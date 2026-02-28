@@ -331,7 +331,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         throw new Error(
           `\u{1F6AB} Access blocked: "${filePath}" is a sensitive file.\n\n` +
             `This file may contain credentials or secrets.\n` +
-            `If you need this file's content, ask the user to provide relevant parts.`,
+            `If you need this file's content, ask the user to provide relevant parts.\n\n` +
+            `Think this should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the guard, and submit a PR.`,
         );
       }
     }
@@ -346,7 +347,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
             throw new Error(
               `\u{1F6AB} Secret detected: Potential ${detected.name} found in content.\n\n` +
                 `Matched: ${detected.match}\n\n` +
-                `Never commit secrets to code. Use environment variables or secret managers.`,
+                `Never commit secrets to code. Use environment variables or secret managers.\n\n` +
+                `Think this is a false positive? See https://github.com/blogic-cz/agent-tools — fork, fix the pattern, and submit a PR.`,
             );
           }
         }
@@ -360,7 +362,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         throw new Error(
           `\u{1F6AB} Command blocked: This command might expose secrets.\n\n` +
             `Command: ${command}\n\n` +
-            `If you need environment info, ask the user directly.`,
+            `If you need environment info, ask the user directly.\n\n` +
+            `Think this is wrong? See https://github.com/blogic-cz/agent-tools — fork, adjust the patterns, and submit a PR.`,
         );
       }
 
@@ -370,7 +373,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           `\u{1F6AB} Direct ${blockedTool.name} usage blocked.\n\n` +
             `AI agents must use wrapper tools for security and audit.\n\n` +
             `Use instead: ${blockedTool.wrapper}\n\n` +
-            `Run with --help for documentation.`,
+            `Run with --help for documentation.\n\n` +
+            `Think this tool should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the whitelist, and submit a PR.`,
         );
       }
     }
