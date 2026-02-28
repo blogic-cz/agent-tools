@@ -1,0 +1,90 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install GitHub CLI
+        run: |
+          if ! command -v gh &> /dev/null; then
+            echo "gh CLI not found, installing..."
+            GH_VERSION=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')
+            curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" -o /tmp/gh.tar.gz
+            tar -xzf /tmp/gh.tar.gz -C /tmp
+            mkdir -p "$HOME/.local/bin"
+            mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" "$HOME/.local/bin/"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            rm -rf /tmp/gh.tar.gz /tmp/gh_*
+            echo "gh CLI installed: $($HOME/.local/bin/gh --version)"
+          else
+            echo "gh CLI already available: $(gh --version)"
+          fi
+
+      - name: Load prompt from file
+        id: load-prompt
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Read prompt from separate file - can be edited without triggering workflow changes
+          # Substitute environment variables in the prompt template
+          PROMPT=$(envsubst < .github/prompts/code-review.md)
+          # Use delimiter to handle multiline content
+          echo "prompt<<EOF" >> $GITHUB_OUTPUT
+          echo "$PROMPT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ steps.load-prompt.outputs.prompt }}
+          use_sticky_comment: true
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(bun:*),Bash(git:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+
+      - name: Fail job if Claude found violations
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUTPUT_FILE="${RUNNER_TEMP}/claude-execution-output.json"
+
+          if [ ! -f "$OUTPUT_FILE" ]; then
+            echo "Claude execution output not found, skipping check."
+            exit 0
+          fi
+
+          echo "Checking Claude review result..."
+          RESULT_LINE=$(grep -o 'RESULT: [A-Z]*' "$OUTPUT_FILE" | tail -n 1 || true)
+
+          if [ -z "$RESULT_LINE" ]; then
+            echo "No RESULT line found in Claude output, assuming PASSED."
+            exit 0
+          fi
+
+          echo "Found result: $RESULT_LINE"
+
+          if [ "$RESULT_LINE" = "RESULT: FAILED" ]; then
+            echo "Claude found violations – failing the job."
+            exit 1
+          else
+            echo "Claude reported PASSED – keeping job green."
+          fi
