@@ -30,7 +30,7 @@ import {
   prChecksCommand,
   prChecksFailedCommand,
   prRerunChecksCommand,
-} from "./pr";
+} from "./pr/index";
 import { repoInfoCommand, repoListCommand, repoSearchCodeCommand } from "./repo";
 import { GitHubService } from "./service";
 import {
