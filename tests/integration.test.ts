@@ -100,7 +100,7 @@ describe("Integration: tools --help with config file", () => {
   it("session-tool --help exits 0 with config", () => {
     const result = runTool("src/session-tool/index.ts", ["--help"], configDir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("Session");
+    expect(result.stdout.toLowerCase()).toContain("session");
   });
 });
 

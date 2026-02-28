@@ -1,6 +1,6 @@
-import { Command, Options } from "@effect/cli";
-import { Command as PlatformCommand, CommandExecutor } from "@effect/platform";
-import { Chunk, Console, Effect, Option, Stream } from "effect";
+import { Command, Flag } from "effect/unstable/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Console, Effect, Option, Stream } from "effect";
 
 import type {
   BranchPRDetail,
@@ -42,22 +42,22 @@ type ButStatusJson = {
 };
 
 const runLocalCommand = Effect.fn("pr.runLocalCommand")(function* (binary: string, args: string[]) {
-  const executor = yield* CommandExecutor.CommandExecutor;
+  const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-  const command = PlatformCommand.make(binary, ...args).pipe(
-    PlatformCommand.stdout("pipe"),
-    PlatformCommand.stderr("pipe"),
-  );
+  const command = ChildProcess.make(binary, args, {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   const result = yield* Effect.scoped(
     Effect.gen(function* () {
-      const proc = yield* executor.start(command);
+      const proc = yield* executor.spawn(command);
 
       const stdoutChunk = yield* proc.stdout.pipe(Stream.decodeText(), Stream.runCollect);
-      const stdout = Chunk.join(stdoutChunk, "");
+      const stdout = stdoutChunk.join("");
 
       const stderrChunk = yield* proc.stderr.pipe(Stream.decodeText(), Stream.runCollect);
-      const stderr = Chunk.join(stderrChunk, "");
+      const stderr = stderrChunk.join("");
 
       const exitCode = yield* proc.exitCode;
 
@@ -142,19 +142,16 @@ const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
 
   const butStatusResult = yield* runLocalCommand("but", ["status", "--json"]);
 
-  const butStatus = yield* Effect.try(
-    () => JSON.parse(butStatusResult.stdout) as ButStatusJson,
-  ).pipe(
-    Effect.mapError(
-      (error) =>
-        new GitHubCommandError({
-          command: "but status --json",
-          exitCode: 0,
-          stderr: `Failed to parse JSON: ${error instanceof Error ? error.message : String(error)}`,
-          message: `Failed to parse JSON: ${error instanceof Error ? error.message : String(error)}`,
-        }),
-    ),
-  );
+  const butStatus = yield* Effect.try({
+    try: () => JSON.parse(butStatusResult.stdout) as ButStatusJson,
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "but status --json",
+        exitCode: 0,
+        stderr: `Failed to parse JSON: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to parse JSON: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  }).pipe(Effect.mapError((error) => error as GitHubCommandError));
 
   const branchNames = [
     ...new Set(
@@ -229,7 +226,7 @@ const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
             ),
           remoteExists: runLocalCommand("git", ["ls-remote", "--heads", "origin", branchName]).pipe(
             Effect.map((result) => result.stdout.trim().length > 0),
-            Effect.catchAll(() => Effect.succeed(false)),
+            Effect.catch(() => Effect.succeed(false)),
           ),
         },
         { concurrency: "unbounded" },
@@ -477,13 +474,15 @@ const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
 
     const timeoutMs = timeoutSeconds * 1000;
     yield* gh.runGh(watchArgs).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: timeoutMs,
         onTimeout: () =>
-          new GitHubTimeoutError({
-            message: `CI check monitoring timed out after ${timeoutSeconds}s`,
-            timeoutMs,
-          }),
+          Effect.fail(
+            new GitHubTimeoutError({
+              message: `CI check monitoring timed out after ${timeoutSeconds}s`,
+              timeoutMs,
+            }),
+          ),
       }),
     );
 
@@ -692,7 +691,16 @@ const fetchComments = Effect.fn("pr.fetchComments")(function* (
     `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/comments`,
   ]);
 
-  const raw = yield* Effect.try(() => JSON.parse(result.stdout) as RawReviewComment[]);
+  const raw = yield* Effect.try({
+    try: () => JSON.parse(result.stdout) as RawReviewComment[],
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "gh-tool pr comments",
+        exitCode: 0,
+        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  });
 
   const comments: ReviewComment[] = raw.map((c) => ({
     id: c.id,
@@ -740,7 +748,16 @@ const fetchIssueComments = Effect.fn("pr.fetchIssueComments")(function* (
     `repos/${repoInfo.owner}/${repoInfo.name}/issues/${resolvedPr}/comments`,
   ]);
 
-  const raw = yield* Effect.try(() => JSON.parse(result.stdout) as RawIssueComment[]);
+  const raw = yield* Effect.try({
+    try: () => JSON.parse(result.stdout) as RawIssueComment[],
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "gh-tool pr issue-comments",
+        exitCode: 0,
+        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  });
 
   let comments = raw.map(mapRawIssueComment);
 
@@ -810,7 +827,16 @@ const postIssueComment = Effect.fn("pr.postIssueComment")(function* (
     `body=${trimmedBody}`,
   ]);
 
-  const rawComment = yield* Effect.try(() => JSON.parse(result.stdout) as RawIssueComment);
+  const rawComment = yield* Effect.try({
+    try: () => JSON.parse(result.stdout) as RawIssueComment,
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "gh-tool pr comment",
+        exitCode: 0,
+        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  });
 
   return mapRawIssueComment(rawComment);
 });
@@ -941,12 +967,19 @@ const replyToComment = Effect.fn("pr.replyToComment")(function* (
       }),
     );
 
-  const parsed = yield* Effect.try(
-    () =>
+  const parsed = yield* Effect.try({
+    try: () =>
       JSON.parse(result.stdout) as {
         id: number;
       },
-  );
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "gh-tool pr reply",
+        exitCode: 0,
+        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  });
 
   return { success: true as const, commentId: parsed.id };
 });
@@ -1026,9 +1059,9 @@ export const prViewCommand = Command.make(
   "view",
   {
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
   },
   ({ format, pr }) =>
@@ -1051,24 +1084,24 @@ export const prStatusCommand = Command.make("status", { format: formatOption }, 
 export const prCreateCommand = Command.make(
   "create",
   {
-    base: Options.text("base").pipe(
-      Options.withDescription("Base branch for the PR"),
-      Options.withDefault("test"),
+    base: Flag.string("base").pipe(
+      Flag.withDescription("Base branch for the PR"),
+      Flag.withDefault("test"),
     ),
-    body: Options.text("body").pipe(
-      Options.withDescription("PR body/description"),
-      Options.withDefault(""),
+    body: Flag.string("body").pipe(
+      Flag.withDescription("PR body/description"),
+      Flag.withDefault(""),
     ),
-    draft: Options.boolean("draft").pipe(
-      Options.withDescription("Create as draft PR"),
-      Options.withDefault(false),
+    draft: Flag.boolean("draft").pipe(
+      Flag.withDescription("Create as draft PR"),
+      Flag.withDefault(false),
     ),
     format: formatOption,
-    head: Options.text("head").pipe(
-      Options.withDescription("Source branch name (required in GitButler workspace mode)"),
-      Options.optional,
+    head: Flag.string("head").pipe(
+      Flag.withDescription("Source branch name (required in GitButler workspace mode)"),
+      Flag.optional,
     ),
-    title: Options.text("title").pipe(Options.withDescription("PR title")),
+    title: Flag.string("title").pipe(Flag.withDescription("PR title")),
   },
   ({ base, body, draft, format, head, title }) =>
     Effect.gen(function* () {
@@ -1118,13 +1151,10 @@ const editPR = Effect.fn("pr.editPR")(function* (opts: {
 export const prEditCommand = Command.make(
   "edit",
   {
-    body: Options.text("body").pipe(
-      Options.withDescription("New PR body/description"),
-      Options.optional,
-    ),
+    body: Flag.string("body").pipe(Flag.withDescription("New PR body/description"), Flag.optional),
     format: formatOption,
-    pr: Options.integer("pr").pipe(Options.withDescription("PR number to edit")),
-    title: Options.text("title").pipe(Options.withDescription("New PR title"), Options.optional),
+    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to edit")),
+    title: Flag.string("title").pipe(Flag.withDescription("New PR title"), Flag.optional),
   },
   ({ body, format, pr, title }) =>
     Effect.gen(function* () {
@@ -1140,19 +1170,19 @@ export const prEditCommand = Command.make(
 export const prMergeCommand = Command.make(
   "merge",
   {
-    confirm: Options.boolean("confirm").pipe(
-      Options.withDescription("Actually merge (without this flag, only shows dry-run)"),
-      Options.withDefault(false),
+    confirm: Flag.boolean("confirm").pipe(
+      Flag.withDescription("Actually merge (without this flag, only shows dry-run)"),
+      Flag.withDefault(false),
     ),
-    deleteBranch: Options.boolean("delete-branch").pipe(
-      Options.withDescription("Delete branch after merge"),
-      Options.withDefault(DEFAULT_DELETE_BRANCH),
+    deleteBranch: Flag.boolean("delete-branch").pipe(
+      Flag.withDescription("Delete branch after merge"),
+      Flag.withDefault(DEFAULT_DELETE_BRANCH),
     ),
     format: formatOption,
-    pr: Options.integer("pr").pipe(Options.withDescription("PR number to merge")),
-    strategy: Options.choice("strategy", MERGE_STRATEGIES).pipe(
-      Options.withDescription("Merge strategy: squash, merge, or rebase"),
-      Options.withDefault(DEFAULT_MERGE_STRATEGY),
+    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to merge")),
+    strategy: Flag.choice("strategy", MERGE_STRATEGIES).pipe(
+      Flag.withDescription("Merge strategy: squash, merge, or rebase"),
+      Flag.withDefault(DEFAULT_MERGE_STRATEGY),
     ),
   },
   ({ confirm, deleteBranch, format, pr, strategy }) =>
@@ -1170,22 +1200,22 @@ export const prMergeCommand = Command.make(
 export const prChecksCommand = Command.make(
   "checks",
   {
-    failFast: Options.boolean("fail-fast").pipe(
-      Options.withDefault(true),
-      Options.withDescription("Stop watching on first failure (with --watch)"),
+    failFast: Flag.boolean("fail-fast").pipe(
+      Flag.withDefault(true),
+      Flag.withDescription("Stop watching on first failure (with --watch)"),
     ),
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
-    timeout: Options.integer("timeout").pipe(
-      Options.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
-      Options.withDescription("Timeout in seconds for watch mode (default: 600)"),
+    timeout: Flag.integer("timeout").pipe(
+      Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
+      Flag.withDescription("Timeout in seconds for watch mode (default: 600)"),
     ),
-    watch: Options.boolean("watch").pipe(
-      Options.withDefault(false),
-      Options.withDescription("Watch until checks complete or timeout"),
+    watch: Flag.boolean("watch").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Watch until checks complete or timeout"),
     ),
   },
   ({ failFast, format, pr, timeout, watch }) =>
@@ -1200,9 +1230,9 @@ export const prChecksFailedCommand = Command.make(
   "checks-failed",
   {
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
   },
   ({ format, pr }) =>
@@ -1255,7 +1285,7 @@ const rerunChecks = Effect.fn("pr.rerunChecks")(function* (pr: number | null, fa
     const rerunArgs = failedOnly ? ["run", "rerun", runId, "--failed"] : ["run", "rerun", runId];
     const success = yield* gh.runGh(rerunArgs).pipe(
       Effect.map(() => true),
-      Effect.catchAll(() => Effect.succeed(false)),
+      Effect.catch(() => Effect.succeed(false)),
     );
     results.push({ runId, success });
   }
@@ -1272,13 +1302,13 @@ export const prRerunChecksCommand = Command.make(
   "rerun-checks",
   {
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
-    failedOnly: Options.boolean("failed-only").pipe(
-      Options.withDefault(true),
-      Options.withDescription("Only rerun failed checks (default: true)"),
+    failedOnly: Flag.boolean("failed-only").pipe(
+      Flag.withDefault(true),
+      Flag.withDescription("Only rerun failed checks (default: true)"),
     ),
   },
   ({ failedOnly, format, pr }) =>
@@ -1295,13 +1325,13 @@ export const prThreadsCommand = Command.make(
   "threads",
   {
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
-    unresolvedOnly: Options.boolean("unresolved-only").pipe(
-      Options.withDescription("Only show unresolved threads"),
-      Options.withDefault(true),
+    unresolvedOnly: Flag.boolean("unresolved-only").pipe(
+      Flag.withDescription("Only show unresolved threads"),
+      Flag.withDefault(true),
     ),
   },
   ({ format, pr, unresolvedOnly }) =>
@@ -1316,13 +1346,13 @@ export const prCommentsCommand = Command.make(
   "comments",
   {
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
-    since: Options.text("since").pipe(
-      Options.withDescription("ISO timestamp to filter comments created after"),
-      Options.optional,
+    since: Flag.string("since").pipe(
+      Flag.withDescription("ISO timestamp to filter comments created after"),
+      Flag.optional,
     ),
   },
   ({ format, pr, since }) =>
@@ -1337,22 +1367,22 @@ export const prCommentsCommand = Command.make(
 export const prIssueCommentsCommand = Command.make(
   "issue-comments",
   {
-    author: Options.text("author").pipe(
-      Options.withDescription("Filter by author login substring"),
-      Options.optional,
+    author: Flag.string("author").pipe(
+      Flag.withDescription("Filter by author login substring"),
+      Flag.optional,
     ),
-    bodyContains: Options.text("body-contains").pipe(
-      Options.withDescription("Filter comments by body substring"),
-      Options.optional,
+    bodyContains: Flag.string("body-contains").pipe(
+      Flag.withDescription("Filter comments by body substring"),
+      Flag.optional,
     ),
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
-    since: Options.text("since").pipe(
-      Options.withDescription("ISO timestamp to filter comments created after"),
-      Options.optional,
+    since: Flag.string("since").pipe(
+      Flag.withDescription("ISO timestamp to filter comments created after"),
+      Flag.optional,
     ),
   },
   ({ author, bodyContains, format, pr, since }) =>
@@ -1375,18 +1405,18 @@ export const prIssueCommentsCommand = Command.make(
 export const prIssueCommentsLatestCommand = Command.make(
   "issue-comments-latest",
   {
-    author: Options.text("author").pipe(
-      Options.withDescription("Filter by author login substring"),
-      Options.optional,
+    author: Flag.string("author").pipe(
+      Flag.withDescription("Filter by author login substring"),
+      Flag.optional,
     ),
-    bodyContains: Options.text("body-contains").pipe(
-      Options.withDescription("Filter comments by body substring"),
-      Options.optional,
+    bodyContains: Flag.string("body-contains").pipe(
+      Flag.withDescription("Filter comments by body substring"),
+      Flag.optional,
     ),
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
   },
   ({ author, bodyContains, format, pr }) =>
@@ -1403,11 +1433,11 @@ export const prIssueCommentsLatestCommand = Command.make(
 export const prCommentCommand = Command.make(
   "comment",
   {
-    body: Options.text("body").pipe(Options.withDescription("General PR comment body text")),
+    body: Flag.string("body").pipe(Flag.withDescription("General PR comment body text")),
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
   },
   ({ body, format, pr }) =>
@@ -1422,9 +1452,9 @@ export const prDiscussionSummaryCommand = Command.make(
   "discussion-summary",
   {
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
   },
   ({ format, pr }) =>
@@ -1440,14 +1470,14 @@ export const prDiscussionSummaryCommand = Command.make(
 export const prReplyCommand = Command.make(
   "reply",
   {
-    body: Options.text("body").pipe(Options.withDescription("Reply body text")),
-    commentId: Options.integer("comment-id").pipe(
-      Options.withDescription("ID of the comment to reply to"),
+    body: Flag.string("body").pipe(Flag.withDescription("Reply body text")),
+    commentId: Flag.integer("comment-id").pipe(
+      Flag.withDescription("ID of the comment to reply to"),
     ),
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
   },
   ({ body, commentId, format, pr }) =>
@@ -1462,8 +1492,8 @@ export const prResolveCommand = Command.make(
   "resolve",
   {
     format: formatOption,
-    threadId: Options.text("thread-id").pipe(
-      Options.withDescription("GraphQL node ID of the thread to resolve"),
+    threadId: Flag.string("thread-id").pipe(
+      Flag.withDescription("GraphQL node ID of the thread to resolve"),
     ),
   },
   ({ format, threadId }) =>
@@ -1476,20 +1506,20 @@ export const prResolveCommand = Command.make(
 export const prSubmitReviewCommand = Command.make(
   "submit-review",
   {
-    body: Options.text("body").pipe(
-      Options.withDescription("Optional review body text when submitting"),
-      Options.optional,
+    body: Flag.string("body").pipe(
+      Flag.withDescription("Optional review body text when submitting"),
+      Flag.optional,
     ),
     format: formatOption,
-    pr: Options.integer("pr").pipe(
-      Options.withDescription("PR number (default: current branch PR)"),
-      Options.optional,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
     ),
-    reviewId: Options.text("review-id").pipe(
-      Options.withDescription(
+    reviewId: Flag.string("review-id").pipe(
+      Flag.withDescription(
         "Pending review GraphQL ID (defaults to current user's pending review on PR)",
       ),
-      Options.optional,
+      Flag.optional,
     ),
   },
   ({ body, format, pr, reviewId }) =>

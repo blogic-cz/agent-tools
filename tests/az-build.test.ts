@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Either, Layer } from "effect";
+import { Effect, Result, Layer } from "effect";
 
 import type { BuildJob, BuildTimeline, BuildLogs, PipelineRun } from "../src/az-tool/types";
 
@@ -174,11 +174,11 @@ describe("getBuildTimeline", () => {
         "invoke:build:timeline": { invalid: "data" },
       });
 
-      const result = yield* getBuildTimeline(123).pipe(Effect.either, Effect.provide(layer));
+      const result = yield* getBuildTimeline(123).pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: () => {},
-        onRight: () => {
+      Result.match(result, {
+        onFailure: () => {},
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -281,11 +281,11 @@ describe("getBuildLogs", () => {
         "invoke:build:logs": { invalid: "data" },
       });
 
-      const result = yield* getBuildLogs(123).pipe(Effect.either, Effect.provide(layer));
+      const result = yield* getBuildLogs(123).pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: () => {},
-        onRight: () => {
+      Result.match(result, {
+        onFailure: () => {},
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -294,37 +294,35 @@ describe("getBuildLogs", () => {
 });
 
 describe("getBuildLogContent", () => {
-  it.effect("returns log content as string", () =>
-    Effect.gen(function* () {
-      const logContent = "Build log line 1\nBuild log line 2\n";
-      const layer = createMockAzServiceLayer({
-        "invoke:build:logs": logContent,
-      });
+  it("returns log content as string", async () => {
+    const logContent = "Build log line 1\nBuild log line 2\n";
+    const layer = createMockAzServiceLayer({
+      "invoke:build:logs": logContent,
+    });
 
-      const result = yield* getBuildLogContent(123, 1).pipe(Effect.provide(layer));
+    const result = await Effect.runPromise(getBuildLogContent(123, 1).pipe(Effect.provide(layer)));
 
-      expect(result).toBe(logContent);
-    }),
-  );
+    expect(result).toBe(logContent);
+  });
 
-  it.effect("fails with AzParseError on non-string response", () =>
-    Effect.gen(function* () {
-      const layer = createMockAzServiceLayer({
-        "invoke:build:logs": { notAString: true },
-      });
+  it("fails with AzParseError on non-string response", async () => {
+    const layer = createMockAzServiceLayer({
+      "invoke:build:logs": { notAString: true },
+    });
 
-      const result = yield* getBuildLogContent(123, 1).pipe(Effect.either, Effect.provide(layer));
+    const result = await Effect.runPromise(
+      getBuildLogContent(123, 1).pipe(Effect.result, Effect.provide(layer)),
+    );
 
-      Either.match(result, {
-        onLeft: (left) => {
-          expect(left._tag).toBe("AzParseError");
-        },
-        onRight: () => {
-          expect.fail("Expected Left but got Right");
-        },
-      });
-    }),
-  );
+    Result.match(result, {
+      onFailure: (left) => {
+        expect(left._tag).toBe("AzParseError");
+      },
+      onSuccess: () => {
+        expect.fail("Expected Left but got Right");
+      },
+    });
+  });
 });
 
 describe("getBuildJobSummary", () => {
@@ -382,7 +380,7 @@ describe("getBuildJobSummary", () => {
         records: [
           createMockBuildJob({
             id: "job-orphan",
-            parentId: undefined,
+            parentId: null,
           }),
         ],
       });
@@ -403,7 +401,7 @@ describe("getBuildJobSummary", () => {
         records: [
           createMockBuildJob({
             id: "job-no-log",
-            log: undefined,
+            log: null,
           }),
         ],
       });
@@ -424,8 +422,8 @@ describe("getBuildJobSummary", () => {
         records: [
           createMockBuildJob({
             id: "job-no-times",
-            startTime: undefined,
-            finishTime: undefined,
+            startTime: null,
+            finishTime: null,
           }),
         ],
       });
@@ -533,8 +531,8 @@ describe("findFailedJobs", () => {
           createMockBuildJob({
             id: "job-no-counts",
             result: "failed",
-            errorCount: undefined,
-            warningCount: undefined,
+            errorCount: null,
+            warningCount: null,
           }),
         ],
       });
@@ -764,13 +762,13 @@ describe("listPipelineRuns", () => {
         },
       });
 
-      const result = yield* listPipelineRuns().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* listPipelineRuns().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (left) => {
+      Result.match(result, {
+        onFailure: (left) => {
           expect(left._tag).toBe("AzParseError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });

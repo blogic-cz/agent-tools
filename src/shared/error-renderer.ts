@@ -23,18 +23,18 @@ const formatError = (error: unknown): string => {
 };
 
 const formatCause = (cause: Cause.Cause<unknown>): string => {
-  const failures = Cause.failures(cause);
+  const failures = cause.reasons.filter(Cause.isFailReason);
   const firstFailure = Array.from(failures)[0];
   if (firstFailure !== undefined) return formatError(firstFailure);
 
-  const defects = Cause.defects(cause);
+  const defects = cause.reasons.filter(Cause.isDieReason);
   const firstDefect = Array.from(defects)[0];
   if (firstDefect !== undefined) {
     if (firstDefect instanceof Error) return `Unexpected error: ${firstDefect.message}`;
     return `Unexpected error: ${String(firstDefect)}`;
   }
 
-  if (Cause.isInterruptedOnly(cause)) return "Interrupted";
+  if (Cause.hasInterruptsOnly(cause)) return "Interrupted";
   return "Unknown error";
 };
 

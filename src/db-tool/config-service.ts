@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Effect, Layer, ServiceMap } from "effect";
 
 import { ConfigService, getToolConfig } from "../config";
 import type { DatabaseConfig } from "../config";
@@ -12,10 +12,10 @@ import type { DatabaseConfig } from "../config";
  *   const dbConfig = yield* DbConfigService;
  *   if (!dbConfig) { // no config }
  */
-export class DbConfigService extends Context.Tag("@agent-tools/DbConfigService")<
+export class DbConfigService extends ServiceMap.Service<
   DbConfigService,
   DatabaseConfig | undefined
->() {}
+>()("@agent-tools/DbConfigService") {}
 
 /**
  * Creates a DbConfigService layer that resolves the database config

@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Effect, Layer, ServiceMap } from "effect";
 import { readdir } from "node:fs/promises";
 
 import type { MessageSummary, SessionInfo } from "./types";
@@ -103,7 +103,7 @@ const readJsonFilesFlat = (dir: string): Effect.Effect<FileEntry[], SessionError
       }),
   });
 
-export class SessionService extends Context.Tag("@agent-tools/SessionService")<
+export class SessionService extends ServiceMap.Service<
   SessionService,
   {
     readonly getSessionsForProject: (
@@ -114,7 +114,7 @@ export class SessionService extends Context.Tag("@agent-tools/SessionService")<
     ) => Effect.Effect<MessageSummary[], SessionError>;
     readonly searchSummaries: (summaries: MessageSummary[], query: string) => MessageSummary[];
   }
->() {
+>()("@agent-tools/SessionService") {
   static readonly layer = Layer.effect(
     SessionService,
     Effect.gen(function* () {

@@ -116,6 +116,22 @@ const SECRET_PATTERNS = [
     pattern: /(?:["'=:\s]|^)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
   },
   {
+    name: "Azure SAS Token",
+    pattern: /[?&]sig=[A-Za-z0-9%+/=]{20,}/,
+  },
+  {
+    name: "GCP Service Account Key",
+    pattern: /"type"\s*:\s*"service_account"/,
+  },
+  {
+    name: "Slack Webhook URL",
+    pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/,
+  },
+  {
+    name: "Discord Webhook URL",
+    pattern: /https:\/\/discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/,
+  },
+  {
     name: "Database URL",
     pattern: /(?:postgres(?:ql)?|mysql|mongodb):\/\/(?!\$\{)[^:]+:(?!\$\{)[^@]+@/,
   },

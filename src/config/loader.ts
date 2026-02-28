@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 
-import { Context, Data, Effect, Layer, ParseResult, Schema } from "effect";
+import { Data, Effect, Layer, Schema, ServiceMap } from "effect";
 
 import type { AgentToolsConfig } from "./types.ts";
 
@@ -10,25 +10,22 @@ const CliToolOverrideSchema = Schema.Struct({
 });
 
 const CredentialGuardConfigSchema = Schema.Struct({
-  additionalBlockedPaths: Schema.optional(Schema.Array(Schema.String)),
-  additionalAllowedPaths: Schema.optional(Schema.Array(Schema.String)),
-  additionalBlockedCliTools: Schema.optional(Schema.Array(CliToolOverrideSchema)),
-  additionalDangerousBashPatterns: Schema.optional(Schema.Array(Schema.String)),
+  additionalBlockedPaths: Schema.optionalKey(Schema.Array(Schema.String)),
+  additionalAllowedPaths: Schema.optionalKey(Schema.Array(Schema.String)),
+  additionalBlockedCliTools: Schema.optionalKey(Schema.Array(CliToolOverrideSchema)),
+  additionalDangerousBashPatterns: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 const AzureConfigSchema = Schema.Struct({
   organization: Schema.String,
   defaultProject: Schema.String,
-  timeoutMs: Schema.optional(Schema.Number),
+  timeoutMs: Schema.optionalKey(Schema.Number),
 });
 
 const K8sConfigSchema = Schema.Struct({
   clusterId: Schema.String,
-  namespaces: Schema.Record({
-    key: Schema.String,
-    value: Schema.String,
-  }),
-  timeoutMs: Schema.optional(Schema.Number),
+  namespaces: Schema.Record(Schema.String, Schema.String),
+  timeoutMs: Schema.optionalKey(Schema.Number),
 });
 
 const DbEnvConfigSchema = Schema.Struct({
@@ -36,22 +33,19 @@ const DbEnvConfigSchema = Schema.Struct({
   port: Schema.Number,
   user: Schema.String,
   database: Schema.String,
-  passwordEnvVar: Schema.optional(Schema.String),
+  passwordEnvVar: Schema.optionalKey(Schema.String),
 });
 
 const DatabaseConfigSchema = Schema.Struct({
-  environments: Schema.Record({
-    key: Schema.String,
-    value: DbEnvConfigSchema,
-  }),
-  kubectl: Schema.optional(
+  environments: Schema.Record(Schema.String, DbEnvConfigSchema),
+  kubectl: Schema.optionalKey(
     Schema.Struct({
       context: Schema.String,
       namespace: Schema.String,
     }),
   ),
-  tunnelTimeoutMs: Schema.optional(Schema.Number),
-  remotePort: Schema.optional(Schema.Number),
+  tunnelTimeoutMs: Schema.optionalKey(Schema.Number),
+  remotePort: Schema.optionalKey(Schema.Number),
 });
 
 const LogsConfigSchema = Schema.Struct({
@@ -60,37 +54,17 @@ const LogsConfigSchema = Schema.Struct({
 });
 
 const AgentToolsConfigSchema = Schema.Struct({
-  $schema: Schema.optional(Schema.String),
-  azure: Schema.optional(
-    Schema.Record({
-      key: Schema.String,
-      value: AzureConfigSchema,
-    }),
-  ),
-  kubernetes: Schema.optional(
-    Schema.Record({
-      key: Schema.String,
-      value: K8sConfigSchema,
-    }),
-  ),
-  database: Schema.optional(
-    Schema.Record({
-      key: Schema.String,
-      value: DatabaseConfigSchema,
-    }),
-  ),
-  logs: Schema.optional(
-    Schema.Record({
-      key: Schema.String,
-      value: LogsConfigSchema,
-    }),
-  ),
-  session: Schema.optional(
+  $schema: Schema.optionalKey(Schema.String),
+  azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
+  kubernetes: Schema.optionalKey(Schema.Record(Schema.String, K8sConfigSchema)),
+  database: Schema.optionalKey(Schema.Record(Schema.String, DatabaseConfigSchema)),
+  logs: Schema.optionalKey(Schema.Record(Schema.String, LogsConfigSchema)),
+  session: Schema.optionalKey(
     Schema.Struct({
       storagePath: Schema.String,
     }),
   ),
-  credentialGuard: Schema.optional(CredentialGuardConfigSchema),
+  credentialGuard: Schema.optionalKey(CredentialGuardConfigSchema),
 });
 
 async function findConfigFile(startDirectory: string = process.cwd()): Promise<string | undefined> {
@@ -125,14 +99,9 @@ export async function loadConfig(): Promise<AgentToolsConfig | undefined> {
   const parsed = Bun.JSON5.parse(fileContent);
 
   try {
-    const decoded = await Effect.runPromise(Schema.decodeUnknown(AgentToolsConfigSchema)(parsed));
+    const decoded = Schema.decodeUnknownSync(AgentToolsConfigSchema)(parsed);
     return decoded as AgentToolsConfig;
   } catch (error) {
-    if (ParseResult.isParseError(error)) {
-      const details = ParseResult.TreeFormatter.formatErrorSync(error);
-      throw new Error(`Invalid agent-tools config at ${configPath}: ${details}`);
-    }
-
     throw new Error(
       `Invalid agent-tools config at ${configPath}: ${
         error instanceof Error ? error.message : String(error)
@@ -141,10 +110,10 @@ export async function loadConfig(): Promise<AgentToolsConfig | undefined> {
   }
 }
 
-export class ConfigService extends Context.Tag("@agent-tools/ConfigService")<
+export class ConfigService extends ServiceMap.Service<
   ConfigService,
   AgentToolsConfig | undefined
->() {}
+>()("@agent-tools/ConfigService") {}
 
 export class ConfigLoadError extends Data.TaggedError("ConfigLoadError")<{
   readonly cause: unknown;

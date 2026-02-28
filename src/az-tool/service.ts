@@ -1,5 +1,5 @@
-import { Command, CommandExecutor } from "@effect/platform";
-import { Context, Effect, Layer, Stream, Option, Chunk } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect, Layer, ServiceMap, Stream, Option } from "effect";
 
 import type { InvokeParams } from "./types";
 import type { AzureConfig } from "../config/types";
@@ -9,7 +9,7 @@ import { AzSecurityError, AzCommandError, AzTimeoutError, AzParseError } from ".
 import { isCommandAllowed, isInvokeAllowed } from "./security";
 import { ConfigService, getToolConfig } from "../config";
 
-export class AzService extends Context.Tag("@agent-tools/AzService")<
+export class AzService extends ServiceMap.Service<
   AzService,
   {
     readonly runCommand: (
@@ -20,7 +20,7 @@ export class AzService extends Context.Tag("@agent-tools/AzService")<
       params: InvokeParams,
     ) => Effect.Effect<unknown, AzSecurityError | AzCommandError | AzTimeoutError | AzParseError>;
   }
->() {
+>()("@agent-tools/AzService") {
   static readonly layer = Layer.effect(
     AzService,
     Effect.gen(function* () {
@@ -40,22 +40,22 @@ export class AzService extends Context.Tag("@agent-tools/AzService")<
         };
       }
 
-      const executor = yield* CommandExecutor.CommandExecutor;
+      const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
 
       const runShellCommand = (fullCommand: string, timeoutMs: number) =>
         Effect.scoped(
           Effect.gen(function* () {
-            const command = Command.make("sh", "-c", fullCommand).pipe(
-              Command.stdout("pipe"),
-              Command.stderr("pipe"),
-            );
-            const process = yield* executor.start(command);
+            const command = ChildProcess.make("sh", ["-c", fullCommand], {
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            const process = yield* executor.spawn(command);
 
             const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
-            const stdout = Chunk.join(stdoutChunk, "");
+            const stdout = stdoutChunk.join("");
 
             const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
-            const stderr = Chunk.join(stderrChunk, "");
+            const stderr = stderrChunk.join("");
 
             const exitCode = yield* process.exitCode;
 

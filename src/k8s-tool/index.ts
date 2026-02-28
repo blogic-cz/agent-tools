@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { Command, Options } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
+import { Command, Flag } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
 import type { CommandResult } from "./types";
@@ -13,20 +13,20 @@ import type { K8sConfig } from "../config";
 const kubectlCommand = Command.make(
   "kubectl",
   {
-    env: Options.choice("env", ["test", "prod"]).pipe(
-      Options.withDescription("Target environment: test or prod"),
+    env: Flag.choice("env", ["test", "prod"]).pipe(
+      Flag.withDescription("Target environment: test or prod"),
     ),
-    cmd: Options.text("cmd").pipe(
-      Options.withDescription('kubectl command (without "kubectl" prefix)'),
+    cmd: Flag.string("cmd").pipe(
+      Flag.withDescription('kubectl command (without "kubectl" prefix)'),
     ),
-    dryRun: Options.boolean("dry-run").pipe(
-      Options.withAlias("d"),
-      Options.withDescription("Show command without executing"),
-      Options.withDefault(false),
+    dryRun: Flag.boolean("dry-run").pipe(
+      Flag.withAlias("d"),
+      Flag.withDescription("Show command without executing"),
+      Flag.withDefault(false),
     ),
     format: formatOption,
-    profile: Options.optional(Options.text("profile")).pipe(
-      Options.withDescription("Kubernetes profile name (if multiple configured)"),
+    profile: Flag.optional(Flag.string("profile")).pipe(
+      Flag.withDescription("Kubernetes profile name (if multiple configured)"),
     ),
   },
   ({ cmd, dryRun, format, profile }) =>
@@ -136,19 +136,15 @@ const mainCommand = Command.make("k8s-tool", {}).pipe(
 );
 
 const cli = Command.run(mainCommand, {
-  name: "K8s Tool",
   version: VERSION,
 });
 
 const MainLayer = K8sServiceLayer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
-  Layer.provideMerge(BunContext.layer),
+  Layer.provideMerge(BunServices.layer),
 );
 
-const program = cli(process.argv).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapErrorCause(renderCauseToStderr),
-);
+const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

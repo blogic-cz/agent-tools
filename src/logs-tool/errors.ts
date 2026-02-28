@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class LogsNotFoundError extends Schema.TaggedError<LogsNotFoundError>()(
+export class LogsNotFoundError extends Schema.TaggedErrorClass<LogsNotFoundError>()(
   "LogsNotFoundError",
   {
     message: Schema.String,
@@ -8,9 +8,22 @@ export class LogsNotFoundError extends Schema.TaggedError<LogsNotFoundError>()(
   },
 ) {}
 
-export class LogsReadError extends Schema.TaggedError<LogsReadError>()("LogsReadError", {
+export class LogsReadError extends Schema.TaggedErrorClass<LogsReadError>()("LogsReadError", {
   message: Schema.String,
   source: Schema.String,
 }) {}
 
-export type LogsError = LogsNotFoundError | LogsReadError;
+export class LogsConfigError extends Schema.TaggedErrorClass<LogsConfigError>()("LogsConfigError", {
+  message: Schema.String,
+}) {}
+
+export class LogsTimeoutError extends Schema.TaggedErrorClass<LogsTimeoutError>()(
+  "LogsTimeoutError",
+  {
+    message: Schema.String,
+    source: Schema.String,
+    timeoutMs: Schema.Number,
+  },
+) {}
+
+export type LogsError = LogsNotFoundError | LogsReadError | LogsConfigError | LogsTimeoutError;

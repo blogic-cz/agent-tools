@@ -1,12 +1,12 @@
-import { Options } from "@effect/cli";
+import { Flag } from "effect/unstable/cli";
 import { encode as encodeToon } from "@toon-format/toon";
 import { Console } from "effect";
 
 import type { BaseResult, OutputFormat } from "./types";
 
-export const formatOption = Options.choice("format", ["toon", "json"]).pipe(
-  Options.withDescription("Output format: toon (default, token-efficient) or json"),
-  Options.withDefault("toon"),
+export const formatOption = Flag.choice("format", ["toon", "json"]).pipe(
+  Flag.withDescription("Output format: toon (default, token-efficient) or json"),
+  Flag.withDefault("toon"),
 );
 
 export function formatOutput<T extends BaseResult>(result: T, format: OutputFormat): string {

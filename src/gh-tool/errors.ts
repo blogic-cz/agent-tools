@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class GitHubCommandError extends Schema.TaggedError<GitHubCommandError>()(
+export class GitHubCommandError extends Schema.TaggedErrorClass<GitHubCommandError>()(
   "GitHubCommandError",
   {
     message: Schema.String,
@@ -10,7 +10,7 @@ export class GitHubCommandError extends Schema.TaggedError<GitHubCommandError>()
   },
 ) {}
 
-export class GitHubNotFoundError extends Schema.TaggedError<GitHubNotFoundError>()(
+export class GitHubNotFoundError extends Schema.TaggedErrorClass<GitHubNotFoundError>()(
   "GitHubNotFoundError",
   {
     message: Schema.String,
@@ -19,16 +19,19 @@ export class GitHubNotFoundError extends Schema.TaggedError<GitHubNotFoundError>
   },
 ) {}
 
-export class GitHubAuthError extends Schema.TaggedError<GitHubAuthError>()("GitHubAuthError", {
+export class GitHubAuthError extends Schema.TaggedErrorClass<GitHubAuthError>()("GitHubAuthError", {
   message: Schema.String,
 }) {}
 
-export class GitHubMergeError extends Schema.TaggedError<GitHubMergeError>()("GitHubMergeError", {
-  message: Schema.String,
-  reason: Schema.Literal("conflicts", "checks_failing", "branch_protected", "unknown"),
-}) {}
+export class GitHubMergeError extends Schema.TaggedErrorClass<GitHubMergeError>()(
+  "GitHubMergeError",
+  {
+    message: Schema.String,
+    reason: Schema.Literals(["conflicts", "checks_failing", "branch_protected", "unknown"]),
+  },
+) {}
 
-export class GitHubTimeoutError extends Schema.TaggedError<GitHubTimeoutError>()(
+export class GitHubTimeoutError extends Schema.TaggedErrorClass<GitHubTimeoutError>()(
   "GitHubTimeoutError",
   {
     message: Schema.String,

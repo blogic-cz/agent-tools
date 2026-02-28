@@ -14,9 +14,9 @@
  * Use --format toon for LLM-optimized output (fewer tokens).
  */
 
-import { Command, Options } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
-import { Console, Effect, Either, Layer, Option } from "effect";
+import { Command, Flag } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Console, Effect, Layer, Option, Result } from "effect";
 
 import type { Environment, LogResult, ReadOptions } from "./types";
 
@@ -24,9 +24,9 @@ import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "../sha
 import { LogsNotFoundError } from "./errors";
 import { LogsService, LogsServiceLayer } from "./service";
 
-const profileOption = Options.optional(
-  Options.text("profile").pipe(
-    Options.withDescription(
+const profileOption = Flag.optional(
+  Flag.string("profile").pipe(
+    Flag.withDescription(
       "Named profile from agent-tools.json5 logs section (default: 'default' key or single entry)",
     ),
   ),
@@ -56,8 +56,8 @@ const buildSource = (
 const listCommand = Command.make(
   "list",
   {
-    env: Options.choice("env", ["local", "test", "prod"]).pipe(
-      Options.withDescription("Target environment"),
+    env: Flag.choice("env", ["local", "test", "prod"]).pipe(
+      Flag.withDescription("Target environment"),
     ),
     format: formatOption,
     profile: profileOption,
@@ -70,17 +70,17 @@ const listCommand = Command.make(
 
       const result = yield* logsService
         .listLogs(env as Environment, profileName)
-        .pipe(Effect.either);
+        .pipe(Effect.result);
       const executionTimeMs = Date.now() - startTime;
 
-      const logResult: LogResult = Either.match(result, {
-        onLeft: (error) => ({
+      const logResult: LogResult = Result.match(result, {
+        onFailure: (error) => ({
           success: false,
           error: error.message,
-          source: error instanceof LogsNotFoundError ? error.path : error.source,
+          source: error instanceof LogsNotFoundError ? error.path : undefined,
           executionTimeMs,
         }),
-        onRight: (data) => ({
+        onSuccess: (data) => ({
           success: true,
           data,
           source: buildSource("list", env as Environment, undefined, null),
@@ -95,26 +95,26 @@ const listCommand = Command.make(
 const readCommand = Command.make(
   "read",
   {
-    env: Options.choice("env", ["local", "test", "prod"]).pipe(
-      Options.withDescription("Target environment"),
+    env: Flag.choice("env", ["local", "test", "prod"]).pipe(
+      Flag.withDescription("Target environment"),
     ),
-    file: Options.text("file").pipe(
-      Options.withDescription("Specific log file to read"),
-      Options.optional,
+    file: Flag.string("file").pipe(
+      Flag.withDescription("Specific log file to read"),
+      Flag.optional,
     ),
     format: formatOption,
-    grep: Options.text("grep").pipe(
-      Options.withDescription("Filter lines containing pattern"),
-      Options.optional,
+    grep: Flag.string("grep").pipe(
+      Flag.withDescription("Filter lines containing pattern"),
+      Flag.optional,
     ),
-    pretty: Options.boolean("pretty").pipe(
-      Options.withDescription("Pretty-print JSON log entries"),
-      Options.withDefault(false),
+    pretty: Flag.boolean("pretty").pipe(
+      Flag.withDescription("Pretty-print JSON log entries"),
+      Flag.withDefault(false),
     ),
     profile: profileOption,
-    tail: Options.integer("tail").pipe(
-      Options.withDescription("Show last N lines"),
-      Options.withDefault(100),
+    tail: Flag.integer("tail").pipe(
+      Flag.withDescription("Show last N lines"),
+      Flag.withDefault(100),
     ),
   },
   ({ env, file, format, grep, pretty, profile, tail }) =>
@@ -132,17 +132,17 @@ const readCommand = Command.make(
 
       const result = yield* logsService
         .readLogs(env as Environment, readOptions, profileName)
-        .pipe(Effect.either);
+        .pipe(Effect.result);
       const executionTimeMs = Date.now() - startTime;
 
-      const logResult: LogResult = Either.match(result, {
-        onLeft: (error) => ({
+      const logResult: LogResult = Result.match(result, {
+        onFailure: (error) => ({
           success: false,
           error: error.message,
-          source: error instanceof LogsNotFoundError ? error.path : error.source,
+          source: error instanceof LogsNotFoundError ? error.path : undefined,
           executionTimeMs,
         }),
-        onRight: (data) => ({
+        onSuccess: (data) => ({
           success: true,
           data,
           source: buildSource("read", env as Environment, undefined, readOptions),
@@ -160,18 +160,16 @@ const mainCommand = Command.make("logs-tool", {}).pipe(
 );
 
 const cli = Command.run(mainCommand, {
-  name: "Logs Tool",
   version: VERSION,
 });
 
-export const run = (argv: ReadonlyArray<string>) => cli(argv);
+export const run = Command.runWith(mainCommand, {
+  version: VERSION,
+});
 
-const MainLayer = LogsServiceLayer.pipe(Layer.provideMerge(BunContext.layer));
+const MainLayer = LogsServiceLayer.pipe(Layer.provideMerge(BunServices.layer));
 
-const program = cli(process.argv).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapErrorCause(renderCauseToStderr),
-);
+const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

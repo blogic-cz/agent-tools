@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Either, Layer, Match } from "effect";
+import { Effect, Result, Layer, Match } from "effect";
 
 import type { CommandResult, Environment } from "../src/k8s-tool/types";
 
@@ -229,14 +229,14 @@ describe("K8sService", () => {
     it.effect("handles K8sContextError", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;
-        const result = yield* service.runKubectl("get pods", false).pipe(Effect.either);
+        const result = yield* service.runKubectl("get pods", false).pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (left) => {
+        Result.match(result, {
+          onFailure: (left) => {
             expect(left._tag).toBe("K8sContextError");
             expect(left.message).toContain("No kubectl context found");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -255,10 +255,10 @@ describe("K8sService", () => {
     it.effect("handles K8sCommandError with exit code", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;
-        const result = yield* service.runKubectl("get pod invalid-pod", false).pipe(Effect.either);
+        const result = yield* service.runKubectl("get pod invalid-pod", false).pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (left) => {
+        Result.match(result, {
+          onFailure: (left) => {
             Match.value(left).pipe(
               Match.tag("K8sCommandError", (err) => {
                 expect(err.exitCode).toBe(1);
@@ -269,7 +269,7 @@ describe("K8sService", () => {
               }),
             );
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -290,10 +290,10 @@ describe("K8sService", () => {
     it.effect("handles K8sTimeoutError", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;
-        const result = yield* service.runKubectl("logs -f pod-name", false).pipe(Effect.either);
+        const result = yield* service.runKubectl("logs -f pod-name", false).pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (left) => {
+        Result.match(result, {
+          onFailure: (left) => {
             Match.value(left).pipe(
               Match.tag("K8sTimeoutError", (err) => {
                 expect(err.timeoutMs).toBe(30000);
@@ -303,7 +303,7 @@ describe("K8sService", () => {
               }),
             );
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -325,10 +325,10 @@ describe("K8sService", () => {
         const service = yield* K8sService;
         const result = yield* service
           .runKubectl("get pods -n my-app-test", false)
-          .pipe(Effect.either);
+          .pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (left) => {
+        Result.match(result, {
+          onFailure: (left) => {
             Match.value(left).pipe(
               Match.tag("K8sCommandError", (err) => {
                 expect(err.command).toBe("kubectl get pods -n my-app-test");
@@ -338,7 +338,7 @@ describe("K8sService", () => {
               }),
             );
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -406,11 +406,11 @@ describe("K8sService", () => {
     it.effect("fails on command error", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;
-        const result = yield* service.runCommand("invalid-kubectl-cmd", "test").pipe(Effect.either);
+        const result = yield* service.runCommand("invalid-kubectl-cmd", "test").pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: () => {},
-          onRight: () => {
+        Result.match(result, {
+          onFailure: () => {},
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -716,11 +716,11 @@ spec:
     it.effect("includes error field in error result", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;
-        const result = yield* service.runKubectl("get pods", false).pipe(Effect.either);
+        const result = yield* service.runKubectl("get pods", false).pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: () => {},
-          onRight: () => {
+        Result.match(result, {
+          onFailure: () => {},
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });

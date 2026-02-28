@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { Command, Options } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
+import { Command, Flag } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
 import type { SchemaMode } from "./types";
@@ -18,15 +18,13 @@ const profileArg = profileIndex !== -1 ? process.argv[profileIndex + 1] : undefi
 const sqlCommand = Command.make(
   "sql",
   {
-    env: Options.text("env").pipe(
-      Options.withDescription("Target database environment name (e.g. local, test, prod)"),
+    env: Flag.string("env").pipe(
+      Flag.withDescription("Target database environment name (e.g. local, test, prod)"),
     ),
-    sql: Options.text("sql").pipe(Options.withDescription("SQL query to execute")),
+    sql: Flag.string("sql").pipe(Flag.withDescription("SQL query to execute")),
     format: formatOption,
-    profile: Options.optional(Options.text("profile")).pipe(
-      Options.withDescription(
-        "Database profile name from agent-tools.json5 (if multiple configured)",
-      ),
+    profile: Flag.optional(Flag.string("profile")).pipe(
+      Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
   ({ env, sql, format }) =>
@@ -40,23 +38,21 @@ const sqlCommand = Command.make(
 const schemaCommand = Command.make(
   "schema",
   {
-    env: Options.text("env").pipe(
-      Options.withDescription("Target database environment name (e.g. local, test, prod)"),
+    env: Flag.string("env").pipe(
+      Flag.withDescription("Target database environment name (e.g. local, test, prod)"),
     ),
-    mode: Options.choice("mode", ["tables", "columns", "full", "relationships"]).pipe(
-      Options.withDescription(
+    mode: Flag.choice("mode", ["tables", "columns", "full", "relationships"]).pipe(
+      Flag.withDescription(
         "Schema introspection mode: tables (list all), columns (show columns for --table), full (all tables with columns), relationships (foreign keys)",
       ),
     ),
-    table: Options.text("table").pipe(
-      Options.withDescription("Table name (required for --mode columns)"),
-      Options.optional,
+    table: Flag.string("table").pipe(
+      Flag.withDescription("Table name (required for --mode columns)"),
+      Flag.optional,
     ),
     format: formatOption,
-    profile: Options.optional(Options.text("profile")).pipe(
-      Options.withDescription(
-        "Database profile name from agent-tools.json5 (if multiple configured)",
-      ),
+    profile: Flag.optional(Flag.string("profile")).pipe(
+      Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
   ({ env, mode, table, format }) =>
@@ -77,7 +73,6 @@ const mainCommand = Command.make("db-tool", {}).pipe(
 );
 
 const cli = Command.run(mainCommand, {
-  name: "Database Tool",
   version: VERSION,
 });
 
@@ -86,13 +81,10 @@ const dbConfigLayer = makeDbConfigLayer(profileArg);
 const MainLayer = DbService.layer.pipe(
   Layer.provide(dbConfigLayer),
   Layer.provideMerge(ConfigServiceLayer),
-  Layer.provideMerge(BunContext.layer),
+  Layer.provideMerge(BunServices.layer),
 );
 
-const program = cli(process.argv).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapErrorCause(renderCauseToStderr),
-);
+const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

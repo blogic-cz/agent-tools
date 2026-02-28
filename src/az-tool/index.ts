@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { Command, Options } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
+import { Command, Flag } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
 import { formatAny, formatOption, formatOutput, renderCauseToStderr, VERSION } from "../shared";
@@ -14,27 +14,26 @@ import {
 import { AzCommandError } from "./errors";
 import { extractOptionValue } from "./extract-option-value";
 import { AzService, AzServiceLayer } from "./service";
-import { ConfigService, ConfigServiceLayer } from "../config";
+import { ConfigServiceLayer } from "../config";
 
 const mainCommand = Command.make(
   "az-tool",
   {
-    profile: Options.optional(Options.text("profile")).pipe(
-      Options.withDescription("Azure DevOps profile name (from agent-tools config)"),
+    profile: Flag.optional(Flag.string("profile")).pipe(
+      Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
     ),
-    project: Options.optional(Options.text("project")).pipe(
-      Options.withDescription("Azure DevOps project name (overrides config default)"),
+    project: Flag.optional(Flag.string("project")).pipe(
+      Flag.withDescription("Azure DevOps project name (overrides config default)"),
     ),
-    cmd: Options.text("cmd").pipe(Options.withDescription("az command (without 'az' prefix)")),
-    dryRun: Options.boolean("dry-run").pipe(
-      Options.withDescription("Show command without executing"),
-      Options.withDefault(false),
+    cmd: Flag.string("cmd").pipe(Flag.withDescription("az command (without 'az' prefix)")),
+    dryRun: Flag.boolean("dry-run").pipe(
+      Flag.withDescription("Show command without executing"),
+      Flag.withDefault(false),
     ),
     format: formatOption,
   },
   ({ profile: _profile, project, cmd, dryRun, format }) =>
     Effect.gen(function* () {
-      const _config = yield* ConfigService;
       const projectName = project ? Option.getOrUndefined(project) : undefined;
 
       // Handle dry-run mode
@@ -82,19 +81,15 @@ Supports raw az wrapper via --cmd and convenience build helpers:
 );
 
 const cli = Command.run(mainCommand, {
-  name: "Azure CLI Tool",
   version: VERSION,
 });
 
 const MainLayer = AzServiceLayer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
-  Layer.provideMerge(BunContext.layer),
+  Layer.provideMerge(BunServices.layer),
 );
 
-const program = cli(process.argv).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapErrorCause(renderCauseToStderr),
-);
+const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

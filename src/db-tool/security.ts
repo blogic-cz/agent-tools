@@ -12,8 +12,70 @@ const MUTATION_PATTERNS = [
 
 const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+/**
+ * Strip SQL comments (block and line) while preserving string literals.
+ * This prevents bypass via inline comment masking before DELETE statements.
+ */
+export function stripSqlComments(sql: string): string {
+  let result = "";
+  let i = 0;
+  const len = sql.length;
+
+  while (i < len) {
+    const ch = sql[i];
+    const next = i + 1 < len ? sql[i + 1] : "";
+
+    // Single-quoted string literal — skip through
+    if (ch === "'") {
+      result += ch;
+      i++;
+      while (i < len) {
+        if (sql[i] === "'" && i + 1 < len && sql[i + 1] === "'") {
+          result += "''";
+          i += 2;
+        } else if (sql[i] === "'") {
+          result += "'";
+          i++;
+          break;
+        } else {
+          result += sql[i];
+          i++;
+        }
+      }
+      continue;
+    }
+
+    // Block comment /* ... */
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i + 1 < len && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        i++;
+      }
+      i += 2; // skip closing */
+      result += " "; // replace comment with space
+      continue;
+    }
+
+    // Line comment -- ...
+    if (ch === "-" && next === "-") {
+      i += 2;
+      while (i < len && sql[i] !== "\n") {
+        i++;
+      }
+      result += " ";
+      continue;
+    }
+
+    result += ch;
+    i++;
+  }
+
+  return result;
+}
+
 export function isMutationQuery(sql: string): boolean {
-  return MUTATION_PATTERNS.some((pattern) => pattern.test(sql));
+  const stripped = stripSqlComments(sql);
+  return MUTATION_PATTERNS.some((pattern) => pattern.test(stripped));
 }
 
 export function isValidTableName(tableName: string): boolean {

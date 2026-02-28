@@ -18,21 +18,21 @@ export const getBuildTimeline = Effect.fn("Build.getBuildTimeline")(function* (b
     queryParameters: { "api-version": "7.0" },
   });
 
-  const parsed = yield* Schema.decodeUnknown(
+  const parsed = yield* Schema.decodeUnknownEffect(
     Schema.Struct({
       records: Schema.Array(
         Schema.Struct({
           id: Schema.String,
-          parentId: Schema.optional(Schema.NullOr(Schema.String)),
+          parentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
           type: Schema.String,
           name: Schema.String,
           state: Schema.String,
-          result: Schema.optional(Schema.NullOr(Schema.String)),
-          startTime: Schema.optional(Schema.NullOr(Schema.String)),
-          finishTime: Schema.optional(Schema.NullOr(Schema.String)),
-          errorCount: Schema.optional(Schema.NullOr(Schema.Number)),
-          warningCount: Schema.optional(Schema.NullOr(Schema.Number)),
-          log: Schema.optional(
+          result: Schema.optionalKey(Schema.NullOr(Schema.String)),
+          startTime: Schema.optionalKey(Schema.NullOr(Schema.String)),
+          finishTime: Schema.optionalKey(Schema.NullOr(Schema.String)),
+          errorCount: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+          warningCount: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+          log: Schema.optionalKey(
             Schema.NullOr(
               Schema.Struct({
                 id: Schema.Number,
@@ -89,7 +89,7 @@ export const getBuildLogs = Effect.fn("Build.getBuildLogs")(function* (buildId: 
     queryParameters: { "api-version": "7.0" },
   });
 
-  const parsed = yield* Schema.decodeUnknown(
+  const parsed = yield* Schema.decodeUnknownEffect(
     Schema.Struct({
       value: Schema.Array(
         Schema.Struct({
@@ -130,13 +130,13 @@ export const getBuildLogContent = Effect.fn("Build.getBuildLogContent")(function
     queryParameters: { "api-version": "7.0" },
   });
 
-  const parsed = yield* Schema.decodeUnknown(
-    Schema.Union(
+  const parsed = yield* Schema.decodeUnknownEffect(
+    Schema.Union([
       Schema.String,
       Schema.Struct({
         value: Schema.Array(Schema.String),
       }),
-    ),
+    ]),
   )(result).pipe(
     Effect.mapError(
       (e) =>
@@ -248,17 +248,17 @@ export const listPipelineRuns = Effect.fn("Build.listPipelineRuns")(function* (o
       }),
   });
 
-  const parsed = yield* Schema.decodeUnknown(
+  const parsed = yield* Schema.decodeUnknownEffect(
     Schema.Struct({
       value: Schema.Array(
         Schema.Struct({
           id: Schema.Number,
           buildNumber: Schema.String,
           status: Schema.String,
-          result: Schema.optional(Schema.String),
+          result: Schema.optionalKey(Schema.String),
           sourceBranch: Schema.String,
-          startTime: Schema.optional(Schema.String),
-          finishTime: Schema.optional(Schema.String),
+          startTime: Schema.optionalKey(Schema.String),
+          finishTime: Schema.optionalKey(Schema.String),
         }),
       ),
     }),

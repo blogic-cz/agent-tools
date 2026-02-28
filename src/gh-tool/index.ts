@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { Command } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
+import { Command } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
 import { renderCauseToStderr, VERSION } from "../shared";
@@ -128,16 +128,12 @@ WORKFLOW FOR AI AGENTS:
 );
 
 const cli = Command.run(mainCommand, {
-  name: "gh-tool",
   version: VERSION,
 });
 
-const MainLayer = GitHubService.layer.pipe(Layer.provideMerge(BunContext.layer));
+const MainLayer = GitHubService.layer.pipe(Layer.provideMerge(BunServices.layer));
 
-const program = cli(process.argv).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapErrorCause(renderCauseToStderr),
-);
+const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

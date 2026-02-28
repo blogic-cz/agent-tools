@@ -1,4 +1,4 @@
-import { Command, Options } from "@effect/cli";
+import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "../shared";
@@ -154,17 +154,16 @@ const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts: {
     `body=${trimmedBody}`,
   ]);
 
-  const rawComment = yield* Effect.try(() => JSON.parse(result.stdout) as RawIssueComment).pipe(
-    Effect.mapError(
-      (error) =>
-        new GitHubCommandError({
-          command: "gh-tool issue comment",
-          exitCode: 0,
-          stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-          message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-        }),
-    ),
-  );
+  const rawComment = yield* Effect.try({
+    try: () => JSON.parse(result.stdout) as RawIssueComment,
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "gh-tool issue comment",
+        exitCode: 0,
+        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  }).pipe(Effect.mapError((error) => error as GitHubCommandError));
 
   return {
     id: rawComment.id,
@@ -226,17 +225,17 @@ export const issueListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    labels: Options.text("label").pipe(
-      Options.withDescription("Filter by label (comma-separated)"),
-      Options.optional,
+    labels: Flag.string("labels").pipe(
+      Flag.withDescription("Filter by label (comma-separated)"),
+      Flag.optional,
     ),
-    limit: Options.integer("limit").pipe(
-      Options.withDescription("Maximum number of issues to return"),
-      Options.withDefault(30),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Maximum number of issues to return"),
+      Flag.withDefault(30),
     ),
-    state: Options.choice("state", ["open", "closed", "all"]).pipe(
-      Options.withDescription("Filter by state: open, closed, all"),
-      Options.withDefault("open"),
+    state: Flag.choice("state", ["open", "closed", "all"]).pipe(
+      Flag.withDescription("Filter by state: open, closed, all"),
+      Flag.withDefault("open"),
     ),
   },
   ({ format, labels, limit, state }) =>
@@ -254,7 +253,7 @@ export const issueViewCommand = Command.make(
   "view",
   {
     format: formatOption,
-    issue: Options.integer("issue").pipe(Options.withDescription("Issue number")),
+    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number")),
   },
   ({ format, issue }) =>
     Effect.gen(function* () {
@@ -266,15 +265,15 @@ export const issueViewCommand = Command.make(
 export const issueCloseCommand = Command.make(
   "close",
   {
-    comment: Options.text("comment").pipe(
-      Options.withDescription("Comment to add when closing"),
-      Options.optional,
+    comment: Flag.string("comment").pipe(
+      Flag.withDescription("Comment to add when closing"),
+      Flag.optional,
     ),
     format: formatOption,
-    issue: Options.integer("issue").pipe(Options.withDescription("Issue number to close")),
-    reason: Options.choice("reason", ["completed", "not planned"]).pipe(
-      Options.withDescription("Close reason: completed, not planned"),
-      Options.withDefault("completed"),
+    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to close")),
+    reason: Flag.choice("reason", ["completed", "not planned"]).pipe(
+      Flag.withDescription("Close reason: completed, not planned"),
+      Flag.withDefault("completed"),
     ),
   },
   ({ comment, format, issue, reason }) =>
@@ -291,12 +290,12 @@ export const issueCloseCommand = Command.make(
 export const issueReopenCommand = Command.make(
   "reopen",
   {
-    comment: Options.text("comment").pipe(
-      Options.withDescription("Comment to add when reopening"),
-      Options.optional,
+    comment: Flag.string("comment").pipe(
+      Flag.withDescription("Comment to add when reopening"),
+      Flag.optional,
     ),
     format: formatOption,
-    issue: Options.integer("issue").pipe(Options.withDescription("Issue number to reopen")),
+    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to reopen")),
   },
   ({ comment, format, issue }) =>
     Effect.gen(function* () {
@@ -311,9 +310,9 @@ export const issueReopenCommand = Command.make(
 export const issueCommentCommand = Command.make(
   "comment",
   {
-    body: Options.text("body").pipe(Options.withDescription("Comment body text")),
+    body: Flag.string("body").pipe(Flag.withDescription("Comment body text")),
     format: formatOption,
-    issue: Options.integer("issue").pipe(Options.withDescription("Issue number to comment on")),
+    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to comment on")),
   },
   ({ body, format, issue }) =>
     Effect.gen(function* () {
@@ -325,26 +324,26 @@ export const issueCommentCommand = Command.make(
 export const issueEditCommand = Command.make(
   "edit",
   {
-    addAssignee: Options.text("add-assignee").pipe(
-      Options.withDescription("Add assignee login (comma-separated for multiple)"),
-      Options.optional,
+    addAssignee: Flag.string("add-assignee").pipe(
+      Flag.withDescription("Add assignee login (comma-separated for multiple)"),
+      Flag.optional,
     ),
-    addLabels: Options.text("add-label").pipe(
-      Options.withDescription("Add labels (comma-separated)"),
-      Options.optional,
+    addLabels: Flag.string("add-labels").pipe(
+      Flag.withDescription("Add labels (comma-separated)"),
+      Flag.optional,
     ),
-    body: Options.text("body").pipe(Options.withDescription("New issue body"), Options.optional),
+    body: Flag.string("body").pipe(Flag.withDescription("New issue body"), Flag.optional),
     format: formatOption,
-    issue: Options.integer("issue").pipe(Options.withDescription("Issue number to edit")),
-    removeAssignee: Options.text("remove-assignee").pipe(
-      Options.withDescription("Remove assignee login (comma-separated for multiple)"),
-      Options.optional,
+    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to edit")),
+    removeAssignee: Flag.string("remove-assignee").pipe(
+      Flag.withDescription("Remove assignee login (comma-separated for multiple)"),
+      Flag.optional,
     ),
-    removeLabels: Options.text("remove-label").pipe(
-      Options.withDescription("Remove labels (comma-separated)"),
-      Options.optional,
+    removeLabels: Flag.string("remove-labels").pipe(
+      Flag.withDescription("Remove labels (comma-separated)"),
+      Flag.optional,
     ),
-    title: Options.text("title").pipe(Options.withDescription("New issue title"), Options.optional),
+    title: Flag.string("title").pipe(Flag.withDescription("New issue title"), Flag.optional),
   },
   ({ addAssignee, addLabels, body, format, issue, removeAssignee, removeLabels, title }) =>
     Effect.gen(function* () {

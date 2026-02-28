@@ -1,5 +1,5 @@
-import { Command, CommandExecutor } from "@effect/platform";
-import { Chunk, Context, Effect, Either, Layer, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect, Layer, Result, ServiceMap, Stream } from "effect";
 
 import type { Environment, LogFile, ReadOptions } from "./types";
 
@@ -9,7 +9,7 @@ import { ConfigService, ConfigServiceLayer, getToolConfig } from "../config/load
 import type { LogsConfig } from "../config/types";
 import { LogsNotFoundError, LogsReadError, type LogsError } from "./errors";
 
-const parseLogFiles = (output: string): LogFile[] => {
+export const parseLogFiles = (output: string): LogFile[] => {
   const lines = output.trim().split("\n").slice(1);
   return lines
     .filter((line) => line.includes(".log"))
@@ -24,7 +24,7 @@ const parseLogFiles = (output: string): LogFile[] => {
     .filter((file) => file.name.length > 0);
 };
 
-const formatPrettyOutput = (output: string): string => {
+export const formatPrettyOutput = (output: string): string => {
   const lines = output.split("\n");
   return lines
     .map((line) => {
@@ -42,9 +42,9 @@ const formatPrettyOutput = (output: string): string => {
  * Sanitize a string for safe use in shell commands by escaping single quotes
  * and wrapping in single quotes. This prevents shell injection.
  */
-const sanitizeShellArg = (input: string): string => `'${input.replace(/'/g, "'\\''")}'`;
+export const sanitizeShellArg = (input: string): string => `'${input.replace(/'/g, "'\\''")}'`;
 
-export class LogsService extends Context.Tag("@agent-tools/LogsService")<
+export class LogsService extends ServiceMap.Service<
   LogsService,
   {
     readonly listLogs: (env: Environment, profile?: string) => Effect.Effect<LogFile[], LogsError>;
@@ -54,34 +54,34 @@ export class LogsService extends Context.Tag("@agent-tools/LogsService")<
       profile?: string,
     ) => Effect.Effect<string, LogsError>;
   }
->() {
+>()("@agent-tools/LogsService") {
   static readonly layer = Layer.effect(
     LogsService,
     Effect.gen(function* () {
       const k8s = yield* K8sService;
-      const executor = yield* CommandExecutor.CommandExecutor;
+      const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
       const config = yield* ConfigService;
 
       const runShellCommand = (commandStr: string) =>
         Effect.scoped(
           Effect.gen(function* () {
-            const command = Command.make("sh", "-c", commandStr).pipe(
-              Command.stdout("pipe"),
-              Command.stderr("pipe"),
-            );
-            const process = yield* executor.start(command);
+            const command = ChildProcess.make("sh", ["-c", commandStr], {
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            const process = yield* executor.spawn(command);
 
             const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
             const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
 
-            const stdout = Chunk.join(stdoutChunk, "");
-            const stderr = Chunk.join(stderrChunk, "");
+            const stdout = stdoutChunk.join("");
+            const stderr = stderrChunk.join("");
             const exitCode = yield* process.exitCode;
 
             return { stdout, stderr, exitCode };
           }),
         ).pipe(
-          Effect.catchAll((platformError) =>
+          Effect.catch((platformError) =>
             Effect.succeed({
               stdout: "",
               stderr: String(platformError),
@@ -247,10 +247,10 @@ export class LogsService extends Context.Tag("@agent-tools/LogsService")<
 
         const execResult = yield* k8s
           .runKubectl(`exec ${pod} -- sh -c "${command}"`, false)
-          .pipe(Effect.either);
+          .pipe(Effect.result);
 
-        return yield* Either.match(execResult, {
-          onLeft: (error) => {
+        return yield* Result.match(execResult, {
+          onFailure: (error) => {
             if (error instanceof K8sCommandError && error.exitCode === 1 && options.grep) {
               return Effect.succeed("(no matching lines)");
             }
@@ -262,7 +262,7 @@ export class LogsService extends Context.Tag("@agent-tools/LogsService")<
               }),
             );
           },
-          onRight: (result) => {
+          onSuccess: (result) => {
             const trimmed = (result.output ?? "").trim();
             if (options.pretty && trimmed) {
               return Effect.succeed(formatPrettyOutput(trimmed));

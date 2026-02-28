@@ -1,4 +1,4 @@
-import { Command, Options } from "@effect/cli";
+import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "../shared";
@@ -101,14 +101,14 @@ export const repoListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    limit: Options.integer("limit").pipe(
-      Options.withDescription("Maximum number of repositories to return"),
-      Options.withDefault(30),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Maximum number of repositories to return"),
+      Flag.withDefault(30),
     ),
-    org: Options.text("org").pipe(Options.withDescription("GitHub organization slug")),
-    visibility: Options.choice("visibility", ["public", "private", "all"]).pipe(
-      Options.withDescription("Filter by repository visibility"),
-      Options.optional,
+    org: Flag.string("org").pipe(Flag.withDescription("GitHub organization slug")),
+    visibility: Flag.choice("visibility", ["public", "private", "all"]).pipe(
+      Flag.withDescription("Filter by repository visibility"),
+      Flag.optional,
     ),
   },
   ({ format, limit, org, visibility }) =>
@@ -128,12 +128,12 @@ export const repoSearchCodeCommand = Command.make(
   "search-code",
   {
     format: formatOption,
-    limit: Options.integer("limit").pipe(
-      Options.withDescription("Maximum number of results to return"),
-      Options.withDefault(30),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Maximum number of results to return"),
+      Flag.withDefault(30),
     ),
-    org: Options.text("org").pipe(Options.withDescription("GitHub organization slug")),
-    query: Options.text("query").pipe(Options.withDescription("Code search query")),
+    org: Flag.string("org").pipe(Flag.withDescription("GitHub organization slug")),
+    query: Flag.string("query").pipe(Flag.withDescription("Code search query")),
   },
   ({ format, limit, org, query }) =>
     Effect.gen(function* () {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Either, Layer } from "effect";
+import { Effect, Result, Layer } from "effect";
 
 import type {
   MergeResult,
@@ -174,13 +174,13 @@ describe("GitHubService.runGh() error mapping", () => {
   it.effect("maps non-zero exit code to GitHubCommandError", () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGh(["pr", "view"]).pipe(Effect.either);
+      const result = yield* service.runGh(["pr", "view"]).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubCommandError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -204,13 +204,13 @@ describe("GitHubService.runGh() error mapping", () => {
   it.effect('maps "not logged in" stderr to GitHubAuthError', () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGh(["pr", "view"]).pipe(Effect.either);
+      const result = yield* service.runGh(["pr", "view"]).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubAuthError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -231,13 +231,13 @@ describe("GitHubService.runGh() error mapping", () => {
   it.effect('maps "gh auth login" stderr to GitHubAuthError', () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGh(["api", "graphql"]).pipe(Effect.either);
+      const result = yield* service.runGh(["api", "graphql"]).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubAuthError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -258,13 +258,13 @@ describe("GitHubService.runGh() error mapping", () => {
   it.effect('maps "not found" stderr to GitHubNotFoundError', () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGh(["pr", "view", "999"]).pipe(Effect.either);
+      const result = yield* service.runGh(["pr", "view", "999"]).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubNotFoundError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -287,13 +287,13 @@ describe("GitHubService.runGh() error mapping", () => {
   it.effect('maps "Could not resolve" stderr to GitHubNotFoundError', () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGh(["repo", "view", "nonexistent/repo"]).pipe(Effect.either);
+      const result = yield* service.runGh(["repo", "view", "nonexistent/repo"]).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubNotFoundError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -343,16 +343,16 @@ describe("GitHubService.runGhJson() JSON parsing", () => {
       const service = yield* GitHubService;
       const result = yield* service
         .runGhJson(["pr", "view", "--json", "number"])
-        .pipe(Effect.either);
+        .pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubCommandError");
           if (error._tag === "GitHubCommandError") {
             expect(error.stderr).toContain("Failed to parse JSON");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -399,13 +399,13 @@ describe("GitHubService.runGhJson() JSON parsing", () => {
   it.effect("propagates auth errors from underlying runGh", () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGhJson(["pr", "view"]).pipe(Effect.either);
+      const result = yield* service.runGhJson(["pr", "view"]).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubAuthError");
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -448,16 +448,16 @@ describe("GitHubService.runGraphQL() response handling", () => {
   it.effect("fails with GitHubCommandError when GraphQL errors present", () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGraphQL("query { bad }", {}).pipe(Effect.either);
+      const result = yield* service.runGraphQL("query { bad }", {}).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubCommandError");
           if (error._tag === "GitHubCommandError") {
             expect(error.stderr).toContain("Field");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -532,16 +532,16 @@ describe("GitHubService.runGraphQL() response handling", () => {
   it.effect("fails with GitHubCommandError on unparseable response", () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
-      const result = yield* service.runGraphQL("query { viewer }", {}).pipe(Effect.either);
+      const result = yield* service.runGraphQL("query { viewer }", {}).pipe(Effect.result);
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubCommandError");
           if (error._tag === "GitHubCommandError") {
             expect(error.stderr).toContain("Failed to parse");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -876,16 +876,16 @@ describe("Merge error mapping", () => {
           ),
       });
 
-      const result = yield* simulateMergeWithError().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* simulateMergeWithError().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubMergeError");
           if (error._tag === "GitHubMergeError") {
             expect(error.reason).toBe("conflicts");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -906,16 +906,16 @@ describe("Merge error mapping", () => {
           ),
       });
 
-      const result = yield* simulateMergeWithError().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* simulateMergeWithError().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubMergeError");
           if (error._tag === "GitHubMergeError") {
             expect(error.reason).toBe("conflicts");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -936,16 +936,16 @@ describe("Merge error mapping", () => {
           ),
       });
 
-      const result = yield* simulateMergeWithError().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* simulateMergeWithError().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubMergeError");
           if (error._tag === "GitHubMergeError") {
             expect(error.reason).toBe("checks_failing");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -966,16 +966,16 @@ describe("Merge error mapping", () => {
           ),
       });
 
-      const result = yield* simulateMergeWithError().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* simulateMergeWithError().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubMergeError");
           if (error._tag === "GitHubMergeError") {
             expect(error.reason).toBe("checks_failing");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -996,16 +996,16 @@ describe("Merge error mapping", () => {
           ),
       });
 
-      const result = yield* simulateMergeWithError().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* simulateMergeWithError().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubMergeError");
           if (error._tag === "GitHubMergeError") {
             expect(error.reason).toBe("branch_protected");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });
@@ -1026,17 +1026,17 @@ describe("Merge error mapping", () => {
           ),
       });
 
-      const result = yield* simulateMergeWithError().pipe(Effect.either, Effect.provide(layer));
+      const result = yield* simulateMergeWithError().pipe(Effect.result, Effect.provide(layer));
 
-      Either.match(result, {
-        onLeft: (error) => {
+      Result.match(result, {
+        onFailure: (error) => {
           expect(error._tag).toBe("GitHubMergeError");
           if (error._tag === "GitHubMergeError") {
             expect(error.reason).toBe("unknown");
             expect(error.message).toContain("Something totally unexpected");
           }
         },
-        onRight: () => {
+        onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
       });

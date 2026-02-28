@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Effect, Layer, ServiceMap } from "effect";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -37,13 +37,13 @@ export const resolveSessionsPath = Effect.gen(function* () {
 /**
  * Context tag for resolved paths (cached during effect execution).
  */
-export class ResolvedPaths extends Context.Tag("@agent-tools/ResolvedPaths")<
+export class ResolvedPaths extends ServiceMap.Service<
   ResolvedPaths,
   {
     readonly messagesPath: string;
     readonly sessionsPath: string;
   }
->() {}
+>()("@agent-tools/ResolvedPaths") {}
 
 export const ResolvedPathsLayer = Layer.effect(
   ResolvedPaths,

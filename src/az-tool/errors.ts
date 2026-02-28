@@ -1,24 +1,24 @@
 import { Schema } from "effect";
 
-export class AzSecurityError extends Schema.TaggedError<AzSecurityError>()("AzSecurityError", {
+export class AzSecurityError extends Schema.TaggedErrorClass<AzSecurityError>()("AzSecurityError", {
   message: Schema.String,
   command: Schema.String,
 }) {}
 
-export class AzCommandError extends Schema.TaggedError<AzCommandError>()("AzCommandError", {
+export class AzCommandError extends Schema.TaggedErrorClass<AzCommandError>()("AzCommandError", {
   message: Schema.String,
   command: Schema.String,
-  exitCode: Schema.optional(Schema.Number),
-  stderr: Schema.optional(Schema.String),
+  exitCode: Schema.optionalKey(Schema.Number),
+  stderr: Schema.optionalKey(Schema.String),
 }) {}
 
-export class AzTimeoutError extends Schema.TaggedError<AzTimeoutError>()("AzTimeoutError", {
+export class AzTimeoutError extends Schema.TaggedErrorClass<AzTimeoutError>()("AzTimeoutError", {
   message: Schema.String,
   command: Schema.String,
   timeoutMs: Schema.Number,
 }) {}
 
-export class AzParseError extends Schema.TaggedError<AzParseError>()("AzParseError", {
+export class AzParseError extends Schema.TaggedErrorClass<AzParseError>()("AzParseError", {
   message: Schema.String,
   rawOutput: Schema.String,
 }) {}

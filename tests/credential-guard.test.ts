@@ -1,10 +1,13 @@
 import { describe, expect, it, test } from "vitest";
 
 import {
+  createCredentialGuard,
   detectSecrets,
   getBlockedCliTool,
+  isDangerousBashCommand,
   isGhCommandAllowed,
   isPathAllowed,
+  isPathBlocked,
 } from "../src/credential-guard/index";
 
 // Build example secret strings dynamically to avoid triggering credential guard
@@ -294,5 +297,221 @@ describe("isGhCommandAllowed", () => {
     expect(isGhCommandAllowed("gh issue create -R owner/repo")).toBe(false);
     expect(isGhCommandAllowed("gh pr create -R owner/repo")).toBe(false);
     expect(isGhCommandAllowed("gh pr merge 1 -R owner/repo")).toBe(false);
+  });
+});
+
+// ============================================================================
+// ADVERSARIAL TESTS — path traversal, evasion, edge cases
+// ============================================================================
+
+describe("path traversal and evasion", () => {
+  it("blocks path traversal to .env", () => {
+    expect(isPathBlocked("src/../../.env")).toBe(true);
+  });
+
+  it("blocks path traversal to .ssh", () => {
+    expect(isPathBlocked("project/../.ssh/id_rsa")).toBe(true);
+  });
+
+  it("blocks path traversal to .aws", () => {
+    expect(isPathBlocked("deep/nested/../../.aws/credentials")).toBe(true);
+  });
+
+  it("blocks .env.local", () => {
+    expect(isPathBlocked(".env.local")).toBe(true);
+  });
+
+  it("blocks .env.production", () => {
+    expect(isPathBlocked(".env.production")).toBe(true);
+  });
+
+  it("blocks .pem files", () => {
+    expect(isPathBlocked("certs/server.pem")).toBe(true);
+  });
+
+  it("blocks .key files", () => {
+    expect(isPathBlocked("ssl/private.key")).toBe(true);
+  });
+
+  it("blocks .p12 files", () => {
+    expect(isPathBlocked("certs/keystore.p12")).toBe(true);
+  });
+
+  it("blocks .pfx files", () => {
+    expect(isPathBlocked("certs/cert.pfx")).toBe(true);
+  });
+
+  it("blocks kube config", () => {
+    expect(isPathBlocked("home/.kube/config")).toBe(true);
+  });
+
+  it("blocks secrets directory (case insensitive)", () => {
+    expect(isPathBlocked("deploy/secrets/prod.yaml")).toBe(true);
+    expect(isPathBlocked("deploy/Secrets/prod.yaml")).toBe(true);
+  });
+
+  it("blocks credentials directory", () => {
+    expect(isPathBlocked("infra/credentials/db.json")).toBe(true);
+  });
+
+  it("blocks .sentryclirc", () => {
+    expect(isPathBlocked(".sentryclirc")).toBe(true);
+  });
+
+  it("allows .env.example", () => {
+    expect(isPathBlocked(".env.example")).toBe(false);
+  });
+
+  it("allows .env.template", () => {
+    expect(isPathBlocked(".env.template")).toBe(false);
+  });
+
+  it("allows .env.sample", () => {
+    expect(isPathBlocked(".env.sample")).toBe(false);
+  });
+
+  it("allows normal source files", () => {
+    expect(isPathBlocked("src/index.ts")).toBe(false);
+    expect(isPathBlocked("package.json")).toBe(false);
+    expect(isPathBlocked("README.md")).toBe(false);
+  });
+});
+
+describe("dangerous bash command evasion", () => {
+  it("blocks printenv", () => {
+    expect(isDangerousBashCommand("printenv")).toBe(true);
+  });
+
+  it("blocks env at start", () => {
+    expect(isDangerousBashCommand("env")).toBe(true);
+  });
+
+  it("blocks env after &&", () => {
+    expect(isDangerousBashCommand("echo hi && env")).toBe(true);
+  });
+
+  it("blocks env after |", () => {
+    expect(isDangerousBashCommand("ls | env")).toBe(true);
+  });
+
+  it("blocks env after ;", () => {
+    expect(isDangerousBashCommand("ls ; env")).toBe(true);
+  });
+
+  it("blocks cat .env", () => {
+    expect(isDangerousBashCommand("cat .env")).toBe(true);
+  });
+
+  it("blocks cat with path to .env", () => {
+    expect(isDangerousBashCommand("cat /app/.env")).toBe(true);
+  });
+
+  it("blocks cat .pem", () => {
+    expect(isDangerousBashCommand("cat server.pem")).toBe(true);
+  });
+
+  it("blocks cat .key", () => {
+    expect(isDangerousBashCommand("cat private.key")).toBe(true);
+  });
+
+  it("blocks cat secrets path", () => {
+    expect(isDangerousBashCommand("cat /etc/secret/token")).toBe(true);
+  });
+
+  it("blocks cat credentials path", () => {
+    expect(isDangerousBashCommand("cat /home/user/credential/db.json")).toBe(true);
+  });
+
+  it("blocks cat .ssh path", () => {
+    expect(isDangerousBashCommand("cat ~/.ssh/id_rsa")).toBe(true);
+  });
+
+  it("blocks cat .aws path", () => {
+    expect(isDangerousBashCommand("cat ~/.aws/credentials")).toBe(true);
+  });
+
+  it("allows safe bash commands", () => {
+    expect(isDangerousBashCommand("ls -la")).toBe(false);
+    expect(isDangerousBashCommand("git status")).toBe(false);
+    expect(isDangerousBashCommand("npm test")).toBe(false);
+    expect(isDangerousBashCommand("cat README.md")).toBe(false);
+  });
+});
+
+describe("CLI tool blocking edge cases", () => {
+  it("blocks kubectl", () => {
+    expect(getBlockedCliTool("kubectl get pods")).not.toBeNull();
+    expect(getBlockedCliTool("kubectl get pods")?.wrapper).toBe("agent-tools-k8s");
+  });
+
+  it("blocks psql", () => {
+    expect(getBlockedCliTool("psql -h localhost mydb")).not.toBeNull();
+    expect(getBlockedCliTool("psql -h localhost mydb")?.wrapper).toBe("agent-tools-db");
+  });
+
+  it("blocks az", () => {
+    expect(getBlockedCliTool("az login")).not.toBeNull();
+    expect(getBlockedCliTool("az login")?.wrapper).toBe("agent-tools-az");
+  });
+
+  it("blocks chained CLI tools after ;", () => {
+    expect(getBlockedCliTool("echo hi ; kubectl get secrets")).not.toBeNull();
+  });
+
+  it("blocks chained CLI tools after &&", () => {
+    expect(getBlockedCliTool("echo hi && psql -c 'SELECT 1'")).not.toBeNull();
+  });
+
+  it("blocks chained CLI tools after |", () => {
+    expect(getBlockedCliTool("echo hi | az pipelines list")).not.toBeNull();
+  });
+
+  it("does not block non-matching commands", () => {
+    expect(getBlockedCliTool("npm install")).toBeNull();
+    expect(getBlockedCliTool("git push")).toBeNull();
+    expect(getBlockedCliTool("bun test")).toBeNull();
+  });
+});
+
+describe("createCredentialGuard with custom config", () => {
+  it("merges additional blocked paths", () => {
+    const guard = createCredentialGuard({
+      additionalBlockedPaths: ["custom/secret"],
+    });
+    expect(guard.isPathBlocked("custom/secret/data.json")).toBe(true);
+    // Default patterns still work
+    expect(guard.isPathBlocked(".env")).toBe(true);
+  });
+
+  it("merges additional allowed paths", () => {
+    const guard = createCredentialGuard({
+      additionalAllowedPaths: ["\\.env\\.test$"],
+    });
+    expect(guard.isPathBlocked(".env.test")).toBe(false);
+  });
+
+  it("merges additional dangerous bash patterns", () => {
+    const guard = createCredentialGuard({
+      additionalDangerousBashPatterns: ["rm -rf /"],
+    });
+    expect(guard.isDangerousBashCommand("rm -rf /")).toBe(true);
+    // Default patterns still work
+    expect(guard.isDangerousBashCommand("printenv")).toBe(true);
+  });
+
+  it("merges additional blocked CLI tools", () => {
+    const guard = createCredentialGuard({
+      additionalBlockedCliTools: [{ tool: "helm", suggestion: "Use agent-tools-k8s" }],
+    });
+    const result = guard.getBlockedCliTool("helm install mychart");
+    expect(result).not.toBeNull();
+    expect(result?.name).toBe("helm");
+    expect(result?.wrapper).toBe("Use agent-tools-k8s");
+  });
+
+  it("works with empty config", () => {
+    const guard = createCredentialGuard({});
+    expect(guard.isPathBlocked(".env")).toBe(true);
+    expect(guard.isDangerousBashCommand("printenv")).toBe(true);
   });
 });

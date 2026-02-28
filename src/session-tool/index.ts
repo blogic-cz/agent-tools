@@ -7,9 +7,9 @@
  * Uses current project scope by default, or all projects with --all.
  */
 
-import { Args, Command, Options } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
-import { Console, Effect, Either, Layer } from "effect";
+import { Argument, Command, Flag } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Console, Effect, Layer, Result } from "effect";
 
 import type { MessageSummary, SessionResult } from "./types";
 
@@ -48,14 +48,14 @@ const mapSummary = (summary: MessageSummary) => {
 const listCommand = Command.make(
   "list",
   {
-    all: Options.boolean("all").pipe(
-      Options.withDescription("Search all projects"),
-      Options.withDefault(false),
+    all: Flag.boolean("all").pipe(
+      Flag.withDescription("Search all projects"),
+      Flag.withDefault(false),
     ),
     format: formatOption,
-    limit: Options.integer("limit").pipe(
-      Options.withDescription("Limit result count"),
-      Options.withDefault(10),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Limit result count"),
+      Flag.withDefault(10),
     ),
   },
   ({ all, format, limit }) =>
@@ -99,10 +99,10 @@ const listCommand = Command.make(
           count: results.length,
           executionTimeMs: Date.now() - startTime,
         } satisfies SessionResult;
-      }).pipe(Effect.either);
+      }).pipe(Effect.result);
 
-      const output = Either.match(result, {
-        onLeft: (error) =>
+      const output = Result.match(result, {
+        onFailure: (error) =>
           ({
             success: false,
             error: error.message,
@@ -111,7 +111,7 @@ const listCommand = Command.make(
             count: 0,
             executionTimeMs: Date.now() - startTime,
           }) satisfies SessionResult,
-        onRight: (okResult) => okResult,
+        onSuccess: (okResult) => okResult,
       });
 
       yield* Console.log(formatOutput(output, format));
@@ -121,15 +121,15 @@ const listCommand = Command.make(
 const searchCommand = Command.make(
   "search",
   {
-    query: Args.text({ name: "query" }).pipe(Args.withDescription("Search query")),
-    all: Options.boolean("all").pipe(
-      Options.withDescription("Search all projects"),
-      Options.withDefault(false),
+    query: Argument.string("query").pipe(Argument.withDescription("Search query")),
+    all: Flag.boolean("all").pipe(
+      Flag.withDescription("Search all projects"),
+      Flag.withDefault(false),
     ),
     format: formatOption,
-    limit: Options.integer("limit").pipe(
-      Options.withDescription("Limit result count"),
-      Options.withDefault(10),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Limit result count"),
+      Flag.withDefault(10),
     ),
   },
   ({ all, format, limit, query }) =>
@@ -174,10 +174,10 @@ const searchCommand = Command.make(
           count: mappedResults.length,
           executionTimeMs: Date.now() - startTime,
         } satisfies SessionResult;
-      }).pipe(Effect.either);
+      }).pipe(Effect.result);
 
-      const output = Either.match(result, {
-        onLeft: (error) =>
+      const output = Result.match(result, {
+        onFailure: (error) =>
           ({
             success: false,
             query,
@@ -190,7 +190,7 @@ const searchCommand = Command.make(
             count: 0,
             executionTimeMs: Date.now() - startTime,
           }) satisfies SessionResult,
-        onRight: (okResult) => okResult,
+        onSuccess: (okResult) => okResult,
       });
 
       yield* Console.log(formatOutput(output, format));
@@ -200,7 +200,7 @@ const searchCommand = Command.make(
 const readCommand = Command.make(
   "read",
   {
-    session: Options.text("session").pipe(Options.withDescription("Session ID to read")),
+    session: Flag.string("session").pipe(Flag.withDescription("Session ID to read")),
     format: formatOption,
   },
   ({ format, session }) =>
@@ -210,10 +210,10 @@ const readCommand = Command.make(
 
       const result = yield* sessionService
         .getMessageSummaries(new Set([session]))
-        .pipe(Effect.either);
+        .pipe(Effect.result);
 
-      const output: SessionResult = yield* Either.match(result, {
-        onLeft: (error) =>
+      const output: SessionResult = yield* Result.match(result, {
+        onFailure: (error) =>
           Effect.succeed({
             success: false,
             error: error.message,
@@ -224,7 +224,7 @@ const readCommand = Command.make(
             count: 0,
             executionTimeMs: Date.now() - startTime,
           } satisfies SessionResult),
-        onRight: (summaries) => {
+        onSuccess: (summaries) => {
           const sessionResults = summaries.filter((summary) => summary.sessionID === session);
           return Effect.all(sessionResults.map(mapSummary)).pipe(
             Effect.map(
@@ -254,15 +254,16 @@ const mainCommand = Command.make("session-tool", {}).pipe(
 );
 
 const cli = Command.run(mainCommand, {
-  name: "Session Tool",
   version: VERSION,
 });
 
-export const run = (argv: ReadonlyArray<string>) => cli(argv);
+export const run = Command.runWith(mainCommand, {
+  version: VERSION,
+});
 
-const MainLayer = AppLayer.pipe(Layer.provideMerge(BunContext.layer));
+const MainLayer = AppLayer.pipe(Layer.provideMerge(BunServices.layer));
 
-const program = cli(process.argv).pipe(Effect.provide(MainLayer));
+const program = cli.pipe(Effect.provide(MainLayer));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

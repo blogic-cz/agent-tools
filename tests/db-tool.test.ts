@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Either, Layer } from "effect";
+import { Effect, Result, Layer } from "effect";
 
 import type { DbError } from "../src/db-tool/errors";
 import type { QueryResult } from "../src/db-tool/types";
@@ -105,13 +105,13 @@ describe("DbService", () => {
         const service = yield* DbService;
         const result = yield* service
           .executeQuery("test", "UPDATE users SET name = 'test'")
-          .pipe(Effect.either);
+          .pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (error) => {
+        Result.match(result, {
+          onFailure: (error) => {
             expect(error._tag).toBe("DbMutationBlockedError");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -130,13 +130,13 @@ describe("DbService", () => {
     it.effect("blocks mutations on prod environment", () =>
       Effect.gen(function* () {
         const service = yield* DbService;
-        const result = yield* service.executeQuery("prod", "DELETE FROM users").pipe(Effect.either);
+        const result = yield* service.executeQuery("prod", "DELETE FROM users").pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (error) => {
+        Result.match(result, {
+          onFailure: (error) => {
             expect(error._tag).toBe("DbMutationBlockedError");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -157,13 +157,13 @@ describe("DbService", () => {
         const service = yield* DbService;
         const result = yield* service
           .executeQuery("local", "SELECT * FROM nonexistent_table")
-          .pipe(Effect.either);
+          .pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (error) => {
+        Result.match(result, {
+          onFailure: (error) => {
             expect(error._tag).toBe("DbQueryError");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -233,13 +233,13 @@ describe("DbService", () => {
         const service = yield* DbService;
         const result = yield* service
           .executeQuery("local", "SELECT invalid_json")
-          .pipe(Effect.either);
+          .pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (error) => {
+        Result.match(result, {
+          onFailure: (error) => {
             expect(error._tag).toBe("DbParseError");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -445,13 +445,13 @@ describe("DbService", () => {
         const service = yield* DbService;
         const result = yield* service
           .executeSchemaQuery("local", "columns", "nonexistent_table")
-          .pipe(Effect.either);
+          .pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (error) => {
+        Result.match(result, {
+          onFailure: (error) => {
             expect(error._tag).toBe("DbQueryError");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });
@@ -502,13 +502,13 @@ describe("DbService", () => {
     it.effect("handles connection errors", () =>
       Effect.gen(function* () {
         const service = yield* DbService;
-        const result = yield* service.executeQuery("local", "SELECT 1").pipe(Effect.either);
+        const result = yield* service.executeQuery("local", "SELECT 1").pipe(Effect.result);
 
-        Either.match(result, {
-          onLeft: (error) => {
+        Result.match(result, {
+          onFailure: (error) => {
             expect(error._tag).toBe("DbConnectionError");
           },
-          onRight: () => {
+          onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
         });

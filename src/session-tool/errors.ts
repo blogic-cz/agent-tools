@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class SessionStorageNotFoundError extends Schema.TaggedError<SessionStorageNotFoundError>()(
+export class SessionStorageNotFoundError extends Schema.TaggedErrorClass<SessionStorageNotFoundError>()(
   "SessionStorageNotFoundError",
   {
     message: Schema.String,
@@ -8,9 +8,31 @@ export class SessionStorageNotFoundError extends Schema.TaggedError<SessionStora
   },
 ) {}
 
-export class SessionReadError extends Schema.TaggedError<SessionReadError>()("SessionReadError", {
-  message: Schema.String,
-  source: Schema.String,
-}) {}
+export class SessionReadError extends Schema.TaggedErrorClass<SessionReadError>()(
+  "SessionReadError",
+  {
+    message: Schema.String,
+    source: Schema.String,
+  },
+) {}
 
-export type SessionError = SessionReadError | SessionStorageNotFoundError;
+export class SessionConfigError extends Schema.TaggedErrorClass<SessionConfigError>()(
+  "SessionConfigError",
+  {
+    message: Schema.String,
+  },
+) {}
+
+export class SessionParseError extends Schema.TaggedErrorClass<SessionParseError>()(
+  "SessionParseError",
+  {
+    message: Schema.String,
+    source: Schema.String,
+  },
+) {}
+
+export type SessionError =
+  | SessionReadError
+  | SessionStorageNotFoundError
+  | SessionConfigError
+  | SessionParseError;
