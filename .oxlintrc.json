@@ -1,0 +1,10 @@
+{
+  "plugins": ["import", "node", "oxc", "promise", "typescript", "unicorn"],
+  "rules": {
+    "import/no-cycle": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/no-base-to-string": "off"
+  }
+}

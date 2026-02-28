@@ -1,0 +1,84 @@
+{
+  // Agent Tools Configuration (JSON5 supported)
+  $schema: "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
+
+  // Azure DevOps profiles
+  azure: {
+    default: {
+      organization: "https://dev.azure.com/example-org",
+      defaultProject: "platform",
+      timeoutMs: 60000,
+    },
+    legacy: {
+      organization: "https://dev.azure.com/legacy-org",
+      defaultProject: "main-project",
+    },
+  },
+
+  // Kubernetes cluster profiles
+  kubernetes: {
+    default: {
+      clusterId: "398bf1ad-788c-40f5-a7e0-88366648d9d9",
+      namespaces: {
+        test: "my-app-test",
+        prod: "my-app-prod",
+        system: "bl-system",
+      },
+      timeoutMs: 60000,
+    },
+  },
+
+  // Database profiles (with kubectl tunneling support)
+  database: {
+    default: {
+      environments: {
+        local: {
+          host: "127.0.0.1",
+          port: 25538,
+          user: "my-app-user",
+          database: "my-app",
+          passwordEnvVar: "AGENT_TOOLS_DB_LOCAL_CRED", // Read from env for security
+        },
+        test: {
+          host: "127.0.0.1",
+          port: 25437,
+          user: "readonly-user",
+          database: "my-app-test",
+          passwordEnvVar: "AGENT_TOOLS_DB_TEST_CRED",
+        },
+      },
+      kubectl: {
+        context: "cloud2-example-cz",
+        namespace: "bl-system",
+      },
+      tunnelTimeoutMs: 5000,
+      remotePort: 5432,
+    },
+  },
+
+  // Logs profiles
+  logs: {
+    default: {
+      localDir: "apps/web-app/logs",
+      remotePath: "/app/logs",
+    },
+  },
+
+  // Global session storage path
+  session: {
+    storagePath: "~/.local/share/opencode/storage",
+  },
+
+  // Global security rules for AI agents
+  credentialGuard: {
+    additionalBlockedPaths: ["private/"],
+    additionalAllowedPaths: ["apps/web-app/.env.test"],
+    additionalBlockedCliTools: [
+      {
+        tool: "kubectl",
+        suggestion: "Use agent-tools-k8s instead",
+      },
+    ],
+    additionalDangerousBashPatterns: ["rm -rf /"],
+  },
+}

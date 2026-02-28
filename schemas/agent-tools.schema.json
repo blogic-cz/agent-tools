@@ -1,0 +1,319 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
+  "title": "Agent Tools Configuration",
+  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, kubernetes, database, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session and credentialGuard are global sections.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "description": "Optional self-reference URL to this JSON Schema.",
+      "type": "string"
+    },
+    "azure": {
+      "description": "Named Azure DevOps profiles as Record<string, AzureConfig>.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "Azure DevOps profile configuration for a specific environment or project.",
+        "$ref": "#/definitions/AzureConfig"
+      }
+    },
+    "kubernetes": {
+      "description": "Named Kubernetes cluster profiles as Record<string, K8sConfig>.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "Kubernetes cluster configuration for a specific environment.",
+        "$ref": "#/definitions/K8sConfig"
+      }
+    },
+    "database": {
+      "description": "Named database profiles as Record<string, DatabaseConfig>.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "Database profile configuration containing one or more environments.",
+        "$ref": "#/definitions/DatabaseConfig"
+      }
+    },
+    "logs": {
+      "description": "Named logs profiles as Record<string, LogsConfig>.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "Logs profile configuration for local and remote access.",
+        "$ref": "#/definitions/LogsConfig"
+      }
+    },
+    "session": {
+      "description": "Global session configuration shared across profiles.",
+      "$ref": "#/definitions/SessionConfig"
+    },
+    "credentialGuard": {
+      "description": "Global credential guard configuration merged with built-in defaults.",
+      "$ref": "#/definitions/CredentialGuardConfig"
+    }
+  },
+  "definitions": {
+    "AzureConfig": {
+      "description": "Azure DevOps profile configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "organization": {
+          "description": "Azure DevOps organization URL or identifier.",
+          "type": "string"
+        },
+        "defaultProject": {
+          "description": "Default Azure DevOps project name.",
+          "type": "string"
+        },
+        "timeoutMs": {
+          "description": "Optional command timeout in milliseconds.",
+          "type": "number"
+        }
+      },
+      "required": ["organization", "defaultProject"]
+    },
+    "K8sConfig": {
+      "description": "Kubernetes cluster profile configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clusterId": {
+          "description": "Cluster identifier.",
+          "type": "string"
+        },
+        "namespaces": {
+          "description": "Named namespaces map, for example { \"test\": \"my-app-test\", \"prod\": \"my-app-prod\" }.",
+          "type": "object",
+          "additionalProperties": {
+            "description": "Kubernetes namespace value for the given key.",
+            "type": "string"
+          }
+        },
+        "timeoutMs": {
+          "description": "Optional command timeout in milliseconds.",
+          "type": "number"
+        }
+      },
+      "required": ["clusterId", "namespaces"]
+    },
+    "DbEnvConfig": {
+      "description": "Single database environment connection details.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "description": "Database host name or address.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Database port.",
+          "type": "number"
+        },
+        "user": {
+          "description": "Database user name.",
+          "type": "string"
+        },
+        "database": {
+          "description": "Database name.",
+          "type": "string"
+        },
+        "passwordEnvVar": {
+          "description": "Name of the environment variable holding the database password.",
+          "type": "string"
+        }
+      },
+      "required": ["host", "port", "user", "database"]
+    },
+    "DatabaseConfig": {
+      "description": "Database profile configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "environments": {
+          "description": "Named database environments as Record<string, DbEnvConfig>.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/DbEnvConfig"
+          }
+        },
+        "kubectl": {
+          "description": "Optional kubectl tunnel settings.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "description": "Kubectl context name.",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "Kubectl namespace for tunnel commands.",
+              "type": "string"
+            }
+          },
+          "required": ["context", "namespace"]
+        },
+        "tunnelTimeoutMs": {
+          "description": "Optional timeout for establishing a tunnel, in milliseconds.",
+          "type": "number"
+        },
+        "remotePort": {
+          "description": "Optional remote database port used by the tunnel.",
+          "type": "number"
+        }
+      },
+      "required": ["environments"]
+    },
+    "LogsConfig": {
+      "description": "Logs profile configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "localDir": {
+          "description": "Local logs directory path.",
+          "type": "string"
+        },
+        "remotePath": {
+          "description": "Remote logs path used in container or host environments.",
+          "type": "string"
+        }
+      },
+      "required": ["localDir", "remotePath"]
+    },
+    "SessionConfig": {
+      "description": "Global session configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storagePath": {
+          "description": "Filesystem path used for session storage.",
+          "type": "string"
+        }
+      },
+      "required": ["storagePath"]
+    },
+    "CliToolOverride": {
+      "description": "CLI override entry that blocks a tool and recommends a safer wrapper.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "description": "CLI tool name to block.",
+          "type": "string"
+        },
+        "suggestion": {
+          "description": "Suggested wrapper command or alternative.",
+          "type": "string"
+        }
+      },
+      "required": ["tool", "suggestion"]
+    },
+    "CredentialGuardConfig": {
+      "description": "Credential guard additions merged with built-in defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "additionalBlockedPaths": {
+          "description": "Additional blocked file path patterns.",
+          "type": "array",
+          "items": {
+            "description": "Blocked path pattern.",
+            "type": "string"
+          }
+        },
+        "additionalAllowedPaths": {
+          "description": "Additional allowed file path patterns.",
+          "type": "array",
+          "items": {
+            "description": "Allowed path pattern.",
+            "type": "string"
+          }
+        },
+        "additionalBlockedCliTools": {
+          "description": "Additional blocked CLI tools and recommendations.",
+          "type": "array",
+          "items": {
+            "description": "Blocked CLI tool override entry.",
+            "$ref": "#/definitions/CliToolOverride"
+          }
+        },
+        "additionalDangerousBashPatterns": {
+          "description": "Additional dangerous bash patterns to block.",
+          "type": "array",
+          "items": {
+            "description": "Dangerous bash pattern.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "$schema": "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
+      "azure": {
+        "default": {
+          "organization": "https://dev.azure.com/example-org",
+          "defaultProject": "platform",
+          "timeoutMs": 60000
+        }
+      },
+      "kubernetes": {
+        "default": {
+          "clusterId": "398bf1ad-788c-40f5-a7e0-88366648d9d9",
+          "namespaces": {
+            "test": "my-app-test",
+            "prod": "my-app-prod",
+            "system": "bl-system"
+          },
+          "timeoutMs": 60000
+        }
+      },
+      "database": {
+        "default": {
+          "environments": {
+            "local": {
+              "host": "127.0.0.1",
+              "port": 25538,
+              "user": "my-app-user",
+              "database": "my-app",
+              "passwordEnvVar": "AGENT_TOOLS_DB_LOCAL_CRED"
+            },
+            "test": {
+              "host": "127.0.0.1",
+              "port": 25437,
+              "user": "readonly-user",
+              "database": "my-app-test",
+              "passwordEnvVar": "AGENT_TOOLS_DB_TEST_CRED"
+            }
+          },
+          "kubectl": {
+            "context": "cloud2-example-cz",
+            "namespace": "bl-system"
+          },
+          "tunnelTimeoutMs": 5000,
+          "remotePort": 5432
+        }
+      },
+      "logs": {
+        "default": {
+          "localDir": "apps/web-app/logs",
+          "remotePath": "/app/logs"
+        }
+      },
+      "session": {
+        "storagePath": "~/.local/share/opencode/storage"
+      },
+      "credentialGuard": {
+        "additionalBlockedPaths": ["private/"],
+        "additionalAllowedPaths": ["apps/web-app/.env.test"],
+        "additionalBlockedCliTools": [
+          {
+            "tool": "kubectl",
+            "suggestion": "Use bun run k8s-tool instead"
+          }
+        ],
+        "additionalDangerousBashPatterns": ["rm -rf /"]
+      }
+    }
+  ]
+}

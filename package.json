@@ -1,0 +1,72 @@
+{
+  "name": "@blogic/agent-tools",
+  "version": "0.1.0",
+  "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, and sessions",
+  "keywords": [
+    "agent",
+    "ai",
+    "cli",
+    "database",
+    "devops",
+    "github",
+    "kubernetes",
+    "tools"
+  ],
+  "homepage": "https://github.com/blogic-cz/agent-tools#readme",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blogic-cz/agent-tools.git"
+  },
+  "bin": {
+    "agent-tools-az": "./src/az-tool/index.ts",
+    "agent-tools-db": "./src/db-tool/index.ts",
+    "agent-tools-gh": "./src/gh-tool/index.ts",
+    "agent-tools-k8s": "./src/k8s-tool/index.ts",
+    "agent-tools-logs": "./src/logs-tool/index.ts",
+    "agent-tools-session": "./src/session-tool/index.ts"
+  },
+  "files": [
+    "src/",
+    "schemas/",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./credential-guard": "./src/credential-guard/index.ts",
+    "./config": "./src/config/index.ts"
+  },
+  "scripts": {
+    "check": "bun check.ts",
+    "check:ci": "bun check.ts ci",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint -c ./.oxlintrc.json --deny-warnings",
+    "lint:fix": "oxlint -c ./.oxlintrc.json --fix",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/cli": "0.73.2",
+    "@effect/platform": "0.94.5",
+    "@effect/platform-bun": "0.87.1",
+    "@effect/printer": "0.47.0",
+    "@effect/printer-ansi": "0.47.0",
+    "@effect/typeclass": "0.38.0",
+    "@toon-format/toon": "2.1.0",
+    "effect": "3.19.19"
+  },
+  "devDependencies": {
+    "@effect/language-service": "0.77.0",
+    "@effect/vitest": "^0.27.0",
+    "@types/bun": "1.3.9",
+    "oxfmt": "0.35.0",
+    "oxlint": "1.50.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
