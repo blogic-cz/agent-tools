@@ -1,5 +1,5 @@
 {
-  "name": "@blogic/agent-tools",
+  "name": "@blogic-cz/agent-tools",
   "version": "0.1.0",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, and sessions",
   "keywords": [
@@ -60,6 +60,9 @@
     "oxlint": "1.50.0",
     "typescript": "5.9.3",
     "vitest": "^4.0.18"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "bun": ">=1.0.0"

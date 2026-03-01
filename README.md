@@ -1,4 +1,4 @@
-# @blogic/agent-tools
+# @blogic-cz/agent-tools
 
 Safe CLI wrappers for AI coding agents. 6 tools for GitHub, databases, Kubernetes, Azure DevOps, logs, and OpenCode sessions — with JSON5 config and a credential guard that blocks agents from touching secrets.
 
@@ -16,7 +16,7 @@ These tools wrap each CLI with:
 ## Installation
 
 ```bash
-bun add @blogic/agent-tools
+bun add @blogic-cz/agent-tools
 ```
 
 **Requirements:** [Bun](https://bun.sh/) >=1.0.0
@@ -64,7 +64,7 @@ npx agent-tools-logs list --env local
 4. Hook up the credential guard in your agent config (Claude Code, OpenCode, etc.):
 
 ```typescript
-import { handleToolExecuteBefore } from "@blogic/agent-tools/credential-guard";
+import { handleToolExecuteBefore } from "@blogic-cz/agent-tools/credential-guard";
 
 export default { handleToolExecuteBefore };
 ```
@@ -175,7 +175,7 @@ Claude Code uses shell command hooks. The package ships a ready-made wrapper scr
         "hooks": [
           {
             "type": "command",
-            "command": "bun node_modules/@blogic/agent-tools/src/credential-guard/claude-hook.ts"
+            "command": "bun node_modules/@blogic-cz/agent-tools/src/credential-guard/claude-hook.ts"
           }
         ]
       }
@@ -193,7 +193,7 @@ OpenCode loads plugins automatically from `.opencode/plugins/`. Create a plugin 
 **`.opencode/plugins/credential-guard.ts`**
 
 ```typescript
-import { handleToolExecuteBefore } from "@blogic/agent-tools/credential-guard";
+import { handleToolExecuteBefore } from "@blogic-cz/agent-tools/credential-guard";
 
 export const CredentialGuard = async () => ({
   "tool.execute.before": handleToolExecuteBefore,
@@ -205,7 +205,7 @@ If the package isn't already in your project dependencies, add a `.opencode/pack
 ```json
 {
   "dependencies": {
-    "@blogic/agent-tools": "*"
+    "@blogic-cz/agent-tools": "*"
   }
 }
 ```

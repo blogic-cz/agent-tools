@@ -7,7 +7,7 @@
  *
  * Usage in .claude/settings.json:
  *   { "hooks": { "PreToolUse": [{ "matcher": ".*", "hooks": [{ "type": "command",
- *     "command": "bun node_modules/@blogic/agent-tools/src/credential-guard/claude-hook.ts" }] }] } }
+ *     "command": "bun node_modules/@blogic-cz/agent-tools/src/credential-guard/claude-hook.ts" }] }] } }
  */
 
 import { handleToolExecuteBefore } from "./index";
