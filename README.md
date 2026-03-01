@@ -129,16 +129,29 @@ Secrets are **never** stored in the config file. Use environment variables:
 | `AGENT_TOOLS_DB_*` | db-tool | DB passwords (name defined by `passwordEnvVar` in config) |
 | `GITHUB_TOKEN`     | gh-tool | GitHub API token (falls back to `gh` CLI auth)            |
 
+### Setting up credentials
+
+The config file only references env var **names** (via `passwordEnvVar`), never actual secrets. Set the values in your shell:
+
+**macOS / Linux** — add to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+export AGENT_TOOLS_DB_PASSWORD="your-password"
+export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
+```
+
+**Windows** — PowerShell (persistent, user-level):
+
+```powershell
+[Environment]::SetEnvironmentVariable("AGENT_TOOLS_DB_PASSWORD", "your-password", "User")
+[Environment]::SetEnvironmentVariable("GITHUB_TOKEN", "ghp_xxxxxxxxxxxx", "User")
+```
+
+Restart your terminal after adding env vars. The credential guard ensures these values never leak into agent output.
+
 ## Credential Guard
 
 The guard blocks agents from accessing sensitive files, leaking secrets, and running dangerous commands. Every block message links to the source — if an agent thinks a block is wrong, it can fork the repo and submit a PR.
-
-```typescript
-import { handleToolExecuteBefore } from "@blogic/agent-tools/credential-guard";
-
-// Use in Claude Code / OpenCode hook
-export default { handleToolExecuteBefore };
-```
 
 **What it blocks:**
 
@@ -147,7 +160,61 @@ export default { handleToolExecuteBefore };
 - Dangerous shell patterns (`printenv`, `cat .env`, etc.)
 - Direct CLI usage (`gh`, `kubectl`, `psql`, `az`) — must use wrapper tools
 
-**Custom patterns** via `credentialGuard` config section — arrays are merged with built-in defaults (not replaced):
+### Setup for Claude Code
+
+Claude Code uses shell command hooks. The package ships a ready-made wrapper script.
+
+1. Add to `.claude/settings.json` (or `.claude/settings.local.json` for gitignored config):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun node_modules/@blogic/agent-tools/src/credential-guard/claude-hook.ts"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+That's it. The hook reads tool input from stdin, runs the guard, and exits with code 2 (blocked + reason on stderr) or 0 (allowed).
+
+### Setup for OpenCode
+
+OpenCode loads plugins automatically from `.opencode/plugins/`. Create a plugin file:
+
+**`.opencode/plugins/credential-guard.ts`**
+
+```typescript
+import { handleToolExecuteBefore } from "@blogic/agent-tools/credential-guard";
+
+export const CredentialGuard = async () => ({
+  "tool.execute.before": handleToolExecuteBefore,
+});
+```
+
+If the package isn't already in your project dependencies, add a `.opencode/package.json`:
+
+```json
+{
+  "dependencies": {
+    "@blogic/agent-tools": "*"
+  }
+}
+```
+
+OpenCode installs plugin dependencies automatically at startup.
+
+### Custom patterns
+
+Use the `credentialGuard` config section to extend built-in defaults (arrays are merged, not replaced):
 
 ```json5
 {
