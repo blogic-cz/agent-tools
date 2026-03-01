@@ -11,14 +11,14 @@ Safe CLI wrappers for AI coding agents — GitHub, databases, Kubernetes, Azure 
 
 ## Tools Overview
 
-| Tool | Description | Help |
-|------|-------------|------|
-| **gh-tool** | GitHub CLI wrapper — PR management, issues, checks, reviews, merge | `bun run gh-tool --help` |
-| **db-tool** | Database query tool — SQL execution, schema introspection, tunneling | `bun run db-tool --help` |
-| **k8s-tool** | Kubernetes tool — kubectl with config-driven context resolution | `bun run k8s-tool --help` |
-| **az-tool** | Azure DevOps tool — pipelines, builds, repos (read-only) | `bun run az-tool --help` |
-| **logs-tool** | Application logs — read local and remote (k8s pod) logs | `bun run logs-tool --help` |
-| **session-tool** | OpenCode session browser — list, read, search session history | `bun run session-tool --help` |
+| Tool             | Description                                                          | Help                          |
+| ---------------- | -------------------------------------------------------------------- | ----------------------------- |
+| **gh-tool**      | GitHub CLI wrapper — PR management, issues, checks, reviews, merge   | `bun run gh-tool --help`      |
+| **db-tool**      | Database query tool — SQL execution, schema introspection, tunneling | `bun run db-tool --help`      |
+| **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution      | `bun run k8s-tool --help`     |
+| **az-tool**      | Azure DevOps tool — pipelines, builds, repos (read-only)             | `bun run az-tool --help`      |
+| **logs-tool**    | Application logs — read local and remote (k8s pod) logs              | `bun run logs-tool --help`    |
+| **session-tool** | OpenCode session browser — list, read, search session history        | `bun run session-tool --help` |
 
 ## Tool Priority
 
@@ -99,6 +99,7 @@ See full config reference: https://github.com/blogic-cz/agent-tools#configuratio
 The guard blocks agents from accessing sensitive files and leaking secrets. It's configured via the `credentialGuard` section in `agent-tools.json5`.
 
 **What it blocks:**
+
 - Reads of secret files (`.env`, `.pem`, `.key`, `.ssh/`, etc.)
 - Writes containing detected secrets (API keys, tokens, passwords)
 - Dangerous shell patterns (`printenv`, `cat .env`, etc.)
