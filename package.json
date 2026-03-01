@@ -38,6 +38,9 @@
     "./credential-guard": "./src/credential-guard/index.ts",
     "./config": "./src/config/index.ts"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "check": "bun check.ts",
     "check:ci": "bun check.ts ci",
@@ -60,9 +63,6 @@
     "oxlint": "1.50.0",
     "typescript": "5.9.3",
     "vitest": "^4.0.18"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "engines": {
     "bun": ">=1.0.0"
