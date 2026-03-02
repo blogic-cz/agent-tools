@@ -3,7 +3,7 @@ import {
   detectSecrets,
   isPathAllowed,
   createCredentialGuard,
-} from "#src/credential-guard/index";
+} from "#guard";
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";

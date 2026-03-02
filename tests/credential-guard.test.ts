@@ -8,7 +8,7 @@ import {
   isGhCommandAllowed,
   isPathAllowed,
   isPathBlocked,
-} from "#src/credential-guard/index";
+} from "#guard";
 
 /* eslint-disable eslint/no-template-curly-in-string */
 

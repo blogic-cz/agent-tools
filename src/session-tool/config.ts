@@ -2,7 +2,7 @@ import { Effect, Layer, ServiceMap } from "effect";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { loadConfig } from "#src/config/loader";
+import { loadConfig } from "#config/loader";
 
 /**
  * Resolves the OpenCode storage base path from config or default.

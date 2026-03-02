@@ -1,13 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type {
-  BuildJob,
-  BuildTimeline,
-  BuildLogs,
-  JobSummary,
-  PipelineRun,
-} from "#src/az-tool/types";
+import type { BuildJob, BuildTimeline, BuildLogs, JobSummary, PipelineRun } from "#az/types";
 
 import {
   getBuildTimeline,
@@ -17,10 +11,10 @@ import {
   getBuildJobSummary,
   findFailedJobs,
   listPipelineRuns,
-} from "#src/az-tool/build";
-import { AzCommandError, AzParseError, AzTimeoutError } from "#src/az-tool/errors";
-import { AzService } from "#src/az-tool/service";
-import { formatAny } from "#src/shared";
+} from "#az/build";
+import { AzCommandError, AzParseError, AzTimeoutError } from "#az/errors";
+import { AzService } from "#az/service";
+import { formatAny } from "#shared";
 function createMockBuildJob(overrides?: Partial<BuildJob>): BuildJob {
   return {
     id: "job-1",

@@ -5,8 +5,8 @@ import { Console, Effect, Layer, Option } from "effect";
 
 import type { SchemaMode } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#src/shared";
-import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#src/config";
+import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { makeDbConfigLayer } from "./config-service";
 import { DbConnectionError } from "./errors";
 import { DbService } from "./service";

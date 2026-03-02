@@ -1,16 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type { DbError } from "#src/db-tool/errors";
-import type { QueryResult } from "#src/db-tool/types";
+import type { DbError } from "#db/errors";
+import type { QueryResult } from "#db/types";
 
-import {
-  DbConnectionError,
-  DbMutationBlockedError,
-  DbParseError,
-  DbQueryError,
-} from "#src/db-tool/errors";
-import { DbService } from "#src/db-tool/service";
+import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
+import { DbService } from "#db/service";
 
 /**
  * Mock DbService layer factory for testing

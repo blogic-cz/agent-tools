@@ -5,15 +5,10 @@ import { Console, Effect, Layer, Option } from "effect";
 
 import type { CommandResult } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#src/shared";
+import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
 import { K8sService, K8sServiceLayer } from "./service";
-import {
-  ConfigService,
-  ConfigServiceLayer,
-  getDefaultEnvironment,
-  getToolConfig,
-} from "#src/config";
-import type { K8sConfig } from "#src/config";
+import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
+import type { K8sConfig } from "#config";
 import { K8sContextError } from "./errors";
 
 /**

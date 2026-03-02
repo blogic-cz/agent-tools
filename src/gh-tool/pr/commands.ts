@@ -1,15 +1,15 @@
 import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
-import type { PRStatusResult } from "#src/gh-tool/types";
+import type { PRStatusResult } from "#gh/types";
 
-import { formatOption, logFormatted } from "#src/shared";
+import { formatOption, logFormatted } from "#shared";
 import {
   CI_CHECK_WATCH_TIMEOUT_MS,
   DEFAULT_DELETE_BRANCH,
   DEFAULT_MERGE_STRATEGY,
   MERGE_STRATEGIES,
-} from "#src/gh-tool/config";
+} from "#gh/config";
 
 import {
   createPR,

@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, and sessions",
   "keywords": [
     "agent",
@@ -34,7 +34,17 @@
   ],
   "type": "module",
   "imports": {
-    "#src/*": "./src/*"
+    "#shared": "./src/shared/index.ts",
+    "#shared/*": "./src/shared/*.ts",
+    "#config": "./src/config/index.ts",
+    "#config/*": "./src/config/*.ts",
+    "#gh/*": "./src/gh-tool/*.ts",
+    "#k8s/*": "./src/k8s-tool/*.ts",
+    "#db/*": "./src/db-tool/*.ts",
+    "#logs/*": "./src/logs-tool/*.ts",
+    "#az/*": "./src/az-tool/*.ts",
+    "#guard": "./src/credential-guard/index.ts",
+    "#session/*": "./src/session-tool/*.ts"
   },
   "exports": {
     ".": "./src/index.ts",

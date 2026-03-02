@@ -1,4 +1,4 @@
-import type { OutputFormat } from "#src/shared";
+import type { OutputFormat } from "#shared";
 
 export type { OutputFormat };
 

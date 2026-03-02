@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Match, Option, Result } from "effect";
 
-import type { CommandResult, Environment } from "#src/k8s-tool/types";
+import type { CommandResult, Environment } from "#k8s/types";
 
-import { K8sCommandError, K8sContextError, K8sTimeoutError } from "#src/k8s-tool/errors";
-import { K8sService } from "#src/k8s-tool/service";
-import { formatOutput } from "#src/shared";
+import { K8sCommandError, K8sContextError, K8sTimeoutError } from "#k8s/errors";
+import { K8sService } from "#k8s/service";
+import { formatOutput } from "#shared";
 
 type K8sError = K8sCommandError | K8sContextError | K8sTimeoutError;
 

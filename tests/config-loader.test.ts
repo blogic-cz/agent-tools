@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { getDefaultEnvironment, getToolConfig } from "#src/config/loader";
-import type { AgentToolsConfig } from "#src/config/types";
+import { getDefaultEnvironment, getToolConfig } from "#config/loader";
+import type { AgentToolsConfig } from "#config/types";
 
 describe("getToolConfig", () => {
   it("returns undefined when config is undefined", () => {

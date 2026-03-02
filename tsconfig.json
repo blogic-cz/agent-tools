@@ -9,7 +9,17 @@
     "moduleResolution": "bundler",
     "noEmit": true,
     "paths": {
-      "#src/*": ["./src/*"]
+      "#shared": ["./src/shared/index.ts"],
+      "#shared/*": ["./src/shared/*"],
+      "#config": ["./src/config/index.ts"],
+      "#config/*": ["./src/config/*"],
+      "#gh/*": ["./src/gh-tool/*"],
+      "#k8s/*": ["./src/k8s-tool/*"],
+      "#db/*": ["./src/db-tool/*"],
+      "#logs/*": ["./src/logs-tool/*"],
+      "#az/*": ["./src/az-tool/*"],
+      "#guard": ["./src/credential-guard/index.ts"],
+      "#session/*": ["./src/session-tool/*"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],

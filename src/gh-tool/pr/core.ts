@@ -1,15 +1,9 @@
 import { Console, Effect, Option } from "effect";
 
-import type {
-  BranchPRDetail,
-  CheckResult,
-  MergeResult,
-  MergeStrategy,
-  PRInfo,
-} from "#src/gh-tool/types";
+import type { BranchPRDetail, CheckResult, MergeResult, MergeStrategy, PRInfo } from "#gh/types";
 
-import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#src/gh-tool/errors";
-import { GitHubService } from "#src/gh-tool/service";
+import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
+import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";

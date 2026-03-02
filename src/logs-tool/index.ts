@@ -20,8 +20,8 @@ import { Console, Effect, Layer, Option, Result } from "effect";
 
 import type { Environment, LogResult, ReadOptions } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#src/shared";
-import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#src/config";
+import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { LogsConfigError, LogsNotFoundError, LogsReadError, LogsTimeoutError } from "./errors";
 import { LogsService, LogsServiceLayer } from "./service";
 

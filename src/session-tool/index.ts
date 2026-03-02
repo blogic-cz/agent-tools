@@ -13,7 +13,7 @@ import { Console, Effect, Layer, Result } from "effect";
 
 import type { MessageSummary, SessionResult } from "./types";
 
-import { formatOption, formatOutput, VERSION } from "#src/shared";
+import { formatOption, formatOutput, VERSION } from "#shared";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
 import { formatDate, SessionService, SessionServiceLayer, truncate } from "./service";

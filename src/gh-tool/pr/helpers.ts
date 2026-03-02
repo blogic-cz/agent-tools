@@ -1,7 +1,7 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Effect, Stream } from "effect";
 
-import { GitHubCommandError } from "#src/gh-tool/errors";
+import { GitHubCommandError } from "#gh/errors";
 
 export type LocalCommandResult = {
   stdout: string;

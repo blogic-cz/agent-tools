@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ALLOWED_INVOKE_AREAS, BLOCKED_INVOKE_AREAS } from "#src/az-tool/config";
-import { isCommandAllowed, isInvokeAllowed } from "#src/az-tool/security";
+import { ALLOWED_INVOKE_AREAS, BLOCKED_INVOKE_AREAS } from "#az/config";
+import { isCommandAllowed, isInvokeAllowed } from "#az/security";
 
 describe("az-tool security", () => {
   describe("isCommandAllowed", () => {

@@ -1,28 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type {
-  MergeResult,
-  MergeStrategy,
-  PRInfo,
-  ReviewComment,
-  ReviewThread,
-} from "#src/gh-tool/types";
+import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
 
 import {
   GitHubAuthError,
   GitHubCommandError,
   GitHubMergeError,
   GitHubNotFoundError,
-} from "#src/gh-tool/errors";
-import { GitHubService } from "#src/gh-tool/service";
-import { fetchChecks, viewPR } from "#src/gh-tool/pr/core";
-import {
-  fetchDiscussionSummary,
-  fetchThreads,
-  replyToComment,
-  resolveThread,
-} from "#src/gh-tool/pr/review";
+} from "#gh/errors";
+import { GitHubService } from "#gh/service";
+import { fetchChecks, viewPR } from "#gh/pr/core";
+import { fetchDiscussionSummary, fetchThreads, replyToComment, resolveThread } from "#gh/pr/review";
 
 const mockRepoInfo = {
   owner: "test-owner",

@@ -7,10 +7,10 @@ import type {
   IsoTimestamp,
   ReviewComment,
   ReviewThread,
-} from "#src/gh-tool/types";
+} from "#gh/types";
 
-import { GitHubCommandError } from "#src/gh-tool/errors";
-import { GitHubService } from "#src/gh-tool/service";
+import { GitHubCommandError } from "#gh/errors";
+import { GitHubService } from "#gh/service";
 
 import { viewPR } from "./core";
 
