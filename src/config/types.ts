@@ -19,6 +19,8 @@ export type DbEnvConfig = {
   port: number;
   user: string;
   database: string;
+  /** Plain-text password for local development. Prefer passwordEnvVar for non-local environments. */
+  password?: string;
   /** Name of environment variable holding the password, e.g. "DB_TEST_PWD" */
   passwordEnvVar?: string;
 };

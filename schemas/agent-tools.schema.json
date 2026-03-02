@@ -121,6 +121,10 @@
           "description": "Database name.",
           "type": "string"
         },
+        "password": {
+          "description": "Plain-text database password. Use for local development only; prefer passwordEnvVar for non-local environments.",
+          "type": "string"
+        },
         "passwordEnvVar": {
           "description": "Name of the environment variable holding the database password.",
           "type": "string"

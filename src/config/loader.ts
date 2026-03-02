@@ -33,6 +33,7 @@ const DbEnvConfigSchema = Schema.Struct({
   port: Schema.Number,
   user: Schema.String,
   database: Schema.String,
+  password: Schema.optionalKey(Schema.String),
   passwordEnvVar: Schema.optionalKey(Schema.String),
 });
 
