@@ -6,4 +6,8 @@ export type CommandResult = {
   error?: string;
   command?: string;
   executionTimeMs: number;
+  hint?: string;
+  nextCommand?: string;
+  retryable?: boolean;
+  environment?: string;
 };

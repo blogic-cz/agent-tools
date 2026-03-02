@@ -5,6 +5,9 @@ export class DbConnectionError extends Schema.TaggedErrorClass<DbConnectionError
   {
     message: Schema.String,
     environment: Schema.String,
+    hint: Schema.optionalKey(Schema.String),
+    nextCommand: Schema.optionalKey(Schema.String),
+    retryable: Schema.optionalKey(Schema.Boolean),
   },
 ) {}
 
@@ -12,16 +15,25 @@ export class DbQueryError extends Schema.TaggedErrorClass<DbQueryError>()("DbQue
   message: Schema.String,
   sql: Schema.String,
   stderr: Schema.optionalKey(Schema.String),
+  hint: Schema.optionalKey(Schema.String),
+  nextCommand: Schema.optionalKey(Schema.String),
+  retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 export class DbTunnelError extends Schema.TaggedErrorClass<DbTunnelError>()("DbTunnelError", {
   message: Schema.String,
   port: Schema.Number,
+  hint: Schema.optionalKey(Schema.String),
+  nextCommand: Schema.optionalKey(Schema.String),
+  retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 export class DbParseError extends Schema.TaggedErrorClass<DbParseError>()("DbParseError", {
   message: Schema.String,
   rawOutput: Schema.String,
+  hint: Schema.optionalKey(Schema.String),
+  nextCommand: Schema.optionalKey(Schema.String),
+  retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 export class DbMutationBlockedError extends Schema.TaggedErrorClass<DbMutationBlockedError>()(
@@ -29,6 +41,9 @@ export class DbMutationBlockedError extends Schema.TaggedErrorClass<DbMutationBl
   {
     message: Schema.String,
     environment: Schema.String,
+    hint: Schema.optionalKey(Schema.String),
+    nextCommand: Schema.optionalKey(Schema.String),
+    retryable: Schema.optionalKey(Schema.Boolean),
   },
 ) {}
 

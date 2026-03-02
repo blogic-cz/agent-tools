@@ -49,6 +49,10 @@
     "credentialGuard": {
       "description": "Global credential guard configuration merged with built-in defaults.",
       "$ref": "#/definitions/CredentialGuardConfig"
+    },
+    "defaultEnvironment": {
+      "description": "Optional default environment name used by tools when no --env flag is provided.",
+      "type": "string"
     }
   },
   "definitions": {

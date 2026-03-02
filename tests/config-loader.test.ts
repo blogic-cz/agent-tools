@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getToolConfig } from "../src/config/loader";
+import { getDefaultEnvironment, getToolConfig } from "../src/config/loader";
 import type { AgentToolsConfig } from "../src/config/types";
 
 describe("getToolConfig", () => {
@@ -159,5 +159,83 @@ describe("getToolConfig", () => {
     expect(getToolConfig(config, "kubernetes")).toBeDefined();
     expect(getToolConfig(config, "database")).toBeDefined();
     expect(getToolConfig(config, "logs")).toBeDefined();
+  });
+});
+
+describe("getDefaultEnvironment", () => {
+  it("returns undefined when config is undefined", () => {
+    const result = getDefaultEnvironment(undefined);
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when defaultEnvironment is not set", () => {
+    const config: AgentToolsConfig = {
+      kubernetes: {
+        default: {
+          clusterId: "cluster",
+          namespaces: { test: "ns-test" },
+        },
+      },
+    };
+
+    const result = getDefaultEnvironment(config);
+    expect(result).toBeUndefined();
+  });
+
+  it("returns the configured defaultEnvironment string", () => {
+    const config: AgentToolsConfig = {
+      defaultEnvironment: "test",
+      kubernetes: {
+        default: {
+          clusterId: "cluster",
+          namespaces: { test: "ns-test" },
+        },
+      },
+    };
+
+    const result = getDefaultEnvironment(config);
+    expect(result).toBe("test");
+  });
+
+  it("returns defaultEnvironment even when set to prod", () => {
+    const config: AgentToolsConfig = {
+      defaultEnvironment: "prod",
+      kubernetes: {
+        default: {
+          clusterId: "cluster",
+          namespaces: { prod: "ns-prod" },
+        },
+      },
+    };
+
+    const result = getDefaultEnvironment(config);
+    expect(result).toBe("prod");
+  });
+
+  it("returns defaultEnvironment for local environment", () => {
+    const config: AgentToolsConfig = {
+      defaultEnvironment: "local",
+      database: {
+        default: {
+          environments: {
+            local: {
+              host: "localhost",
+              port: 5432,
+              user: "app",
+              database: "app_db",
+            },
+          },
+        },
+      },
+    };
+
+    const result = getDefaultEnvironment(config);
+    expect(result).toBe("local");
+  });
+
+  it("works with empty config object", () => {
+    const config: AgentToolsConfig = {};
+    const result = getDefaultEnvironment(config);
+    expect(result).toBeUndefined();
   });
 });

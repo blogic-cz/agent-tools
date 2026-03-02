@@ -1,0 +1,149 @@
+{
+  "recorded": "2026-03-01",
+  "scores": [
+    {
+      "taskId": "gh-pr-checks-failed",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "gh-pr-threads-unresolved",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "gh-pr-merge-readiness",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "gh-workflow-job-logs",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "gh-workflow-runs-latest",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "gh-issue-backlog-triage",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "gh-repo-code-search",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "db-orders-latency-sample",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "db-schema-payments-columns",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "db-relationship-audit",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "db-recent-failed-jobs",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "k8s-pods-crashloop",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "k8s-describe-api-pod",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "k8s-tail-worker-logs",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "k8s-top-memory-hotspots",
+      "passed": false,
+      "score": 0.5,
+      "details": "tool=match; command=match; flags=mismatch(sortBy); pattern=match"
+    },
+    {
+      "taskId": "k8s-exec-config-check",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "az-build-failed-jobs",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "az-build-summary-duration",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "az-build-log-content",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "az-pipeline-list-cmd",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "logs-local-auth-errors",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "logs-test-queue-timeouts",
+      "passed": true,
+      "score": 1.0,
+      "details": "tool=match; command=match; flags=match; pattern=match"
+    },
+    {
+      "taskId": "session-release-regression-search",
+      "passed": false,
+      "score": 0.0,
+      "details": "tool=mismatch(expected=session-tool,actual=gh-tool); command=match; flags=match; pattern=match"
+    }
+  ],
+  "summary": {
+    "total": 23,
+    "passed": 21,
+    "failed": 2,
+    "averageScore": 0.935
+  }
+}

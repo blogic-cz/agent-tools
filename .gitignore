@@ -7,3 +7,4 @@ dist/
 *.log
 .effect-cache/
 .opencode/plugin/session-map.json
+.sisyphus/

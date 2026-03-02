@@ -32,7 +32,7 @@ export class AzService extends ServiceMap.Service<
           message: "No Azure configuration found. Add an 'azure' section to agent-tools.json5.",
           command: "unknown",
           exitCode: -1,
-          stderr: undefined,
+          hint: "Create or update agent-tools.json5 with an 'azure' section containing organization and defaultProject",
         });
         return {
           runCommand: (_cmd: string, _project?: string) => Effect.fail(noConfigError),
@@ -69,7 +69,9 @@ export class AzService extends ServiceMap.Service<
                 message: `Command execution failed: ${platformError.message}`,
                 command: fullCommand,
                 exitCode: -1,
-                stderr: undefined,
+                hint: "Check that the az CLI is installed and authenticated",
+                nextCommand: "az login",
+                retryable: true,
               }),
           ),
         );
@@ -87,6 +89,7 @@ export class AzService extends ServiceMap.Service<
           return yield* new AzSecurityError({
             message: securityCheck.reason ?? "Command not allowed",
             command: cmd,
+            hint: "Only read-only az devops commands are allowed. Use build helpers for common operations.",
           });
         }
 
@@ -125,6 +128,8 @@ export class AzService extends ServiceMap.Service<
             message: `Command timed out after ${azConfig.timeoutMs ?? 60000}ms`,
             command: fullCommand,
             timeoutMs: azConfig.timeoutMs ?? 60000,
+            retryable: true,
+            hint: "The command took too long. Retry or increase timeoutMs in azure config.",
           });
         }
 
@@ -148,6 +153,7 @@ export class AzService extends ServiceMap.Service<
           return yield* new AzSecurityError({
             message: securityCheck.reason ?? "Invoke not allowed",
             command: `invoke --area ${params.area} --resource ${params.resource}`,
+            hint: "Only allowed invoke areas/resources can be used. Check az-tool security config.",
           });
         }
 
@@ -183,6 +189,8 @@ export class AzService extends ServiceMap.Service<
             message: `Invoke timed out after ${azConfig.timeoutMs ?? 60000}ms`,
             command: fullCommand,
             timeoutMs: azConfig.timeoutMs ?? 60000,
+            retryable: true,
+            hint: "The invoke took too long. Retry or increase timeoutMs in azure config.",
           });
         }
 
@@ -203,6 +211,7 @@ export class AzService extends ServiceMap.Service<
             new AzParseError({
               message: `Failed to parse JSON response from invoke`,
               rawOutput: result.stdout.slice(0, 500),
+              hint: "The az CLI returned non-JSON output. Ensure --output json is used.",
             }),
         });
         return jsonData;

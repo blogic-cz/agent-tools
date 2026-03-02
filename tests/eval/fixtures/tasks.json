@@ -1,0 +1,197 @@
+{
+  "gh-pr-checks-failed": {
+    "tool": "gh-tool",
+    "input": { "command": "pr checks-failed", "pr": 184, "format": "toon" },
+    "output": "failing checks detected; rerun guidance attached"
+  },
+  "gh-pr-threads-unresolved": {
+    "tool": "gh-tool",
+    "input": { "command": "pr threads", "pr": 233, "unresolvedOnly": true, "format": "toon" },
+    "output": "unresolved thread list with blocker ranking"
+  },
+  "gh-pr-merge-readiness": {
+    "tool": "gh-tool",
+    "input": {
+      "command": "pr discussion-summary",
+      "pr": 219,
+      "includeChecks": true,
+      "includeThreads": true
+    },
+    "output": "not ready: checks and reviews still pending"
+  },
+  "gh-workflow-job-logs": {
+    "tool": "gh-tool",
+    "input": { "command": "workflow job-logs", "run": 984213, "job": "test-api", "format": "json" },
+    "output": "exception: first error signature extracted from failed step"
+  },
+  "gh-workflow-runs-latest": {
+    "tool": "gh-tool",
+    "input": { "command": "workflow list", "limit": 5, "format": "toon" },
+    "output": "running deployment plus completed and queued runs"
+  },
+  "gh-issue-backlog-triage": {
+    "tool": "gh-tool",
+    "input": {
+      "command": "issue list",
+      "state": "open",
+      "labels": ["bug", "customer-impact"],
+      "limit": 20
+    },
+    "output": "priority policy: escalate critical, comment medium, close duplicates"
+  },
+  "gh-repo-code-search": {
+    "tool": "gh-tool",
+    "input": {
+      "command": "repo search-code",
+      "query": "kubectl config get-contexts",
+      "path": "src",
+      "limit": 50
+    },
+    "output": "kubectl shell usage found; k8s-tool migration recommended"
+  },
+  "db-orders-latency-sample": {
+    "tool": "db-tool",
+    "input": {
+      "command": "sql",
+      "env": "test",
+      "sql": "SELECT endpoint, query_hash, avg_ms FROM query_stats ORDER BY avg_ms DESC LIMIT 20",
+      "format": "json"
+    },
+    "output": "query latency sample grouped by endpoint with avg_ms"
+  },
+  "db-schema-payments-columns": {
+    "tool": "db-tool",
+    "input": {
+      "command": "schema",
+      "env": "local",
+      "mode": "columns",
+      "table": "payments",
+      "format": "toon"
+    },
+    "output": "column and nullable type checks complete"
+  },
+  "db-relationship-audit": {
+    "tool": "db-tool",
+    "input": {
+      "command": "schema",
+      "env": "test",
+      "mode": "relationships",
+      "tableLike": "%invoice%"
+    },
+    "output": "foreign key reference map with cascade paths"
+  },
+  "db-recent-failed-jobs": {
+    "tool": "db-tool",
+    "input": {
+      "command": "sql",
+      "env": "test",
+      "sql": "SELECT queue, count(*) AS failures FROM jobs WHERE status = 'failed' GROUP BY queue ORDER BY failures DESC LIMIT 50",
+      "format": "toon"
+    },
+    "output": "failed queue count summary"
+  },
+  "k8s-pods-crashloop": {
+    "tool": "k8s-tool",
+    "input": {
+      "command": "pods",
+      "env": "test",
+      "namespace": "web-test",
+      "wide": true,
+      "format": "toon"
+    },
+    "output": "CrashLoopBackOff pods with restart counts"
+  },
+  "k8s-describe-api-pod": {
+    "tool": "k8s-tool",
+    "input": {
+      "command": "describe",
+      "env": "test",
+      "namespace": "api-test",
+      "resource": "pod",
+      "name": "api-6d8f9b7c47-abcde"
+    },
+    "output": "Events show Warning with image Pull status"
+  },
+  "k8s-tail-worker-logs": {
+    "tool": "k8s-tool",
+    "input": {
+      "command": "logs",
+      "env": "test",
+      "namespace": "jobs-test",
+      "pod": "worker-85fc9c97c4-kz2mv",
+      "tail": 200
+    },
+    "output": "retry sequence confirms queue backoff behavior"
+  },
+  "k8s-top-memory-hotspots": {
+    "tool": "k8s-tool",
+    "input": { "command": "top", "env": "test", "namespace": "web-test", "format": "json" },
+    "output": "pod memory consumers in Mi"
+  },
+  "k8s-exec-config-check": {
+    "tool": "k8s-tool",
+    "input": {
+      "command": "exec",
+      "env": "test",
+      "namespace": "api-test",
+      "pod": "api-6d8f9b7c47-abcde",
+      "execCmd": "sha256sum /app/config/runtime.json"
+    },
+    "output": "sha256 checksum for runtime.json"
+  },
+  "az-build-failed-jobs": {
+    "tool": "az-tool",
+    "input": { "command": "build failed-jobs", "buildId": 44192, "format": "toon" },
+    "output": "failed stage blocked promotion"
+  },
+  "az-build-summary-duration": {
+    "tool": "az-tool",
+    "input": { "command": "build summary", "buildId": 44192, "format": "json" },
+    "output": "job duration distribution with longest jobs"
+  },
+  "az-build-log-content": {
+    "tool": "az-tool",
+    "input": { "command": "build log-content", "buildId": 44192, "logId": 12, "format": "toon" },
+    "output": "first test failure assert found"
+  },
+  "az-pipeline-list-cmd": {
+    "tool": "az-tool",
+    "input": { "command": "cmd", "cmd": "pipelines list", "project": "platform", "format": "json" },
+    "output": "pipeline catalog includes deploy-api id"
+  },
+  "logs-local-auth-errors": {
+    "tool": "logs-tool",
+    "input": {
+      "command": "read",
+      "env": "local",
+      "file": "app.log",
+      "tail": 150,
+      "grep": "auth failed",
+      "pretty": true
+    },
+    "output": "auth failed 401 for user login attempt"
+  },
+  "logs-test-queue-timeouts": {
+    "tool": "logs-tool",
+    "input": {
+      "command": "read",
+      "env": "test",
+      "file": "worker.log",
+      "tail": 300,
+      "grep": "timeout",
+      "pretty": false
+    },
+    "output": "timeout burst triggered queue retry policy"
+  },
+  "session-release-regression-search": {
+    "tool": "gh-tool",
+    "input": {
+      "command": "search",
+      "query": "release regression",
+      "limit": 10,
+      "all": false,
+      "format": "toon"
+    },
+    "output": "release regression message index by session"
+  }
+}

@@ -2,6 +2,10 @@
 
 This project contains safe CLI wrappers for AI coding agents. The tools provide controlled access to GitHub, databases, Kubernetes, Azure DevOps, application logs, and OpenCode sessions — with project-specific configuration via JSON5.
 
+## KISS
+
+Keep It Simple, Stupid.
+
 ## Code Quality
 
 **CRITICAL: Always run `bun run check` after every change. If it fails, your code is wrong — fix it. Never bypass or ignore failing checks.**

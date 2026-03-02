@@ -11,13 +11,111 @@ import {
   getBuildLogs,
   getBuildTimeline,
 } from "./build";
-import { AzCommandError } from "./errors";
-import { extractOptionValue } from "./extract-option-value";
 import { AzService, AzServiceLayer } from "./service";
 import { ConfigServiceLayer } from "../config";
 
-const mainCommand = Command.make(
-  "az-tool",
+// ---------------------------------------------------------------------------
+// Common flags shared across build subcommands
+// ---------------------------------------------------------------------------
+
+const commonBuildFlags = {
+  format: formatOption,
+  profile: Flag.optional(Flag.string("profile")).pipe(
+    Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
+  ),
+};
+
+// ---------------------------------------------------------------------------
+// Build subcommands
+// ---------------------------------------------------------------------------
+
+const buildTimelineCommand = Command.make(
+  "timeline",
+  {
+    ...commonBuildFlags,
+    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+  },
+  ({ buildId, format, profile: _profile }) =>
+    Effect.gen(function* () {
+      const result = yield* getBuildTimeline(buildId);
+      yield* Console.log(formatAny(result, format));
+    }),
+).pipe(Command.withDescription("Get build timeline with all records (jobs, stages, tasks)"));
+
+const buildFailedJobsCommand = Command.make(
+  "failed-jobs",
+  {
+    ...commonBuildFlags,
+    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+  },
+  ({ buildId, format, profile: _profile }) =>
+    Effect.gen(function* () {
+      const failedJobs = yield* findFailedJobs(buildId);
+      yield* Console.log(formatAny({ buildId, failedJobs }, format));
+    }),
+).pipe(Command.withDescription("Find failed or canceled jobs in a build"));
+
+const buildLogsCommand = Command.make(
+  "logs",
+  {
+    ...commonBuildFlags,
+    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+  },
+  ({ buildId, format, profile: _profile }) =>
+    Effect.gen(function* () {
+      const result = yield* getBuildLogs(buildId);
+      yield* Console.log(formatAny(result, format));
+    }),
+).pipe(Command.withDescription("Get list of build logs"));
+
+const buildLogContentCommand = Command.make(
+  "log-content",
+  {
+    ...commonBuildFlags,
+    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+    logId: Flag.integer("log-id").pipe(Flag.withDescription("Log ID")),
+  },
+  ({ buildId, format, logId, profile: _profile }) =>
+    Effect.gen(function* () {
+      const content = yield* getBuildLogContent(buildId, logId);
+      yield* Console.log(formatAny({ buildId, logId, content }, format));
+    }),
+).pipe(Command.withDescription("Get specific log content by log ID"));
+
+const buildSummaryCommand = Command.make(
+  "summary",
+  {
+    ...commonBuildFlags,
+    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+  },
+  ({ buildId, format, profile: _profile }) =>
+    Effect.gen(function* () {
+      const summary = yield* getBuildJobSummary(buildId);
+      yield* Console.log(formatAny({ buildId, summary }, format));
+    }),
+).pipe(Command.withDescription("Get job summaries with duration and status information"));
+
+// ---------------------------------------------------------------------------
+// Build parent command
+// ---------------------------------------------------------------------------
+
+const buildCommand = Command.make("build", {}).pipe(
+  Command.withDescription("Build helpers for Azure DevOps pipelines"),
+  Command.withSubcommands([
+    buildTimelineCommand,
+    buildFailedJobsCommand,
+    buildLogsCommand,
+    buildLogContentCommand,
+    buildSummaryCommand,
+  ]),
+);
+
+// ---------------------------------------------------------------------------
+// Raw command subcommand (preserves existing --cmd behavior)
+// ---------------------------------------------------------------------------
+
+const cmdCommand = Command.make(
+  "cmd",
   {
     profile: Flag.optional(Flag.string("profile")).pipe(
       Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
@@ -36,17 +134,9 @@ const mainCommand = Command.make(
     Effect.gen(function* () {
       const projectName = project ? Option.getOrUndefined(project) : undefined;
 
-      // Handle dry-run mode
       if (dryRun) {
         const fullCommand = `az ${cmd}`;
         yield* Console.log(`[DRY-RUN] Would execute: ${fullCommand}`);
-        return;
-      }
-
-      const buildHelperResult = yield* runBuildHelperCommand(cmd);
-
-      if (buildHelperResult !== undefined) {
-        yield* Console.log(formatAny(buildHelperResult, format));
         return;
       }
 
@@ -69,15 +159,34 @@ const mainCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
+    `Execute raw az CLI commands directly.
+
+EXAMPLES:
+  agent-tools-az cmd --cmd "pipelines list"
+  agent-tools-az cmd --cmd "repos list" --project my-project
+  agent-tools-az cmd --cmd "pipelines runs list --output json"`,
+  ),
+);
+
+// ---------------------------------------------------------------------------
+// Main command with subcommands
+// ---------------------------------------------------------------------------
+
+const mainCommand = Command.make("az-tool", {}).pipe(
+  Command.withDescription(
     `Azure CLI Tool for Coding Agents (READ-ONLY)
 
-Supports raw az wrapper via --cmd and convenience build helpers:
-  --cmd "build timeline --build-id 123"
-  --cmd "build failed-jobs --build-id 123"
-  --cmd "build logs --build-id 123"
-  --cmd "build log-content --build-id 123 --log-id 45"
-  --cmd "build summary --build-id 123"`,
+Typed build subcommands:
+  az-tool build timeline --build-id 123
+  az-tool build failed-jobs --build-id 123
+  az-tool build logs --build-id 123
+  az-tool build log-content --build-id 123 --log-id 45
+  az-tool build summary --build-id 123
+
+Raw az wrapper:
+  az-tool cmd --cmd "pipelines list"`,
   ),
+  Command.withSubcommands([buildCommand, cmdCommand]),
 );
 
 const cli = Command.run(mainCommand, {
@@ -94,88 +203,3 @@ const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseT
 BunRuntime.runMain(program, {
   disableErrorReporting: true,
 });
-
-function runBuildHelperCommand(cmd: string) {
-  return Effect.gen(function* () {
-    const words = cmd.trim().split(/\s+/);
-
-    if (words[0] !== "build") {
-      return undefined;
-    }
-
-    const action = words[1];
-    if (!action) {
-      return yield* invalidBuildCommand(
-        cmd,
-        "Missing build action. Use one of: timeline, failed-jobs, logs, log-content, summary",
-      );
-    }
-
-    const buildId = yield* parseRequiredIntOption(words, "--build-id", cmd);
-
-    if (action === "timeline") {
-      const timeline = yield* getBuildTimeline(buildId);
-      return timeline;
-    }
-
-    if (action === "failed-jobs") {
-      const failedJobs = yield* findFailedJobs(buildId);
-      return { buildId, failedJobs };
-    }
-
-    if (action === "logs") {
-      const logs = yield* getBuildLogs(buildId);
-      return logs;
-    }
-
-    if (action === "log-content") {
-      const logId = yield* parseRequiredIntOption(words, "--log-id", cmd);
-      const content = yield* getBuildLogContent(buildId, logId);
-      return {
-        buildId,
-        logId,
-        content,
-      };
-    }
-
-    if (action === "summary") {
-      const summary = yield* getBuildJobSummary(buildId);
-      return { buildId, summary };
-    }
-
-    return yield* invalidBuildCommand(
-      cmd,
-      `Unknown build action '${action}'. Use one of: timeline, failed-jobs, logs, log-content, summary`,
-    );
-  });
-}
-
-function invalidBuildCommand(cmd: string, message: string) {
-  return Effect.fail(
-    new AzCommandError({
-      message,
-      command: cmd,
-      exitCode: 2,
-      stderr: message,
-    }),
-  );
-}
-
-function parseRequiredIntOption(args: readonly string[], optionName: string, cmd: string) {
-  return Effect.gen(function* () {
-    const rawValue = extractOptionValue(args, optionName);
-    if (!rawValue) {
-      return yield* invalidBuildCommand(cmd, `Missing required option ${optionName}`);
-    }
-
-    const parsedValue = Number.parseInt(rawValue, 10);
-    if (Number.isNaN(parsedValue)) {
-      return yield* invalidBuildCommand(
-        cmd,
-        `Option ${optionName} must be an integer, received '${rawValue}'`,
-      );
-    }
-
-    return parsedValue;
-  });
-}

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result, Layer, Match } from "effect";
+import { Effect, Layer, Match, Option, Result } from "effect";
 
 import type { CommandResult, Environment } from "../src/k8s-tool/types";
 
 import { K8sCommandError, K8sContextError, K8sTimeoutError } from "../src/k8s-tool/errors";
 import { K8sService } from "../src/k8s-tool/service";
+import { formatOutput } from "../src/shared";
 
 type K8sError = K8sCommandError | K8sContextError | K8sTimeoutError;
 
@@ -757,5 +758,442 @@ spec:
         ),
       ),
     );
+  });
+
+  describe("structured subcommands - command construction", () => {
+    // Replicates the internal buildKubectlCommand logic from index.ts
+    const buildCmd = (base: string, args: ReadonlyArray<string>) => {
+      const extras = args.filter((part) => part.length > 0);
+      return extras.length === 0 ? base : `${base} ${extras.join(" ")}`;
+    };
+
+    describe("pods", () => {
+      it("builds base get pods command with no options", () => {
+        expect(buildCmd("get pods", ["", "", ""])).toBe("get pods");
+      });
+
+      it("builds command with label selector", () => {
+        expect(buildCmd("get pods", ["-l app=web", "", ""])).toBe("get pods -l app=web");
+      });
+
+      it("builds command with namespace", () => {
+        expect(buildCmd("get pods", ["", "-n my-app-test", ""])).toBe("get pods -n my-app-test");
+      });
+
+      it("builds command with wide output", () => {
+        expect(buildCmd("get pods", ["", "", "-o wide"])).toBe("get pods -o wide");
+      });
+
+      it("builds command with all flags combined", () => {
+        expect(buildCmd("get pods", ["-l app=web", "-n my-app-test", "-o wide"])).toBe(
+          "get pods -l app=web -n my-app-test -o wide",
+        );
+      });
+    });
+
+    describe("logs", () => {
+      it("builds base logs command", () => {
+        expect(buildCmd("logs my-pod", ["", "", "", ""])).toBe("logs my-pod");
+      });
+
+      it("builds command with namespace and container", () => {
+        expect(buildCmd("logs my-pod", ["-n my-ns", "-c app", "", ""])).toBe(
+          "logs my-pod -n my-ns -c app",
+        );
+      });
+
+      it("builds command with tail and follow", () => {
+        expect(buildCmd("logs my-pod", ["", "", "--tail=100", "-f"])).toBe(
+          "logs my-pod --tail=100 -f",
+        );
+      });
+
+      it("builds command with all options", () => {
+        expect(buildCmd("logs my-pod", ["-n my-ns", "-c app", "--tail=50", "-f"])).toBe(
+          "logs my-pod -n my-ns -c app --tail=50 -f",
+        );
+      });
+    });
+
+    describe("describe", () => {
+      it("builds base describe command", () => {
+        expect(buildCmd("describe pod my-pod", [""])).toBe("describe pod my-pod");
+      });
+
+      it("builds command with namespace", () => {
+        expect(buildCmd("describe deploy web-app", ["-n my-ns"])).toBe(
+          "describe deploy web-app -n my-ns",
+        );
+      });
+    });
+
+    describe("exec", () => {
+      it("builds base exec command with -- separator", () => {
+        expect(buildCmd("exec my-pod", ["", "", "-- ls -la"])).toBe("exec my-pod -- ls -la");
+      });
+
+      it("builds command with namespace and container", () => {
+        expect(buildCmd("exec my-pod", ["-n my-ns", "-c app", "-- cat /app/logs/app.log"])).toBe(
+          "exec my-pod -n my-ns -c app -- cat /app/logs/app.log",
+        );
+      });
+    });
+
+    describe("top", () => {
+      it("builds base top pod command", () => {
+        expect(buildCmd("top pod", ["", ""])).toBe("top pod");
+      });
+
+      it("builds command with namespace", () => {
+        expect(buildCmd("top pod", ["-n my-ns", ""])).toBe("top pod -n my-ns");
+      });
+
+      it("builds command with sort-by", () => {
+        expect(buildCmd("top pod", ["", "--sort-by=cpu"])).toBe("top pod --sort-by=cpu");
+      });
+
+      it("builds command with namespace and sort-by", () => {
+        expect(buildCmd("top pod", ["-n my-ns", "--sort-by=memory"])).toBe(
+          "top pod -n my-ns --sort-by=memory",
+        );
+      });
+    });
+  });
+
+  describe("output format - TOON and JSON", () => {
+    it("formats successful result as JSON with all fields", () => {
+      const result: CommandResult = {
+        success: true,
+        output: "pod-1\npod-2",
+        command: "kubectl get pods",
+        executionTimeMs: 150,
+      };
+      const json = formatOutput(result, "json");
+      const parsed = JSON.parse(json);
+      expect(parsed.success).toBe(true);
+      expect(parsed.output).toBe("pod-1\npod-2");
+      expect(parsed.command).toBe("kubectl get pods");
+      expect(parsed.executionTimeMs).toBe(150);
+    });
+
+    it("formats successful result as TOON", () => {
+      const result: CommandResult = {
+        success: true,
+        output: "pod-1\npod-2",
+        command: "kubectl get pods",
+        executionTimeMs: 150,
+      };
+      const toon = formatOutput(result, "toon");
+      expect(toon).toContain("pod-1");
+      expect(toon).toContain("pod-2");
+    });
+
+    it("includes hint fields in JSON output", () => {
+      const result: CommandResult = {
+        success: false,
+        error: "pod not found",
+        hint: "Check pod name and namespace",
+        nextCommand: "kubectl get pods -n my-ns",
+        retryable: false,
+        executionTimeMs: 0,
+      };
+      const json = formatOutput(result, "json");
+      const parsed = JSON.parse(json);
+      expect(parsed.hint).toBe("Check pod name and namespace");
+      expect(parsed.nextCommand).toBe("kubectl get pods -n my-ns");
+      expect(parsed.retryable).toBe(false);
+    });
+
+    it("includes hint fields in TOON output", () => {
+      const result: CommandResult = {
+        success: false,
+        error: "pod not found",
+        hint: "Check pod name and namespace",
+        nextCommand: "kubectl get pods -n my-ns",
+        executionTimeMs: 0,
+      };
+      const toon = formatOutput(result, "toon");
+      expect(toon).toContain("Check pod name and namespace");
+      expect(toon).toContain("kubectl get pods -n my-ns");
+    });
+
+    it("includes environment field in output when present", () => {
+      const result: CommandResult = {
+        success: true,
+        output: "pod-1",
+        executionTimeMs: 100,
+        environment: "test",
+      };
+      const json = formatOutput(result, "json");
+      const parsed = JSON.parse(json);
+      expect(parsed.environment).toBe("test");
+    });
+  });
+
+  describe("env resolution", () => {
+    it("explicit env option returns the provided value", () => {
+      const env = Option.some("test");
+      expect(Option.getOrUndefined(env)).toBe("test");
+    });
+
+    it("none env option returns undefined for config fallback", () => {
+      const env: Option.Option<string> = Option.none();
+      expect(Option.getOrUndefined(env)).toBeUndefined();
+    });
+
+    it("prod safety error carries actionable hint and next command", () => {
+      const error = new K8sContextError({
+        message:
+          "Implicit prod access blocked. Config defaultEnvironment is 'prod' but --env was not passed explicitly.",
+        clusterId: "(prod-safety)",
+        hint: "Pass --env prod explicitly to confirm production access, or change defaultEnvironment to a non-prod value.",
+        nextCommand: 'agent-tools-k8s kubectl --env prod --cmd "get pods -n <namespace>"',
+      });
+      expect(error._tag).toBe("K8sContextError");
+      expect(error.hint).toContain("--env prod");
+      expect(error.nextCommand).toContain("--env prod");
+      expect(error.clusterId).toBe("(prod-safety)");
+    });
+
+    it("missing env error provides config guidance", () => {
+      const error = new K8sContextError({
+        message:
+          "No environment specified. Use --env <name> or set defaultEnvironment in agent-tools.json5.",
+        clusterId: "(not specified)",
+        hint: 'Set defaultEnvironment in agent-tools.json5 (e.g. defaultEnvironment: "test") or pass --env explicitly.',
+        nextCommand: 'agent-tools-k8s kubectl --env test --cmd "get pods -n <namespace>"',
+      });
+      expect(error.hint).toContain("defaultEnvironment");
+      expect(error.nextCommand).toContain("--env test");
+    });
+  });
+
+  describe("error recovery hints", () => {
+    it("K8sContextError carries hint, nextCommand, and retryable", () => {
+      const error = new K8sContextError({
+        message: "No kubectl context found",
+        clusterId: "my-cluster",
+        hint: "Verify cluster ID matches kubectl config",
+        nextCommand: "kubectl config get-contexts",
+        retryable: true,
+      });
+      expect(error.hint).toBe("Verify cluster ID matches kubectl config");
+      expect(error.nextCommand).toBe("kubectl config get-contexts");
+      expect(error.retryable).toBe(true);
+    });
+
+    it("K8sCommandError carries hint with exit code and stderr", () => {
+      const error = new K8sCommandError({
+        message: "pod not found",
+        command: "kubectl get pod invalid-pod",
+        exitCode: 1,
+        stderr: 'Error from server (NotFound): pods "invalid-pod" not found',
+        hint: "Check pod name; use 'kubectl get pods' to list available pods.",
+        nextCommand: "kubectl get pods -n my-ns",
+        retryable: false,
+      });
+      expect(error.hint).toContain("kubectl get pods");
+      expect(error.nextCommand).toBe("kubectl get pods -n my-ns");
+      expect(error.retryable).toBe(false);
+      expect(error.exitCode).toBe(1);
+    });
+
+    it("K8sTimeoutError carries hint with retryable flag", () => {
+      const error = new K8sTimeoutError({
+        message: "Command timed out after 30000ms",
+        command: "kubectl logs -f pod-name",
+        timeoutMs: 30000,
+        hint: "Consider increasing timeoutMs or narrowing the query.",
+        retryable: true,
+      });
+      expect(error.hint).toContain("timeoutMs");
+      expect(error.retryable).toBe(true);
+      expect(error.timeoutMs).toBe(30000);
+    });
+
+    it("errors without hints have undefined optional fields", () => {
+      const error = new K8sContextError({
+        message: "No context",
+        clusterId: "my-cluster",
+      });
+      expect(error.hint).toBeUndefined();
+      expect(error.nextCommand).toBeUndefined();
+      expect(error.retryable).toBeUndefined();
+    });
+
+    it.effect("service error with hints propagates through mock layer", () =>
+      Effect.gen(function* () {
+        const service = yield* K8sService;
+        const result = yield* service
+          .runKubectl("get pod missing-pod -n my-ns", false)
+          .pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (left) => {
+            Match.value(left).pipe(
+              Match.tag("K8sCommandError", (err) => {
+                expect(err.hint).toBe("Check the pod name is correct.");
+                expect(err.nextCommand).toBe("kubectl get pods -n my-ns");
+                expect(err.retryable).toBe(false);
+              }),
+              Match.orElse(() => {
+                throw new Error("Expected K8sCommandError");
+              }),
+            );
+          },
+          onSuccess: () => {
+            expect.fail("Expected Left but got Right");
+          },
+        });
+      }).pipe(
+        Effect.provide(
+          createMockK8sServiceLayer({
+            "kubectl:get pod missing-pod -n my-ns": new K8sCommandError({
+              message: "pod not found",
+              command: "kubectl get pod missing-pod -n my-ns",
+              exitCode: 1,
+              hint: "Check the pod name is correct.",
+              nextCommand: "kubectl get pods -n my-ns",
+              retryable: false,
+            }),
+          }),
+        ),
+      ),
+    );
+  });
+});
+
+describe("env resolution with defaultEnvironment", () => {
+  it.effect("executes kubectl command successfully with explicit env", () =>
+    Effect.gen(function* () {
+      const service = yield* K8sService;
+      const result = yield* service.runKubectl("get pods", false);
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBeDefined();
+    }).pipe(
+      Effect.provide(
+        createMockK8sServiceLayer({
+          "kubectl:get pods": {
+            success: true,
+            output: "pod-1",
+            command: "kubectl get pods",
+            executionTimeMs: 100,
+          },
+        }),
+      ),
+    ),
+  );
+
+  it.effect("service layer is environment-agnostic (env resolution happens at CLI level)", () =>
+    Effect.gen(function* () {
+      const service = yield* K8sService;
+      const result = yield* service.runKubectl("get pods", false);
+
+      expect(result.success).toBe(true);
+      expect(result.command).toBe("kubectl get pods");
+    }).pipe(
+      Effect.provide(
+        createMockK8sServiceLayer({
+          "kubectl:get pods": {
+            success: true,
+            output: "pod-1",
+            command: "kubectl get pods",
+            executionTimeMs: 100,
+          },
+        }),
+      ),
+    ),
+  );
+
+  it("K8sContextError can carry prod-safety hint", () => {
+    const error = new K8sContextError({
+      message:
+        "Implicit prod access blocked. Config defaultEnvironment is 'prod' but --env was not passed explicitly.",
+      clusterId: "(prod-safety)",
+      hint: "Pass --env prod explicitly to confirm production access, or change defaultEnvironment to a non-prod value.",
+      nextCommand: 'agent-tools-k8s kubectl --env prod --cmd "get pods -n <namespace>"',
+    });
+
+    expect(error._tag).toBe("K8sContextError");
+    expect(error.message).toContain("Implicit prod access blocked");
+    expect(error.hint).toContain("--env prod");
+    expect(error.nextCommand).toContain("--env prod");
+  });
+});
+
+it("K8sContextError can carry missing-env hint", () => {
+  const error = new K8sContextError({
+    message:
+      "No environment specified. Use --env <name> or set defaultEnvironment in agent-tools.json5.",
+    clusterId: "(not specified)",
+    hint: 'Set defaultEnvironment in agent-tools.json5 (e.g. defaultEnvironment: "test") or pass --env explicitly.',
+    nextCommand: 'agent-tools-k8s kubectl --env test --cmd "get pods -n <namespace>"',
+  });
+
+  expect(error._tag).toBe("K8sContextError");
+  expect(error.message).toContain("No environment specified");
+  expect(error.hint).toContain("defaultEnvironment");
+  expect(error.nextCommand).toContain("--env test");
+});
+
+describe("error recovery hints - unit tests", () => {
+  it("K8sCommandError with hint and nextCommand", () => {
+    const error = new K8sCommandError({
+      message: 'error: namespaces "invalid" not found',
+      command: "get pods -n invalid",
+      exitCode: 1,
+      hint: "Check namespace name. Use 'kubectl get namespaces' to list available namespaces.",
+      nextCommand: "agent-tools-k8s kubectl --cmd 'get namespaces'",
+      retryable: true,
+    });
+
+    expect(error._tag).toBe("K8sCommandError");
+    expect(error.hint).toBe(
+      "Check namespace name. Use 'kubectl get namespaces' to list available namespaces.",
+    );
+    expect(error.nextCommand).toBe("agent-tools-k8s kubectl --cmd 'get namespaces'");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("K8sContextError with hint and nextCommand", () => {
+    const error = new K8sContextError({
+      message: "No cluster context configured",
+      clusterId: "prod-cluster",
+      hint: "Configure kubectl context using 'kubectl config use-context <context-name>'",
+      nextCommand: "kubectl config use-context prod-cluster",
+    });
+
+    expect(error._tag).toBe("K8sContextError");
+    expect(error.hint).toContain("kubectl config use-context");
+    expect(error.nextCommand).toBe("kubectl config use-context prod-cluster");
+  });
+
+  it("K8sTimeoutError with hint and retryable", () => {
+    const error = new K8sTimeoutError({
+      message: "Command timed out after 30000ms",
+      command: "logs -f pod-name",
+      timeoutMs: 30000,
+      hint: "Pod may be slow to respond. Try increasing timeout or checking pod status.",
+      nextCommand: "agent-tools-k8s kubectl --cmd 'describe pod pod-name'",
+      retryable: true,
+    });
+
+    expect(error._tag).toBe("K8sTimeoutError");
+    expect(error.hint).toContain("Pod may be slow");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("hint fields are optional in K8s errors", () => {
+    const error = new K8sCommandError({
+      message: "Connection refused",
+      command: "get pods",
+      exitCode: 1,
+    });
+
+    expect(error._tag).toBe("K8sCommandError");
+    expect(error.message).toBe("Connection refused");
+    expect(error.hint).toBeUndefined();
+    expect(error.nextCommand).toBeUndefined();
   });
 });

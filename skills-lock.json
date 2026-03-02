@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "skills": {
+    "code-review": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "9cbf5528d8202ebd7ac894ca11e76151f0681430e0f97241338f8223210a8e17"
+    },
+    "debugging-with-opensrc": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "193331d61902227913e83bcdf877e957a06b848ad61120baf4a389fd46d7bd3e"
+    },
+    "effect-ts": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "688dd8c0c92950093fb898fc8a70b33aeb77f6e646bc908aa1ed202674e8d9a7"
+    },
+    "git-workflow": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "a653e91230009ab42768c65b7cb903d8e299c330adad61602819994a56e29b13"
+    },
+    "tdd": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "9d9dfc89b7ec07d7f416b47b3a3f0a25b61462704e59dfcfbf0064b897f3d2c1"
+    },
+    "testing-patterns": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "b52abcf4b2c311bf13d94a32913aa9ed4898c5a9e38fc237f52e151dc888c5fe"
+    },
+    "update-packages": {
+      "source": "blogic-cz/blogic-marketplace",
+      "sourceType": "github",
+      "computedHash": "a99b46ea3c657c6baeddf052a96caf498e5be07409ef81d9b207e3003baac6dc"
+    }
+  }
+}

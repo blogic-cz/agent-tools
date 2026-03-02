@@ -20,6 +20,9 @@ export type LogResult = {
   error?: string;
   source?: string;
   executionTimeMs: number;
+  hint?: string;
+  nextCommand?: string;
+  retryable?: boolean;
 };
 
 export type ParsedArgs =

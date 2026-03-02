@@ -66,6 +66,8 @@ export class GitHubService extends ServiceMap.Service<
                   command: `gh ${args.join(" ")}`,
                   exitCode: -1,
                   stderr: `Command execution failed: ${String(platformError)}`,
+                  hint: "Ensure the 'gh' CLI is installed and available on PATH.",
+                  nextCommand: "gh --version",
                 }),
             ),
           );
@@ -80,6 +82,8 @@ export class GitHubService extends ServiceMap.Service<
             ) {
               return yield* new GitHubAuthError({
                 message: "GitHub CLI not authenticated. Run 'gh auth login'.",
+                hint: "Authenticate with GitHub CLI or set GITHUB_TOKEN environment variable.",
+                nextCommand: "gh auth login",
               });
             }
 
@@ -91,6 +95,7 @@ export class GitHubService extends ServiceMap.Service<
                 message: result.stderr,
                 resource: "unknown",
                 identifier: "unknown",
+                hint: "Verify the resource exists and you have access. Check repository owner/name spelling.",
               });
             }
 

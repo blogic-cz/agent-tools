@@ -6,8 +6,9 @@ import { Console, Effect, Layer, Option } from "effect";
 import type { SchemaMode } from "./types";
 
 import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "../shared";
-import { ConfigServiceLayer } from "../config";
+import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "../config";
 import { makeDbConfigLayer } from "./config-service";
+import { DbConnectionError } from "./errors";
 import { DbService } from "./service";
 
 // Extract --profile from argv before @effect/cli parsing
@@ -15,11 +16,45 @@ import { DbService } from "./service";
 const profileIndex = process.argv.indexOf("--profile");
 const profileArg = profileIndex !== -1 ? process.argv[profileIndex + 1] : undefined;
 
+/**
+ * Resolve environment from explicit --env flag, config defaultEnvironment, or fail with hint.
+ */
+const resolveEnv = (envOption: Option.Option<string>) =>
+  Effect.gen(function* () {
+    const explicit = Option.getOrUndefined(envOption);
+    if (explicit) return explicit;
+
+    const config = yield* ConfigService;
+    const defaultEnv = getDefaultEnvironment(config);
+
+    if (defaultEnv === "prod") {
+      return yield* new DbConnectionError({
+        message:
+          "Implicit prod access blocked. Config defaultEnvironment is 'prod' but --env was not passed explicitly.",
+        environment: "(prod-safety)",
+        hint: "Pass --env prod explicitly to confirm production access, or change defaultEnvironment to a non-prod value.",
+        nextCommand: 'agent-tools-db sql --env prod --sql "SELECT 1"',
+      });
+    }
+
+    if (defaultEnv) return defaultEnv;
+
+    return yield* new DbConnectionError({
+      message:
+        "No environment specified. Use --env <name> or set defaultEnvironment in agent-tools.json5.",
+      environment: "(not specified)",
+      hint: 'Set defaultEnvironment in agent-tools.json5 (e.g. defaultEnvironment: "local") or pass --env explicitly.',
+      nextCommand: 'agent-tools-db sql --env local --sql "SELECT 1"',
+    });
+  });
+
 const sqlCommand = Command.make(
   "sql",
   {
-    env: Flag.string("env").pipe(
-      Flag.withDescription("Target database environment name (e.g. local, test, prod)"),
+    env: Flag.optional(Flag.string("env")).pipe(
+      Flag.withDescription(
+        "Target database environment name (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
+      ),
     ),
     sql: Flag.string("sql").pipe(Flag.withDescription("SQL query to execute")),
     format: formatOption,
@@ -29,8 +64,9 @@ const sqlCommand = Command.make(
   },
   ({ env, sql, format }) =>
     Effect.gen(function* () {
+      const resolvedEnv = yield* resolveEnv(env);
       const db = yield* DbService;
-      const result = yield* db.executeQuery(env, sql);
+      const result = yield* db.executeQuery(resolvedEnv, sql);
       yield* Console.log(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("Execute a SQL query"));
@@ -38,8 +74,10 @@ const sqlCommand = Command.make(
 const schemaCommand = Command.make(
   "schema",
   {
-    env: Flag.string("env").pipe(
-      Flag.withDescription("Target database environment name (e.g. local, test, prod)"),
+    env: Flag.optional(Flag.string("env")).pipe(
+      Flag.withDescription(
+        "Target database environment name (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
+      ),
     ),
     mode: Flag.choice("mode", ["tables", "columns", "full", "relationships"]).pipe(
       Flag.withDescription(
@@ -57,9 +95,10 @@ const schemaCommand = Command.make(
   },
   ({ env, mode, table, format }) =>
     Effect.gen(function* () {
+      const resolvedEnv = yield* resolveEnv(env);
       const db = yield* DbService;
       const result = yield* db.executeSchemaQuery(
-        env,
+        resolvedEnv,
         mode as SchemaMode,
         Option.getOrUndefined(table),
       );

@@ -2,6 +2,10 @@
   // Agent Tools Configuration (JSON5 supported)
   $schema: "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
 
+  // Default environment used when --env flag is omitted.
+  // Implicit production access is always blocked for safety.
+  defaultEnvironment: "test",
+
   // Azure DevOps profiles
   azure: {
     default: {

@@ -15,6 +15,14 @@ These tools wrap each CLI with:
 
 ## Installation
 
+> **Recommended:** Copy the repo URL and tell your AI agent to install it. The agent will set up everything — dependencies, config file, credential guard — in the right places for your project.
+>
+> ```
+> Install @blogic-cz/agent-tools from https://github.com/blogic-cz/agent-tools and set it up for this project.
+> ```
+
+### Manual installation
+
 ```bash
 bun add @blogic-cz/agent-tools
 ```
@@ -38,6 +46,7 @@ ls src/  # gh-tool/ db-tool/ k8s-tool/ az-tool/ logs-tool/ session-tool/ credent
 ```json5
 {
   $schema: "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
+  defaultEnvironment: "test", // optional: any string (e.g. "local", "test", "prod")
   kubernetes: {
     default: {
       clusterId: "your-cluster-id",
@@ -56,9 +65,14 @@ ls src/  # gh-tool/ db-tool/ k8s-tool/ az-tool/ logs-tool/ session-tool/ credent
 3. Run tools:
 
 ```bash
-npx agent-tools-gh pr list
-npx agent-tools-k8s kubectl -n prod-ns get pods
-npx agent-tools-logs list --env local
+bunx agent-tools-gh pr status
+bunx agent-tools-k8s kubectl --env test --cmd "get pods"
+bunx agent-tools-logs list --env local
+```
+
+```bash
+bunx agent-tools-gh pr review-triage   # interactive summary of PR feedback
+bunx agent-tools-k8s pods --env test   # list pods (structured command)
 ```
 
 4. Hook up the credential guard in your agent config (Claude Code, OpenCode, etc.):
@@ -71,20 +85,30 @@ export default { handleToolExecuteBefore };
 
 ## Tools
 
-| Binary                | Description                                                     |
-| --------------------- | --------------------------------------------------------------- |
-| `agent-tools-gh`      | GitHub CLI wrapper — PR management, issues, workflows           |
-| `agent-tools-db`      | Database query tool — SQL execution, schema introspection       |
-| `agent-tools-k8s`     | Kubernetes tool — kubectl with config-driven context resolution |
-| `agent-tools-az`      | Azure DevOps tool — pipelines, builds, repos                    |
-| `agent-tools-logs`    | Application logs — read local and remote (k8s pod) logs         |
-| `agent-tools-session` | OpenCode session browser — list, read, search sessions          |
+| Binary                | Description                                                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `agent-tools-gh`      | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
+| `agent-tools-db`      | Database query tool — SQL execution, schema introspection                                                        |
+| `agent-tools-k8s`     | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
+| `agent-tools-az`      | Azure DevOps tool — pipelines, builds, repos                                                                     |
+| `agent-tools-logs`    | Application logs — read local and remote (k8s pod) logs                                                          |
+| `agent-tools-session` | OpenCode session browser — list, read, search sessions                                                           |
 
 All tools support `--help` for full usage documentation.
 
 ## Configuration
 
 Config is loaded from `agent-tools.json5` (or `agent-tools.json`) by walking up from the current working directory. Missing config = zero-config mode (works for `gh-tool`; others require config).
+
+### Global Settings
+
+Use `defaultEnvironment` to set the default target for tools that support environments (k8s-tool, logs-tool, db-tool). Passing `--env` explicitly always takes precedence. Note that tools will block implicit production access if `defaultEnvironment` is set to `"prod"`.
+
+```json5
+{
+  defaultEnvironment: "test",
+}
+```
 
 ### IDE Autocompletion
 
@@ -110,8 +134,8 @@ Each tool section supports multiple named profiles. Select with `--profile <name
 ```
 
 ```bash
-npx agent-tools-az pipeline list                    # uses "default" profile
-npx agent-tools-az pipeline list --profile legacy   # uses "legacy" profile
+bunx agent-tools-az cmd --cmd "pipelines list"                    # uses "default" profile
+bunx agent-tools-az cmd --cmd "pipelines list" --profile legacy   # uses "legacy" profile
 ```
 
 **Profile resolution:** `--profile` flag > auto-select (single profile) > `"default"` key > error.
@@ -120,34 +144,38 @@ npx agent-tools-az pipeline list --profile legacy   # uses "legacy" profile
 
 See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for a complete example with all options documented.
 
-## Environment Variables
+## Authentication
 
-Secrets are **never** stored in the config file. Use environment variables:
+Each tool uses its own auth method — no unified token store:
 
-| Variable           | Used By | Description                                               |
-| ------------------ | ------- | --------------------------------------------------------- |
-| `AGENT_TOOLS_DB_*` | db-tool | DB passwords (name defined by `passwordEnvVar` in config) |
-| `GITHUB_TOKEN`     | gh-tool | GitHub API token (falls back to `gh` CLI auth)            |
+| Tool        | Auth Method                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `gh-tool`   | `gh` CLI session (`gh auth login`) or `GITHUB_TOKEN` env var                                 |
+| `k8s-tool`  | Existing kubectl context (kubeconfig). Cluster ID from config resolves context automatically |
+| `az-tool`   | `az` CLI session (`az login`)                                                                |
+| `db-tool`   | Password from env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWORD`) |
+| `logs-tool` | No auth — reads local files or uses k8s-tool for remote access                               |
 
-### Setting up credentials
+Secrets are **never** stored in the config file. The `db-tool` config references env var **names** only:
 
-The config file only references env var **names** (via `passwordEnvVar`), never actual secrets. Set the values in your shell:
+```json5
+{
+  databases: {
+    default: {
+      passwordEnvVar: "AGENT_TOOLS_DB_PASSWORD", // tool reads process.env[passwordEnvVar] at runtime
+    },
+  },
+}
+```
 
-**macOS / Linux** — add to `~/.zshrc` or `~/.bashrc`:
+Set the values in your shell:
 
 ```bash
 export AGENT_TOOLS_DB_PASSWORD="your-password"
 export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
 ```
 
-**Windows** — PowerShell (persistent, user-level):
-
-```powershell
-[Environment]::SetEnvironmentVariable("AGENT_TOOLS_DB_PASSWORD", "your-password", "User")
-[Environment]::SetEnvironmentVariable("GITHUB_TOKEN", "ghp_xxxxxxxxxxxx", "User")
-```
-
-Restart your terminal after adding env vars. The credential guard ensures these values never leak into agent output.
+The credential guard ensures these values never leak into agent output.
 
 ## Credential Guard
 
@@ -230,6 +258,16 @@ Use the `credentialGuard` config section to extend built-in defaults (arrays are
 ### Extending the guard
 
 The guard source is at [`src/credential-guard/index.ts`](./src/credential-guard/index.ts). Fork the repo, adjust patterns, submit a PR: https://github.com/blogic-cz/agent-tools
+
+## Development & Evaluation
+
+### Run Evaluation Harness
+
+The evaluation harness runs a set of test cases against the tools to ensure quality and reliability:
+
+```bash
+bun run tests/eval/run.ts
+```
 
 ## License
 

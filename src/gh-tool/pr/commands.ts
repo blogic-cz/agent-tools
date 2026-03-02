@@ -430,3 +430,58 @@ export const prSubmitReviewCommand = Command.make(
     "Submit a pending review as COMMENT (auto-detects your pending review if --review-id is omitted)",
   ),
 );
+
+export const prReviewTriageCommand = Command.make(
+  "review-triage",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+  },
+  ({ format, pr }) =>
+    Effect.gen(function* () {
+      const prNumber = Option.getOrNull(pr);
+      const [info, threads, summary, checks] = yield* Effect.all([
+        viewPR(prNumber),
+        fetchThreads(prNumber, true),
+        fetchDiscussionSummary(prNumber),
+        fetchChecks(prNumber, false, false, 0),
+      ]);
+      yield* logFormatted({ info, unresolvedThreads: threads, summary, checks }, format);
+    }),
+).pipe(
+  Command.withDescription(
+    "Composite: PR info + unresolved threads + discussion summary + checks status in one call",
+  ),
+);
+
+export const prReplyAndResolveCommand = Command.make(
+  "reply-and-resolve",
+  {
+    body: Flag.string("body").pipe(Flag.withDescription("Reply body text")),
+    commentId: Flag.integer("comment-id").pipe(
+      Flag.withDescription("ID of the comment to reply to"),
+    ),
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    threadId: Flag.string("thread-id").pipe(
+      Flag.withDescription("GraphQL node ID of the thread to resolve"),
+    ),
+  },
+  ({ body, commentId, format, pr, threadId }) =>
+    Effect.gen(function* () {
+      const prNumber = Option.getOrNull(pr);
+      const replyResult = yield* replyToComment(prNumber, commentId, body);
+      const resolveResult = yield* resolveThread(threadId);
+      yield* logFormatted({ reply: replyResult, resolve: resolveResult }, format);
+    }),
+).pipe(
+  Command.withDescription(
+    "Composite: reply to a review comment and resolve its thread in one call",
+  ),
+);

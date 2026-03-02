@@ -54,6 +54,7 @@ export const getBuildTimeline = Effect.fn("Build.getBuildTimeline")(function* (b
         new AzParseError({
           message: `Failed to parse build timeline: ${String(e)}`,
           rawOutput: JSON.stringify(result).slice(0, 500),
+          hint: "The Azure DevOps API returned an unexpected response format for build timeline",
         }),
     ),
   );
@@ -107,6 +108,7 @@ export const getBuildLogs = Effect.fn("Build.getBuildLogs")(function* (buildId: 
         new AzParseError({
           message: `Failed to parse build logs: ${String(e)}`,
           rawOutput: JSON.stringify(result).slice(0, 500),
+          hint: "The Azure DevOps API returned an unexpected response format for build logs",
         }),
     ),
   );
@@ -143,6 +145,7 @@ export const getBuildLogContent = Effect.fn("Build.getBuildLogContent")(function
         new AzParseError({
           message: `Failed to parse log content: ${String(e)}`,
           rawOutput: String(result).slice(0, 500),
+          hint: "The Azure DevOps API returned an unexpected format for log content",
         }),
     ),
   );
@@ -245,6 +248,7 @@ export const listPipelineRuns = Effect.fn("Build.listPipelineRuns")(function* (o
       new AzParseError({
         message: "Failed to parse JSON from pipeline runs output",
         rawOutput: rawResult.slice(0, 500),
+        hint: "The az CLI returned non-JSON output. Check that the command ran successfully.",
       }),
   });
 
@@ -268,6 +272,7 @@ export const listPipelineRuns = Effect.fn("Build.listPipelineRuns")(function* (o
         new AzParseError({
           message: `Failed to parse pipeline runs: ${String(e)}`,
           rawOutput: rawResult.slice(0, 500),
+          hint: "The Azure DevOps API returned an unexpected response format for pipeline runs",
         }),
     ),
   );

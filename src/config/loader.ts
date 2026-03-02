@@ -65,6 +65,7 @@ const AgentToolsConfigSchema = Schema.Struct({
     }),
   ),
   credentialGuard: Schema.optionalKey(CredentialGuardConfigSchema),
+  defaultEnvironment: Schema.optionalKey(Schema.String),
 });
 
 async function findConfigFile(startDirectory: string = process.cwd()): Promise<string | undefined> {
@@ -167,4 +168,8 @@ export function getToolConfig<T>(
   throw new Error(
     `Multiple ${section} profiles found: [${keys.join(", ")}]. Use --profile <name> to select one.`,
   );
+}
+
+export function getDefaultEnvironment(config: AgentToolsConfig | undefined): string | undefined {
+  return config?.defaultEnvironment;
 }

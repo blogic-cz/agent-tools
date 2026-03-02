@@ -8,7 +8,7 @@ import type { AgentToolsConfig, LogsConfig } from "../src/config/types";
 import { K8sCommandError } from "../src/k8s-tool/errors";
 import { K8sService } from "../src/k8s-tool/service";
 import type { CommandResult } from "../src/k8s-tool/types";
-import { LogsNotFoundError, LogsReadError } from "../src/logs-tool/errors";
+import { LogsConfigError, LogsNotFoundError, LogsReadError } from "../src/logs-tool/errors";
 import { LogsService } from "../src/logs-tool/service";
 import type { Environment, ReadOptions } from "../src/logs-tool/types";
 
@@ -621,5 +621,132 @@ describe("LogsService", () => {
         ),
       ),
     );
+  });
+});
+
+describe("env resolution with defaultEnvironment", () => {
+  it.effect("lists local logs successfully", () =>
+    Effect.gen(function* () {
+      const service = yield* LogsService;
+      const result = yield* service.listLogs("local");
+
+      expect(result).toBeDefined();
+      expect(result.length).toBeGreaterThan(0);
+    }).pipe(
+      Effect.provide(
+        createLogsServiceLayer({
+          shellResponses: {
+            "ls -la /app/logs": {
+              stdout: [
+                "total 12",
+                "drwxr-xr-x 2 app app  64 Jan 1 09:59 .",
+                "-rw-r--r-- 1 app app 120 Jan 1 10:00 app.log",
+              ].join("\n"),
+              stderr: "",
+              exitCode: 0,
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
+  it.effect("lists remote logs through kubectl", () =>
+    Effect.gen(function* () {
+      const service = yield* LogsService;
+      const result = yield* service.listLogs("test");
+
+      expect(result).toBeDefined();
+      expect(result.length).toBeGreaterThan(0);
+    }).pipe(
+      Effect.provide(
+        createLogsServiceLayer({
+          k8sResponses: {
+            "-n $(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo default) get pods -o jsonpath='{.items[0].metadata.name}'":
+              {
+                success: true,
+                output: "'test-pod'",
+                command: "kubectl get pods",
+                executionTimeMs: 5,
+              },
+            "exec test-pod -- ls -la /var/log/app": {
+              success: true,
+              output: ["total 4", "-rw-r--r-- 1 root root 220 Jan 2 11:00 app.log"].join("\n"),
+              command: "kubectl exec test-pod -- ls -la /var/log/app",
+              executionTimeMs: 7,
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
+  it("LogsConfigError can carry missing-env hint", () => {
+    const error = new LogsConfigError({
+      message:
+        "No environment specified. Use --env <name> or set defaultEnvironment in agent-tools.json5.",
+      hint: 'Set defaultEnvironment in agent-tools.json5 (e.g. defaultEnvironment: "local") or pass --env explicitly.',
+      nextCommand: "agent-tools-logs list --env local",
+    });
+
+    expect(error._tag).toBe("LogsConfigError");
+    expect(error.message).toContain("No environment specified");
+    expect(error.hint).toContain("defaultEnvironment");
+    expect(error.nextCommand).toContain("--env local");
+  });
+});
+
+describe("error recovery hints - unit tests", () => {
+  it("LogsNotFoundError with hint and nextCommand", () => {
+    const error = new LogsNotFoundError({
+      message: "Log file not found",
+      path: "/app/logs/missing.log",
+      hint: "Check the log file path. Use 'agent-tools-logs list' to see available logs.",
+      nextCommand: "agent-tools-logs list --env local",
+    });
+
+    expect(error._tag).toBe("LogsNotFoundError");
+    expect(error.hint).toBe(
+      "Check the log file path. Use 'agent-tools-logs list' to see available logs.",
+    );
+    expect(error.nextCommand).toBe("agent-tools-logs list --env local");
+  });
+
+  it("LogsReadError with hint", () => {
+    const error = new LogsReadError({
+      message: "Permission denied",
+      source: "local",
+      hint: "Check file permissions. You may need elevated privileges to read this log.",
+    });
+
+    expect(error._tag).toBe("LogsReadError");
+    expect(error.hint).toBe(
+      "Check file permissions. You may need elevated privileges to read this log.",
+    );
+    expect(error.nextCommand).toBeUndefined();
+  });
+
+  it("LogsConfigError with hint and nextCommand", () => {
+    const error = new LogsConfigError({
+      message: "No logs configuration found",
+      hint: "Add logs configuration to agent-tools.json5",
+      nextCommand: "agent-tools-logs list --env local",
+    });
+
+    expect(error._tag).toBe("LogsConfigError");
+    expect(error.hint).toBe("Add logs configuration to agent-tools.json5");
+    expect(error.nextCommand).toBe("agent-tools-logs list --env local");
+  });
+
+  it("hint fields are optional in logs errors", () => {
+    const error = new LogsReadError({
+      message: "Read error",
+      source: "local",
+    });
+
+    expect(error._tag).toBe("LogsReadError");
+    expect(error.message).toBe("Read error");
+    expect(error.hint).toBeUndefined();
+    expect(error.nextCommand).toBeUndefined();
   });
 });

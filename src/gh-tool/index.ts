@@ -30,6 +30,8 @@ import {
   prChecksCommand,
   prChecksFailedCommand,
   prRerunChecksCommand,
+  prReplyAndResolveCommand,
+  prReviewTriageCommand,
 } from "./pr/index";
 import { repoInfoCommand, repoListCommand, repoSearchCodeCommand } from "./repo";
 import { GitHubService } from "./service";
@@ -64,6 +66,8 @@ const prCommand = Command.make("pr", {}).pipe(
     prChecksCommand,
     prChecksFailedCommand,
     prRerunChecksCommand,
+    prReplyAndResolveCommand,
+    prReviewTriageCommand,
   ]),
 );
 

@@ -324,6 +324,8 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
           new GitHubMergeError({
             message: `PR #${opts.pr} has merge conflicts`,
             reason: "conflicts",
+            hint: "Resolve merge conflicts locally, push the fix, then retry the merge.",
+            nextCommand: `gh pr diff ${opts.pr}`,
           }),
         );
       }
@@ -333,6 +335,9 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
           new GitHubMergeError({
             message: `PR #${opts.pr} has failing required checks`,
             reason: "checks_failing",
+            hint: "Wait for CI checks to pass or investigate failures before merging.",
+            nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
+            retryable: true,
           }),
         );
       }
@@ -342,6 +347,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
           new GitHubMergeError({
             message: `PR #${opts.pr} targets a protected branch`,
             reason: "branch_protected",
+            hint: "This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.",
           }),
         );
       }
@@ -350,6 +356,8 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
         new GitHubMergeError({
           message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
           reason: "unknown",
+          hint: "Check the PR state and branch protections. The PR may already be merged or closed.",
+          nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
         }),
       );
     }),
@@ -426,6 +434,9 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
             new GitHubTimeoutError({
               message: `CI check monitoring timed out after ${timeoutSeconds}s`,
               timeoutMs,
+              hint: "CI checks are still running. Retry with a longer --timeout or check status manually.",
+              nextCommand: `agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""}`,
+              retryable: true,
             }),
           ),
       }),

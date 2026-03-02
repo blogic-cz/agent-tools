@@ -11,12 +11,21 @@ const formatError = (error: unknown): string => {
   ) {
     const tag = (error as Record<string, unknown>)._tag as string;
     const message = (error as Record<string, unknown>).message;
-    if (typeof message === "string") return `${tag}: ${message}`;
-    const details = Object.entries(error as Record<string, unknown>)
-      .filter(([key, val]) => typeof val === "string" && key !== "_tag")
-      .map(([key, val]) => `${key}=${String(val)}`)
-      .join(", ");
-    return details ? `${tag}: ${details}` : tag;
+    const hint = (error as Record<string, unknown>).hint;
+    let result = "";
+    if (typeof message === "string") {
+      result = `${tag}: ${message}`;
+    } else {
+      const details = Object.entries(error as Record<string, unknown>)
+        .filter(([key, val]) => typeof val === "string" && key !== "_tag" && key !== "hint")
+        .map(([key, val]) => `${key}=${String(val)}`)
+        .join(", ");
+      result = details ? `${tag}: ${details}` : tag;
+    }
+    if (typeof hint === "string") {
+      result += `\n  Hint: ${hint}`;
+    }
+    return result;
   }
   if (error instanceof Error) return error.message;
   return String(error);

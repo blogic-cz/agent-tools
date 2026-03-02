@@ -1,7 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type { BuildJob, BuildTimeline, BuildLogs, PipelineRun } from "../src/az-tool/types";
+import type {
+  BuildJob,
+  BuildTimeline,
+  BuildLogs,
+  JobSummary,
+  PipelineRun,
+} from "../src/az-tool/types";
 
 import {
   getBuildTimeline,
@@ -12,8 +18,9 @@ import {
   findFailedJobs,
   listPipelineRuns,
 } from "../src/az-tool/build";
+import { AzCommandError, AzParseError, AzTimeoutError } from "../src/az-tool/errors";
 import { AzService } from "../src/az-tool/service";
-
+import { formatAny } from "../src/shared";
 function createMockBuildJob(overrides?: Partial<BuildJob>): BuildJob {
   return {
     id: "job-1",
@@ -774,4 +781,432 @@ describe("listPipelineRuns", () => {
       });
     }),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Typed build subcommands – wiring, integer flags, output format, error hints
+// ---------------------------------------------------------------------------
+
+describe("typed build subcommands – wiring assumptions", () => {
+  // Each subcommand in index.ts destructures Flag.integer flags and calls a build.ts
+  // function directly. We verify that the build functions accept the expected integer
+  // arguments and return the expected shapes, matching subcommand output wrappers.
+
+  describe("timeline subcommand", () => {
+    it.effect("getBuildTimeline accepts integer buildId and returns BuildTimeline", () =>
+      Effect.gen(function* () {
+        const mockTimeline = createMockBuildTimeline();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:timeline": mockTimeline,
+        });
+
+        // Subcommand calls getBuildTimeline(buildId) where buildId is Flag.integer
+        const result = yield* getBuildTimeline(123).pipe(Effect.provide(layer));
+
+        // Subcommand wraps with formatAny(result, format)
+        const json = formatAny(result, "json");
+        const parsed = JSON.parse(json);
+        expect(parsed.id).toBe("build-123");
+        expect(parsed.records).toHaveLength(3);
+      }),
+    );
+
+    it.effect("formatAny encodes timeline as TOON", () =>
+      Effect.gen(function* () {
+        const mockTimeline = createMockBuildTimeline();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:timeline": mockTimeline,
+        });
+
+        const result = yield* getBuildTimeline(123).pipe(Effect.provide(layer));
+        const toon = formatAny(result, "toon");
+        expect(toon).toContain("build-123");
+        expect(toon).toContain("Stage 1");
+      }),
+    );
+  });
+
+  describe("failed-jobs subcommand", () => {
+    it.effect("findFailedJobs accepts integer buildId and returns array", () =>
+      Effect.gen(function* () {
+        const mockTimeline = createMockBuildTimeline();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:timeline": mockTimeline,
+        });
+
+        const failedJobs = yield* findFailedJobs(123).pipe(Effect.provide(layer));
+
+        // Subcommand wraps: formatAny({ buildId, failedJobs }, format)
+        const json = formatAny({ buildId: 123, failedJobs }, "json");
+        const parsed = JSON.parse(json);
+        expect(parsed.buildId).toBe(123);
+        expect(parsed.failedJobs).toHaveLength(1);
+        expect(parsed.failedJobs[0].name).toBe("Job 2");
+      }),
+    );
+
+    it.effect("failed-jobs with no failures returns empty array in wrapper", () =>
+      Effect.gen(function* () {
+        const mockTimeline = createMockBuildTimeline({
+          records: [createMockBuildJob({ id: "j1", result: "succeeded" })],
+        });
+        const layer = createMockAzServiceLayer({
+          "invoke:build:timeline": mockTimeline,
+        });
+
+        const failedJobs = yield* findFailedJobs(123).pipe(Effect.provide(layer));
+        const json = formatAny({ buildId: 123, failedJobs }, "json");
+        const parsed = JSON.parse(json);
+        expect(parsed.failedJobs).toHaveLength(0);
+      }),
+    );
+  });
+
+  describe("logs subcommand", () => {
+    it.effect("getBuildLogs accepts integer buildId and returns BuildLogs", () =>
+      Effect.gen(function* () {
+        const mockLogs = createMockBuildLogs();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:logs": mockLogs,
+        });
+
+        const result = yield* getBuildLogs(123).pipe(Effect.provide(layer));
+
+        const json = formatAny(result, "json");
+        const parsed = JSON.parse(json);
+        expect(parsed.count).toBe(2);
+        expect(parsed.value).toHaveLength(2);
+        expect(parsed.value[0].id).toBe(1);
+      }),
+    );
+
+    it.effect("logs TOON output includes log ids", () =>
+      Effect.gen(function* () {
+        const mockLogs = createMockBuildLogs();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:logs": mockLogs,
+        });
+
+        const result = yield* getBuildLogs(123).pipe(Effect.provide(layer));
+        const toon = formatAny(result, "toon");
+        // Log IDs 1 and 2 should appear in TOON output
+        expect(toon).toContain("1");
+        expect(toon).toContain("2");
+      }),
+    );
+  });
+
+  describe("log-content subcommand", () => {
+    it.effect("getBuildLogContent accepts two integer params (buildId, logId)", () =>
+      Effect.gen(function* () {
+        const logContent = "Step 1: Build\nStep 2: Test\nStep 3: Deploy";
+        const layer = createMockAzServiceLayer({
+          "invoke:build:logs": logContent,
+        });
+
+        const content = yield* getBuildLogContent(123, 45).pipe(Effect.provide(layer));
+
+        // Subcommand wraps: formatAny({ buildId, logId, content }, format)
+        const json = formatAny({ buildId: 123, logId: 45, content }, "json");
+        const parsed = JSON.parse(json);
+        expect(parsed.buildId).toBe(123);
+        expect(parsed.logId).toBe(45);
+        expect(parsed.content).toContain("Step 1: Build");
+      }),
+    );
+
+    it.effect("log-content wrapper includes both buildId and logId integers", () =>
+      Effect.gen(function* () {
+        const layer = createMockAzServiceLayer({
+          "invoke:build:logs": "line1\nline2",
+        });
+
+        const content = yield* getBuildLogContent(999, 77).pipe(Effect.provide(layer));
+        const toon = formatAny({ buildId: 999, logId: 77, content }, "toon");
+        expect(toon).toContain("999");
+        expect(toon).toContain("77");
+        expect(toon).toContain("line1");
+      }),
+    );
+  });
+
+  describe("summary subcommand", () => {
+    it.effect("getBuildJobSummary accepts integer buildId and returns summaries", () =>
+      Effect.gen(function* () {
+        const mockTimeline = createMockBuildTimeline();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:timeline": mockTimeline,
+        });
+
+        const summary = yield* getBuildJobSummary(123).pipe(Effect.provide(layer));
+
+        // Subcommand wraps: formatAny({ buildId, summary }, format)
+        const json = formatAny({ buildId: 123, summary }, "json");
+        const parsed = JSON.parse(json);
+        expect(parsed.buildId).toBe(123);
+        expect(parsed.summary).toHaveLength(3);
+      }),
+    );
+
+    it.effect("summary TOON includes stage and job names", () =>
+      Effect.gen(function* () {
+        const mockTimeline = createMockBuildTimeline();
+        const layer = createMockAzServiceLayer({
+          "invoke:build:timeline": mockTimeline,
+        });
+
+        const summary = yield* getBuildJobSummary(123).pipe(Effect.provide(layer));
+        const toon = formatAny({ buildId: 123, summary }, "toon");
+        expect(toon).toContain("Stage 1");
+        expect(toon).toContain("Job 1");
+        expect(toon).toContain("Job 2");
+      }),
+    );
+  });
+});
+
+describe("typed integer flag semantics", () => {
+  // Flag.integer("build-id") parses CLI strings to numbers before the handler runs.
+  // The build module functions accept `number` — these tests confirm integer contract.
+
+  it.effect("buildId=0 is a valid integer argument", () =>
+    Effect.gen(function* () {
+      const mockTimeline = createMockBuildTimeline();
+      const layer = createMockAzServiceLayer({
+        "invoke:build:timeline": mockTimeline,
+      });
+
+      // Build ID 0 should not be rejected by the function itself
+      const result = yield* getBuildTimeline(0).pipe(Effect.provide(layer));
+      expect(result.records).toBeDefined();
+    }),
+  );
+
+  it.effect("large integer buildId passes through", () =>
+    Effect.gen(function* () {
+      const mockTimeline = createMockBuildTimeline();
+      const layer = createMockAzServiceLayer({
+        "invoke:build:timeline": mockTimeline,
+      });
+
+      const result = yield* getBuildTimeline(999999).pipe(Effect.provide(layer));
+      expect(result.id).toBe("build-123");
+    }),
+  );
+
+  it.effect("logId integer is forwarded to getBuildLogContent", () =>
+    Effect.gen(function* () {
+      const layer = createMockAzServiceLayer({
+        "invoke:build:logs": "log output here",
+      });
+
+      // Both buildId and logId are integers from Flag.integer
+      const content = yield* getBuildLogContent(100, 200).pipe(Effect.provide(layer));
+      expect(content).toBe("log output here");
+    }),
+  );
+
+  it("integer values are number type, not string", () => {
+    // Flag.integer parses "123" -> 123 (number)
+    // Verify build functions accept number, not string
+    const buildId: Parameters<typeof getBuildTimeline>[0] = 123;
+    const logId: Parameters<typeof getBuildLogContent>[1] = 45;
+    expect(typeof buildId).toBe("number");
+    expect(typeof logId).toBe("number");
+  });
+});
+
+describe("output format wrappers – JSON and TOON", () => {
+  // Each subcommand wraps its result with formatAny(wrappedResult, format).
+  // Verify JSON round-trips and TOON contains expected fields.
+
+  it("timeline JSON output round-trips with all fields", () => {
+    const timeline: BuildTimeline = createMockBuildTimeline();
+    const json = formatAny(timeline, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.id).toBe("build-123");
+    expect(parsed.changeId).toBe(456);
+    expect(parsed.lastChangedBy).toBe("user@example.com");
+    expect(parsed.records).toHaveLength(3);
+    expect(parsed.url).toBeDefined();
+  });
+
+  it("failed-jobs JSON wrapper includes buildId field", () => {
+    const wrapped = {
+      buildId: 42,
+      failedJobs: [{ id: "j1", name: "J1", result: "failed", errorCount: 1, warningCount: 0 }],
+    };
+    const json = formatAny(wrapped, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.buildId).toBe(42);
+    expect(parsed.failedJobs[0].errorCount).toBe(1);
+  });
+
+  it("log-content JSON wrapper includes buildId and logId", () => {
+    const wrapped = { buildId: 10, logId: 20, content: "build output" };
+    const json = formatAny(wrapped, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.buildId).toBe(10);
+    expect(parsed.logId).toBe(20);
+    expect(parsed.content).toBe("build output");
+  });
+
+  it("summary JSON wrapper includes buildId and summary array", () => {
+    const summaries: JobSummary[] = [
+      { name: "Stage 1", state: "completed", result: "succeeded", duration: "300s" },
+      { name: "Job 1", state: "completed", result: "succeeded", stage: "Stage 1", logId: 1 },
+    ];
+    const json = formatAny({ buildId: 55, summary: summaries }, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.buildId).toBe(55);
+    expect(parsed.summary).toHaveLength(2);
+    expect(parsed.summary[0].duration).toBe("300s");
+    expect(parsed.summary[1].logId).toBe(1);
+  });
+
+  it("TOON output is a string containing key data", () => {
+    const wrapped = { buildId: 7, failedJobs: [] };
+    const toon = formatAny(wrapped, "toon");
+    expect(typeof toon).toBe("string");
+    expect(toon).toContain("7");
+  });
+});
+
+describe("az error recovery hints in build context", () => {
+  it("AzParseError carries optional hint fields", () => {
+    const error = new AzParseError({
+      message: "Failed to parse build timeline",
+      rawOutput: '{"bad":"data"}',
+      hint: "The Azure DevOps API returned an unexpected response format",
+      nextCommand: "agent-tools-az build timeline --build-id 123",
+      retryable: true,
+    });
+    expect(error._tag).toBe("AzParseError");
+    expect(error.hint).toContain("unexpected response format");
+    expect(error.nextCommand).toContain("--build-id");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("AzCommandError carries optional hint fields", () => {
+    const error = new AzCommandError({
+      message: "az pipeline failed",
+      command: "az pipelines runs list",
+      exitCode: 1,
+      stderr: "Authorization failed",
+      hint: "Re-authenticate with az login",
+      nextCommand: "az login",
+      retryable: true,
+    });
+    expect(error.hint).toBe("Re-authenticate with az login");
+    expect(error.nextCommand).toBe("az login");
+    expect(error.retryable).toBe(true);
+    expect(error.exitCode).toBe(1);
+  });
+
+  it("AzTimeoutError carries retryable hint", () => {
+    const error = new AzTimeoutError({
+      message: "Command timed out",
+      command: "az devops invoke",
+      timeoutMs: 30000,
+      hint: "Increase timeout or check network connectivity",
+      retryable: true,
+    });
+    expect(error.hint).toContain("timeout");
+    expect(error.retryable).toBe(true);
+    expect(error.timeoutMs).toBe(30000);
+  });
+
+  it("errors without hints have undefined optional fields", () => {
+    const error = new AzParseError({
+      message: "Parse failed",
+      rawOutput: "bad",
+    });
+    expect(error.hint).toBeUndefined();
+    expect(error.nextCommand).toBeUndefined();
+    expect(error.retryable).toBeUndefined();
+  });
+
+  it.effect("AzParseError propagates through build function on bad data", () =>
+    Effect.gen(function* () {
+      const layer = createMockAzServiceLayer({
+        "invoke:build:timeline": { totally: "wrong" },
+      });
+
+      const result = yield* getBuildTimeline(123).pipe(Effect.result, Effect.provide(layer));
+
+      Result.match(result, {
+        onFailure: (err) => {
+          expect(err._tag).toBe("AzParseError");
+          expect((err as AzParseError).hint).toContain("unexpected response format");
+        },
+        onSuccess: () => {
+          expect.fail("Expected failure but got success");
+        },
+      });
+    }),
+  );
+});
+
+describe("error recovery hints - unit tests", () => {
+  it("AzCommandError with hint and nextCommand", () => {
+    const error = new AzCommandError({
+      message: "Build not found",
+      command: "az pipelines runs show --id 999",
+      exitCode: 1,
+      hint: "Check the build ID. Use 'az pipelines runs list' to see available builds.",
+      nextCommand: "agent-tools-az pipeline list",
+      retryable: true,
+    });
+
+    expect(error._tag).toBe("AzCommandError");
+    expect(error.hint).toBe(
+      "Check the build ID. Use 'az pipelines runs list' to see available builds.",
+    );
+    expect(error.nextCommand).toBe("agent-tools-az pipeline list");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("AzParseError with hint", () => {
+    const error = new AzParseError({
+      message: "Failed to parse build timeline",
+      rawOutput: "invalid json",
+      hint: "The Azure DevOps API returned an unexpected response format. Check your configuration.",
+    });
+
+    expect(error._tag).toBe("AzParseError");
+    expect(error.hint).toBe(
+      "The Azure DevOps API returned an unexpected response format. Check your configuration.",
+    );
+    expect(error.nextCommand).toBeUndefined();
+  });
+
+  it("AzTimeoutError with hint and retryable", () => {
+    const error = new AzTimeoutError({
+      message: "Request timed out after 30000ms",
+      command: "az pipelines runs show --id 123",
+      timeoutMs: 30000,
+      hint: "Azure DevOps API is slow to respond. Try again in a moment.",
+      nextCommand: "agent-tools-az pipeline show --id 123",
+      retryable: true,
+    });
+
+    expect(error._tag).toBe("AzTimeoutError");
+    expect(error.hint).toBe("Azure DevOps API is slow to respond. Try again in a moment.");
+    expect(error.nextCommand).toBe("agent-tools-az pipeline show --id 123");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("hint fields are optional in Azure errors", () => {
+    const error = new AzCommandError({
+      message: "Command failed",
+      command: "az pipelines runs show --id 123",
+      exitCode: 1,
+    });
+
+    expect(error._tag).toBe("AzCommandError");
+    expect(error.message).toBe("Command failed");
+    expect(error.hint).toBeUndefined();
+    expect(error.nextCommand).toBeUndefined();
+    expect(error.retryable).toBeUndefined();
+  });
 });

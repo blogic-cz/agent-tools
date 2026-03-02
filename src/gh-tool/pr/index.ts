@@ -11,9 +11,11 @@ export {
   prMergeCommand,
   prReplyCommand,
   prRerunChecksCommand,
+  prReplyAndResolveCommand,
   prResolveCommand,
   prStatusCommand,
   prSubmitReviewCommand,
   prThreadsCommand,
+  prReviewTriageCommand,
   prViewCommand,
 } from "./commands";

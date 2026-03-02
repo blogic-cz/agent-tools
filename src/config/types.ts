@@ -79,4 +79,6 @@ export type AgentToolsConfig = {
   };
   /** Global credential guard config (merged with built-in defaults, not per-profile) */
   credentialGuard?: CredentialGuardConfig;
+  /** Optional default environment name (local|test|prod) used by tools when no --env flag is provided */
+  defaultEnvironment?: string;
 };

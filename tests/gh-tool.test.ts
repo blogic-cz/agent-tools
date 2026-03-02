@@ -16,6 +16,13 @@ import {
   GitHubNotFoundError,
 } from "../src/gh-tool/errors";
 import { GitHubService } from "../src/gh-tool/service";
+import { fetchChecks, viewPR } from "../src/gh-tool/pr/core";
+import {
+  fetchDiscussionSummary,
+  fetchThreads,
+  replyToComment,
+  resolveThread,
+} from "../src/gh-tool/pr/review";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -1324,4 +1331,215 @@ describe("GitHubService.getRepoInfo()", () => {
       expect(info.url).toBe("https://github.com/test-owner/test-repo");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
+});
+
+const mockChecksData = [
+  {
+    name: "CI / build",
+    state: "completed",
+    bucket: "pass",
+    link: "https://github.com/test-owner/test-repo/actions/runs/1",
+  },
+  {
+    name: "CI / lint",
+    state: "completed",
+    bucket: "fail",
+    link: "https://github.com/test-owner/test-repo/actions/runs/2",
+  },
+];
+
+const mockIssueCommentsRaw = [
+  {
+    id: 301,
+    user: { login: "commenter" },
+    body: "General discussion",
+    created_at: "2025-01-15T10:00:00Z",
+    html_url: "https://github.com/test-owner/test-repo/pull/123#issuecomment-301",
+  },
+];
+
+describe("PR composite commands", () => {
+  it.effect(
+    "review-triage: combined output contains PR info, unresolved threads, discussion summary, and checks",
+    () =>
+      Effect.gen(function* () {
+        const layer = createMockGhLayer({
+          runGhJson: (args) => {
+            if (args[0] === "pr" && args[1] === "view") {
+              return Effect.succeed(mockPRInfo);
+            }
+            if (args[0] === "pr" && args[1] === "checks") {
+              return Effect.succeed(mockChecksData);
+            }
+            return Effect.succeed({});
+          },
+          runGraphQL: () => Effect.succeed(mockGraphQLThreadsResponse),
+          runGh: (args) => {
+            const apiPath = args[1] ?? "";
+            if (apiPath.includes("issues") && apiPath.includes("comments")) {
+              return Effect.succeed({
+                stdout: JSON.stringify(mockIssueCommentsRaw),
+                stderr: "",
+                exitCode: 0,
+              });
+            }
+            if (apiPath.includes("pulls") && apiPath.includes("comments")) {
+              return Effect.succeed({
+                stdout: JSON.stringify(mockRESTComments),
+                stderr: "",
+                exitCode: 0,
+              });
+            }
+            return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+          },
+        });
+
+        const [info, threads, summary, checks] = yield* Effect.all([
+          viewPR(123),
+          fetchThreads(123, true),
+          fetchDiscussionSummary(123),
+          fetchChecks(123, false, false, 0),
+        ]).pipe(Effect.provide(layer));
+
+        const result = { info, unresolvedThreads: threads, summary, checks };
+
+        // PR info from viewPR
+        expect(result.info.number).toBe(123);
+        expect(result.info.title).toBe("Test PR");
+        expect(result.info.state).toBe("OPEN");
+
+        // Unresolved threads only (unresolvedOnly=true filters resolved + empty)
+        expect(result.unresolvedThreads).toHaveLength(1);
+        expect(result.unresolvedThreads[0]!.threadId).toBe("thread-1");
+        expect(result.unresolvedThreads[0]!.isResolved).toBe(false);
+
+        // Discussion summary aggregates from all sub-fetches
+        expect(result.summary.issueCommentsCount).toBe(1);
+        expect(result.summary.reviewCommentsCount).toBe(3);
+        expect(result.summary.reviewThreadsCount).toBe(2);
+        expect(result.summary.unresolvedReviewThreadsCount).toBe(1);
+        expect(result.summary.latestIssueComment).not.toBeNull();
+
+        // CI checks
+        expect(result.checks).toHaveLength(2);
+        expect(result.checks[0]!.name).toBe("CI / build");
+        expect(result.checks[0]!.bucket).toBe("pass");
+        expect(result.checks[1]!.bucket).toBe("fail");
+      }),
+  );
+
+  it.effect("reply-and-resolve: reply executes before resolve (sequential ordering)", () =>
+    Effect.gen(function* () {
+      const callOrder: string[] = [];
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "api" && (args[1] ?? "").includes("pulls/comments")) {
+            return Effect.succeed({
+              id: 101,
+              in_reply_to_id: null,
+              pull_request_url: "https://api.github.com/repos/test-owner/test-repo/pulls/123",
+            });
+          }
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          if (args.includes("POST") && args.some((a) => a.includes("replies"))) {
+            callOrder.push("reply");
+            return Effect.succeed({
+              stdout: JSON.stringify({ id: 301 }),
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGraphQL: () => {
+          callOrder.push("resolve");
+          return Effect.succeed({
+            resolveReviewThread: {
+              thread: { id: "thread-1", isResolved: true },
+            },
+          });
+        },
+      });
+
+      const replyResult = yield* replyToComment(123, 101, "Fixed this issue").pipe(
+        Effect.provide(layer),
+      );
+      const resolveResult = yield* resolveThread("thread-1").pipe(Effect.provide(layer));
+
+      // Ordering: reply must execute before resolve
+      expect(callOrder).toEqual(["reply", "resolve"]);
+
+      // Reply result
+      expect(replyResult.success).toBe(true);
+      expect(replyResult.commentId).toBe(301);
+
+      // Resolve result
+      expect(resolveResult.resolved).toBe(true);
+      expect(resolveResult.threadId).toBe("thread-1");
+    }),
+  );
+});
+
+describe("error recovery hints - unit tests", () => {
+  it("GitHubCommandError with hint and nextCommand", () => {
+    const error = new GitHubCommandError({
+      message: "unknown flag: --invalid-flag",
+      command: "gh pr list --invalid-flag",
+      exitCode: 2,
+      stderr: "unknown flag: --invalid-flag",
+      hint: "Check the command syntax. Use 'gh pr list --help' for available options.",
+      nextCommand: "gh pr list --help",
+      retryable: true,
+    });
+
+    expect(error._tag).toBe("GitHubCommandError");
+    expect(error.hint).toBe(
+      "Check the command syntax. Use 'gh pr list --help' for available options.",
+    );
+    expect(error.nextCommand).toBe("gh pr list --help");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("GitHubAuthError with hint and nextCommand", () => {
+    const error = new GitHubAuthError({
+      message: "authentication required",
+      hint: "Set GITHUB_TOKEN environment variable or run 'gh auth login'",
+      nextCommand: "gh auth login",
+    });
+
+    expect(error._tag).toBe("GitHubAuthError");
+    expect(error.hint).toContain("GITHUB_TOKEN");
+    expect(error.nextCommand).toBe("gh auth login");
+  });
+
+  it("GitHubNotFoundError with hint", () => {
+    const error = new GitHubNotFoundError({
+      message: "pull request not found",
+      identifier: "999",
+      resource: "pull request",
+      hint: "Check the PR number. Use 'gh pr list' to see available pull requests.",
+      nextCommand: "gh pr list",
+    });
+
+    expect(error._tag).toBe("GitHubNotFoundError");
+    expect(error.hint).toContain("PR number");
+    expect(error.nextCommand).toBe("gh pr list");
+  });
+
+  it("hint fields are optional in GitHub errors", () => {
+    const error = new GitHubCommandError({
+      message: "command failed",
+      command: "gh pr list",
+      exitCode: 1,
+      stderr: "error",
+    });
+
+    expect(error._tag).toBe("GitHubCommandError");
+    expect(error.message).toBe("command failed");
+    expect(error.hint).toBeUndefined();
+    expect(error.nextCommand).toBeUndefined();
+  });
 });

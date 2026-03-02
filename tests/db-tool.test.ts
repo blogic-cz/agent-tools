@@ -589,4 +589,135 @@ describe("DbService", () => {
       ),
     );
   });
+
+  describe("env resolution with defaultEnvironment", () => {
+    it.effect("uses explicit --env when provided", () =>
+      Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service.executeQuery("prod", "SELECT 1");
+
+        expect(result.success).toBe(true);
+      }).pipe(
+        Effect.provide(
+          createMockDbServiceLayer({
+            "query:prod:SELECT 1": {
+              success: true,
+              data: [{ result: 1 }],
+              rowCount: 1,
+              executionTimeMs: 10,
+            },
+          }),
+        ),
+      ),
+    );
+
+    it.effect("falls back to defaultEnvironment when --env is not provided", () =>
+      Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service.executeQuery("test", "SELECT 1");
+
+        expect(result.success).toBe(true);
+      }).pipe(
+        Effect.provide(
+          createMockDbServiceLayer({
+            "query:test:SELECT 1": {
+              success: true,
+              data: [{ result: 1 }],
+              rowCount: 1,
+              executionTimeMs: 10,
+            },
+          }),
+        ),
+      ),
+    );
+
+    it.effect("handles missing environment with helpful error", () =>
+      Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service
+          .executeQuery("(not specified)", "SELECT 1")
+          .pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (error) => {
+            expect(error._tag).toBe("DbConnectionError");
+          },
+          onSuccess: () => {
+            expect.fail("Expected Left but got Right");
+          },
+        });
+      }).pipe(
+        Effect.provide(
+          createMockDbServiceLayer({
+            "query:(not specified):SELECT 1": new DbConnectionError({
+              message:
+                "No environment specified. Use --env <name> or set defaultEnvironment in agent-tools.json5.",
+              environment: "(not specified)",
+              hint: 'Set defaultEnvironment in agent-tools.json5 (e.g. defaultEnvironment: "local") or pass --env explicitly.',
+              nextCommand: 'agent-tools-db sql --env local --sql "SELECT 1"',
+            }),
+          }),
+        ),
+      ),
+    );
+  });
+
+  describe("error recovery hints - unit tests", () => {
+    it("DbConnectionError with hint and nextCommand", () => {
+      const error = new DbConnectionError({
+        message: "Connection timeout",
+        environment: "prod",
+        hint: "Check network connectivity and database availability",
+        nextCommand: "agent-tools-db sql --env prod --sql 'SELECT 1'",
+        retryable: true,
+      });
+
+      expect(error._tag).toBe("DbConnectionError");
+      expect(error.hint).toBe("Check network connectivity and database availability");
+      expect(error.nextCommand).toBe("agent-tools-db sql --env prod --sql 'SELECT 1'");
+      expect(error.retryable).toBe(true);
+    });
+
+    it("DbQueryError with hint and retryable", () => {
+      const error = new DbQueryError({
+        message: 'relation "bad_table" does not exist',
+        sql: "SELECT * FROM bad_table",
+        hint: "Check table name spelling. Use schema introspection to list available tables.",
+        retryable: false,
+      });
+
+      expect(error._tag).toBe("DbQueryError");
+      expect(error.hint).toBe(
+        "Check table name spelling. Use schema introspection to list available tables.",
+      );
+      expect(error.retryable).toBe(false);
+    });
+
+    it("DbMutationBlockedError with hint and nextCommand", () => {
+      const error = new DbMutationBlockedError({
+        message: "Mutation queries are not allowed on this environment",
+        environment: "test",
+        hint: "Use a local environment for mutations. Test environment is read-only.",
+        nextCommand: "agent-tools-db sql --env local --sql \"UPDATE users SET name = 'test'\"",
+      });
+
+      expect(error._tag).toBe("DbMutationBlockedError");
+      expect(error.hint).toBe(
+        "Use a local environment for mutations. Test environment is read-only.",
+      );
+      expect(error.nextCommand).toContain("--env local");
+    });
+
+    it("hint fields are optional in error responses", () => {
+      const error = new DbQueryError({
+        message: 'relation "missing" does not exist',
+        sql: "SELECT * FROM missing",
+      });
+
+      expect(error._tag).toBe("DbQueryError");
+      expect(error.message).toBe('relation "missing" does not exist');
+      expect(error.hint).toBeUndefined();
+      expect(error.nextCommand).toBeUndefined();
+    });
+  });
 });

@@ -21,7 +21,8 @@ import { Console, Effect, Layer, Option, Result } from "effect";
 import type { Environment, LogResult, ReadOptions } from "./types";
 
 import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "../shared";
-import { LogsNotFoundError } from "./errors";
+import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "../config";
+import { LogsConfigError, LogsNotFoundError, LogsReadError, LogsTimeoutError } from "./errors";
 import { LogsService, LogsServiceLayer } from "./service";
 
 const profileOption = Flag.optional(
@@ -31,6 +32,36 @@ const profileOption = Flag.optional(
     ),
   ),
 );
+
+/**
+ * Resolve environment from explicit --env flag, config defaultEnvironment, or fail with hint.
+ */
+const resolveEnv = (envOption: Option.Option<string>) =>
+  Effect.gen(function* () {
+    const explicit = Option.getOrUndefined(envOption);
+    if (explicit) return explicit;
+
+    const config = yield* ConfigService;
+    const defaultEnv = getDefaultEnvironment(config);
+
+    if (defaultEnv === "prod") {
+      return yield* new LogsConfigError({
+        message:
+          "Implicit prod access blocked. Config defaultEnvironment is 'prod' but --env was not passed explicitly.",
+        hint: "Pass --env prod explicitly to confirm production access, or change defaultEnvironment to a non-prod value.",
+        nextCommand: "agent-tools-logs list --env prod",
+      });
+    }
+
+    if (defaultEnv) return defaultEnv;
+
+    return yield* new LogsConfigError({
+      message:
+        "No environment specified. Use --env <name> or set defaultEnvironment in agent-tools.json5.",
+      hint: 'Set defaultEnvironment in agent-tools.json5 (e.g. defaultEnvironment: "local") or pass --env explicitly.',
+      nextCommand: "agent-tools-logs list --env local",
+    });
+  });
 
 const buildSource = (
   mode: "list" | "read",
@@ -56,20 +87,23 @@ const buildSource = (
 const listCommand = Command.make(
   "list",
   {
-    env: Flag.choice("env", ["local", "test", "prod"]).pipe(
-      Flag.withDescription("Target environment"),
+    env: Flag.optional(Flag.string("env")).pipe(
+      Flag.withDescription(
+        "Target environment (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
+      ),
     ),
     format: formatOption,
     profile: profileOption,
   },
   ({ env, format, profile }) =>
     Effect.gen(function* () {
+      const resolvedEnv = yield* resolveEnv(env);
       const logsService = yield* LogsService;
       const startTime = Date.now();
       const profileName = Option.getOrUndefined(profile);
 
       const result = yield* logsService
-        .listLogs(env as Environment, profileName)
+        .listLogs(resolvedEnv as Environment, profileName)
         .pipe(Effect.result);
       const executionTimeMs = Date.now() - startTime;
 
@@ -79,11 +113,22 @@ const listCommand = Command.make(
           error: error.message,
           source: error instanceof LogsNotFoundError ? error.path : undefined,
           executionTimeMs,
+          hint:
+            error.hint ??
+            (error instanceof LogsReadError && error.source === "config"
+              ? "Add a 'logs' section to agent-tools.json5 with localDir and remotePath."
+              : undefined),
+          nextCommand:
+            error.nextCommand ??
+            (error instanceof LogsReadError && error.source === "config"
+              ? "agent-tools-logs list --env local"
+              : undefined),
+          retryable: error.retryable ?? (error instanceof LogsTimeoutError ? true : undefined),
         }),
         onSuccess: (data) => ({
           success: true,
           data,
-          source: buildSource("list", env as Environment, undefined, null),
+          source: buildSource("list", resolvedEnv as Environment, undefined, null),
           executionTimeMs,
         }),
       });
@@ -95,8 +140,10 @@ const listCommand = Command.make(
 const readCommand = Command.make(
   "read",
   {
-    env: Flag.choice("env", ["local", "test", "prod"]).pipe(
-      Flag.withDescription("Target environment"),
+    env: Flag.optional(Flag.string("env")).pipe(
+      Flag.withDescription(
+        "Target environment (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
+      ),
     ),
     file: Flag.string("file").pipe(
       Flag.withDescription("Specific log file to read"),
@@ -119,6 +166,7 @@ const readCommand = Command.make(
   },
   ({ env, file, format, grep, pretty, profile, tail }) =>
     Effect.gen(function* () {
+      const resolvedEnv = yield* resolveEnv(env);
       const logsService = yield* LogsService;
       const startTime = Date.now();
       const profileName = Option.getOrUndefined(profile);
@@ -131,7 +179,7 @@ const readCommand = Command.make(
       };
 
       const result = yield* logsService
-        .readLogs(env as Environment, readOptions, profileName)
+        .readLogs(resolvedEnv as Environment, readOptions, profileName)
         .pipe(Effect.result);
       const executionTimeMs = Date.now() - startTime;
 
@@ -141,11 +189,22 @@ const readCommand = Command.make(
           error: error.message,
           source: error instanceof LogsNotFoundError ? error.path : undefined,
           executionTimeMs,
+          hint:
+            error.hint ??
+            (error instanceof LogsReadError && error.source === "config"
+              ? "Add a 'logs' section to agent-tools.json5 with localDir and remotePath."
+              : undefined),
+          nextCommand:
+            error.nextCommand ??
+            (error instanceof LogsReadError && error.source === "config"
+              ? "agent-tools-logs read --env local --file app.log"
+              : undefined),
+          retryable: error.retryable ?? (error instanceof LogsTimeoutError ? true : undefined),
         }),
         onSuccess: (data) => ({
           success: true,
           data,
-          source: buildSource("read", env as Environment, undefined, readOptions),
+          source: buildSource("read", resolvedEnv as Environment, undefined, readOptions),
           executionTimeMs,
         }),
       });
@@ -167,7 +226,10 @@ export const run = Command.runWith(mainCommand, {
   version: VERSION,
 });
 
-const MainLayer = LogsServiceLayer.pipe(Layer.provideMerge(BunServices.layer));
+const MainLayer = LogsServiceLayer.pipe(
+  Layer.provideMerge(ConfigServiceLayer),
+  Layer.provideMerge(BunServices.layer),
+);
 
 const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 

@@ -287,6 +287,8 @@ const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (runId: number
       command: "workflow job-logs",
       exitCode: 1,
       stderr: "",
+      hint: `Multiple jobs match "${jobName}". Use the exact job name from the list above.`,
+      nextCommand: `agent-tools-gh workflow jobs --run ${runId}`,
     });
   }
 
@@ -294,6 +296,8 @@ const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (runId: number
     message: `Job "${jobName}" not found in run ${runId}. Available jobs: ${jobs.map((j) => j.name).join(", ")}`,
     identifier: jobName,
     resource: "job",
+    hint: "Use one of the available job names listed above. Run the jobs command to see all jobs.",
+    nextCommand: `agent-tools-gh workflow jobs --run ${runId}`,
   });
 });
 

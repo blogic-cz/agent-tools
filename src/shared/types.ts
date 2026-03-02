@@ -5,6 +5,9 @@ export type BaseResult = {
   success: boolean;
   error?: string;
   executionTimeMs: number;
+  nextCommand?: string;
+  retryable?: boolean;
+  hint?: string;
 };
 
 export type CommandOptions = {
