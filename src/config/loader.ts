@@ -73,11 +73,13 @@ async function findConfigFile(startDirectory: string = process.cwd()): Promise<s
 
   while (true) {
     const json5Path = `${currentDirectory}/agent-tools.json5`;
+    // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
     if (await Bun.file(json5Path).exists()) {
       return json5Path;
     }
 
     const jsonPath = `${currentDirectory}/agent-tools.json`;
+    // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
     if (await Bun.file(jsonPath).exists()) {
       return jsonPath;
     }
@@ -107,6 +109,7 @@ export async function loadConfig(): Promise<AgentToolsConfig | undefined> {
       `Invalid agent-tools config at ${configPath}: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      { cause: error },
     );
   }
 }

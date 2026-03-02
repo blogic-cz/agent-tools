@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ALLOWED_INVOKE_AREAS, BLOCKED_INVOKE_AREAS } from "../src/az-tool/config";
-import { isCommandAllowed, isInvokeAllowed } from "../src/az-tool/security";
+import { ALLOWED_INVOKE_AREAS, BLOCKED_INVOKE_AREAS } from "#src/az-tool/config";
+import { isCommandAllowed, isInvokeAllowed } from "#src/az-tool/security";
 
 describe("az-tool security", () => {
   describe("isCommandAllowed", () => {
@@ -111,7 +111,7 @@ describe("az-tool security", () => {
         resource: "pushes",
       });
       expect(result.reason).toBeDefined();
-      expect(result.reason!.length).toBeGreaterThan(10);
+      expect(result.reason?.length).toBeGreaterThan(10);
     });
   });
 

@@ -51,7 +51,7 @@ export async function runCommand(
   };
 }
 
-export async function runShellCommand(
+export function runShellCommand(
   command: string,
   options: CommandOptions = {},
 ): Promise<CommandResult> {

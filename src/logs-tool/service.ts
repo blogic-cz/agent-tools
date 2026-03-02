@@ -3,10 +3,10 @@ import { Effect, Layer, Result, ServiceMap, Stream } from "effect";
 
 import type { Environment, LogFile, ReadOptions } from "./types";
 
-import { K8sCommandError } from "../k8s-tool/errors";
-import { K8sService, K8sServiceLayer } from "../k8s-tool/service";
-import { ConfigService, ConfigServiceLayer, getToolConfig } from "../config/loader";
-import type { LogsConfig } from "../config/types";
+import { K8sCommandError } from "#src/k8s-tool/errors";
+import { K8sService, K8sServiceLayer } from "#src/k8s-tool/service";
+import { ConfigService, ConfigServiceLayer, getToolConfig } from "#src/config/loader";
+import type { LogsConfig } from "#src/config/types";
 import { LogsNotFoundError, LogsReadError, type LogsError } from "./errors";
 
 export const parseLogFiles = (output: string): LogFile[] => {

@@ -1,7 +1,7 @@
 import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
-import { formatOption, logFormatted } from "../shared";
+import { formatOption, logFormatted } from "#src/shared";
 import { GitHubCommandError } from "./errors";
 import { GitHubService } from "./service";
 

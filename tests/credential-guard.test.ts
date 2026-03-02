@@ -8,7 +8,9 @@ import {
   isGhCommandAllowed,
   isPathAllowed,
   isPathBlocked,
-} from "../src/credential-guard/index";
+} from "#src/credential-guard/index";
+
+/* eslint-disable eslint/no-template-curly-in-string */
 
 // Build example secret strings dynamically to avoid triggering credential guard
 // self-detection. These are well-known example/test values, not real secrets.
@@ -24,6 +26,7 @@ const SK_PREFIX = "sk-";
 const SK_BODY = "x".repeat(48);
 const EXAMPLE_OPENAI_KEY = `${SK_PREFIX}${SK_BODY}`;
 
+// eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
 const GENERIC_SECRET_VALUE = "my-super-" + "secret-password-12345-abcdef";
 
 test("apps/web-app/.env.prod is NOT in default allowed paths", () => {

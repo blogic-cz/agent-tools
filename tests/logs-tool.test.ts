@@ -3,14 +3,14 @@ import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { Effect, Layer, Result, Sink, Stream } from "effect";
 
-import { ConfigService } from "../src/config/loader";
-import type { AgentToolsConfig, LogsConfig } from "../src/config/types";
-import { K8sCommandError } from "../src/k8s-tool/errors";
-import { K8sService } from "../src/k8s-tool/service";
-import type { CommandResult } from "../src/k8s-tool/types";
-import { LogsConfigError, LogsNotFoundError, LogsReadError } from "../src/logs-tool/errors";
-import { LogsService } from "../src/logs-tool/service";
-import type { Environment, ReadOptions } from "../src/logs-tool/types";
+import { ConfigService } from "#src/config/loader";
+import type { AgentToolsConfig, LogsConfig } from "#src/config/types";
+import { K8sCommandError } from "#src/k8s-tool/errors";
+import { K8sService } from "#src/k8s-tool/service";
+import type { CommandResult } from "#src/k8s-tool/types";
+import { LogsConfigError, LogsNotFoundError, LogsReadError } from "#src/logs-tool/errors";
+import { LogsService } from "#src/logs-tool/service";
+import type { Environment, ReadOptions } from "#src/logs-tool/types";
 
 type ShellResult = {
   stdout: string;

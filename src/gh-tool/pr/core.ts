@@ -1,9 +1,15 @@
 import { Console, Effect, Option } from "effect";
 
-import type { BranchPRDetail, CheckResult, MergeResult, MergeStrategy, PRInfo } from "../types";
+import type {
+  BranchPRDetail,
+  CheckResult,
+  MergeResult,
+  MergeStrategy,
+  PRInfo,
+} from "#src/gh-tool/types";
 
-import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "../errors";
-import { GitHubService } from "../service";
+import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#src/gh-tool/errors";
+import { GitHubService } from "#src/gh-tool/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
@@ -155,7 +161,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
     { concurrency: "unbounded" },
   );
 
-  const foundPrs = branchResults.filter((r) => r.openPr !== null).map((r) => r.openPr!);
+  const foundPrs = branchResults.flatMap((r) => (r.openPr === null ? [] : [r.openPr]));
 
   if (foundPrs.length === 0) {
     const branchDetails: BranchPRDetail[] = branchResults.map((r) => ({
@@ -172,7 +178,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
   if (foundPrs.length === 1) {
     return {
       mode: "single" as const,
-      pr: foundPrs[0]!,
+      pr: foundPrs[0] as PRInfo,
     };
   }
 
@@ -205,7 +211,11 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
           "--limit",
           "1",
         ])
-        .pipe(Effect.map((prs) => (prs.length > 0 ? Option.some(prs[0]!) : Option.none())))
+        .pipe(
+          Effect.map((prs) =>
+            prs.length > 0 ? Option.some(prs[0] as PRInfo) : Option.none<PRInfo>(),
+          ),
+        )
     : gh
         .runGhJson<{ number: number; url: string }>(["pr", "view", "--json", "number,url"])
         .pipe(Effect.option);
@@ -258,7 +268,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     "1",
   ]);
   if (prs.length > 0) {
-    return prs[0]!;
+    return prs[0] as PRInfo;
   }
 
   return yield* Effect.fail(

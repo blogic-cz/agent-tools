@@ -3,7 +3,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
-import { formatAny, formatOption, formatOutput, renderCauseToStderr, VERSION } from "../shared";
+import { formatAny, formatOption, formatOutput, renderCauseToStderr, VERSION } from "#src/shared";
 import {
   findFailedJobs,
   getBuildJobSummary,
@@ -12,7 +12,7 @@ import {
   getBuildTimeline,
 } from "./build";
 import { AzService, AzServiceLayer } from "./service";
-import { ConfigServiceLayer } from "../config";
+import { ConfigServiceLayer } from "#src/config";
 
 // ---------------------------------------------------------------------------
 // Common flags shared across build subcommands

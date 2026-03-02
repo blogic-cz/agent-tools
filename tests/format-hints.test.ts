@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { formatOutput } from "../src/shared";
-import type { BaseResult } from "../src/shared/types";
+import { formatOutput } from "#src/shared";
+import type { BaseResult } from "#src/shared/types";
 
 describe("error recovery hints in output formatting", () => {
   it("includes hint field in JSON output", () => {

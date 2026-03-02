@@ -5,10 +5,15 @@ import { Console, Effect, Layer, Option } from "effect";
 
 import type { CommandResult } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "../shared";
+import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#src/shared";
 import { K8sService, K8sServiceLayer } from "./service";
-import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "../config";
-import type { K8sConfig } from "../config";
+import {
+  ConfigService,
+  ConfigServiceLayer,
+  getDefaultEnvironment,
+  getToolConfig,
+} from "#src/config";
+import type { K8sConfig } from "#src/config";
 import { K8sContextError } from "./errors";
 
 /**
@@ -78,17 +83,17 @@ const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
     const result = yield* k8sService.runKubectl(command, options.dryRun).pipe(
       Effect.catchTags({
         K8sContextError: (error) => {
-          const result: CommandResult = {
+          const errorResult: CommandResult = {
             success: false,
             error: error.message,
             hint: `Verify cluster ID "${k8sConfig.clusterId}" matches a context in kubectl config. Run: kubectl config get-contexts`,
             nextCommand: "kubectl config get-contexts",
             executionTimeMs: 0,
           };
-          return Effect.succeed(result);
+          return Effect.succeed(errorResult);
         },
         K8sCommandError: (error) => {
-          const result: CommandResult = {
+          const errorResult: CommandResult = {
             success: false,
             error: error.message,
             command: error.command,
@@ -96,10 +101,10 @@ const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
               error.hint ?? "Check command syntax and ensure the target namespace/resource exists.",
             executionTimeMs: 0,
           };
-          return Effect.succeed(result);
+          return Effect.succeed(errorResult);
         },
         K8sTimeoutError: (error) => {
-          const result: CommandResult = {
+          const errorResult: CommandResult = {
             success: false,
             error: error.message,
             command: error.command,
@@ -108,7 +113,7 @@ const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
               `Command timed out after ${error.timeoutMs}ms. Consider increasing timeoutMs in config or narrowing the query.`,
             executionTimeMs: error.timeoutMs,
           };
-          return Effect.succeed(result);
+          return Effect.succeed(errorResult);
         },
       }),
     );

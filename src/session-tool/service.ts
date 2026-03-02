@@ -51,8 +51,10 @@ const readJsonFilesInTree = (parentDir: string): Effect.Effect<FileEntry[], Sess
         const subPath = `${parentDir}/${subDir}`;
         let files: string[];
         try {
+          // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
           files = await readdir(subPath);
         } catch {
+          /* ignore unreadable files */
           continue;
         }
 
@@ -63,8 +65,11 @@ const readJsonFilesInTree = (parentDir: string): Effect.Effect<FileEntry[], Sess
             try {
               const content = await Bun.file(filePath).text();
               results.push({ filePath, content });
-            } catch {}
+            } catch {
+              /* ignore unreadable files */
+            }
           });
+        // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
         await Promise.all(reads);
       }
 
@@ -90,7 +95,9 @@ const readJsonFilesFlat = (dir: string): Effect.Effect<FileEntry[], SessionError
           try {
             const content = await Bun.file(filePath).text();
             results.push({ filePath, content });
-          } catch {}
+          } catch {
+            /* ignore unreadable files */
+          }
         });
       await Promise.all(reads);
 
@@ -191,7 +198,13 @@ export class SessionService extends ServiceMap.Service<
             }
           }
 
-          return summaries.sort((left, right) => right.created - left.created);
+          return (
+            summaries as MessageSummary[] & {
+              toSorted(
+                compareFn: (left: MessageSummary, right: MessageSummary) => number,
+              ): MessageSummary[];
+            }
+          ).toSorted((left, right) => right.created - left.created);
         }),
 
         searchSummaries: (summaries: MessageSummary[], query: string): MessageSummary[] => {

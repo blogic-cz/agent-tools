@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Match, Option, Result } from "effect";
 
-import type { CommandResult, Environment } from "../src/k8s-tool/types";
+import type { CommandResult, Environment } from "#src/k8s-tool/types";
 
-import { K8sCommandError, K8sContextError, K8sTimeoutError } from "../src/k8s-tool/errors";
-import { K8sService } from "../src/k8s-tool/service";
-import { formatOutput } from "../src/shared";
+import { K8sCommandError, K8sContextError, K8sTimeoutError } from "#src/k8s-tool/errors";
+import { K8sService } from "#src/k8s-tool/service";
+import { formatOutput } from "#src/shared";
 
 type K8sError = K8sCommandError | K8sContextError | K8sTimeoutError;
 
@@ -410,7 +410,9 @@ describe("K8sService", () => {
         const result = yield* service.runCommand("invalid-kubectl-cmd", "test").pipe(Effect.result);
 
         Result.match(result, {
-          onFailure: () => {},
+          onFailure: () => {
+            /* noop - only success branch is asserted */
+          },
           onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
@@ -720,7 +722,9 @@ spec:
         const result = yield* service.runKubectl("get pods", false).pipe(Effect.result);
 
         Result.match(result, {
-          onFailure: () => {},
+          onFailure: () => {
+            /* noop - only success branch is asserted */
+          },
           onSuccess: () => {
             expect.fail("Expected Left but got Right");
           },
@@ -762,6 +766,7 @@ spec:
 
   describe("structured subcommands - command construction", () => {
     // Replicates the internal buildKubectlCommand logic from index.ts
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- test helper, clearer inline
     const buildCmd = (base: string, args: ReadonlyArray<string>) => {
       const extras = args.filter((part) => part.length > 0);
       return extras.length === 0 ? base : `${base} ${extras.join(" ")}`;

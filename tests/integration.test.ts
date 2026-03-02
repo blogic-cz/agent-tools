@@ -1,3 +1,10 @@
+import {
+  handleToolExecuteBefore,
+  detectSecrets,
+  isPathAllowed,
+  createCredentialGuard,
+} from "#src/credential-guard/index";
+
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,16 +129,15 @@ describe("Integration: tools --help with config file", () => {
 });
 
 describe("Integration: credential-guard import", () => {
-  it("exports handleToolExecuteBefore and detectSecrets", async () => {
-    const mod = await import("../src/credential-guard/index");
-    expect(typeof mod.handleToolExecuteBefore).toBe("function");
-    expect(typeof mod.detectSecrets).toBe("function");
-    expect(typeof mod.isPathAllowed).toBe("function");
-    expect(typeof mod.createCredentialGuard).toBe("function");
+  it("exports handleToolExecuteBefore and detectSecrets", () => {
+    expect(typeof handleToolExecuteBefore).toBe("function");
+    expect(typeof detectSecrets).toBe("function");
+    expect(typeof isPathAllowed).toBe("function");
+    expect(typeof createCredentialGuard).toBe("function");
   });
 
-  it("detectSecrets finds AWS keys", async () => {
-    const { detectSecrets } = await import("../src/credential-guard/index");
+  it("detectSecrets finds AWS keys", () => {
+    // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
     const fakeKey = "AKIA" + "IOSFODNN7EXAMPLE";
     const found = detectSecrets(fakeKey);
     expect(found).toBeDefined();

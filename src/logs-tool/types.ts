@@ -1,4 +1,4 @@
-import type { Environment, OutputFormat } from "../shared";
+import type { Environment, OutputFormat } from "#src/shared";
 export type { Environment, OutputFormat };
 
 export type LogFile = {

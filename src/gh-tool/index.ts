@@ -3,7 +3,7 @@ import { Command } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
-import { renderCauseToStderr, VERSION } from "../shared";
+import { renderCauseToStderr, VERSION } from "#src/shared";
 import {
   issueListCommand,
   issueViewCommand,

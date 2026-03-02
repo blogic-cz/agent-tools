@@ -8,7 +8,6 @@
  * and lockfile haven't changed (1 hour TTL).
  */
 
-// @ts-expect-error - no type definitions for @effect/language-service
 import effectPlugin from "@effect/language-service";
 import { existsSync } from "node:fs";
 import ts from "typescript";
@@ -111,7 +110,11 @@ async function findEffectFiles(): Promise<EffectFile[]> {
 }
 
 function computeCacheHash(files: EffectFile[], tsconfigHash: string, lockfileHash: string): string {
-  const contentHashes = files.map((f) => f.contentHash).sort();
+  const contentHashes = (
+    files.map((f) => f.contentHash) as string[] & {
+      toSorted(compareFn?: (left: string, right: string) => number): string[];
+    }
+  ).toSorted();
   const combined = [tsconfigHash, lockfileHash, ...contentHashes].join("|");
   return Bun.hash(combined).toString(16);
 }
@@ -234,7 +237,9 @@ export async function runEffectDiagnostics(): Promise<EffectDiagnosticsResult> {
     languageService: baseLS,
     languageServiceHost: host,
     project: {
-      log: () => {},
+      log: () => {
+        /* noop - diagnostics run does not need plugin logs */
+      },
       getProjectName: () => "effect-check",
     },
     config: { diagnostics: { enabled: true } },

@@ -4,8 +4,8 @@ import { Effect, Layer, Option, Ref, ServiceMap, Stream } from "effect";
 import type { CommandResult, Environment } from "./types";
 
 import { K8sCommandError, K8sContextError, K8sTimeoutError } from "./errors";
-import { ConfigService, getToolConfig } from "../config";
-import type { K8sConfig } from "../config";
+import { ConfigService, getToolConfig } from "#src/config";
+import type { K8sConfig } from "#src/config";
 
 export class K8sService extends ServiceMap.Service<
   K8sService,

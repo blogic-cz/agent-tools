@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, and sessions",
   "keywords": [
     "agent",
@@ -33,6 +33,9 @@
     "LICENSE"
   ],
   "type": "module",
+  "imports": {
+    "#src/*": "./src/*"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./credential-guard": "./src/credential-guard/index.ts",

@@ -7,10 +7,10 @@ import type {
   IsoTimestamp,
   ReviewComment,
   ReviewThread,
-} from "../types";
+} from "#src/gh-tool/types";
 
-import { GitHubCommandError } from "../errors";
-import { GitHubService } from "../service";
+import { GitHubCommandError } from "#src/gh-tool/errors";
+import { GitHubService } from "#src/gh-tool/service";
 
 import { viewPR } from "./core";
 
@@ -190,9 +190,12 @@ export const fetchThreads = Effect.fn("pr.fetchThreads")(function* (
   const threads = response.repository.pullRequest.reviewThreads.nodes;
 
   const mapped: ReviewThread[] = threads
-    .filter((node) => node.comments.nodes.length > 0)
     .map((node) => {
-      const comment = node.comments.nodes[0]!;
+      const comment = node.comments.nodes[0];
+      if (!comment) {
+        return null;
+      }
+
       return {
         threadId: node.id,
         commentId: comment.databaseId,
@@ -201,7 +204,8 @@ export const fetchThreads = Effect.fn("pr.fetchThreads")(function* (
         body: comment.body,
         isResolved: node.isResolved,
       };
-    });
+    })
+    .filter((thread): thread is ReviewThread => thread !== null);
 
   return unresolvedOnly ? mapped.filter((t) => !t.isResolved) : mapped;
 });

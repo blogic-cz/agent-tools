@@ -7,7 +7,7 @@ import type {
   BuildLogs,
   JobSummary,
   PipelineRun,
-} from "../src/az-tool/types";
+} from "#src/az-tool/types";
 
 import {
   getBuildTimeline,
@@ -17,10 +17,10 @@ import {
   getBuildJobSummary,
   findFailedJobs,
   listPipelineRuns,
-} from "../src/az-tool/build";
-import { AzCommandError, AzParseError, AzTimeoutError } from "../src/az-tool/errors";
-import { AzService } from "../src/az-tool/service";
-import { formatAny } from "../src/shared";
+} from "#src/az-tool/build";
+import { AzCommandError, AzParseError, AzTimeoutError } from "#src/az-tool/errors";
+import { AzService } from "#src/az-tool/service";
+import { formatAny } from "#src/shared";
 function createMockBuildJob(overrides?: Partial<BuildJob>): BuildJob {
   return {
     id: "job-1",
@@ -184,7 +184,9 @@ describe("getBuildTimeline", () => {
       const result = yield* getBuildTimeline(123).pipe(Effect.result, Effect.provide(layer));
 
       Result.match(result, {
-        onFailure: () => {},
+        onFailure: () => {
+          /* noop - only success branch is asserted */
+        },
         onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },
@@ -291,7 +293,9 @@ describe("getBuildLogs", () => {
       const result = yield* getBuildLogs(123).pipe(Effect.result, Effect.provide(layer));
 
       Result.match(result, {
-        onFailure: () => {},
+        onFailure: () => {
+          /* noop - only success branch is asserted */
+        },
         onSuccess: () => {
           expect.fail("Expected Left but got Right");
         },

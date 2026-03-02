@@ -7,22 +7,22 @@ import type {
   PRInfo,
   ReviewComment,
   ReviewThread,
-} from "../src/gh-tool/types";
+} from "#src/gh-tool/types";
 
 import {
   GitHubAuthError,
   GitHubCommandError,
   GitHubMergeError,
   GitHubNotFoundError,
-} from "../src/gh-tool/errors";
-import { GitHubService } from "../src/gh-tool/service";
-import { fetchChecks, viewPR } from "../src/gh-tool/pr/core";
+} from "#src/gh-tool/errors";
+import { GitHubService } from "#src/gh-tool/service";
+import { fetchChecks, viewPR } from "#src/gh-tool/pr/core";
 import {
   fetchDiscussionSummary,
   fetchThreads,
   replyToComment,
   resolveThread,
-} from "../src/gh-tool/pr/review";
+} from "#src/gh-tool/pr/review";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -1066,9 +1066,12 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
       const threads = response.repository.pullRequest.reviewThreads.nodes;
 
       const mapped: ReviewThread[] = threads
-        .filter((node) => node.comments.nodes.length > 0)
         .map((node) => {
-          const comment = node.comments.nodes[0]!;
+          const comment = node.comments.nodes[0];
+          if (!comment) {
+            return null;
+          }
+
           return {
             threadId: node.id,
             commentId: comment.databaseId,
@@ -1077,7 +1080,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             body: comment.body,
             isResolved: node.isResolved,
           };
-        });
+        })
+        .filter((thread): thread is ReviewThread => thread !== null);
 
       return unresolvedOnly ? mapped.filter((t) => !t.isResolved) : mapped;
     });
@@ -1092,17 +1096,17 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
 
       expect(threads).toHaveLength(2);
 
-      const first = threads[0]!;
-      expect(first.threadId).toBe("thread-1");
-      expect(first.commentId).toBe(101);
-      expect(first.path).toBe("src/file.ts");
-      expect(first.line).toBe(10);
-      expect(first.body).toBe("Please fix this");
-      expect(first.isResolved).toBe(false);
+      const first = threads[0];
+      expect(first?.threadId).toBe("thread-1");
+      expect(first?.commentId).toBe(101);
+      expect(first?.path).toBe("src/file.ts");
+      expect(first?.line).toBe(10);
+      expect(first?.body).toBe("Please fix this");
+      expect(first?.isResolved).toBe(false);
 
-      const second = threads[1]!;
-      expect(second.threadId).toBe("thread-2");
-      expect(second.isResolved).toBe(true);
+      const second = threads[1];
+      expect(second?.threadId).toBe("thread-2");
+      expect(second?.isResolved).toBe(true);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 
@@ -1115,8 +1119,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
       const threads = yield* simulateFetchThreads(true).pipe(Effect.provide(layer));
 
       expect(threads).toHaveLength(1);
-      expect(threads[0]!.threadId).toBe("thread-1");
-      expect(threads[0]!.isResolved).toBe(false);
+      expect(threads[0]?.threadId).toBe("thread-1");
+      expect(threads[0]?.isResolved).toBe(false);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 
@@ -1226,18 +1230,18 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
 
       expect(comments).toHaveLength(3);
 
-      const first = comments[0]!;
-      expect(first.id).toBe(201);
-      expect(first.inReplyToId).toBeNull();
-      expect(first.author).toBe("reviewer");
-      expect(first.body).toBe("Top-level comment");
-      expect(first.path).toBe("src/file.ts");
-      expect(first.line).toBe(10);
-      expect(first.createdAt).toBe("2025-01-15T10:00:00Z");
+      const first = comments[0];
+      expect(first?.id).toBe(201);
+      expect(first?.inReplyToId).toBeNull();
+      expect(first?.author).toBe("reviewer");
+      expect(first?.body).toBe("Top-level comment");
+      expect(first?.path).toBe("src/file.ts");
+      expect(first?.line).toBe(10);
+      expect(first?.createdAt).toBe("2025-01-15T10:00:00Z");
 
-      const reply = comments[1]!;
-      expect(reply.inReplyToId).toBe(201);
-      expect(reply.author).toBe("author");
+      const reply = comments[1];
+      expect(reply?.inReplyToId).toBe(201);
+      expect(reply?.author).toBe("author");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 
@@ -1410,8 +1414,8 @@ describe("PR composite commands", () => {
 
         // Unresolved threads only (unresolvedOnly=true filters resolved + empty)
         expect(result.unresolvedThreads).toHaveLength(1);
-        expect(result.unresolvedThreads[0]!.threadId).toBe("thread-1");
-        expect(result.unresolvedThreads[0]!.isResolved).toBe(false);
+        expect(result.unresolvedThreads[0]?.threadId).toBe("thread-1");
+        expect(result.unresolvedThreads[0]?.isResolved).toBe(false);
 
         // Discussion summary aggregates from all sub-fetches
         expect(result.summary.issueCommentsCount).toBe(1);
@@ -1422,9 +1426,9 @@ describe("PR composite commands", () => {
 
         // CI checks
         expect(result.checks).toHaveLength(2);
-        expect(result.checks[0]!.name).toBe("CI / build");
-        expect(result.checks[0]!.bucket).toBe("pass");
-        expect(result.checks[1]!.bucket).toBe("fail");
+        expect(result.checks[0]?.name).toBe("CI / build");
+        expect(result.checks[0]?.bucket).toBe("pass");
+        expect(result.checks[1]?.bucket).toBe("fail");
       }),
   );
 

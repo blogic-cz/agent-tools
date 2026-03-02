@@ -1,7 +1,7 @@
 import { Effect, Layer, ServiceMap } from "effect";
 
-import { ConfigService, getToolConfig } from "../config";
-import type { DatabaseConfig } from "../config";
+import { ConfigService, getToolConfig } from "#src/config";
+import type { DatabaseConfig } from "#src/config";
 
 /**
  * DbConfigService wraps the resolved DatabaseConfig for the selected profile.

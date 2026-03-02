@@ -2,12 +2,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Effect, Layer, ServiceMap, Stream, Option } from "effect";
 
 import type { InvokeParams } from "./types";
-import type { AzureConfig } from "../config/types";
+import type { AzureConfig } from "#src/config/types";
 
 import { DIRECT_AZ_COMMANDS, STANDALONE_AZ_COMMANDS } from "./config";
 import { AzSecurityError, AzCommandError, AzTimeoutError, AzParseError } from "./errors";
 import { isCommandAllowed, isInvokeAllowed } from "./security";
-import { ConfigService, getToolConfig } from "../config";
+import { ConfigService, getToolConfig } from "#src/config";
 
 export class AzService extends ServiceMap.Service<
   AzService,

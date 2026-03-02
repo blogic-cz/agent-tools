@@ -1,10 +1,71 @@
 {
   "plugins": ["import", "node", "oxc", "promise", "typescript", "unicorn"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
   "rules": {
+    "eslint/array-callback-return": "error",
+    "eslint/default-param-last": "error",
+    "eslint/no-await-in-loop": "error",
+    "eslint/eqeqeq": "error",
+    "eslint/no-else-return": "error",
+    "eslint/no-promise-executor-return": "error",
+    "eslint/no-empty": "error",
+    "eslint/no-empty-function": "error",
+    "eslint/require-await": "error",
+    "eslint/no-self-compare": "error",
+    "eslint/no-template-curly-in-string": "error",
+    "eslint/no-var": "error",
+    "no-shadow": "error",
     "import/no-cycle": "error",
-    "typescript/no-explicit-any": "error",
+    "import/no-duplicates": "error",
+    "import/no-named-as-default": "error",
+    "import/no-named-as-default-member": "error",
+    "import/no-relative-parent-imports": "error",
+    "import/no-unassigned-import": "error",
+    "oxc/bad-comparison-sequence": "error",
+    "oxc/bad-object-literal-comparison": "error",
+    "oxc/const-comparisons": "error",
+    "oxc/double-comparisons": "error",
+    "oxc/erasing-op": "error",
+    "oxc/misrefactored-assign-op": "error",
+    "oxc/missing-throw": "error",
+    "oxc/no-accumulating-spread": "error",
+    "promise/always-return": "error",
+    "promise/no-callback-in-promise": "error",
+    "typescript/ban-ts-comment": "error",
+    "typescript/consistent-type-definitions": ["error", "type"],
     "typescript/consistent-type-imports": "error",
+    "typescript/no-base-to-string": "error",
+    "typescript/no-confusing-non-null-assertion": "error",
     "typescript/no-deprecated": "error",
-    "typescript/no-base-to-string": "off"
+    "typescript/no-duplicate-type-constituents": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-import-type-side-effects": "error",
+    "typescript/no-unnecessary-boolean-literal-compare": "error",
+    "typescript/no-unnecessary-template-expression": "error",
+    "typescript/no-unnecessary-type-arguments": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/no-invalid-void-type": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-unsafe-type-assertion": "error",
+    "typescript/prefer-nullish-coalescing": [
+      "error",
+      {
+        "ignoreBooleanCoercion": true,
+        "ignorePrimitives": {
+          "boolean": true
+        }
+      }
+    ],
+    "unicorn/consistent-function-scoping": "error",
+    "unicorn/error-message": "error",
+    "unicorn/no-array-reverse": "error",
+    "unicorn/no-array-sort": "error",
+    "unicorn/no-await-in-promise-methods": "error",
+    "unicorn/prefer-add-event-listener": "error",
+    "unicorn/require-module-specifiers": "off",
+    "unicorn/throw-new-error": "error"
   }
 }

@@ -14,7 +14,7 @@
  * at infrastructure level (K8s RBAC, file permissions, etc.)
  */
 
-import type { CliToolOverride, CredentialGuardConfig } from "../config/types.ts";
+import type { CliToolOverride, CredentialGuardConfig } from "#src/config/types.ts";
 
 // ============================================================================
 // TYPES
@@ -108,6 +108,7 @@ const SECRET_PATTERNS = [
       /(?:secret|token|password|passwd|pwd)["  \t:=]+["']?(?!\$\{|process\.env|z\.|generate|create|read|get|fetch|import|export|const|function|return|Schema)[^\s"']{32,}["']?/i,
   },
   {
+    // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
     name: "Priv" + "ate Key",
     pattern: new RegExp("-----BEGIN.*PRIVATE KEY-----"),
   },
