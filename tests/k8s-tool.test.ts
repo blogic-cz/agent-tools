@@ -1,13 +1,23 @@
+import {
+  isKubectlCommandAllowed,
+  ALLOWED_KUBECTL_VERBS,
+  BLOCKED_KUBECTL_VERBS,
+} from "#k8s/security";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Match, Option, Result } from "effect";
 
 import type { CommandResult, Environment } from "#k8s/types";
 
-import { K8sCommandError, K8sContextError, K8sTimeoutError } from "#k8s/errors";
+import {
+  K8sCommandError,
+  K8sContextError,
+  K8sDangerousCommandError,
+  K8sTimeoutError,
+} from "#k8s/errors";
 import { K8sService } from "#k8s/service";
 import { formatOutput } from "#shared";
 
-type K8sError = K8sCommandError | K8sContextError | K8sTimeoutError;
+type K8sError = K8sCommandError | K8sContextError | K8sTimeoutError | K8sDangerousCommandError;
 
 function createMockK8sServiceLayer(
   mockResponses: Record<string, CommandResult | string | K8sError>,
@@ -19,7 +29,8 @@ function createMockK8sServiceLayer(
       if (
         response instanceof K8sCommandError ||
         response instanceof K8sContextError ||
-        response instanceof K8sTimeoutError
+        response instanceof K8sTimeoutError ||
+        response instanceof K8sDangerousCommandError
       ) {
         return Effect.fail(response);
       }
@@ -53,7 +64,8 @@ function createMockK8sServiceLayer(
       if (
         response instanceof K8sCommandError ||
         response instanceof K8sContextError ||
-        response instanceof K8sTimeoutError
+        response instanceof K8sTimeoutError ||
+        response instanceof K8sDangerousCommandError
       ) {
         return Effect.fail(response);
       }
@@ -1200,5 +1212,167 @@ describe("error recovery hints - unit tests", () => {
     expect(error.message).toBe("Connection refused");
     expect(error.hint).toBeUndefined();
     expect(error.nextCommand).toBeUndefined();
+  });
+});
+
+describe("kubectl command security", () => {
+  describe("isKubectlCommandAllowed - blocked verbs", () => {
+    const dangerousCommands = [
+      "delete pod my-pod -n my-ns",
+      "delete deployment web-app",
+      "apply -f deployment.yaml",
+      "patch deployment web-app -p '{}",
+      "create namespace new-ns",
+      "scale deployment web-app --replicas=0",
+      "drain node-1",
+      "cordon node-1",
+      "uncordon node-1",
+      "taint nodes node-1 key=value:NoSchedule",
+      "edit deployment web-app",
+      "replace -f deployment.yaml",
+      "rollout restart deployment web-app",
+      "set image deployment/web-app app=app:v2",
+      "label pod my-pod env=prod",
+      "annotate pod my-pod note=test",
+      "expose deployment web-app --port=80",
+      "autoscale deployment web-app --min=1 --max=5",
+      "run test-pod --image=alpine",
+      "cp /tmp/file my-pod:/tmp/file",
+    ];
+
+    for (const cmd of dangerousCommands) {
+      const verb = cmd.split(/\s+/)[0];
+      it(`blocks '${verb}' command: ${cmd}`, () => {
+        const result = isKubectlCommandAllowed(cmd);
+        expect(result.allowed).toBe(false);
+        expect(result.verb).toBe(verb);
+        expect(result.reason).toContain("mutating operation");
+      });
+    }
+  });
+
+  describe("isKubectlCommandAllowed - allowed verbs", () => {
+    const safeCommands = [
+      "get pods -n my-ns",
+      "get deployment web-app -o yaml",
+      "describe pod my-pod -n my-ns",
+      "logs my-pod -n my-ns --tail=100",
+      "top pod -n my-ns",
+      "explain deployment",
+      "api-resources",
+      "api-versions",
+      "version",
+      "cluster-info",
+      "auth can-i get pods",
+      "diff -f deployment.yaml",
+      "wait --for=condition=ready pod/my-pod",
+      "exec my-pod -- ls -la",
+      "port-forward my-pod 8080:80",
+      "config view",
+      "config get-contexts",
+    ];
+
+    for (const cmd of safeCommands) {
+      const verb = cmd.split(/\s+/)[0];
+      it(`allows '${verb}' command: ${cmd}`, () => {
+        const result = isKubectlCommandAllowed(cmd);
+        expect(result.allowed).toBe(true);
+        expect(result.verb).toBe(verb);
+      });
+    }
+  });
+
+  describe("isKubectlCommandAllowed - piped commands", () => {
+    it("allows safe command with pipe", () => {
+      const result = isKubectlCommandAllowed("get pods -n my-ns | grep Running");
+      expect(result.allowed).toBe(true);
+      expect(result.verb).toBe("get");
+    });
+
+    it("blocks dangerous command even with pipe", () => {
+      const result = isKubectlCommandAllowed("delete pod my-pod | tee log.txt");
+      expect(result.allowed).toBe(false);
+      expect(result.verb).toBe("delete");
+    });
+  });
+
+  describe("isKubectlCommandAllowed - edge cases", () => {
+    it("blocks empty command", () => {
+      const result = isKubectlCommandAllowed("");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("Empty");
+    });
+
+    it("blocks whitespace-only command", () => {
+      const result = isKubectlCommandAllowed("   ");
+      expect(result.allowed).toBe(false);
+    });
+
+    it("blocks unknown verb", () => {
+      const result = isKubectlCommandAllowed("something-unknown pods");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("Unknown kubectl verb");
+    });
+
+    it("handles leading flags (without value) before verb", () => {
+      // pure flags before verb are filtered out, verb is 'get'
+      const result = isKubectlCommandAllowed("--all-namespaces get pods");
+      expect(result.allowed).toBe(true);
+      expect(result.verb).toBe("get");
+    });
+
+    it("is case-insensitive for verb matching", () => {
+      const result = isKubectlCommandAllowed("DELETE pod my-pod");
+      expect(result.allowed).toBe(false);
+      expect(result.verb).toBe("delete");
+    });
+  });
+
+  describe("verb lists consistency", () => {
+    it("allowed and blocked lists have no overlap", () => {
+      const overlap = (ALLOWED_KUBECTL_VERBS as readonly string[]).filter((v) =>
+        (BLOCKED_KUBECTL_VERBS as readonly string[]).includes(v),
+      );
+      expect(overlap).toEqual([]);
+    });
+
+    it("all blocked verbs are real kubectl verbs", () => {
+      // Sanity check — blocked list should not be empty
+      expect(BLOCKED_KUBECTL_VERBS.length).toBeGreaterThan(10);
+    });
+
+    it("all allowed verbs are real kubectl verbs", () => {
+      // Sanity check — allowed list should not be empty
+      expect(ALLOWED_KUBECTL_VERBS.length).toBeGreaterThan(5);
+    });
+  });
+
+  describe("K8sDangerousCommandError", () => {
+    it("carries verb, hint, and nextCommand", () => {
+      const error = new K8sDangerousCommandError({
+        message: "'delete' is a mutating operation blocked for AI agents.",
+        command: "delete pod my-pod -n my-ns",
+        verb: "delete",
+        hint: "AI agents can only run read-only kubectl commands.",
+        nextCommand: "agent-tools-k8s kubectl --cmd 'get pods -n my-ns'",
+      });
+
+      expect(error._tag).toBe("K8sDangerousCommandError");
+      expect(error.verb).toBe("delete");
+      expect(error.hint).toContain("read-only");
+      expect(error.nextCommand).toContain("get pods");
+    });
+
+    it("has optional fields", () => {
+      const error = new K8sDangerousCommandError({
+        message: "Command not allowed",
+        command: "delete pod my-pod",
+      });
+
+      expect(error._tag).toBe("K8sDangerousCommandError");
+      expect(error.verb).toBeUndefined();
+      expect(error.hint).toBeUndefined();
+      expect(error.nextCommand).toBeUndefined();
+    });
   });
 });

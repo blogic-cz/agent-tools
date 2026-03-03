@@ -27,4 +27,19 @@ export class K8sTimeoutError extends Schema.TaggedErrorClass<K8sTimeoutError>()(
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export type K8sError = K8sContextError | K8sCommandError | K8sTimeoutError;
+export class K8sDangerousCommandError extends Schema.TaggedErrorClass<K8sDangerousCommandError>()(
+  "K8sDangerousCommandError",
+  {
+    message: Schema.String,
+    command: Schema.String,
+    verb: Schema.optionalKey(Schema.String),
+    hint: Schema.optionalKey(Schema.String),
+    nextCommand: Schema.optionalKey(Schema.String),
+  },
+) {}
+
+export type K8sError =
+  | K8sContextError
+  | K8sCommandError
+  | K8sTimeoutError
+  | K8sDangerousCommandError;

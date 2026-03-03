@@ -110,6 +110,18 @@ const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
           };
           return Effect.succeed(errorResult);
         },
+        K8sDangerousCommandError: (error) => {
+          const errorResult: CommandResult = {
+            success: false,
+            error: error.message,
+            command: error.command,
+            hint:
+              error.hint ??
+              "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
+            executionTimeMs: 0,
+          };
+          return Effect.succeed(errorResult);
+        },
       }),
     );
 

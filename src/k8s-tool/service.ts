@@ -3,9 +3,15 @@ import { Effect, Layer, Option, Ref, ServiceMap, Stream } from "effect";
 
 import type { CommandResult, Environment } from "./types";
 
-import { K8sCommandError, K8sContextError, K8sTimeoutError } from "./errors";
+import {
+  K8sCommandError,
+  K8sContextError,
+  K8sDangerousCommandError,
+  K8sTimeoutError,
+} from "./errors";
 import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
+import { isKubectlCommandAllowed } from "./security";
 
 export class K8sService extends ServiceMap.Service<
   K8sService,
@@ -13,11 +19,17 @@ export class K8sService extends ServiceMap.Service<
     readonly runCommand: (
       cmd: string,
       env: Environment,
-    ) => Effect.Effect<string, K8sContextError | K8sCommandError | K8sTimeoutError>;
+    ) => Effect.Effect<
+      string,
+      K8sContextError | K8sCommandError | K8sTimeoutError | K8sDangerousCommandError
+    >;
     readonly runKubectl: (
       cmd: string,
       dryRun: boolean,
-    ) => Effect.Effect<CommandResult, K8sContextError | K8sCommandError | K8sTimeoutError>;
+    ) => Effect.Effect<
+      CommandResult,
+      K8sContextError | K8sCommandError | K8sTimeoutError | K8sDangerousCommandError
+    >;
   }
 >()("@agent-tools/K8sService") {
   static readonly layer = Layer.effect(
@@ -166,8 +178,18 @@ export class K8sService extends ServiceMap.Service<
           cmd: string,
           _env: Environment,
         ) {
-          const result = yield* executeCommand(cmd);
+          // Security: block dangerous commands before execution
+          const securityCheck = isKubectlCommandAllowed(cmd);
+          if (!securityCheck.allowed) {
+            return yield* new K8sDangerousCommandError({
+              message: securityCheck.reason ?? "Command not allowed",
+              command: cmd,
+              verb: securityCheck.verb,
+              hint: "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
+            });
+          }
 
+          const result = yield* executeCommand(cmd);
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
               message: result.stderr ?? `kubectl exited with code ${result.exitCode}`,
@@ -184,8 +206,18 @@ export class K8sService extends ServiceMap.Service<
           cmd: string,
           dryRun: boolean,
         ) {
-          const startTime = Date.now();
+          // Security: block dangerous commands before execution (even dry-run)
+          const securityCheck = isKubectlCommandAllowed(cmd);
+          if (!securityCheck.allowed) {
+            return yield* new K8sDangerousCommandError({
+              message: securityCheck.reason ?? "Command not allowed",
+              command: cmd,
+              verb: securityCheck.verb,
+              hint: "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
+            });
+          }
 
+          const startTime = Date.now();
           if (dryRun) {
             const context = yield* resolveContext();
             const fullCommand = `kubectl --context ${context} ${cmd}`;
