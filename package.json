@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, and sessions",
   "keywords": [
     "agent",
@@ -64,13 +64,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-beta.20",
+    "@effect/platform-bun": "4.0.0-beta.25",
     "@toon-format/toon": "2.1.0",
-    "effect": "4.0.0-beta.20"
+    "effect": "4.0.0-beta.25"
   },
   "devDependencies": {
     "@effect/language-service": "0.77.0",
-    "@effect/vitest": "4.0.0-beta.20",
+    "@effect/vitest": "4.0.0-beta.25",
     "@types/bun": "1.3.9",
     "oxfmt": "0.35.0",
     "oxlint": "1.50.0",
