@@ -24,7 +24,7 @@ These tools wrap each CLI with:
 ### Manual installation
 
 ```bash
-bun add @blogic-cz/agent-tools
+bun add -d @blogic-cz/agent-tools
 ```
 
 **Requirements:** [Bun](https://bun.sh/) >=1.0.0
