@@ -1,13 +1,13 @@
 {
-  "plugins": ["import", "node", "oxc", "promise", "typescript", "unicorn"],
+  "plugins": ["import", "jsx-a11y", "node", "oxc", "promise", "typescript", "unicorn", "vitest"],
   "categories": {
     "correctness": "error",
+    "perf": "error",
     "suspicious": "error"
   },
   "rules": {
     "eslint/array-callback-return": "error",
     "eslint/default-param-last": "error",
-    "eslint/no-await-in-loop": "error",
     "eslint/eqeqeq": "error",
     "eslint/no-else-return": "error",
     "eslint/no-promise-executor-return": "error",
@@ -17,39 +17,17 @@
     "eslint/no-self-compare": "error",
     "eslint/no-template-curly-in-string": "error",
     "eslint/no-var": "error",
-    "no-shadow": "error",
     "import/no-cycle": "error",
     "import/no-duplicates": "error",
-    "import/no-named-as-default": "error",
-    "import/no-named-as-default-member": "error",
     "import/no-relative-parent-imports": "error",
-    "import/no-unassigned-import": "error",
-    "oxc/bad-comparison-sequence": "error",
-    "oxc/bad-object-literal-comparison": "error",
-    "oxc/const-comparisons": "error",
-    "oxc/double-comparisons": "error",
-    "oxc/erasing-op": "error",
-    "oxc/misrefactored-assign-op": "error",
-    "oxc/missing-throw": "error",
-    "oxc/no-accumulating-spread": "error",
-    "promise/always-return": "error",
-    "promise/no-callback-in-promise": "error",
     "typescript/ban-ts-comment": "error",
     "typescript/consistent-type-definitions": ["error", "type"],
     "typescript/consistent-type-imports": "error",
-    "typescript/no-base-to-string": "error",
-    "typescript/no-confusing-non-null-assertion": "error",
     "typescript/no-deprecated": "error",
-    "typescript/no-duplicate-type-constituents": "error",
     "typescript/no-explicit-any": "error",
     "typescript/no-import-type-side-effects": "error",
-    "typescript/no-unnecessary-boolean-literal-compare": "error",
-    "typescript/no-unnecessary-template-expression": "error",
-    "typescript/no-unnecessary-type-arguments": "error",
-    "typescript/no-unnecessary-type-assertion": "error",
     "typescript/no-invalid-void-type": "error",
     "typescript/no-non-null-assertion": "error",
-    "typescript/no-unsafe-type-assertion": "error",
     "typescript/prefer-nullish-coalescing": [
       "error",
       {
@@ -59,13 +37,35 @@
         }
       }
     ],
-    "unicorn/consistent-function-scoping": "error",
     "unicorn/error-message": "error",
-    "unicorn/no-array-reverse": "error",
-    "unicorn/no-array-sort": "error",
-    "unicorn/no-await-in-promise-methods": "error",
-    "unicorn/prefer-add-event-listener": "error",
     "unicorn/require-module-specifiers": "off",
-    "unicorn/throw-new-error": "error"
-  }
+    "unicorn/throw-new-error": "error",
+    "vitest/no-import-node-test": "error"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx", "**/__tests__/**", "**/e2e/**"],
+      "rules": {
+        "eslint/no-await-in-loop": "off",
+        "eslint/no-empty-function": "off",
+        "eslint/no-promise-executor-return": "off",
+        "eslint/no-shadow": "off",
+        "eslint/require-await": "off",
+        "typescript/no-non-null-assertion": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "vitest/no-conditional-expect": "off",
+        "vitest/no-conditional-tests": "off",
+        "vitest/no-disabled-tests": "off",
+        "vitest/require-to-throw-message": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": ["apps/web-app/src/routes/**"],
+      "rules": {
+        "typescript/only-throw-error": "off"
+      }
+    }
+  ]
 }

@@ -32,12 +32,10 @@ const formatError = (error: unknown): string => {
 };
 
 const formatCause = (cause: Cause.Cause<unknown>): string => {
-  const failures = cause.reasons.filter(Cause.isFailReason);
-  const firstFailure = failures[0];
+  const firstFailure = cause.reasons.find(Cause.isFailReason);
   if (firstFailure !== undefined) return formatError(firstFailure.error);
 
-  const defects = cause.reasons.filter(Cause.isDieReason);
-  const firstDefect = defects[0];
+  const firstDefect = cause.reasons.find(Cause.isDieReason);
   if (firstDefect !== undefined) {
     if (firstDefect.defect instanceof Error)
       return `Unexpected error: ${firstDefect.defect.message}`;

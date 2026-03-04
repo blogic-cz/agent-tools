@@ -68,8 +68,10 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
   const kubectlPart = trimmed.split("|")[0].trim();
 
   // Extract verb: first non-flag word
-  const words = kubectlPart.split(/\s+/).filter((w) => !w.startsWith("-"));
-  const verb = words[0]?.toLowerCase();
+  const verb = kubectlPart
+    .split(/\s+/)
+    .find((word) => !word.startsWith("-"))
+    ?.toLowerCase();
 
   if (!verb) {
     return { allowed: false, command: cmd, reason: "Empty kubectl command." };
