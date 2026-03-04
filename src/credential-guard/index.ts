@@ -389,8 +389,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         throw new Error(
           `\u{1F6AB} Direct ${blockedTool.name} usage blocked.\n\n` +
             `AI agents must use wrapper tools for security and audit.\n\n` +
-            `Use instead: ${blockedTool.wrapper}\n\n` +
-            `Run with --help for documentation.\n\n` +
+            `Use instead: bun ${blockedTool.wrapper}\n\n` +
+            `Example: bun ${blockedTool.wrapper} --help\n\n` +
             `Think this tool should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the whitelist, and submit a PR.`,
         );
       }
