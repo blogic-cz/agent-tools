@@ -75,6 +75,22 @@ bunx agent-tools-gh pr review-triage   # interactive summary of PR feedback
 bunx agent-tools-k8s pods --env test   # list pods (structured command)
 ```
 
+Optionally, add script aliases to your `package.json` for shorter invocation:
+
+```json
+{
+  "scripts": {
+    "gh-tool": "agent-tools-gh",
+    "k8s-tool": "agent-tools-k8s",
+    "db-tool": "agent-tools-db",
+    "logs-tool": "agent-tools-logs",
+    "session-tool": "agent-tools-session"
+  }
+}
+```
+
+Then run via `bun run k8s-tool -- pods --env test` instead of `bunx agent-tools-k8s pods --env test`.
+
 4. Hook up the credential guard in your agent config (Claude Code, OpenCode, etc.):
 
 ```typescript
