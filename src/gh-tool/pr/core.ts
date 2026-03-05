@@ -449,7 +449,14 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     return yield* gh.runGhJson<CheckResult[]>([...args, "--json", "name,state,bucket,link"]);
   }
 
-  return yield* gh.runGhJson<CheckResult[]>([...args, "--json", "name,state,bucket,link"]);
+  const results = yield* gh.runGhJson<CheckResult[]>([...args, "--json", "name,state,bucket,link"]);
+  if (results.some((c) => c.bucket === "pending")) {
+    yield* Console.warn(
+      `ℹ️  Some checks are still running. Prefer --watch to block until completion instead of polling:\n` +
+        `   bun agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""} --watch`,
+    );
+  }
+  return results;
 });
 
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (pr: number | null) {
