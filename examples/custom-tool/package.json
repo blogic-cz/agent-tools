@@ -1,0 +1,15 @@
+{
+  "name": "@your-project/agent-tools",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "example": "bun run example-tool/index.ts"
+  },
+  "dependencies": {
+    "@blogic-cz/agent-tools": "latest",
+    "@effect/platform-bun": "4.0.0-beta.25",
+    "@toon-format/toon": "2.1.0",
+    "effect": "4.0.0-beta.25"
+  }
+}

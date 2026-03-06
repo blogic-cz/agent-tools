@@ -67,6 +67,16 @@ bun agent-tools-gh pr review-triage --pr 123  # Combined info, threads, checks
 bun agent-tools-gh pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done"
 ```
 
+```bash
+bun agent-tools-gh issue list --state open --limit 30
+bun agent-tools-gh issue view --issue 123
+bun agent-tools-gh issue close --issue 123 --reason completed --comment "Done"
+bun agent-tools-gh issue reopen --issue 123
+bun agent-tools-gh issue comment --issue 123 --body "text"
+bun agent-tools-gh issue edit --issue 123 --title "New title" --add-labels bug
+bun agent-tools-gh issue triage-summary --format json --limit 100
+```
+
 ### db-tool (Database)
 
 ```bash

@@ -15,10 +15,10 @@ These tools wrap each CLI with:
 
 ## Installation
 
-> **Recommended:** Copy the repo URL and tell your AI agent to install it. The agent will set up everything — dependencies, config file, credential guard — in the right places for your project.
+> **Recommended:** Copy the repo URL and tell your AI agent to install it. The agent will set up everything — dev dependency, config file, credential guard, skill — in the right places for your project.
 >
 > ```
-> Install @blogic-cz/agent-tools from https://github.com/blogic-cz/agent-tools and set it up for this project.
+> Install @blogic-cz/agent-tools from https://github.com/blogic-cz/agent-tools as a dev dependency, install the agent-tools skill, set up the credential guard, and configure the tools I need for this project.
 > ```
 
 ### Manual installation
@@ -31,11 +31,88 @@ bun add -d @blogic-cz/agent-tools
 
 ### For agents reading this
 
-Clone the repo and look at the source. The tools are in `src/`, each tool is self-contained:
+Follow these steps to set up agent-tools in the consumer project.
+
+**Step 1 — Install**
+
+- **JavaScript/TypeScript project** (has `package.json`): Install as a **dev dependency**:
+  ```bash
+  bun add -d @blogic-cz/agent-tools
+  ```
+- **Non-JavaScript project** (no `package.json`): Skip installation — run tools directly with `bunx`:
+  ```bash
+  bunx agent-tools-gh pr status
+  bunx agent-tools-k8s pods --env test
+  ```
+
+**Step 2 — Configure**
+
+Ask the user which tools they need (gh, db, k8s, az, logs, session). Create `agent-tools.json5` in the project root with **only the selected tools configured**. See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for the full config reference with all options documented.
+
+Minimal starting config:
+
+```json5
+{
+  $schema: "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
+}
+```
+
+**Step 3 — Credential Guard**
+
+Set up the credential guard for the agent's platform:
+
+- **Claude Code**: Add the `PreToolUse` hook to `.claude/settings.json` — see [Setup for Claude Code](#setup-for-claude-code)
+- **OpenCode**: Create the plugin at `.opencode/plugins/credential-guard.ts` — see [Setup for OpenCode](#setup-for-opencode)
+
+**Step 4 — Test & Demo**
+
+For each tool the user selected in Step 2:
+
+1. Run `bunx agent-tools-<tool> --help` to verify it works
+2. Summarize the key commands available
+3. Show the user what data they have access to based on their `agent-tools.json5` — e.g. which environments, clusters, namespaces, databases, or profiles are configured and reachable
+
+**Step 5 — Skill & Agent Docs**
+
+Tell the user to run the following command themselves — it's interactive and lets them choose which agents to install the skill for:
 
 ```bash
-git clone https://github.com/blogic-cz/agent-tools.git
-ls src/  # gh-tool/ db-tool/ k8s-tool/ az-tool/ logs-tool/ session-tool/ credential-guard/
+npx skills add blogic-cz/agent-tools
+```
+
+**Do not run this command for the user** — it requires interactive selection.
+
+Then update the project's `AGENTS.md` and/or `CLAUDE.md`:
+
+1. Add an `agent-tools` row to the skills table (if one exists):
+   ```markdown
+   | Agent wrapper tools (`db-tool`, `k8s-tool`, `logs-tool`, `az-tool`, `gh` patterns) | `agent-tools` |
+   ```
+2. Add or update the **Tooling** section:
+
+   ```markdown
+   ## Tooling
+
+   For tool wrappers and operational patterns, load `agent-tools`.
+   ```
+
+**Step 6 — Custom Tool Scaffold**
+
+Create an `agent-tools/` directory in the project root with an example tool so the user has a working template for building project-specific tools. Copy the scaffold from [`examples/custom-tool/`](./examples/custom-tool/):
+
+```
+agent-tools/
+  package.json          # private package depending on @blogic-cz/agent-tools
+  tsconfig.json         # extends root tsconfig
+  noop.ts               # placeholder export for typecheck
+  example-tool/
+    index.ts             # ping-pong example using Effect CLI
+```
+
+After creating the files, run `bun install` in the `agent-tools/` directory (or from the workspace root if it's a monorepo). Then verify:
+
+```bash
+bun run agent-tools/example-tool/index.ts ping
 ```
 
 ## Quick Start

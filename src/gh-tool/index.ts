@@ -5,12 +5,13 @@ import { Effect, Layer } from "effect";
 
 import { renderCauseToStderr, VERSION } from "#shared";
 import {
-  issueListCommand,
-  issueViewCommand,
   issueCloseCommand,
-  issueReopenCommand,
   issueCommentCommand,
   issueEditCommand,
+  issueListCommand,
+  issueReopenCommand,
+  issueTriageSummaryCommand,
+  issueViewCommand,
 } from "./issue";
 import {
   prViewCommand,
@@ -72,7 +73,9 @@ const prCommand = Command.make("pr", {}).pipe(
 );
 
 const issueCommand = Command.make("issue", {}).pipe(
-  Command.withDescription("Issue operations (list, view, close, reopen, comment, edit)"),
+  Command.withDescription(
+    "Issue operations (list, view, close, reopen, comment, edit, triage-summary)",
+  ),
   Command.withSubcommands([
     issueListCommand,
     issueViewCommand,
@@ -80,6 +83,7 @@ const issueCommand = Command.make("issue", {}).pipe(
     issueReopenCommand,
     issueCommentCommand,
     issueEditCommand,
+    issueTriageSummaryCommand,
   ]),
 );
 
