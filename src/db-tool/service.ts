@@ -17,6 +17,21 @@ import { detectSchemaError, isValidTableName, isMutationQuery } from "./security
 
 const LOCALHOST_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
+export function resolveDbAccessMode(
+  env: string,
+  host: string,
+  hasKubectlConfig: boolean,
+): Pick<DbConfig, "allowMutations" | "host" | "needsTunnel"> {
+  const isLocalHost = LOCALHOST_HOSTS.has(host);
+  const isLocalEnvironment = env === "local";
+
+  return {
+    host,
+    needsTunnel: hasKubectlConfig && !isLocalEnvironment && isLocalHost,
+    allowMutations: isLocalEnvironment,
+  };
+}
+
 export class DbService extends ServiceMap.Service<
   DbService,
   {
@@ -506,19 +521,21 @@ export class DbService extends ServiceMap.Service<
             throw new Error(`Unknown environment "${env}". Available: ${available}`);
           }
 
-          const isLocal = LOCALHOST_HOSTS.has(envConfig.host);
-          const isLocalEnvironment = env === "local";
-          const needsTunnel = dbConfig.kubectl !== undefined && !isLocalEnvironment && isLocal;
+          const accessMode = resolveDbAccessMode(
+            env,
+            envConfig.host,
+            dbConfig.kubectl !== undefined,
+          );
 
           return {
-            host: envConfig.host,
+            host: accessMode.host,
             user: envConfig.user,
             database: envConfig.database,
             password: envConfig.password,
             passwordEnvVar: envConfig.passwordEnvVar,
             port: envConfig.port,
-            needsTunnel,
-            allowMutations: isLocalEnvironment,
+            needsTunnel: accessMode.needsTunnel,
+            allowMutations: accessMode.allowMutations,
           };
         };
 

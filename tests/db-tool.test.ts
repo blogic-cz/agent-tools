@@ -5,7 +5,7 @@ import type { DbError } from "#db/errors";
 import type { QueryResult } from "#db/types";
 
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
-import { DbService } from "#db/service";
+import { DbService, resolveDbAccessMode } from "#db/service";
 
 /**
  * Mock DbService layer factory for testing
@@ -49,6 +49,48 @@ function createMockDbServiceLayer(responses: Record<string, QueryResult | DbErro
 }
 
 describe("DbService", () => {
+  describe("resolveDbAccessMode", () => {
+    it("treats local environment as mutable without a tunnel", () => {
+      const mode = resolveDbAccessMode("local", "127.0.0.1", true);
+
+      expect(mode).toEqual({
+        host: "127.0.0.1",
+        needsTunnel: false,
+        allowMutations: true,
+      });
+    });
+
+    it("opens a tunnel for remote environments using forwarded localhost ports", () => {
+      const mode = resolveDbAccessMode("test", "127.0.0.1", true);
+
+      expect(mode).toEqual({
+        host: "127.0.0.1",
+        needsTunnel: true,
+        allowMutations: false,
+      });
+    });
+
+    it("does not open a tunnel when kubectl config is missing", () => {
+      const mode = resolveDbAccessMode("prod", "127.0.0.1", false);
+
+      expect(mode).toEqual({
+        host: "127.0.0.1",
+        needsTunnel: false,
+        allowMutations: false,
+      });
+    });
+
+    it("keeps direct remote hosts read only without localhost tunnel detection", () => {
+      const mode = resolveDbAccessMode("prod", "db.internal", true);
+
+      expect(mode).toEqual({
+        host: "db.internal",
+        needsTunnel: false,
+        allowMutations: false,
+      });
+    });
+  });
+
   describe("executeQuery", () => {
     it.effect("executes SELECT query successfully", () =>
       Effect.gen(function* () {
