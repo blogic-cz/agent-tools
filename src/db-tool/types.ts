@@ -4,6 +4,7 @@ export type { Environment, OutputFormat };
 export type SchemaMode = "tables" | "columns" | "full" | "relationships";
 
 export type DbConfig = {
+  host: string;
   user: string;
   database: string;
   password?: string;

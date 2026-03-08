@@ -6,7 +6,7 @@ import {
 } from "#guard";
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -268,5 +268,109 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const parsed = JSON.parse(result.stdout.trim()) as { command: string };
     expect(parsed.command).toContain("get pods");
     expect(parsed.command).toContain("-n mapped-test-ns");
+  });
+
+  it("db-tool opens a tunnel for remote envs that use localhost forwarded ports", () => {
+    const dbDir = join(tmpdir(), `agent-tools-db-tunnel-${Date.now()}`);
+    const binDir = join(dbDir, "bin");
+    const tunnelReadyPath = join(dbDir, "tunnel-ready");
+    const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
+    const psqlArgsPath = join(dbDir, "psql-args.txt");
+
+    mkdirSync(binDir, { recursive: true });
+
+    writeFileSync(
+      join(dbDir, "agent-tools.json5"),
+      JSON.stringify({
+        database: {
+          default: {
+            environments: {
+              local: {
+                host: "127.0.0.1",
+                port: 25538,
+                user: "local-user",
+                database: "local-db",
+              },
+              test: {
+                host: "127.0.0.1",
+                port: 25437,
+                user: "readonly-user",
+                database: "app-test",
+                passwordEnvVar: "TEST_DB_PASSWORD",
+              },
+            },
+            kubectl: {
+              context: "cloud2-example-cz",
+              namespace: "bl-system",
+            },
+            remotePort: 5432,
+            tunnelTimeoutMs: 1000,
+          },
+        },
+      }),
+    );
+
+    const kubectlPath = join(binDir, "kubectl");
+    writeFileSync(
+      kubectlPath,
+      `#!/bin/sh
+printf '%s' "$*" > "${kubectlArgsPath}"
+touch "${tunnelReadyPath}"
+trap 'exit 0' TERM INT
+while true; do
+  sleep 1
+done
+`,
+    );
+    chmodSync(kubectlPath, 0o755);
+
+    const ncPath = join(binDir, "nc");
+    writeFileSync(
+      ncPath,
+      `#!/bin/sh
+if [ -f "${tunnelReadyPath}" ]; then
+  exit 0
+fi
+exit 1
+`,
+    );
+    chmodSync(ncPath, 0o755);
+
+    const psqlPath = join(binDir, "psql");
+    writeFileSync(
+      psqlPath,
+      `#!/bin/sh
+printf '%s' "$*" > "${psqlArgsPath}"
+printf '[{"ok":1}]\n'
+`,
+    );
+    chmodSync(psqlPath, 0o755);
+
+    const result = runToolWithEnv(
+      "src/db-tool/index.ts",
+      ["sql", "--env", "test", "--sql", "select 1 as ok", "--format", "json"],
+      dbDir,
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        TEST_DB_PASSWORD: "secret",
+      },
+    );
+
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      success: boolean;
+      data?: Array<{ ok: number }>;
+    };
+    const kubectlArgs = readFileSync(kubectlArgsPath, "utf8");
+    const psqlArgs = readFileSync(psqlArgsPath, "utf8");
+
+    rmSync(dbDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual([{ ok: 1 }]);
+    expect(kubectlArgs).toContain(
+      "port-forward --context cloud2-example-cz --namespace bl-system svc/postgresql 25437:5432",
+    );
+    expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
   });
 });

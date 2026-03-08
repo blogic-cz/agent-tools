@@ -79,10 +79,11 @@ export class DbService extends ServiceMap.Service<
 
           const envVars: Record<string, string> = {};
           const regex = /^export\s+([A-Z_][A-Z0-9_]*)=["']?([^"'\n]+)["']?/gm;
-          let match: RegExpExecArray | null;
+          let match = regex.exec(content);
 
-          while ((match = regex.exec(content)) !== null) {
+          while (match !== null) {
             envVars[match[1]] = match[2];
+            match = regex.exec(content);
           }
 
           yield* Ref.set(zshrcEnvCache, envVars);
@@ -214,7 +215,7 @@ export class DbService extends ServiceMap.Service<
         ) => {
           const args = [
             "-h",
-            "localhost",
+            config.host,
             "-p",
             String(config.port),
             "-U",
@@ -506,14 +507,18 @@ export class DbService extends ServiceMap.Service<
           }
 
           const isLocal = LOCALHOST_HOSTS.has(envConfig.host);
+          const isLocalEnvironment = env === "local";
+          const needsTunnel = dbConfig.kubectl !== undefined && !isLocalEnvironment && isLocal;
 
           return {
+            host: envConfig.host,
             user: envConfig.user,
             database: envConfig.database,
+            password: envConfig.password,
             passwordEnvVar: envConfig.passwordEnvVar,
             port: envConfig.port,
-            needsTunnel: !isLocal && dbConfig.kubectl !== undefined,
-            allowMutations: isLocal,
+            needsTunnel,
+            allowMutations: isLocalEnvironment,
           };
         };
 
