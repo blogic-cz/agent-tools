@@ -15,6 +15,10 @@ bun run check      # format + lint + typecheck + effect diagnostics + test
 bun run check ci   # all parallel, format --check only (no file modification)
 ```
 
+## Version control
+
+`but` (GitButler CLI) for write ops, `git` read-only → load skill `but`.
+
 ## Publishing
 
 Publishing is tag-driven. Do not run `npm publish` locally.
