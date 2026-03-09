@@ -364,6 +364,14 @@ const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
   let repoName: string;
   if (opts.repo !== null) {
     const parts = opts.repo.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return yield* new GitHubCommandError({
+        message: `Invalid --repo format: "${opts.repo}". Expected "owner/name" (e.g. "blogic-cz/agent-tools").`,
+        command: "workflow job-logs",
+        exitCode: 1,
+        stderr: "",
+      });
+    }
     owner = parts[0];
     repoName = parts[1];
   } else {
