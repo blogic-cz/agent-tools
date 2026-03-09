@@ -48,6 +48,10 @@ type LogEntry = {
   message: string;
 };
 
+const repoOption = Flag.string("repo").pipe(
+  Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
+  Flag.optional,
+);
 // ---------------------------------------------------------------------------
 // Internal handlers
 // ---------------------------------------------------------------------------
@@ -89,26 +93,34 @@ const listRuns = Effect.fn("workflow.listRuns")(function* (opts: {
   return yield* gh.runGhJson<WorkflowRun[]>(args);
 });
 
-const viewRun = Effect.fn("workflow.viewRun")(function* (runId: number) {
+const viewRun = Effect.fn("workflow.viewRun")(function* (runId: number, repo: string | null) {
   const gh = yield* GitHubService;
 
-  const run = yield* gh.runGhJson<WorkflowRunDetail>([
+  const args = [
     "run",
     "view",
     String(runId),
     "--json",
     "databaseId,displayTitle,status,conclusion,headBranch,createdAt,event,url,workflowName,jobs",
-  ]);
+  ];
+  if (repo !== null) {
+    args.push("--repo", repo);
+  }
 
-  return run;
+  return yield* gh.runGhJson<WorkflowRunDetail>(args);
 });
 
-const listJobs = Effect.fn("workflow.listJobs")(function* (runId: number) {
+const listJobs = Effect.fn("workflow.listJobs")(function* (runId: number, repo: string | null) {
   const gh = yield* GitHubService;
+
+  const args = ["run", "view", String(runId), "--json", "jobs"];
+  if (repo !== null) {
+    args.push("--repo", repo);
+  }
 
   const run = yield* gh.runGhJson<{
     jobs: WorkflowJob[];
-  }>(["run", "view", String(runId), "--json", "jobs"]);
+  }>(args);
 
   return run.jobs;
 });
@@ -117,9 +129,14 @@ const fetchLogs = Effect.fn("workflow.fetchLogs")(function* (
   runId: number,
   failedOnly: boolean,
   jobId: number | null = null,
+  repo: string | null = null,
 ) {
   const gh = yield* GitHubService;
   const args = ["run", "view", String(runId)];
+
+  if (repo !== null) {
+    args.push("--repo", repo);
+  }
 
   if (jobId !== null) {
     args.push("--log", "--job", String(jobId));
@@ -164,10 +181,15 @@ const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
   };
 });
 
-const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number) {
+const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo: string | null) {
   const gh = yield* GitHubService;
 
-  yield* gh.runGh(["run", "cancel", String(runId)]);
+  const args = ["run", "cancel", String(runId)];
+  if (repo !== null) {
+    args.push("--repo", repo);
+  }
+
+  yield* gh.runGh(args);
 
   return {
     cancelled: true as const,
@@ -176,10 +198,15 @@ const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number) {
   };
 });
 
-const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number) {
+const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: string | null) {
   const gh = yield* GitHubService;
 
-  const result = yield* gh.runGh(["run", "watch", String(runId), "--exit-status"]).pipe(
+  const watchArgs = ["run", "watch", String(runId), "--exit-status"];
+  if (repo !== null) {
+    watchArgs.push("--repo", repo);
+  }
+
+  const result = yield* gh.runGh(watchArgs).pipe(
     Effect.catchTag("GitHubCommandError", (error) => {
       // exit-status returns non-zero if run failed, but we still want the output
       if (error.exitCode > 0 && error.stderr === "") {
@@ -193,7 +220,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number) {
     }),
   );
 
-  const finalState = yield* viewRun(runId);
+  const finalState = yield* viewRun(runId, repo);
 
   return {
     runId,
@@ -268,8 +295,12 @@ export function formatLogEntries(entries: LogEntry[]): string {
 // Job-level log handlers
 // ---------------------------------------------------------------------------
 
-const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (runId: number, jobName: string) {
-  const jobs = yield* listJobs(runId);
+const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
+  runId: number,
+  jobName: string,
+  repo: string | null,
+) {
+  const jobs = yield* listJobs(runId, repo);
 
   // Exact match first
   const exact = jobs.find((j) => j.name === jobName);
@@ -305,8 +336,9 @@ const filterFailedStepEntries = Effect.fn("workflow.filterFailedStepEntries")(fu
   runId: number,
   jobId: number,
   entries: LogEntry[],
+  repo: string | null,
 ) {
-  const jobs = yield* listJobs(runId);
+  const jobs = yield* listJobs(runId, repo);
   const job = jobs.find((j) => j.databaseId === jobId);
   if (!job) return entries;
 
@@ -324,25 +356,39 @@ const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
   job: string;
   failedStepsOnly: boolean;
   format: string;
+  repo: string | null;
 }) {
   const gh = yield* GitHubService;
-  const { owner, name: repo } = yield* gh.getRepoInfo();
 
-  const jobId = yield* resolveJobId(opts.runId, opts.job);
+  let owner: string;
+  let repoName: string;
+  if (opts.repo !== null) {
+    const parts = opts.repo.split("/");
+    owner = parts[0];
+    repoName = parts[1];
+  } else {
+    const info = yield* gh.getRepoInfo();
+    owner = info.owner;
+    repoName = info.name;
+  }
+
+  const jobId = yield* resolveJobId(opts.runId, opts.job, opts.repo);
 
   // Fetch raw logs via API (follows 302 redirect automatically)
-  const raw = yield* gh.runGh(["api", `repos/${owner}/${repo}/actions/jobs/${jobId}/logs`]).pipe(
-    Effect.map((r) => r.stdout),
-    Effect.catchTag("GitHubCommandError", () => {
-      // Fallback: use gh run view --log --job
-      return fetchLogs(opts.runId, false, jobId).pipe(Effect.map((r) => r.log));
-    }),
-  );
+  const raw = yield* gh
+    .runGh(["api", `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`])
+    .pipe(
+      Effect.map((r) => r.stdout),
+      Effect.catchTag("GitHubCommandError", () => {
+        // Fallback: use gh run view --log --job
+        return fetchLogs(opts.runId, false, jobId, opts.repo).pipe(Effect.map((r) => r.log));
+      }),
+    );
 
   let entries = parseRawJobLogs(raw);
 
   if (opts.failedStepsOnly) {
-    entries = yield* filterFailedStepEntries(opts.runId, jobId, entries);
+    entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
   }
 
   if (opts.format === "json") {
@@ -420,11 +466,12 @@ export const workflowViewCommand = Command.make(
   "view",
   {
     format: formatOption,
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
   },
-  ({ format, run }) =>
+  ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const detail = yield* viewRun(run);
+      const detail = yield* viewRun(run, Option.getOrNull(repo));
       yield* logFormatted(detail, format);
     }),
 ).pipe(Command.withDescription("View workflow run details including jobs and steps"));
@@ -433,11 +480,12 @@ export const workflowJobsCommand = Command.make(
   "jobs",
   {
     format: formatOption,
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
   },
-  ({ format, run }) =>
+  ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const jobs = yield* listJobs(run);
+      const jobs = yield* listJobs(run, Option.getOrNull(repo));
       yield* logFormatted(jobs, format);
     }),
 ).pipe(Command.withDescription("List jobs and their steps for a workflow run"));
@@ -450,11 +498,12 @@ export const workflowLogsCommand = Command.make(
       Flag.withDefault(true),
     ),
     format: formatOption,
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
   },
-  ({ failedOnly, format, run }) =>
+  ({ failedOnly, format, repo, run }) =>
     Effect.gen(function* () {
-      const logs = yield* fetchLogs(run, failedOnly);
+      const logs = yield* fetchLogs(run, failedOnly, null, Option.getOrNull(repo));
 
       if (format === "toon" || format === "json") {
         yield* logFormatted(logs, format);
@@ -489,11 +538,12 @@ export const workflowCancelCommand = Command.make(
   "cancel",
   {
     format: formatOption,
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to cancel")),
   },
-  ({ format, run }) =>
+  ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const result = yield* cancelRun(run);
+      const result = yield* cancelRun(run, Option.getOrNull(repo));
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Cancel an in-progress workflow run"));
@@ -502,11 +552,12 @@ export const workflowWatchCommand = Command.make(
   "watch",
   {
     format: formatOption,
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
   },
-  ({ format, run }) =>
+  ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const result = yield* watchRun(run);
+      const result = yield* watchRun(run, Option.getOrNull(repo));
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Watch a workflow run until it completes, then show final status"));
@@ -522,15 +573,17 @@ export const workflowJobLogsCommand = Command.make(
     job: Flag.string("job").pipe(
       Flag.withDescription("Job name to fetch logs for (exact or partial match)"),
     ),
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
   },
-  ({ failedStepsOnly, format, job, run }) =>
+  ({ failedStepsOnly, format, job, repo, run }) =>
     Effect.gen(function* () {
       const result = yield* fetchJobLogs({
         runId: run,
         job,
         failedStepsOnly,
         format,
+        repo: Option.getOrNull(repo),
       });
 
       if ("formatted" in result) {
