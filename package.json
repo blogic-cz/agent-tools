@@ -19,6 +19,7 @@
     "url": "https://github.com/blogic-cz/agent-tools.git"
   },
   "bin": {
+    "agent-tools-audit": "./src/audit-tool/index.ts",
     "agent-tools-az": "./src/az-tool/index.ts",
     "agent-tools-db": "./src/db-tool/index.ts",
     "agent-tools-gh": "./src/gh-tool/index.ts",

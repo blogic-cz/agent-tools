@@ -6,6 +6,7 @@ import { Console, Effect, Layer, Option } from "effect";
 import type { SchemaMode } from "./types";
 
 import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { makeDbConfigLayer } from "./config-service";
 import { DbConnectionError } from "./errors";
@@ -121,9 +122,13 @@ const MainLayer = DbService.layer.pipe(
   Layer.provide(dbConfigLayer),
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
+const program = withAudit("db", cli).pipe(
+  Effect.provide(MainLayer),
+  Effect.tapCause(renderCauseToStderr),
+);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

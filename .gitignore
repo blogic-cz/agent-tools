@@ -8,3 +8,4 @@ dist/
 .effect-cache/
 .opencode/plugin/session-map.json
 .sisyphus/
+.opencode/plugin/plugin-state.json
