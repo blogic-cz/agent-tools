@@ -56,6 +56,11 @@ export type CredentialGuardConfig = {
   additionalDangerousBashPatterns?: string[];
 };
 
+export type AuditConfig = {
+  retentionDays?: number;
+  dbPath?: string;
+};
+
 /**
  * Root agent-tools configuration.
  *
@@ -63,7 +68,7 @@ export type CredentialGuardConfig = {
  * of named profiles. Tools select a profile via the --profile <name> flag (default = "default" key).
  * If only one profile exists, it is used automatically.
  *
- * session and credentialGuard are global - not per-profile.
+ * session, credentialGuard, and audit are global - not per-profile.
  */
 export type AgentToolsConfig = {
   $schema?: string;
@@ -79,6 +84,7 @@ export type AgentToolsConfig = {
   session?: {
     storagePath: string;
   };
+  audit?: AuditConfig;
   /** Global credential guard config (merged with built-in defaults, not per-profile) */
   credentialGuard?: CredentialGuardConfig;
   /** Optional default environment name (local|test|prod) used by tools when no --env flag is provided */

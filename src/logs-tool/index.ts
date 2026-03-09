@@ -21,6 +21,7 @@ import { Console, Effect, Layer, Option, Result } from "effect";
 import type { Environment, LogResult, ReadOptions } from "./types";
 
 import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { LogsConfigError, LogsNotFoundError, LogsReadError, LogsTimeoutError } from "./errors";
 import { LogsService, LogsServiceLayer } from "./service";
@@ -229,9 +230,13 @@ export const run = Command.runWith(mainCommand, {
 const MainLayer = LogsServiceLayer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
+const program = withAudit("logs", cli).pipe(
+  Effect.provide(MainLayer),
+  Effect.tapCause(renderCauseToStderr),
+);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

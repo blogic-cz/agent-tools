@@ -5,6 +5,7 @@ export type {
   DbEnvConfig,
   DatabaseConfig,
   LogsConfig,
+  AuditConfig,
   CliToolOverride,
   CredentialGuardConfig,
 } from "./types.ts";

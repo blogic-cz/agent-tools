@@ -4,6 +4,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
 import { renderCauseToStderr, VERSION } from "#shared";
+import { AuditServiceLayer, withAudit } from "#shared/audit";
 import {
   issueCloseCommand,
   issueCommentCommand,
@@ -162,9 +163,15 @@ const cli = Command.run(mainCommand, {
   version: VERSION,
 });
 
-const MainLayer = GitHubService.layer.pipe(Layer.provideMerge(BunServices.layer));
+const MainLayer = GitHubService.layer.pipe(
+  Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(AuditServiceLayer),
+);
 
-const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
+const program = withAudit("gh", cli).pipe(
+  Effect.provide(MainLayer),
+  Effect.tapCause(renderCauseToStderr),
+);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

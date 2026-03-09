@@ -54,6 +54,11 @@ const LogsConfigSchema = Schema.Struct({
   remotePath: Schema.String,
 });
 
+const AuditConfigSchema = Schema.Struct({
+  retentionDays: Schema.optionalKey(Schema.Number),
+  dbPath: Schema.optionalKey(Schema.String),
+});
+
 const AgentToolsConfigSchema = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String),
   azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
@@ -65,6 +70,7 @@ const AgentToolsConfigSchema = Schema.Struct({
       storagePath: Schema.String,
     }),
   ),
+  audit: Schema.optionalKey(AuditConfigSchema),
   credentialGuard: Schema.optionalKey(CredentialGuardConfigSchema),
   defaultEnvironment: Schema.optionalKey(Schema.String),
 });

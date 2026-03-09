@@ -4,6 +4,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
 import { formatAny, formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import { AuditServiceLayer, withAudit } from "#shared/audit";
 import {
   findFailedJobs,
   getBuildJobSummary,
@@ -196,9 +197,13 @@ const cli = Command.run(mainCommand, {
 const MainLayer = AzServiceLayer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
+const program = withAudit("az", cli).pipe(
+  Effect.provide(MainLayer),
+  Effect.tapCause(renderCauseToStderr),
+);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

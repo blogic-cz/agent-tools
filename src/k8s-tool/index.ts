@@ -6,6 +6,7 @@ import { Console, Effect, Layer, Option } from "effect";
 import type { CommandResult } from "./types";
 
 import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { K8sService, K8sServiceLayer } from "./service";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
@@ -401,9 +402,13 @@ const cli = Command.run(mainCommand, {
 const MainLayer = K8sServiceLayer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = cli.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
+const program = withAudit("k8s", cli).pipe(
+  Effect.provide(MainLayer),
+  Effect.tapCause(renderCauseToStderr),
+);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

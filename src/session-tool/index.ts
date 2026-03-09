@@ -14,6 +14,7 @@ import { Console, Effect, Layer, Result } from "effect";
 import type { MessageSummary, SessionResult } from "./types";
 
 import { formatOption, formatOutput, VERSION } from "#shared";
+import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
 import { formatDate, SessionService, SessionServiceLayer, truncate } from "./service";
@@ -261,9 +262,12 @@ export const run = Command.runWith(mainCommand, {
   version: VERSION,
 });
 
-const MainLayer = AppLayer.pipe(Layer.provideMerge(BunServices.layer));
+const MainLayer = AppLayer.pipe(
+  Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(AuditServiceLayer),
+);
 
-const program = cli.pipe(Effect.provide(MainLayer));
+const program = withAudit("session", cli).pipe(Effect.provide(MainLayer));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,
