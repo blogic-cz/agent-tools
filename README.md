@@ -196,6 +196,65 @@ export default { handleToolExecuteBefore };
 
 All tools support `--help` for full usage documentation.
 
+`agent-tools-audit` reads the same SQLite file the wrappers write to. By default that file lives at `~/.agent-tools/audit.sqlite`, and you can override both path and retention per repo with the global `audit` config section.
+
+## Audit Logging
+
+Every tool invocation is automatically recorded to a local SQLite database — zero configuration required. The audit trail captures which tool ran, what arguments it received, how long it took, whether it succeeded, and which project directory it was called from.
+
+### How it works
+
+Each CLI wrapper (`gh`, `k8s`, `db`, `az`, `logs`, `session`, `audit`) writes a row to `~/.agent-tools/audit.sqlite` on every execution. Logging is fire-and-forget — if the database is unavailable or write fails, the tool continues normally. Audit never blocks or slows down your workflow.
+
+Entries older than `retentionDays` (default: 90) are automatically purged on each write.
+
+### Browsing the audit trail
+
+```bash
+# Recent 20 entries (default)
+bunx agent-tools-audit list
+
+# Last 50 entries, JSON format
+bunx agent-tools-audit list --limit 50 --format json
+
+# Filter by tool
+bunx agent-tools-audit list --tool gh
+
+# Filter by project directory
+bunx agent-tools-audit list --project /Users/me/my-repo
+
+# Purge entries older than 30 days
+bunx agent-tools-audit purge --days 30
+```
+
+### Audit Configuration
+
+Both the database path and retention period are configurable in `agent-tools.json5`:
+
+```json5
+{
+  audit: {
+    retentionDays: 90, // days before auto-purge (default: 90)
+    dbPath: "~/.agent-tools/audit.sqlite", // database file location
+  },
+}
+```
+
+All settings are optional — audit works out of the box with sensible defaults.
+
+### What gets recorded
+
+| Column      | Description                                            |
+| ----------- | ------------------------------------------------------ |
+| `ts`        | ISO 8601 timestamp                                     |
+| `tool`      | Tool name (`gh`, `k8s`, `db`, `az`, `logs`, `session`) |
+| `project`   | Working directory (`process.cwd()`)                    |
+| `args`      | Command-line arguments (JSON array)                    |
+| `duration`  | Execution time in milliseconds                         |
+| `success`   | `1` (success) or `0` (failure)                         |
+| `error`     | Error message if failed, `null` otherwise              |
+| `exit_code` | Process exit code                                      |
+
 ## Configuration
 
 Config is loaded from `agent-tools.json5` (or `agent-tools.json`) by walking up from the current working directory. Missing config = zero-config mode (works for `gh-tool`; others require config).
