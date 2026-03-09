@@ -73,6 +73,12 @@
     storagePath: "~/.local/share/opencode/storage",
   },
 
+  // Global audit log settings
+  audit: {
+    retentionDays: 90,
+    dbPath: "~/.agent-tools/audit.sqlite",
+  },
+
   // Global security rules for AI agents
   credentialGuard: {
     additionalBlockedPaths: ["private/"],

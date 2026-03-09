@@ -1,6 +1,6 @@
 # @blogic-cz/agent-tools
 
-Safe CLI wrappers for AI coding agents. 6 tools for GitHub, databases, Kubernetes, Azure DevOps, logs, and OpenCode sessions — with JSON5 config and a credential guard that blocks agents from touching secrets.
+Safe CLI wrappers for AI coding agents. 7 tools for GitHub, databases, Kubernetes, Azure DevOps, logs, OpenCode sessions, and audit history — with JSON5 config and a credential guard that blocks agents from touching secrets.
 
 ## Why
 
@@ -47,7 +47,7 @@ Follow these steps to set up agent-tools in the consumer project.
 
 **Step 2 — Configure**
 
-Ask the user which tools they need (gh, db, k8s, az, logs, session). Create `agent-tools.json5` in the project root with **only the selected tools configured**. See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for the full config reference with all options documented.
+Ask the user which tools they need (gh, db, k8s, az, logs, session, audit). Create `agent-tools.json5` in the project root with **only the selected tools configured**. See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for the full config reference with all options documented.
 
 Minimal starting config:
 
@@ -124,6 +124,10 @@ bun run agent-tools/example-tool/index.ts ping
 {
   $schema: "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
   defaultEnvironment: "test", // optional: any string (e.g. "local", "test", "prod")
+  audit: {
+    retentionDays: 90,
+    dbPath: "~/.agent-tools/audit.sqlite",
+  },
   kubernetes: {
     default: {
       clusterId: "your-cluster-id",
@@ -145,6 +149,7 @@ bun run agent-tools/example-tool/index.ts ping
 bunx agent-tools-gh pr status
 bunx agent-tools-k8s kubectl --env test --cmd "get pods"
 bunx agent-tools-logs list --env local
+bunx agent-tools-audit list --limit 20
 ```
 
 ```bash
@@ -158,6 +163,7 @@ Optionally, add script aliases to your `package.json` for shorter invocation:
 {
   "scripts": {
     "gh-tool": "agent-tools-gh",
+    "audit-tool": "agent-tools-audit",
     "k8s-tool": "agent-tools-k8s",
     "db-tool": "agent-tools-db",
     "logs-tool": "agent-tools-logs",
@@ -181,6 +187,7 @@ export default { handleToolExecuteBefore };
 | Binary                | Description                                                                                                      |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `agent-tools-gh`      | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
+| `agent-tools-audit`   | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
 | `agent-tools-db`      | Database query tool — SQL execution, schema introspection                                                        |
 | `agent-tools-k8s`     | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
 | `agent-tools-az`      | Azure DevOps tool — pipelines, builds, repos                                                                     |

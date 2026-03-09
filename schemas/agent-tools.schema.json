@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
   "title": "Agent Tools Configuration",
-  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, kubernetes, database, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session and credentialGuard are global sections.",
+  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, kubernetes, database, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session, audit, and credentialGuard are global sections.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -45,6 +45,10 @@
     "session": {
       "description": "Global session configuration shared across profiles.",
       "$ref": "#/definitions/SessionConfig"
+    },
+    "audit": {
+      "description": "Global audit logging configuration shared across profiles.",
+      "$ref": "#/definitions/AuditConfig"
     },
     "credentialGuard": {
       "description": "Global credential guard configuration merged with built-in defaults.",
@@ -199,6 +203,21 @@
       },
       "required": ["storagePath"]
     },
+    "AuditConfig": {
+      "description": "Global audit configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retentionDays": {
+          "description": "How many days of audit history to keep before purge on open.",
+          "type": "number"
+        },
+        "dbPath": {
+          "description": "Filesystem path for the audit SQLite database.",
+          "type": "string"
+        }
+      }
+    },
     "CliToolOverride": {
       "description": "CLI override entry that blocks a tool and recommends a safer wrapper.",
       "type": "object",
@@ -310,6 +329,10 @@
       },
       "session": {
         "storagePath": "~/.local/share/opencode/storage"
+      },
+      "audit": {
+        "retentionDays": 90,
+        "dbPath": "~/.agent-tools/audit.sqlite"
       },
       "credentialGuard": {
         "additionalBlockedPaths": ["private/"],

@@ -6,7 +6,15 @@ import {
 } from "#guard";
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -88,6 +96,40 @@ function runToolWithEnv(
   });
 }
 
+function readAuditRows(dbPath: string, limit: number) {
+  const result = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+import { Database } from "bun:sqlite";
+
+const db = new Database(process.env.DB_PATH, { strict: true });
+const rows = db.query("SELECT tool, project, args, success FROM audit_log ORDER BY id DESC LIMIT ?").all(Number(process.env.LIMIT ?? "1"));
+db.close(false);
+console.log(JSON.stringify(rows));
+      `.trim(),
+    ],
+    {
+      cwd: TOOLS_ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DB_PATH: dbPath,
+        LIMIT: String(limit),
+      },
+    },
+  );
+
+  expect(result.status).toBe(0);
+  return JSON.parse(result.stdout.trim()) as Array<{
+    tool: string;
+    project: string;
+    args: string;
+    success: number;
+  }>;
+}
+
 describe("Integration: tool --help in zero-config mode", () => {
   it("gh-tool --help works without config file", () => {
     const result = runTool("src/gh-tool/index.ts", ["--help"]);
@@ -125,6 +167,62 @@ describe("Integration: tools --help with config file", () => {
     const result = runTool("src/session-tool/index.ts", ["--help"], configDir);
     expect(result.status).toBe(0);
     expect(result.stdout.toLowerCase()).toContain("session");
+  });
+
+  it("session-tool list creates an audit row in an isolated HOME", () => {
+    const homeDir = join(tmpdir(), `agent-tools-audit-home-${Date.now()}`);
+    const workDir = join(tmpdir(), `agent-tools-audit-work-${Date.now()}`);
+    const auditDbPath = join(homeDir, ".agent-tools", "audit.sqlite");
+
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(join(workDir, "message"), { recursive: true });
+    mkdirSync(join(workDir, "session"), { recursive: true });
+
+    writeFileSync(
+      join(workDir, "agent-tools.json5"),
+      JSON.stringify({
+        session: {
+          storagePath: workDir,
+        },
+      }),
+    );
+
+    const result = runToolWithEnv(
+      "src/session-tool/index.ts",
+      ["list", "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(auditDbPath)).toBe(true);
+
+    const rows = readAuditRows(auditDbPath, 1);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.tool).toBe("session");
+    expect(rows[0]?.project).toBe(realpathSync(workDir));
+    expect(rows[0]?.args).toContain("list");
+    expect(rows[0]?.success).toBe(1);
+
+    const auditResult = runToolWithEnv(
+      "src/audit-tool/index.ts",
+      ["list", "--limit", "1", "--project", realpathSync(workDir), "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+    );
+    const parsedAuditResult = JSON.parse(auditResult.stdout.trim()) as {
+      success: boolean;
+      data?: Array<{ tool: string }>;
+    };
+
+    expect(auditResult.status).toBe(0);
+    expect(parsedAuditResult.success).toBe(true);
+    expect(parsedAuditResult.data?.[0]?.tool).toBe("session");
+
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
   });
 });
 
