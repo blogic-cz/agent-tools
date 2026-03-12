@@ -10,6 +10,7 @@ export type PRInfo = {
   baseRefName: string;
   state: string;
   isDraft: boolean;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 };
 
 export type ReviewThread = {

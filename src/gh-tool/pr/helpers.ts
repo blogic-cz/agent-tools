@@ -23,7 +23,7 @@ export type PRViewJsonResult = {
   baseRefName: string;
   state: string;
   isDraft: boolean;
-  mergeable: string;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 };
 
 export const runLocalCommand = Effect.fn("pr.runLocalCommand")(function* (

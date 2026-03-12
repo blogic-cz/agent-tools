@@ -15,7 +15,7 @@ export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null)
   if (prNumber !== null) {
     args.push(String(prNumber));
   }
-  args.push("--json", "number,url,title,headRefName,baseRefName,state,isDraft");
+  args.push("--json", "number,url,title,headRefName,baseRefName,state,isDraft,mergeable");
 
   const info = yield* gh.runGhJson<PRInfo>(args);
   return info;
@@ -98,7 +98,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
               "--head",
               branchName,
               "--json",
-              "number,url,title,headRefName,baseRefName,state,isDraft",
+              "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
               "--limit",
               "1",
             ])
@@ -201,7 +201,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
           "--head",
           opts.head,
           "--json",
-          "number,url,title,headRefName,baseRefName,state,isDraft",
+          "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
           "--limit",
           "1",
         ])
@@ -257,7 +257,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     "--head",
     opts.head,
     "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft",
+    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
     "--limit",
     "1",
   ]);
