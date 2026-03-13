@@ -338,7 +338,10 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function handleToolExecuteBefore(input: HookInput, output: HookOutput): void {
-    const tool = input.tool;
+    // Normalize tool name across platforms:
+    // - Claude Code passes capitalized: "Bash", "Read", "Write", "Edit"
+    // - OpenCode MCP tools pass prefixed: "mcp_bash", "mcp_read", "mcp_write", "mcp_edit"
+    const tool = input.tool.toLowerCase().replace(/^mcp_/, "");
     const args = output.args;
 
     const filePath = extractFilePath(args);
