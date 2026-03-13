@@ -528,46 +528,31 @@ describe("handleToolExecuteBefore tool name normalization", () => {
 
   it("blocks raw gh via lowercase 'bash' (existing behavior)", () => {
     expect(() =>
-      guard.handleToolExecuteBefore(
-        { tool: "bash" },
-        { args: { command: "gh issue list" } },
-      ),
+      guard.handleToolExecuteBefore({ tool: "bash" }, { args: { command: "gh issue list" } }),
     ).toThrow("Direct gh usage blocked");
   });
 
   it("blocks raw gh via Claude Code capitalized 'Bash'", () => {
     expect(() =>
-      guard.handleToolExecuteBefore(
-        { tool: "Bash" },
-        { args: { command: "gh issue list" } },
-      ),
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: "gh issue list" } }),
     ).toThrow("Direct gh usage blocked");
   });
 
   it("blocks raw gh via OpenCode MCP 'mcp_bash'", () => {
     expect(() =>
-      guard.handleToolExecuteBefore(
-        { tool: "mcp_bash" },
-        { args: { command: "gh issue list" } },
-      ),
+      guard.handleToolExecuteBefore({ tool: "mcp_bash" }, { args: { command: "gh issue list" } }),
     ).toThrow("Direct gh usage blocked");
   });
 
   it("blocks .env read via Claude Code capitalized 'Read'", () => {
     expect(() =>
-      guard.handleToolExecuteBefore(
-        { tool: "Read" },
-        { args: { filePath: ".env" } },
-      ),
+      guard.handleToolExecuteBefore({ tool: "Read" }, { args: { filePath: ".env" } }),
     ).toThrow("Access blocked");
   });
 
   it("blocks .env read via OpenCode MCP 'mcp_read'", () => {
     expect(() =>
-      guard.handleToolExecuteBefore(
-        { tool: "mcp_read" },
-        { args: { filePath: ".env" } },
-      ),
+      guard.handleToolExecuteBefore({ tool: "mcp_read" }, { args: { filePath: ".env" } }),
     ).toThrow("Access blocked");
   });
 
@@ -575,7 +560,7 @@ describe("handleToolExecuteBefore tool name normalization", () => {
     expect(() =>
       guard.handleToolExecuteBefore(
         { tool: "mcp_write" },
-        { args: { filePath: "config.ts", content: `token = \"${EXAMPLE_GH_TOKEN}\"` } },
+        { args: { filePath: "config.ts", content: `token = "${EXAMPLE_GH_TOKEN}"` } },
       ),
     ).toThrow("Secret detected");
   });
@@ -600,10 +585,7 @@ describe("handleToolExecuteBefore tool name normalization", () => {
 
   it("allows safe file reads via MCP tool names", () => {
     expect(() =>
-      guard.handleToolExecuteBefore(
-        { tool: "mcp_read" },
-        { args: { filePath: "src/index.ts" } },
-      ),
+      guard.handleToolExecuteBefore({ tool: "mcp_read" }, { args: { filePath: "src/index.ts" } }),
     ).not.toThrow();
   });
 });
