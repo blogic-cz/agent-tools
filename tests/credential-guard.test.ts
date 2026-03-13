@@ -518,3 +518,92 @@ describe("createCredentialGuard with custom config", () => {
     expect(guard.isDangerousBashCommand("printenv")).toBe(true);
   });
 });
+
+// ============================================================================
+// TOOL NAME NORMALIZATION — cross-platform compatibility
+// ============================================================================
+
+describe("handleToolExecuteBefore tool name normalization", () => {
+  const guard = createCredentialGuard();
+
+  it("blocks raw gh via lowercase 'bash' (existing behavior)", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "bash" },
+        { args: { command: "gh issue list" } },
+      ),
+    ).toThrow("Direct gh usage blocked");
+  });
+
+  it("blocks raw gh via Claude Code capitalized 'Bash'", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "Bash" },
+        { args: { command: "gh issue list" } },
+      ),
+    ).toThrow("Direct gh usage blocked");
+  });
+
+  it("blocks raw gh via OpenCode MCP 'mcp_bash'", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "mcp_bash" },
+        { args: { command: "gh issue list" } },
+      ),
+    ).toThrow("Direct gh usage blocked");
+  });
+
+  it("blocks .env read via Claude Code capitalized 'Read'", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "Read" },
+        { args: { filePath: ".env" } },
+      ),
+    ).toThrow("Access blocked");
+  });
+
+  it("blocks .env read via OpenCode MCP 'mcp_read'", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "mcp_read" },
+        { args: { filePath: ".env" } },
+      ),
+    ).toThrow("Access blocked");
+  });
+
+  it("blocks secret write via OpenCode MCP 'mcp_write'", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "mcp_write" },
+        { args: { filePath: "config.ts", content: `token = \"${EXAMPLE_GH_TOKEN}\"` } },
+      ),
+    ).toThrow("Secret detected");
+  });
+
+  it("blocks .env edit via OpenCode MCP 'mcp_edit'", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "mcp_edit" },
+        { args: { filePath: ".env.production" } },
+      ),
+    ).toThrow("Access blocked");
+  });
+
+  it("allows safe commands via MCP tool names", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "mcp_bash" },
+        { args: { command: "bun agent-tools-gh pr list" } },
+      ),
+    ).not.toThrow();
+  });
+
+  it("allows safe file reads via MCP tool names", () => {
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "mcp_read" },
+        { args: { filePath: "src/index.ts" } },
+      ),
+    ).not.toThrow();
+  });
+});
