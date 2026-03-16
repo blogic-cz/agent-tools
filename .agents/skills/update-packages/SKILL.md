@@ -5,98 +5,26 @@ description: "LOAD THIS SKILL when: updating npm packages, user mentions 'update
 
 # Update Packages
 
-## First Step: Create Branch (MANDATORY)
+## Step 0: Update Skills + Create Branch (MANDATORY)
 
-Before touching any packages, create a dedicated branch:
+Before touching any packages, update skills and create a dedicated branch.
 
 ```bash
-but branch new chore/update-packages-$(date +%y%m%d-%H%M)
+# Update all skills from skills-lock.json (reads sources + skill names from lock)
+bun run .agents/skills/update-packages/references/skills-update-local.ts
+
+# Dry run to see what would be executed
+bun run .agents/skills/update-packages/references/skills-update-local.ts --dry-run
+
+# Create a fresh branch
+git checkout -b chore/update-packages-$(date +%y%m%d-%H%M)
 ```
 
 **Rules:**
 
+- Always update skills first — they may contain updated instructions for this workflow
 - Never reuse an existing update-packages branch
-- Always create a fresh branch with the current timestamp
 - All package update commits go to this branch
-
-## Definition of Done
-
-- `bun upgrade` shows all packages at latest versions
-- No packages remain to select or update
-- All checks pass (`bun run check`)
-- All relevant tests pass
-
-## If Bun Updates
-
-When the Bun runtime itself has a new version:
-
-1. Update `packageManager` field in root `package.json`:
-
-   ```json
-   "packageManager": "bun@X.Y.Z"
-   ```
-
-2. Update all Dockerfiles that reference `BUN_VERSION`:
-
-   ```dockerfile
-   ARG BUN_VERSION=X.Y.Z
-   ```
-
-3. Update CI pipeline `BUN_VERSION` environment variable in all relevant pipeline files.
-
-4. Run checks to confirm nothing broke:
-
-   ```bash
-   bun run check
-   ```
-
-5. Commit message format:
-   ```
-   chore: update bun to vX.Y.Z
-   ```
-
-## If Playwright Updates
-
-When `@playwright/test` or `playwright` npm version changes:
-
-1. The Docker image version **must match** the npm package version exactly.
-
-2. Find all references to the Playwright Docker image across:
-   - `Dockerfile` files
-   - CI/CD pipeline YAML files
-   - Kubernetes Helm values files
-   - Any other infrastructure files
-
-3. Update all references to use the matching image tag:
-
-   ```
-   mcr.microsoft.com/playwright:vX.Y.Z-noble
-   ```
-
-4. Run E2E tests to confirm compatibility:
-
-   ```bash
-   bun run test:e2e
-   ```
-
-5. Commit message format:
-   ```
-   chore: update playwright to vX.Y.Z
-   ```
-
-## Catalog Packages
-
-Some packages are managed via Bun's catalog and require manual version checking:
-
-```bash
-# Check latest version of a catalog package
-npm view <package-name> version
-
-# Check all versions available
-npm view <package-name> versions --json
-```
-
-Update catalog entries in `package.json` or `bun.lockb` manually after confirming the latest version.
 
 ## Package Groups (Update Together)
 
@@ -110,56 +38,151 @@ These packages must always be updated as a group — mismatched versions cause t
 | **effect**          | `effect`, `@effect/schema`, `@effect/platform`, `@effect/language-service`                          |
 | **drizzle**         | `drizzle-orm`, `drizzle-kit`, `drizzle-zod`                                                         |
 | **pino**            | `pino`, `pino-pretty`, `@types/pino`                                                                |
-| **playwright**      | `@playwright/test`, `playwright` (+ Docker image sync — see above)                                  |
+| **playwright**      | `@playwright/test`, `playwright` (+ Docker image sync — see Special Cases)                          |
 
 ## Update Strategy
 
-**For regular packages:**
+### Per Package Group Flow
 
-1. Run `bun upgrade` to update all packages interactively
-2. Select packages to update (prefer updating all unless a known breaking change exists)
-3. Run `bun run check` after each group update
-4. Fix any breaking changes before proceeding to the next group
+For each group, execute steps 1–4 before moving to the next:
 
-**For catalog packages:**
+**Step 1 — Identify versions + release notes**
 
-1. Manually check latest version with `npm view <package> version`
-2. Update the version in the catalog configuration
-3. Run `bun install` to apply
-4. Run `bun run check`
+Run all three reports to get outdated packages, runtime drift, and release notes:
+
+```bash
+bun run .agents/skills/update-packages/references/check-outdated.ts
+bun run .agents/skills/update-packages/references/check-outdated.ts --changelog
+bun run .agents/skills/update-packages/references/report.ts --json
+```
+
+- `check-outdated.ts` — scans all workspace `package.json` files (incl. catalog/catalogs), skips `workspace:*` and `catalog:` refs, outputs a grouped list with `[MAJOR]`/`[minor]` tags
+- `check-outdated.ts --changelog` — same scan + fetches GitHub release notes for each minor/major update. Also detects config files for each package. Output is JSON with `releases[]` and `configFiles[]` per entry. Requires `GITHUB_TOKEN` or `GH_TOKEN` env var for authenticated GitHub API access (5000 req/hour vs 60 unauthenticated).
+- `report.ts --json` — checks pinned runtime versions (Bun, Playwright, Node) across workflows, Dockerfiles, and package manifests for drift
+
+**Reports are auto-saved to files** — use these files throughout the update session instead of re-running scripts or holding output in context:
+
+| Script flag          | Saved to                                                     |
+| -------------------- | ------------------------------------------------------------ |
+| `--json`             | `.agents/skills/update-packages/references/outdated.json`          |
+| `--changelog`        | `.agents/skills/update-packages/references/outdated-changelog.json` |
+| `report.ts --json`   | `.agents/skills/update-packages/references/runtime-report.json`    |
+
+These files are `.gitignore`d — they are session-local working data, not committed.
+
+For catalog packages, version pins are in the root `package.json` under `"catalog"` / `"catalogs"` — update them manually.
+
+**Step 2 — Update + Adopt features IN PARALLEL**
+
+| Track A: Apply Update                                 | Track B: Adopt features from release notes                                              |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Apply version bumps via `bun upgrade` or catalog edit | Read `outdated-changelog.json` — each entry has `releases[]` with full release notes    |
+| `bun install` if catalog                              | Classify each new feature by tier (see below)                                           |
+|                                                       | **T0/T1**: implement config-level changes (target files in `configFiles[]`), verify with `bun run check` |
+|                                                       | **T2**: generate concrete diffs, include in report                                      |
+|                                                       | Search codebase for usages of changed/deprecated/new APIs                               |
+
+Each package group shares one background subagent. Standalone packages get one subagent each.
+
+#### Feature Adoption Tiers
+
+| Tier | Type                     | Action                                           | Example                                     |
+| ---- | ------------------------ | ------------------------------------------------ | ------------------------------------------- |
+| T0   | Config addition (zero-risk, additive) | **Auto-implement** + verify with `bun run check` | Add `detectAsyncLeaks: true` to vitest config |
+| T1   | Config addition (behavioral)          | **Auto-implement** + verify with `bun run check` | Add new reporters to vitest CI config        |
+| T2   | Code-level adoption                   | **Suggest with concrete diffs** (don't apply)    | Add `{ tags: ["unit"] }` to `describe()` calls |
+| T3   | Breaking change / migration           | **Fix during Step 3** (check + fix)              | API rename, config schema change             |
+
+A feature is T0/T1 when ALL of these are true:
+- It modifies a config file (not source code)
+- It's additive (doesn't change existing behavior)
+- It can be verified with `bun run check`
+- The `configFiles[]` field in the changelog report points to the target file
+
+**Step 3 — Check + Fix**
+
+- Run `bun run check`
+- If it fails: use release notes from the `--changelog` output for context-aware fixes
+
+**Step 4 — Commit the group**
+
+Use separate commits for version bumps and feature adoptions:
+- `chore: update <package> to vX.Y.Z` — version bump only
+- `feat: adopt <package> vX.Y improvements (<feature list>)` — config/code changes from new features
+
+### Release Notes Report
+
+After all groups are updated, output a unified summary:
+
+```
+| Package | Type | Old → New | Changes | Impact |
+|---------|------|-----------|---------|--------|
+```
+
+**Rules:**
+
+- Each subagent MUST search the codebase for usages of changed/deprecated/new APIs
+- For breaking changes: list affected files with line numbers + migration snippets
+- For T0/T1 features: implement them, list what was adopted
+- For T2 features: generate concrete diffs with file paths and before/after snippets, prefix with `ADOPTABLE:`
+- Skip patch-only updates in the report (the `--changelog` output already excludes them)
+
+## Special Cases
+
+### Bun Runtime Updates
+
+1. Update `packageManager` in root `package.json`: `"bun@X.Y.Z"`
+2. Update every Bun runtime pin in Dockerfiles, including `ARG BUN_VERSION=X.Y.Z` and any `FROM oven/bun:X.Y.Z-*` base images
+3. Update Bun versions in CI workflow and pipeline files, e.g. `bun-version: X.Y.Z` in GitHub Actions and `BUN_VERSION="X.Y.Z"` in Azure pipelines
+4. `bun run check` → commit: `chore: update bun to vX.Y.Z`
+
+If the report shows drift, fix all Bun pins before finishing. The report covers:
+
+- `packageManager`
+- `@types/bun`
+- `bun-version:` in workflows
+- `BUN_VERSION=` / `ARG BUN_VERSION=` in scripts and Dockerfiles
+- `FROM oven/bun:...` Docker base images
+- `node-version:` in workflows
+- Playwright package/image version alignment
+
+Manual search fallback:
+
+```bash
+grep -R "bun-version:\|BUN_VERSION=\|bun@1\.\|oven/bun:1\." .
+```
+
+### Playwright Updates
+
+1. Docker image version **must match** npm package version exactly
+2. Update all references to `mcr.microsoft.com/playwright:vX.Y.Z-noble` across Dockerfiles, CI, and Helm values
+3. `bun run test:e2e` → commit: `chore: update playwright to vX.Y.Z`
+
+### Catalog Packages
+
+Packages in Bun's catalog need manual version checks: `npm view <package> version`. Update entries in `package.json` manually.
 
 ## Testing Requirements
 
-| Update Type                                    | Required Tests                                        |
-| ---------------------------------------------- | ----------------------------------------------------- |
-| UI/component packages (`@base-ui/react`, etc.) | `bun run check` + visual review in browser            |
-| TRPC / TanStack Router                         | `bun run check` + `bun run test`                      |
-| Drizzle ORM                                    | `bun run check` + `bun run test`                      |
-| Effect packages                                | `bun run check` + `bun run test`                      |
-| Playwright                                     | `bun run check` + `bun run test:e2e`                  |
-| Bun runtime                                    | `bun run check` + `bun run test` + `bun run test:e2e` |
-| All others                                     | `bun run check`                                       |
-
-## Cache Recovery (Bun)
-
-If packages fail to install or you see stale cache errors after updating:
-
-```bash
-bun clean:packages && bun install
-```
-
-This clears the local package cache and performs a fresh install.
-
-## Common Breaking Changes
-
-| Package                    | Common Issue                                                          | Fix                                                                         |
-| -------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `@effect/language-service` | Version must match `effect` core exactly                              | Always update together with `effect`                                        |
-| `@types/react`             | React 19 types changed significantly; some third-party types conflict | Check peer deps, may need `--legacy-peer-deps` workaround or type overrides |
-| `@base-ui/react`           | API surface changes frequently in pre-stable releases                 | Review changelog, update component usage accordingly                        |
+| Update Type            | Required Tests                                        |
+| ---------------------- | ----------------------------------------------------- |
+| UI/component packages  | `bun run check` + visual review                       |
+| TRPC / TanStack Router | `bun run check` + `bun run test`                      |
+| Drizzle ORM            | `bun run check` + `bun run test`                      |
+| Effect packages        | `bun run check` + `bun run test`                      |
+| Playwright             | `bun run check` + `bun run test:e2e`                  |
+| Bun runtime            | `bun run check` + `bun run test` + `bun run test:e2e` |
+| All others             | `bun run check`                                       |
 
 ## Guardrails
 
-- **DO NOT** update packages with `workspace:*` version specifiers — these are internal monorepo packages managed separately
-- **DO NOT** skip `@typescript/native-preview` updates — this package affects TypeScript LSP performance and should stay current
-- **DO NOT** use `bun outdated` to check for updates — it misses packages that are in the catalog or have non-standard version specifiers; use `bun upgrade` interactively instead
+- **DO NOT** update packages with `workspace:*` — these are internal monorepo packages
+- **DO NOT** skip `@typescript/native-preview` updates — affects TypeScript LSP performance
+- **DO NOT** use `bun outdated` — hangs and misses catalog packages; use `check-outdated.ts` instead
+- If packages fail to install: `bun clean:packages && bun install`
+
+## Definition of Done
+
+- `check-outdated.ts` shows no remaining direct dependency updates
+- All checks pass (`bun run check`)
+- All relevant tests pass
