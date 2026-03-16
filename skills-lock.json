@@ -34,7 +34,7 @@
     "update-packages": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "a99b46ea3c657c6baeddf052a96caf498e5be07409ef81d9b207e3003baac6dc"
+      "computedHash": "e409f7113a8cf95b4baba3705a2f26544758293b1e8fc73efad371b28d877a2b"
     }
   }
 }
