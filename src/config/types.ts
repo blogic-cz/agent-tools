@@ -61,6 +61,12 @@ export type AuditConfig = {
   dbPath?: string;
 };
 
+/** Single GitHub repository configuration */
+export type GitHubRepoConfig = {
+  owner: string;
+  repo: string;
+};
+
 /**
  * Root agent-tools configuration.
  *
@@ -89,4 +95,6 @@ export type AgentToolsConfig = {
   credentialGuard?: CredentialGuardConfig;
   /** Optional default environment name (local|test|prod) used by tools when no --env flag is provided */
   defaultEnvironment?: string;
+  /** Named GitHub repository profiles. e.g. { default: { owner: "...", repo: "..." } } */
+  github?: Record<string, GitHubRepoConfig>;
 };

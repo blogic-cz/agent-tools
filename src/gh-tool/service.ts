@@ -5,6 +5,7 @@ import type { RepoInfo } from "./types";
 
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
+import { ConfigService, getGitHubConfig } from "#config";
 
 type GhResult = {
   stdout: string;
@@ -31,6 +32,9 @@ export class GitHubService extends ServiceMap.Service<
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const config = yield* ConfigService;
+        const ghRepoConfig = getGitHubConfig(config);
+        const ghRepo = ghRepoConfig ? `${ghRepoConfig.owner}/${ghRepoConfig.repo}` : undefined;
 
         let cachedRepoInfo: RepoInfo | null = null;
 
@@ -40,6 +44,7 @@ export class GitHubService extends ServiceMap.Service<
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
+                ...(ghRepo ? { env: { GH_REPO: ghRepo }, extendEnv: true } : {}),
               });
 
               const proc = yield* executor.spawn(command);
