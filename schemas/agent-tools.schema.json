@@ -57,9 +57,26 @@
     "defaultEnvironment": {
       "description": "Optional default environment name used by tools when no --env flag is provided.",
       "type": "string"
+    },
+    "github": {
+      "type": "object",
+      "description": "Named GitHub repository profiles as Record<string, GitHubRepoConfig>. Use 'default' key for single-repo projects. Multiple profiles can be selected via --repo <name>.",
+      "additionalProperties": {
+        "$ref": "#/definitions/GitHubRepoConfig"
+      }
     }
   },
   "definitions": {
+    "GitHubRepoConfig": {
+      "description": "A single GitHub repository target.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "repo"],
+      "properties": {
+        "owner": { "type": "string", "description": "GitHub organization or user name." },
+        "repo": { "type": "string", "description": "Repository name." }
+      }
+    },
     "AzureConfig": {
       "description": "Azure DevOps profile configuration.",
       "type": "object",

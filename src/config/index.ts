@@ -8,6 +8,7 @@ export type {
   AuditConfig,
   CliToolOverride,
   CredentialGuardConfig,
+  GitHubRepoConfig,
 } from "./types.ts";
 
 export {
@@ -15,5 +16,6 @@ export {
   ConfigServiceLayer,
   getToolConfig,
   getDefaultEnvironment,
+  getGitHubConfig,
   loadConfig,
 } from "./loader";

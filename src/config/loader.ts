@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 
 import { Data, Effect, Layer, Schema, ServiceMap } from "effect";
 
-import type { AgentToolsConfig } from "./types.ts";
+import type { AgentToolsConfig, GitHubRepoConfig } from "./types.ts";
 
 const CliToolOverrideSchema = Schema.Struct({
   tool: Schema.String,
@@ -59,6 +59,11 @@ const AuditConfigSchema = Schema.Struct({
   dbPath: Schema.optionalKey(Schema.String),
 });
 
+const GitHubRepoConfigSchema = Schema.Struct({
+  owner: Schema.String,
+  repo: Schema.String,
+});
+
 const AgentToolsConfigSchema = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String),
   azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
@@ -73,6 +78,7 @@ const AgentToolsConfigSchema = Schema.Struct({
   audit: Schema.optionalKey(AuditConfigSchema),
   credentialGuard: Schema.optionalKey(CredentialGuardConfigSchema),
   defaultEnvironment: Schema.optionalKey(Schema.String),
+  github: Schema.optionalKey(Schema.Record(Schema.String, GitHubRepoConfigSchema)),
 });
 
 async function findConfigFile(startDirectory: string = process.cwd()): Promise<string | undefined> {
@@ -182,4 +188,23 @@ export function getToolConfig<T>(
 
 export function getDefaultEnvironment(config: AgentToolsConfig | undefined): string | undefined {
   return config?.defaultEnvironment;
+}
+
+export function getGitHubConfig(
+  config: AgentToolsConfig | undefined,
+  profile?: string,
+): GitHubRepoConfig | undefined {
+  const repos = config?.github;
+  if (!repos) return undefined;
+
+  const keys = Object.keys(repos);
+  if (keys.length === 0) return undefined;
+
+  if (profile) return repos[profile];
+  if (keys.length === 1) return repos[keys[0] ?? ""];
+  if ("default" in repos) return repos.default;
+
+  throw new Error(
+    `Multiple github profiles found: [${keys.join(", ")}]. Use --repo <name> to select one.`,
+  );
 }
