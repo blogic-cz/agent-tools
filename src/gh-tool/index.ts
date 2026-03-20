@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect";
 
 import { renderCauseToStderr, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { ConfigServiceLayer } from "#config";
 import {
   issueCloseCommand,
   issueCommentCommand,
@@ -166,6 +167,7 @@ const cli = Command.run(mainCommand, {
 const MainLayer = GitHubService.layer.pipe(
   Layer.provideMerge(BunServices.layer),
   Layer.provideMerge(AuditServiceLayer),
+  Layer.provideMerge(ConfigServiceLayer),
 );
 
 const program = withAudit("gh", cli).pipe(

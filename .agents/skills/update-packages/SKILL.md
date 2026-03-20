@@ -62,11 +62,11 @@ bun run .agents/skills/update-packages/references/report.ts --json
 
 **Reports are auto-saved to files** — use these files throughout the update session instead of re-running scripts or holding output in context:
 
-| Script flag          | Saved to                                                     |
-| -------------------- | ------------------------------------------------------------ |
-| `--json`             | `.agents/skills/update-packages/references/outdated.json`          |
-| `--changelog`        | `.agents/skills/update-packages/references/outdated-changelog.json` |
-| `report.ts --json`   | `.agents/skills/update-packages/references/runtime-report.json`    |
+| Script flag        | Saved to                                                            |
+| ------------------ | ------------------------------------------------------------------- |
+| `--json`           | `.agents/skills/update-packages/references/outdated.json`           |
+| `--changelog`      | `.agents/skills/update-packages/references/outdated-changelog.json` |
+| `report.ts --json` | `.agents/skills/update-packages/references/runtime-report.json`     |
 
 These files are `.gitignore`d — they are session-local working data, not committed.
 
@@ -74,26 +74,27 @@ For catalog packages, version pins are in the root `package.json` under `"catalo
 
 **Step 2 — Update + Adopt features IN PARALLEL**
 
-| Track A: Apply Update                                 | Track B: Adopt features from release notes                                              |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Apply version bumps via `bun upgrade` or catalog edit | Read `outdated-changelog.json` — each entry has `releases[]` with full release notes    |
-| `bun install` if catalog                              | Classify each new feature by tier (see below)                                           |
+| Track A: Apply Update                                 | Track B: Adopt features from release notes                                                               |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Apply version bumps via `bun upgrade` or catalog edit | Read `outdated-changelog.json` — each entry has `releases[]` with full release notes                     |
+| `bun install` if catalog                              | Classify each new feature by tier (see below)                                                            |
 |                                                       | **T0/T1**: implement config-level changes (target files in `configFiles[]`), verify with `bun run check` |
-|                                                       | **T2**: generate concrete diffs, include in report                                      |
-|                                                       | Search codebase for usages of changed/deprecated/new APIs                               |
+|                                                       | **T2**: generate concrete diffs, include in report                                                       |
+|                                                       | Search codebase for usages of changed/deprecated/new APIs                                                |
 
 Each package group shares one background subagent. Standalone packages get one subagent each.
 
 #### Feature Adoption Tiers
 
-| Tier | Type                     | Action                                           | Example                                     |
-| ---- | ------------------------ | ------------------------------------------------ | ------------------------------------------- |
-| T0   | Config addition (zero-risk, additive) | **Auto-implement** + verify with `bun run check` | Add `detectAsyncLeaks: true` to vitest config |
-| T1   | Config addition (behavioral)          | **Auto-implement** + verify with `bun run check` | Add new reporters to vitest CI config        |
+| Tier | Type                                  | Action                                           | Example                                        |
+| ---- | ------------------------------------- | ------------------------------------------------ | ---------------------------------------------- |
+| T0   | Config addition (zero-risk, additive) | **Auto-implement** + verify with `bun run check` | Add `detectAsyncLeaks: true` to vitest config  |
+| T1   | Config addition (behavioral)          | **Auto-implement** + verify with `bun run check` | Add new reporters to vitest CI config          |
 | T2   | Code-level adoption                   | **Suggest with concrete diffs** (don't apply)    | Add `{ tags: ["unit"] }` to `describe()` calls |
-| T3   | Breaking change / migration           | **Fix during Step 3** (check + fix)              | API rename, config schema change             |
+| T3   | Breaking change / migration           | **Fix during Step 3** (check + fix)              | API rename, config schema change               |
 
 A feature is T0/T1 when ALL of these are true:
+
 - It modifies a config file (not source code)
 - It's additive (doesn't change existing behavior)
 - It can be verified with `bun run check`
@@ -107,6 +108,7 @@ A feature is T0/T1 when ALL of these are true:
 **Step 4 — Commit the group**
 
 Use separate commits for version bumps and feature adoptions:
+
 - `chore: update <package> to vX.Y.Z` — version bump only
 - `feat: adopt <package> vX.Y improvements (<feature list>)` — config/code changes from new features
 
