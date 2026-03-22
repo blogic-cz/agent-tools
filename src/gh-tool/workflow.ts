@@ -49,6 +49,24 @@ type LogEntry = {
   message: string;
 };
 
+type CheckRunAnnotation = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  start_column: number | null;
+  end_column: number | null;
+  annotation_level: "notice" | "warning" | "failure";
+  title: string | null;
+  message: string;
+  raw_details: string | null;
+};
+
+type JobAnnotations = {
+  jobId: number;
+  jobName: string;
+  annotations: CheckRunAnnotation[];
+};
+
 const repoOption = Flag.string("repo").pipe(
   Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
   Flag.optional,
@@ -233,6 +251,69 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: 
       conclusion: job.conclusion,
     })),
     watchOutput: result.stdout,
+  };
+});
+
+const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts: {
+  runId: number;
+  job: string | null;
+  repo: string | null;
+}) {
+  const gh = yield* GitHubService;
+
+  let owner: string;
+  let repoName: string;
+  if (opts.repo !== null) {
+    const parts = opts.repo.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return yield* new GitHubCommandError({
+        message: `Invalid --repo format: "${opts.repo}". Expected "owner/name" (e.g. "blogic-cz/agent-tools").`,
+        command: "workflow annotations",
+        exitCode: 1,
+        stderr: "",
+      });
+    }
+    owner = parts[0];
+    repoName = parts[1];
+  } else {
+    const info = yield* gh.getRepoInfo();
+    owner = info.owner;
+    repoName = info.name;
+  }
+
+  const jobs = yield* listJobs(opts.runId, opts.repo);
+
+  let targetJobs = jobs;
+  if (opts.job !== null) {
+    const jobId = yield* resolveJobId(opts.runId, opts.job, opts.repo);
+    targetJobs = jobs.filter((j) => j.databaseId === jobId);
+  }
+
+  const results: JobAnnotations[] = [];
+  for (const job of targetJobs) {
+    const annotations = yield* gh
+      .runGhJson<CheckRunAnnotation[]>([
+        "api",
+        `repos/${owner}/${repoName}/check-runs/${job.databaseId}/annotations`,
+        "--paginate",
+      ])
+      .pipe(
+        Effect.catchTag("GitHubCommandError", () => Effect.succeed([] as CheckRunAnnotation[])),
+      );
+
+    if (annotations.length > 0) {
+      results.push({
+        jobId: job.databaseId,
+        jobName: job.name,
+        annotations,
+      });
+    }
+  }
+
+  return {
+    runId: opts.runId,
+    totalAnnotations: results.reduce((sum, r) => sum + r.annotations.length, 0),
+    jobs: results,
   };
 });
 
