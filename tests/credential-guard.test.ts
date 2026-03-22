@@ -3,6 +3,7 @@ import { describe, expect, it, test } from "vitest";
 import {
   createCredentialGuard,
   detectSecrets,
+  detectSleepPolling,
   getBlockedCliTool,
   isDangerousBashCommand,
   isGhCommandAllowed,
@@ -473,6 +474,135 @@ describe("CLI tool blocking edge cases", () => {
     expect(getBlockedCliTool("npm install")).toBeNull();
     expect(getBlockedCliTool("git push")).toBeNull();
     expect(getBlockedCliTool("bun test")).toBeNull();
+  });
+});
+
+describe("detectSleepPolling", () => {
+  it("detects sleep + workflow list polling", () => {
+    const result = detectSleepPolling("sleep 60 && bun agent-tools-gh workflow list --limit 4");
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects sleep + workflow jobs polling", () => {
+    const result = detectSleepPolling(
+      'sleep 180 && echo "=== PROD ===" && bun agent-tools-gh workflow jobs --run 123',
+    );
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects sleep + workflow view polling", () => {
+    const result = detectSleepPolling("sleep 30 && bun agent-tools-gh workflow view --run 456");
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects sleep + workflow logs polling", () => {
+    const result = detectSleepPolling("sleep 120 && bun agent-tools-gh workflow logs --run 789");
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects sleep + pr checks without --watch", () => {
+    const result = detectSleepPolling("sleep 30 && bun agent-tools-gh pr checks --pr 123");
+    expect(result).toContain("pr checks");
+    expect(result).toContain("--watch");
+  });
+
+  it("detects sleep + pr rerun-checks polling", () => {
+    const result = detectSleepPolling("sleep 60 && bun agent-tools-gh pr rerun-checks --pr 123");
+    expect(result).toContain("pr checks");
+    expect(result).toContain("--watch");
+  });
+
+  it("detects sleep + k8s polling", () => {
+    const result = detectSleepPolling(
+      'sleep 10 && bun agent-tools-k8s kubectl --env test --cmd "get pods"',
+    );
+    expect(result).toContain("wait");
+  });
+
+  it("detects sleep + az pipeline run polling", () => {
+    const result = detectSleepPolling(
+      "sleep 60 && bun agent-tools-az cmd --cmd 'pipelines runs list'",
+    );
+    expect(result).toContain("agent-tools-az");
+  });
+
+  it("allows plain sleep without agent-tools", () => {
+    expect(detectSleepPolling("sleep 3")).toBeNull();
+  });
+
+  it("allows sleep with unrelated commands", () => {
+    expect(detectSleepPolling("sleep 5 && bun test")).toBeNull();
+    expect(detectSleepPolling("sleep 2 && echo done")).toBeNull();
+    expect(detectSleepPolling("sleep 1 && npm run build")).toBeNull();
+  });
+
+  it("allows pr checks with --watch (not polling)", () => {
+    expect(
+      detectSleepPolling("sleep 5 && bun agent-tools-gh pr checks --pr 123 --watch"),
+    ).toBeNull();
+  });
+
+  it("detects sleep + workflow job-logs polling", () => {
+    const result = detectSleepPolling(
+      "sleep 30 && bun agent-tools-gh workflow job-logs --run 123 --job build",
+    );
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects polling via script alias (gh-tool)", () => {
+    const result = detectSleepPolling("sleep 60 && bun run gh-tool -- workflow list --limit 5");
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects polling with semicolon separator", () => {
+    const result = detectSleepPolling("sleep 60 ; bun agent-tools-gh workflow jobs --run 1");
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects polling with pipe separator", () => {
+    const result = detectSleepPolling(
+      'sleep 30 && bun agent-tools-gh workflow view --run 1 | grep -E "status"',
+    );
+    expect(result).toContain("workflow watch");
+  });
+
+  it("detects az pipeline singular form", () => {
+    const result = detectSleepPolling("sleep 60 && az pipeline run show --id 123");
+    expect(result).toContain("agent-tools-az");
+  });
+
+  it("allows sleep + workflow watch (not polling)", () => {
+    expect(detectSleepPolling("sleep 5 && bun agent-tools-gh workflow watch --run 123")).toBeNull();
+  });
+
+  it("allows sleep + pr checks-failed (not polling)", () => {
+    expect(
+      detectSleepPolling("sleep 5 && bun agent-tools-gh pr checks-failed --pr 123"),
+    ).toBeNull();
+  });
+
+  it("allows commands without sleep", () => {
+    expect(detectSleepPolling("bun agent-tools-gh workflow list")).toBeNull();
+    expect(detectSleepPolling("bun agent-tools-k8s pods --env test")).toBeNull();
+  });
+
+  it("blocks via handleToolExecuteBefore", () => {
+    const guard = createCredentialGuard();
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "bash" },
+        { args: { command: "sleep 60 && bun agent-tools-gh workflow jobs --run 123" } },
+      ),
+    ).toThrow("Sleep-polling detected");
+  });
+
+  it("allows non-polling via handleToolExecuteBefore", () => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "bash" },
+        { args: { command: "sleep 3 && echo done" } },
+      ),
+    ).not.toThrow();
   });
 });
 

@@ -45,6 +45,7 @@ export type CredentialGuard = {
   isDangerousBashCommand: (command: string) => boolean;
   getBlockedCliTool: (command: string) => { name: string; wrapper: string } | null;
   isGhCommandAllowed: (command: string) => boolean;
+  detectSleepPolling: (command: string) => string | null;
 };
 
 // ============================================================================
@@ -181,6 +182,34 @@ const DEFAULT_BLOCKED_CLI_TOOLS: BlockedCliTool[] = [
     pattern: /(?:^|[;&|]\s*)curl\s.*dev\.azure\.com/,
     name: "curl (Azure DevOps)",
     wrapper: "agent-tools-az",
+  },
+];
+
+type PollingDetectionRule = {
+  pattern: RegExp;
+  suggestion: string;
+};
+
+const DEFAULT_POLLING_DETECTION_RULES: PollingDetectionRule[] = [
+  {
+    pattern: /workflow\s+(?:list|view|jobs|logs|job-logs)\b/,
+    suggestion: "bun agent-tools-gh workflow watch --run <ID>",
+  },
+  {
+    pattern: /pr\s+checks(?![\w-])(?!.*--watch)/,
+    suggestion: "bun agent-tools-gh pr checks --pr <N> --watch",
+  },
+  {
+    pattern: /pr\s+rerun-checks\b/,
+    suggestion: "bun agent-tools-gh pr checks --pr <N> --watch (after rerun completes)",
+  },
+  {
+    pattern: /kubectl\b/,
+    suggestion: 'bun agent-tools-k8s kubectl --env <env> --cmd "wait --for=condition=..."',
+  },
+  {
+    pattern: /\bpipelines?\s+runs?\b/,
+    suggestion: "bun agent-tools-az build summary --build-id <ID>",
   },
 ];
 
@@ -325,6 +354,17 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     return ghSegments.every((segment) => isGhCommandAllowed(segment.trim()));
   }
 
+  function detectSleepPolling(command: string): string | null {
+    if (!/\bsleep\s+\d+/.test(command)) return null;
+
+    for (const { pattern, suggestion } of DEFAULT_POLLING_DETECTION_RULES) {
+      if (pattern.test(command)) {
+        return suggestion;
+      }
+    }
+    return null;
+  }
+
   function getBlockedCliTool(command: string): { name: string; wrapper: string } | null {
     for (const { pattern, name, wrapper } of blockedCliTools) {
       if (pattern.test(command)) {
@@ -390,6 +430,17 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         );
       }
 
+      const sleepSuggestion = detectSleepPolling(command);
+      if (sleepSuggestion) {
+        throw new Error(
+          `\u{26A0}\u{FE0F} Sleep-polling detected.\n\n` +
+            `Instead of polling with sleep, use the built-in watch command:\n\n` +
+            `Use instead: ${sleepSuggestion}\n\n` +
+            `Watch commands block until completion — no polling needed.\n\n` +
+            `→ Skill "agent-tools"`,
+        );
+      }
+
       const blockedTool = getBlockedCliTool(command);
       if (blockedTool) {
         throw new Error(
@@ -412,6 +463,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     isDangerousBashCommand,
     getBlockedCliTool,
     isGhCommandAllowed,
+    detectSleepPolling,
   };
 }
 
@@ -441,3 +493,6 @@ export const getBlockedCliTool = defaultGuard.getBlockedCliTool;
 
 /** Check if a gh command is allowed (default guard). */
 export const isGhCommandAllowed = defaultGuard.isGhCommandAllowed;
+
+/** Detect sleep-polling with agent-tools wrapper commands (default guard). */
+export const detectSleepPolling = defaultGuard.detectSleepPolling;

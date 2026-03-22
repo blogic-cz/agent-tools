@@ -30,14 +30,14 @@ All examples below use `bunx` prefix for clarity.
 
 ## Tools Overview
 
-| Tool             | Description                                                        | Help                             |
-| ---------------- | ------------------------------------------------------------------ | -------------------------------- |
-| **gh-tool**      | GitHub CLI wrapper — PR management, issues, checks, reviews, merge | `bun agent-tools-gh --help`      |
-| **db-tool**      | Database query tool — SQL execution, schema introspection          | `bun agent-tools-db --help`      |
-| **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution    | `bun agent-tools-k8s --help`     |
-| **az-tool**      | Azure DevOps tool — pipelines, builds, repos (read-only)           | `bun agent-tools-az --help`      |
-| **logs-tool**    | Application logs — read local and remote (k8s pod) logs            | `bun agent-tools-logs --help`    |
-| **session-tool** | OpenCode session browser — list, read, search session history      | `bun agent-tools-session --help` |
+| Tool             | Description                                                         | Help                             |
+| ---------------- | ------------------------------------------------------------------- | -------------------------------- |
+| **gh-tool**      | GitHub CLI wrapper — PRs, issues, workflows, checks, reviews, merge | `bun agent-tools-gh --help`      |
+| **db-tool**      | Database query tool — SQL execution, schema introspection           | `bun agent-tools-db --help`      |
+| **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution     | `bun agent-tools-k8s --help`     |
+| **az-tool**      | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun agent-tools-az --help`      |
+| **logs-tool**    | Application logs — read local and remote (k8s pod) logs             | `bun agent-tools-logs --help`    |
+| **session-tool** | OpenCode session browser — list, read, search session history       | `bun agent-tools-session --help` |
 
 ## Tool Priority
 
@@ -66,6 +66,18 @@ bun agent-tools-gh pr create --base test --title "feat: X" --body "Description"
 bun agent-tools-gh pr review-triage --pr 123  # Combined info, threads, checks
 bun agent-tools-gh pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done"
 ```
+
+```bash
+bun agent-tools-gh workflow list                              # List recent workflow runs
+bun agent-tools-gh workflow view --run 123                    # View run details with jobs/steps
+bun agent-tools-gh workflow watch --run 123                   # Block until run completes (NO sleep-polling!)
+bun agent-tools-gh workflow logs --run 123                    # Fetch logs (failed jobs by default)
+bun agent-tools-gh workflow job-logs --run 123 --job "build"  # Clean parsed logs for specific job
+bun agent-tools-gh workflow rerun --run 123                   # Rerun failed jobs
+bun agent-tools-gh workflow cancel --run 123                  # Cancel in-progress run
+```
+
+**NEVER use `sleep N && workflow list/jobs/view`** — use `workflow watch --run N` instead. The credential guard blocks sleep-polling with agent-tools commands.
 
 ```bash
 bun agent-tools-gh issue list --state open --limit 30
