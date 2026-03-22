@@ -96,3 +96,21 @@ export type PRStatusNone = {
 };
 
 export type PRStatusResult = PRStatusSingle | PRStatusMultiple | PRStatusNone;
+
+export type CheckRunAnnotation = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  start_column: number | null;
+  end_column: number | null;
+  annotation_level: "notice" | "warning" | "failure";
+  title: string | null;
+  message: string;
+  raw_details: string | null;
+};
+
+export type JobAnnotations = {
+  jobId: number;
+  jobName: string;
+  annotations: CheckRunAnnotation[];
+};

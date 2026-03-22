@@ -4,6 +4,7 @@ import { Console, Effect, Option } from "effect";
 import { formatOption, logFormatted } from "#shared";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
+import type { CheckRunAnnotation, JobAnnotations } from "./types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,24 +47,6 @@ type WorkflowRunDetail = WorkflowRun & {
 type LogEntry = {
   step: string;
   message: string;
-};
-
-type CheckRunAnnotation = {
-  path: string;
-  start_line: number;
-  end_line: number;
-  start_column: number | null;
-  end_column: number | null;
-  annotation_level: "notice" | "warning" | "failure";
-  title: string | null;
-  message: string;
-  raw_details: string | null;
-};
-
-type JobAnnotations = {
-  jobId: number;
-  jobName: string;
-  annotations: CheckRunAnnotation[];
 };
 
 const repoOption = Flag.string("repo").pipe(

@@ -154,11 +154,11 @@ WORKFLOW FOR AI AGENTS:
   12. Use 'workflow view --run N' to inspect a specific run with jobs/steps
   13. Use 'workflow logs --run N' to get logs (failed jobs by default)
   14. Use 'workflow job-logs --run N --job "build-web-app"' to get clean parsed logs for a specific job
-   15. Use 'workflow annotations --run N' to list CI annotations (errors, warnings, notices)
-   16. Use 'workflow watch --run N' to watch until completion
-   17. Use 'release status' to inspect latest release + repository context
-   18. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
-   19. Use 'release edit/view/list/delete' to maintain existing releases`,
+  15. Use 'workflow annotations --run N' to list CI annotations (errors, warnings, notices)
+  16. Use 'workflow watch --run N' to watch until completion
+  17. Use 'release status' to inspect latest release + repository context
+  18. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
+  19. Use 'release edit/view/list/delete' to maintain existing releases`,
   ),
   Command.withSubcommands([prCommand, issueCommand, repoCommand, workflowCommand, releaseCommand]),
 );
