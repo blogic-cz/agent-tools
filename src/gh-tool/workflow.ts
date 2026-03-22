@@ -49,24 +49,6 @@ type LogEntry = {
   message: string;
 };
 
-type CheckRunAnnotation = {
-  path: string;
-  start_line: number;
-  end_line: number;
-  start_column: number | null;
-  end_column: number | null;
-  annotation_level: "notice" | "warning" | "failure";
-  title: string | null;
-  message: string;
-  raw_details: string | null;
-};
-
-type JobAnnotations = {
-  jobId: number;
-  jobName: string;
-  annotations: CheckRunAnnotation[];
-};
-
 const repoOption = Flag.string("repo").pipe(
   Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
   Flag.optional,
