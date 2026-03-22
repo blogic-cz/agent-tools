@@ -74,26 +74,48 @@ For each tool the user selected in Step 2:
 
 **Step 5 — Skill & Agent Docs**
 
-Tell the user to run the following command themselves — it's interactive and lets them choose which agents to install the skill for:
+Install **only the per-tool skills the project needs** (recommended), or the all-in-one skill:
 
 ```bash
-npx skills add blogic-cz/agent-tools
+# Per-tool skills (recommended) — install only what the project uses
+npx skills add blogic-cz/agent-tools --path skill/gh-tool
+npx skills add blogic-cz/agent-tools --path skill/db-tool
+npx skills add blogic-cz/agent-tools --path skill/k8s-tool
+npx skills add blogic-cz/agent-tools --path skill/az-tool
+npx skills add blogic-cz/agent-tools --path skill/logs-tool
+npx skills add blogic-cz/agent-tools --path skill/session-tool
+
+# All-in-one skill (alternative) — all tools in a single skill
+npx skills add blogic-cz/agent-tools --path skill/agent-tools
 ```
 
-**Do not run this command for the user** — it requires interactive selection.
+**Do not run these commands for the user** — they require interactive selection.
+
+Available per-tool skills:
+
+| Skill          | Install when project uses                          |
+| -------------- | -------------------------------------------------- |
+| `gh-tool`      | GitHub PRs, issues, workflows, CI checks           |
+| `db-tool`      | SQL queries, schema introspection                  |
+| `k8s-tool`     | Kubernetes pods, logs, deployments                 |
+| `az-tool`      | Azure DevOps pipelines, builds                     |
+| `logs-tool`    | Application log reading (local and remote)         |
+| `session-tool` | OpenCode session history browsing                  |
+| `agent-tools`  | All of the above in a single skill                 |
 
 Then update the project's `AGENTS.md` and/or `CLAUDE.md`:
 
-1. Add an `agent-tools` row to the skills table (if one exists):
+1. Add rows to the skills table for each installed skill (if one exists):
    ```markdown
-   | Agent wrapper tools (`db-tool`, `k8s-tool`, `logs-tool`, `az-tool`, `gh` patterns) | `agent-tools` |
+   | GitHub PRs, issues, workflows | `gh-tool` |
+   | Database queries, schema | `db-tool` |
    ```
 2. Add or update the **Tooling** section:
 
    ```markdown
    ## Tooling
 
-   For tool wrappers and operational patterns, load `agent-tools`.
+   For tool wrappers and operational patterns, load the relevant tool skill (`gh-tool`, `db-tool`, etc.).
    ```
 
 **Step 6 — Custom Tool Scaffold**
