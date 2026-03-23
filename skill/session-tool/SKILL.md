@@ -9,15 +9,15 @@ OpenCode session browser — list, read, and search session history. Part of [@b
 
 ## How to Run
 
-Run via `bun agent-tools-session` or project script alias (check `package.json` for `session-tool`).
+Standard alias: `bun run session-tool`. Requires a `"session-tool": "agent-tools-session"` script in the project's `package.json`.
 Auth: no auth needed — reads local session storage.
 
 ## Commands
 
 ```bash
-bun agent-tools-session list                   # List recent sessions
-bun agent-tools-session read --session <session-id> # Read session messages
-bun agent-tools-session search "query"         # Search across sessions
+bun run session-tool -- list                   # List recent sessions
+bun run session-tool -- read --session <session-id> # Read session messages
+bun run session-tool -- search "query"         # Search across sessions
 ```
 
 ## Tips

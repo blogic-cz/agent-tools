@@ -9,15 +9,15 @@ Application logs — read local and remote (k8s pod) logs. Part of [@blogic-cz/a
 
 ## How to Run
 
-Run via `bun agent-tools-logs` or project script alias (check `package.json` for `logs-tool`).
+Standard alias: `bun run logs-tool`. Requires a `"logs-tool": "agent-tools-logs"` script in the project's `package.json`.
 Auth: no auth needed for local files; uses k8s-tool for remote access.
 
 ## Commands
 
 ```bash
-bun agent-tools-logs list --env local          # List available log files
-bun agent-tools-logs read --env local --file app.log  # Read specific log
-bun agent-tools-logs read --env test --file app.log --tail 50
+bun run logs-tool -- list --env local          # List available log files
+bun run logs-tool -- read --env local --file app.log  # Read specific log
+bun run logs-tool -- read --env test --file app.log --tail 50
 ```
 
 Environment is any string (e.g. `local`, `test`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.

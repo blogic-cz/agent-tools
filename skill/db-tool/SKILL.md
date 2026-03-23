@@ -9,17 +9,17 @@ Database query tool — SQL execution and schema introspection. Part of [@blogic
 
 ## How to Run
 
-Run via `bun agent-tools-db` or project script alias (check `package.json` for `db-tool`).
+Standard alias: `bun run db-tool`. Requires a `"db-tool": "agent-tools-db"` script in the project's `package.json`.
 **NEVER run bare `psql`** — the credential guard will block it.
 Auth: env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWORD`).
 
 ## Commands
 
 ```bash
-bun agent-tools-db sql --env local --sql "SELECT * FROM users LIMIT 5"
-bun agent-tools-db sql --env test --sql "SELECT count(*) FROM organizations"
-bun agent-tools-db schema --env local --mode tables          # List tables
-bun agent-tools-db schema --env local --mode columns --table users # Show table schema
+bun run db-tool -- sql --env local --sql "SELECT * FROM users LIMIT 5"
+bun run db-tool -- sql --env test --sql "SELECT count(*) FROM organizations"
+bun run db-tool -- schema --env local --mode tables          # List tables
+bun run db-tool -- schema --env local --mode columns --table users # Show table schema
 ```
 
 Environment is any string (e.g. `local`, `test`, `prod`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.
