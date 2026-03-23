@@ -8,6 +8,8 @@ export type SessionInfo = {
   projectID: string;
 };
 
+export type SessionSource = "opencode" | "claude-code";
+
 export type MessageSummary = {
   sessionID: string;
   id: string;
@@ -15,6 +17,7 @@ export type MessageSummary = {
   body: string;
   created: number;
   role: string;
+  source: SessionSource;
 };
 
 export type SessionResult = {

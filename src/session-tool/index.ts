@@ -11,15 +11,26 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Result } from "effect";
 
-import type { MessageSummary, SessionResult } from "./types";
+import type { MessageSummary, SessionResult, SessionSource } from "./types";
 
 import { formatOption, formatOutput, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { getClaudeCodeSessions } from "./claude-code";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
 import { formatDate, SessionService, SessionServiceLayer, truncate } from "./service";
 
 const AppLayer = SessionServiceLayer.pipe(Layer.provideMerge(ResolvedPathsLayer));
+
+const sourceOption = Flag.string("source").pipe(
+  Flag.withDescription("Filter by source: all, opencode, claude-code"),
+  Flag.withDefault("all"),
+);
+
+const filterBySource = (summaries: MessageSummary[], source: string): MessageSummary[] => {
+  if (source === "all") return summaries;
+  return summaries.filter((s) => s.source === (source as SessionSource));
+};
 
 const buildScopeLabel = (searchAll: boolean, currentDir: string) => {
   if (searchAll) {
@@ -58,8 +69,9 @@ const listCommand = Command.make(
       Flag.withDescription("Limit result count"),
       Flag.withDefault(10),
     ),
+    source: sourceOption,
   },
-  ({ all, format, limit }) =>
+  ({ all, format, limit, source }) =>
     Effect.gen(function* () {
       const sessionService = yield* SessionService;
       const startTime = Date.now();
@@ -83,11 +95,13 @@ const listCommand = Command.make(
           } satisfies SessionResult;
         }
 
-        const summaries = yield* sessionService.getMessageSummaries(sessionFilter);
+        const allSummaries = yield* sessionService.getMessageSummaries(sessionFilter);
+        const summaries = filterBySource(allSummaries, source);
         const results = summaries.slice(0, limit).map((summary) => ({
           created: formatDate(summary.created),
           sessionID: summary.sessionID,
           title: summary.title,
+          source: summary.source,
         }));
 
         return {
@@ -132,8 +146,9 @@ const searchCommand = Command.make(
       Flag.withDescription("Limit result count"),
       Flag.withDefault(10),
     ),
+    source: sourceOption,
   },
-  ({ all, format, limit, query }) =>
+  ({ all, format, limit, query, source }) =>
     Effect.gen(function* () {
       const sessionService = yield* SessionService;
       const startTime = Date.now();
@@ -158,7 +173,8 @@ const searchCommand = Command.make(
           } satisfies SessionResult;
         }
 
-        const summaries = yield* sessionService.getMessageSummaries(sessionFilter);
+        const allSummaries = yield* sessionService.getMessageSummaries(sessionFilter);
+        const summaries = filterBySource(allSummaries, source);
         const matched = sessionService.searchSummaries(summaries, query);
         const mappedResults = yield* Effect.all(matched.slice(0, limit).map(mapSummary));
 
@@ -196,15 +212,16 @@ const searchCommand = Command.make(
 
       yield* Console.log(formatOutput(output, format));
     }),
-).pipe(Command.withDescription("Search OpenCode message history"));
+).pipe(Command.withDescription("Search message history"));
 
 const readCommand = Command.make(
   "read",
   {
     session: Flag.string("session").pipe(Flag.withDescription("Session ID to read")),
     format: formatOption,
+    source: sourceOption,
   },
-  ({ format, session }) =>
+  ({ format, session, source }) =>
     Effect.gen(function* () {
       const sessionService = yield* SessionService;
       const startTime = Date.now();
@@ -226,14 +243,19 @@ const readCommand = Command.make(
             executionTimeMs: Date.now() - startTime,
           } satisfies SessionResult),
         onSuccess: (summaries) => {
-          const sessionResults = summaries.filter((summary) => summary.sessionID === session);
+          const filtered = filterBySource(summaries, source);
+          const sessionResults = filtered.filter((summary) => summary.sessionID === session);
           return Effect.all(sessionResults.map(mapSummary)).pipe(
             Effect.map(
               (mapped) =>
                 ({
                   success: true,
                   data: {
-                    files: mapped.map((message) => message.messagePath),
+                    files: mapped
+                      .map((message) =>
+                        "messagePath" in message ? message.messagePath : message.sessionFile,
+                      )
+                      .filter((filePath): filePath is string => filePath !== null),
                     messages: mapped,
                     session,
                   },
