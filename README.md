@@ -208,15 +208,15 @@ export default { handleToolExecuteBefore };
 
 ## Tools
 
-| Binary           | Description                                                                                                      |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `gh-tool`        | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
-| `audit-tool`     | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
-| `db-tool`        | Database query tool — SQL execution, schema introspection                                                        |
-| `k8s-tool`       | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
-| `az-tool`        | Azure DevOps tool — pipelines, builds, repos                                                                     |
-| `logs-tool`      | Application logs — read local and remote (k8s pod) logs                                                          |
-| `session-tool`   | OpenCode session browser — list, read, search sessions                                                           |
+| Binary         | Description                                                                                                      |
+| -------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `gh-tool`      | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
+| `audit-tool`   | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
+| `db-tool`      | Database query tool — SQL execution, schema introspection                                                        |
+| `k8s-tool`     | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
+| `az-tool`      | Azure DevOps tool — pipelines, builds, repos                                                                     |
+| `logs-tool`    | Application logs — read local and remote (k8s pod) logs                                                          |
+| `session-tool` | OpenCode session browser — list, read, search sessions                                                           |
 
 All tools support `--help` for full usage documentation. Legacy `agent-tools-*` binary names (e.g. `agent-tools-gh`) still work for backwards compatibility.
 

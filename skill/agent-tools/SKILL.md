@@ -25,8 +25,8 @@ Legacy `agent-tools-*` binary names (e.g. `bun gh-tool`) still work but prefer t
 
 ## Tools Overview
 
-| Tool             | Description                                                         | Help                             |
-| ---------------- | ------------------------------------------------------------------- | -------------------------------- |
+| Tool             | Description                                                         | Help                      |
+| ---------------- | ------------------------------------------------------------------- | ------------------------- |
 | **gh-tool**      | GitHub CLI wrapper — PRs, issues, workflows, checks, reviews, merge | `bun gh-tool --help`      |
 | **db-tool**      | Database query tool — SQL execution, schema introspection           | `bun db-tool --help`      |
 | **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution     | `bun k8s-tool --help`     |
