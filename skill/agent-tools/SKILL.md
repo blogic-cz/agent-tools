@@ -11,40 +11,35 @@ Safe CLI wrappers for AI coding agents — GitHub, databases, Kubernetes, Azure 
 
 ## How to Run (CRITICAL)
 
-These are **npm binary commands** — they CANNOT be run bare. You MUST use one of:
+Run tools via `bun <tool-name>` (requires `@blogic-cz/agent-tools` as a dev dependency):
 
 ```bash
-# Option 1: bunx (always works when @blogic-cz/agent-tools is installed)
-bun agent-tools-k8s pods --env test
-
-# Option 2: project script aliases (if defined in package.json "scripts")
-bun run k8s-tool -- pods --env test
+bun gh-tool pr status
+bun k8s-tool pods --env test
+bun db-tool sql --env local --sql "SELECT 1"
 ```
 
-**NEVER run bare `agent-tools-*` commands** — they will fail with `command not found`.
 **NEVER run raw `kubectl`, `gh`, `psql`, `az`** — the credential guard will block them.
 
-Check the project's `package.json` for available script aliases (e.g. `k8s-tool`, `gh-tool`, `db-tool`).
-
-All examples below use `bunx` prefix for clarity.
+Legacy `agent-tools-*` binary names (e.g. `bun gh-tool`) still work but prefer the short form.
 
 ## Tools Overview
 
 | Tool             | Description                                                         | Help                             |
 | ---------------- | ------------------------------------------------------------------- | -------------------------------- |
-| **gh-tool**      | GitHub CLI wrapper — PRs, issues, workflows, checks, reviews, merge | `bun agent-tools-gh --help`      |
-| **db-tool**      | Database query tool — SQL execution, schema introspection           | `bun agent-tools-db --help`      |
-| **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution     | `bun agent-tools-k8s --help`     |
-| **az-tool**      | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun agent-tools-az --help`      |
-| **logs-tool**    | Application logs — read local and remote (k8s pod) logs             | `bun agent-tools-logs --help`    |
-| **session-tool** | OpenCode session browser — list, read, search session history       | `bun agent-tools-session --help` |
+| **gh-tool**      | GitHub CLI wrapper — PRs, issues, workflows, checks, reviews, merge | `bun gh-tool --help`      |
+| **db-tool**      | Database query tool — SQL execution, schema introspection           | `bun db-tool --help`      |
+| **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution     | `bun k8s-tool --help`     |
+| **az-tool**      | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun az-tool --help`      |
+| **logs-tool**    | Application logs — read local and remote (k8s pod) logs             | `bun logs-tool --help`    |
+| **session-tool** | OpenCode session browser — list, read, search session history       | `bun session-tool --help` |
 
 ## Tool Priority
 
 1. **CLI Tools (Preferred)** — More efficient, don't load context, provide full functionality
 2. **MCP Tools (Fallback)** — Use when CLI alternatives don't exist
 
-Always prefer `bun agent-tools-gh` over raw `gh`, `bun agent-tools-db` over raw `psql`, `bun agent-tools-k8s` over raw `kubectl`. The wrappers add security guardrails, audit trails, and project-specific config.
+Always prefer `bun gh-tool` over raw `gh`, `bun db-tool` over raw `psql`, `bun k8s-tool` over raw `kubectl`. The wrappers add security guardrails, audit trails, and project-specific config.
 
 **Consistency**: Tools provide `hint`, `nextCommand`, and `retryable` fields in error responses to help you recover from failures. Always check these fields when a command fails.
 
@@ -53,49 +48,49 @@ Always prefer `bun agent-tools-gh` over raw `gh`, `bun agent-tools-db` over raw 
 ### gh-tool (GitHub)
 
 ```bash
-bun agent-tools-gh pr status                  # View PR status for current branch
-bun agent-tools-gh pr view --pr 123           # View PR details
-bun agent-tools-gh pr checks --pr 123         # Check CI status
-bun agent-tools-gh pr checks --pr 123 --watch # Watch CI until complete
-bun agent-tools-gh pr checks-failed --pr 123  # Get failed check details
-bun agent-tools-gh pr merge --pr 123 --strategy squash --delete-branch --confirm
-bun agent-tools-gh pr threads --pr 123 --unresolved-only  # Review comments
-bun agent-tools-gh pr reply --pr 123 --comment-id 456 --body "Fixed"
-bun agent-tools-gh pr resolve --thread-id 789
-bun agent-tools-gh pr create --base test --title "feat: X" --body "Description"
-bun agent-tools-gh pr review-triage --pr 123  # Combined info, threads, checks
-bun agent-tools-gh pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done"
+bun gh-tool pr status                  # View PR status for current branch
+bun gh-tool pr view --pr 123           # View PR details
+bun gh-tool pr checks --pr 123         # Check CI status
+bun gh-tool pr checks --pr 123 --watch # Watch CI until complete
+bun gh-tool pr checks-failed --pr 123  # Get failed check details
+bun gh-tool pr merge --pr 123 --strategy squash --delete-branch --confirm
+bun gh-tool pr threads --pr 123 --unresolved-only  # Review comments
+bun gh-tool pr reply --pr 123 --comment-id 456 --body "Fixed"
+bun gh-tool pr resolve --thread-id 789
+bun gh-tool pr create --base test --title "feat: X" --body "Description"
+bun gh-tool pr review-triage --pr 123  # Combined info, threads, checks
+bun gh-tool pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done"
 ```
 
 ```bash
-bun agent-tools-gh workflow list                              # List recent workflow runs
-bun agent-tools-gh workflow view --run 123                    # View run details with jobs/steps
-bun agent-tools-gh workflow watch --run 123                   # Block until run completes (NO sleep-polling!)
-bun agent-tools-gh workflow logs --run 123                    # Fetch logs (failed jobs by default)
-bun agent-tools-gh workflow job-logs --run 123 --job "build"  # Clean parsed logs for specific job
-bun agent-tools-gh workflow rerun --run 123                   # Rerun failed jobs
-bun agent-tools-gh workflow cancel --run 123                  # Cancel in-progress run
+bun gh-tool workflow list                              # List recent workflow runs
+bun gh-tool workflow view --run 123                    # View run details with jobs/steps
+bun gh-tool workflow watch --run 123                   # Block until run completes (NO sleep-polling!)
+bun gh-tool workflow logs --run 123                    # Fetch logs (failed jobs by default)
+bun gh-tool workflow job-logs --run 123 --job "build"  # Clean parsed logs for specific job
+bun gh-tool workflow rerun --run 123                   # Rerun failed jobs
+bun gh-tool workflow cancel --run 123                  # Cancel in-progress run
 ```
 
 **NEVER use `sleep N && workflow list/jobs/view`** — use `workflow watch --run N` instead. The credential guard blocks sleep-polling with agent-tools commands.
 
 ```bash
-bun agent-tools-gh issue list --state open --limit 30
-bun agent-tools-gh issue view --issue 123
-bun agent-tools-gh issue close --issue 123 --reason completed --comment "Done"
-bun agent-tools-gh issue reopen --issue 123
-bun agent-tools-gh issue comment --issue 123 --body "text"
-bun agent-tools-gh issue edit --issue 123 --title "New title" --add-labels bug
-bun agent-tools-gh issue triage-summary --format json --limit 100
+bun gh-tool issue list --state open --limit 30
+bun gh-tool issue view --issue 123
+bun gh-tool issue close --issue 123 --reason completed --comment "Done"
+bun gh-tool issue reopen --issue 123
+bun gh-tool issue comment --issue 123 --body "text"
+bun gh-tool issue edit --issue 123 --title "New title" --add-labels bug
+bun gh-tool issue triage-summary --format json --limit 100
 ```
 
 ### db-tool (Database)
 
 ```bash
-bun agent-tools-db sql --env local --sql "SELECT * FROM users LIMIT 5"
-bun agent-tools-db sql --env test --sql "SELECT count(*) FROM organizations"
-bun agent-tools-db schema --env local --mode tables          # List tables
-bun agent-tools-db schema --env local --mode columns --table users # Show table schema
+bun db-tool sql --env local --sql "SELECT * FROM users LIMIT 5"
+bun db-tool sql --env test --sql "SELECT count(*) FROM organizations"
+bun db-tool schema --env local --mode tables          # List tables
+bun db-tool schema --env local --mode columns --table users # Show table schema
 ```
 
 Environment is any string (e.g. `local`, `test`, `prod`). Set `defaultEnvironment` in config to skip `--env` on every call.
@@ -103,44 +98,44 @@ Environment is any string (e.g. `local`, `test`, `prod`). Set `defaultEnvironmen
 ### k8s-tool (Kubernetes)
 
 ```bash
-bun agent-tools-k8s kubectl --env test --cmd "get pods -n test-ns"
-bun agent-tools-k8s kubectl --env prod --cmd "logs <pod> --tail=100"
-bun agent-tools-k8s kubectl --env test --cmd "describe pod <pod>"
-bun agent-tools-k8s pods --env test                     # List pods
-bun agent-tools-k8s logs --pod <pod> --env test --tail 50 # Fetch logs
-bun agent-tools-k8s describe --resource pod --name <pod> --env test
-bun agent-tools-k8s exec --pod <pod> --exec-cmd "ls -la" --env test
-bun agent-tools-k8s top --env test                      # Show resource usage
+bun k8s-tool kubectl --env test --cmd "get pods -n test-ns"
+bun k8s-tool kubectl --env prod --cmd "logs <pod> --tail=100"
+bun k8s-tool kubectl --env test --cmd "describe pod <pod>"
+bun k8s-tool pods --env test                     # List pods
+bun k8s-tool logs --pod <pod> --env test --tail 50 # Fetch logs
+bun k8s-tool describe --resource pod --name <pod> --env test
+bun k8s-tool exec --pod <pod> --exec-cmd "ls -la" --env test
+bun k8s-tool top --env test                      # Show resource usage
 ```
 
 ### az-tool (Azure DevOps)
 
 ```bash
-bun agent-tools-az cmd --cmd "pipelines list"
-bun agent-tools-az cmd --cmd "pipelines show --id 123"
-bun agent-tools-az cmd --cmd "pipelines runs list --top 5"
-bun agent-tools-az cmd --cmd "pipelines runs show --id 456"
-bun agent-tools-az build summary --build-id 456      # Job status & duration
-bun agent-tools-az build timeline --build-id 456     # Full event timeline
-bun agent-tools-az build failed-jobs --build-id 456   # Just failures
-bun agent-tools-az build logs --build-id 456          # List available logs
-bun agent-tools-az build log-content --build-id 456 --log-id 78
+bun az-tool cmd --cmd "pipelines list"
+bun az-tool cmd --cmd "pipelines show --id 123"
+bun az-tool cmd --cmd "pipelines runs list --top 5"
+bun az-tool cmd --cmd "pipelines runs show --id 456"
+bun az-tool build summary --build-id 456      # Job status & duration
+bun az-tool build timeline --build-id 456     # Full event timeline
+bun az-tool build failed-jobs --build-id 456   # Just failures
+bun az-tool build logs --build-id 456          # List available logs
+bun az-tool build log-content --build-id 456 --log-id 78
 ```
 
 ### logs-tool (Application Logs)
 
 ```bash
-bun agent-tools-logs list --env local          # List available log files
-bun agent-tools-logs read --env local --file app.log  # Read specific log
-bun agent-tools-logs read --env test --file app.log --tail 50
+bun logs-tool list --env local          # List available log files
+bun logs-tool read --env local --file app.log  # Read specific log
+bun logs-tool read --env test --file app.log --tail 50
 ```
 
 ### session-tool (OpenCode Sessions)
 
 ```bash
-bun agent-tools-session list                   # List recent sessions
-bun agent-tools-session read --session <session-id> # Read session messages
-bun agent-tools-session search "query"         # Search across sessions
+bun session-tool list                   # List recent sessions
+bun session-tool read --session <session-id> # Read session messages
+bun session-tool search "query"         # Search across sessions
 ```
 
 ## Configuration

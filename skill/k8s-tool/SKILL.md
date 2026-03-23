@@ -9,21 +9,21 @@ Kubernetes tool — kubectl wrapper with config-driven context resolution and st
 
 ## How to Run
 
-Standard alias: `bun run k8s-tool`. Requires a `"k8s-tool": "agent-tools-k8s"` script in the project's `package.json`.
+Run via `bun k8s-tool` (requires `@blogic-cz/agent-tools` as a dev dependency).
 **NEVER run bare `kubectl`** — the credential guard will block it.
 Auth: existing kubectl context (kubeconfig). Cluster ID from config resolves context automatically.
 
 ## Commands
 
 ```bash
-bun run k8s-tool -- kubectl --env test --cmd "get pods -n test-ns"
-bun run k8s-tool -- kubectl --env prod --cmd "logs <pod> --tail=100"
-bun run k8s-tool -- kubectl --env test --cmd "describe pod <pod>"
-bun run k8s-tool -- pods --env test                     # List pods (structured)
-bun run k8s-tool -- logs --pod <pod> --env test --tail 50 # Fetch logs
-bun run k8s-tool -- describe --resource pod --name <pod> --env test
-bun run k8s-tool -- exec --pod <pod> --exec-cmd "ls -la" --env test
-bun run k8s-tool -- top --env test                      # Show resource usage
+bun k8s-tool kubectl --env test --cmd "get pods -n test-ns"
+bun k8s-tool kubectl --env prod --cmd "logs <pod> --tail=100"
+bun k8s-tool kubectl --env test --cmd "describe pod <pod>"
+bun k8s-tool pods --env test                     # List pods (structured)
+bun k8s-tool logs --pod <pod> --env test --tail 50 # Fetch logs
+bun k8s-tool describe --resource pod --name <pod> --env test
+bun k8s-tool exec --pod <pod> --exec-cmd "ls -la" --env test
+bun k8s-tool top --env test                      # Show resource usage
 ```
 
 Environment is any string (e.g. `test`, `prod`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call. Implicit production access is blocked for safety.
