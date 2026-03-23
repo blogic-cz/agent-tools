@@ -1,4 +1,5 @@
 import { Effect, Layer, ServiceMap } from "effect";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -42,6 +43,7 @@ export class ResolvedPaths extends ServiceMap.Service<
   {
     readonly messagesPath: string;
     readonly sessionsPath: string;
+    readonly claudeCodePath: string | null;
   }
 >()("@agent-tools/ResolvedPaths") {}
 
@@ -50,6 +52,8 @@ export const ResolvedPathsLayer = Layer.effect(
   Effect.gen(function* () {
     const messagesPath = yield* resolveMessagesPath;
     const sessionsPath = yield* resolveSessionsPath;
-    return { messagesPath, sessionsPath };
+    const claudeCodeBasePath = join(homedir(), ".claude/projects");
+    const claudeCodePath = existsSync(claudeCodeBasePath) ? claudeCodeBasePath : null;
+    return { messagesPath, sessionsPath, claudeCodePath };
   }),
 );

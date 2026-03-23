@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 
 import type { MessageSummary, SessionInfo } from "./types";
 
+import { getClaudeCodeSessions, readClaudeCodeMessages } from "./claude-code";
 import { ResolvedPaths } from "./config";
 import { SessionReadError, SessionStorageNotFoundError, type SessionError } from "./errors";
 
@@ -36,6 +37,37 @@ export const truncate = (value: string, maxLen: number): string => {
 };
 
 type FileEntry = { filePath: string; content: string };
+
+type SourceFilter = "both" | "opencode" | "claude-code";
+
+const UUID_SESSION_ID_REGEX =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/u;
+
+const getSessionIdFromClaudeFile = (filePath: string): string => {
+  const fileName = filePath.split("/").pop() ?? "";
+  return fileName.endsWith(".jsonl") ? fileName.slice(0, -".jsonl".length) : fileName;
+};
+
+const detectSourceFilter = (filterSessions: Set<string> | null): SourceFilter => {
+  if (filterSessions === null || filterSessions.size !== 1) {
+    return "both";
+  }
+
+  const sessionId = filterSessions.values().next().value;
+  if (typeof sessionId !== "string") {
+    return "both";
+  }
+
+  if (sessionId.startsWith("ses_")) {
+    return "opencode";
+  }
+
+  if (UUID_SESSION_ID_REGEX.test(sessionId)) {
+    return "claude-code";
+  }
+
+  return "both";
+};
 
 /**
  * Reads JSON files from a two-level directory (parent/sub/*.json) using Bun.file().
@@ -131,16 +163,42 @@ export class SessionService extends ServiceMap.Service<
         getSessionsForProject: Effect.fn("SessionService.getSessionsForProject")(function* (
           projectDir: string | null,
         ) {
-          const files = yield* readJsonFilesInTree(paths.sessionsPath);
-          const matchingSessions = new Set<string>();
+          const opencodeSessions = yield* Effect.gen(function* () {
+            const files = yield* readJsonFilesInTree(paths.sessionsPath);
+            const matchingSessions = new Set<string>();
 
-          for (const { content } of files) {
-            const parsed = parseJson<SessionInfo>(content);
-            if (parsed === null) continue;
+            for (const { content } of files) {
+              const parsed = parseJson<SessionInfo>(content);
+              if (parsed === null) continue;
 
-            if (projectDir === null || parsed.directory === projectDir) {
-              matchingSessions.add(parsed.id);
+              if (projectDir === null || parsed.directory === projectDir) {
+                matchingSessions.add(parsed.id);
+              }
             }
+
+            return matchingSessions;
+          }).pipe(
+            Effect.catchTag("SessionStorageNotFoundError", () => Effect.succeed(new Set<string>())),
+          );
+
+          const claudeSessions =
+            paths.claudeCodePath === null
+              ? new Set<string>()
+              : yield* getClaudeCodeSessions(paths.claudeCodePath, projectDir).pipe(
+                  Effect.map(
+                    (files) =>
+                      new Set<string>(
+                        files.map((filePath) => getSessionIdFromClaudeFile(filePath)),
+                      ),
+                  ),
+                  Effect.catchTag("SessionStorageNotFoundError", () =>
+                    Effect.succeed(new Set<string>()),
+                  ),
+                );
+
+          const matchingSessions = new Set<string>(opencodeSessions);
+          for (const sessionId of claudeSessions) {
+            matchingSessions.add(sessionId);
           }
 
           return matchingSessions;
@@ -149,54 +207,81 @@ export class SessionService extends ServiceMap.Service<
         getMessageSummaries: Effect.fn("SessionService.getMessageSummaries")(function* (
           filterSessions: Set<string> | null,
         ) {
-          const sessionDirs = yield* Effect.tryPromise({
-            try: async () => {
-              const dirs = await readdir(paths.messagesPath);
-              return dirs
-                .filter((name) => name.startsWith("ses_"))
-                .filter((name) => filterSessions === null || filterSessions.has(name));
-            },
-            catch: () =>
-              new SessionStorageNotFoundError({
-                message: "Message storage directory not found",
-                path: paths.messagesPath,
-              }),
-          });
+          const sourceFilter = detectSourceFilter(filterSessions);
 
-          const summaries: MessageSummary[] = [];
+          const opencodeSummaries =
+            sourceFilter === "claude-code"
+              ? []
+              : yield* Effect.gen(function* () {
+                  const sessionDirs = yield* Effect.tryPromise({
+                    try: async () => {
+                      const dirs = await readdir(paths.messagesPath);
+                      return dirs
+                        .filter((name) => name.startsWith("ses_"))
+                        .filter((name) => filterSessions === null || filterSessions.has(name));
+                    },
+                    catch: () =>
+                      new SessionStorageNotFoundError({
+                        message: "Message storage directory not found",
+                        path: paths.messagesPath,
+                      }),
+                  });
 
-          for (const sessionId of sessionDirs) {
-            const sessionPath = `${paths.messagesPath}/${sessionId}`;
-            const files = yield* readJsonFilesFlat(sessionPath);
+                  const summaries: MessageSummary[] = [];
 
-            for (const { filePath, content } of files) {
-              const parsed = parseJson<{
-                id?: string;
-                role?: string;
-                sessionID?: string;
-                summary?: {
-                  body?: string;
-                  title?: string;
-                };
-                time?: {
-                  created?: number;
-                };
-              }>(content);
+                  for (const sessionId of sessionDirs) {
+                    const sessionPath = `${paths.messagesPath}/${sessionId}`;
+                    const files = yield* readJsonFilesFlat(sessionPath);
 
-              if (parsed === null || parsed.summary?.title === undefined) {
-                continue;
-              }
+                    for (const { filePath, content } of files) {
+                      const parsed = parseJson<{
+                        id?: string;
+                        role?: string;
+                        sessionID?: string;
+                        summary?: {
+                          body?: string;
+                          title?: string;
+                        };
+                        time?: {
+                          created?: number;
+                        };
+                      }>(content);
 
-              summaries.push({
-                sessionID: parsed.sessionID ?? sessionId,
-                id: parsed.id ?? filePath.split("/").pop()?.replace(".json", "") ?? "",
-                title: parsed.summary.title,
-                body: parsed.summary.body ?? "",
-                created: parsed.time?.created ?? 0,
-                role: parsed.role ?? "unknown",
-              });
-            }
-          }
+                      if (parsed === null || parsed.summary?.title === undefined) {
+                        continue;
+                      }
+
+                      summaries.push({
+                        sessionID: parsed.sessionID ?? sessionId,
+                        id: parsed.id ?? filePath.split("/").pop()?.replace(".json", "") ?? "",
+                        title: parsed.summary.title,
+                        body: parsed.summary.body ?? "",
+                        created: parsed.time?.created ?? 0,
+                        role: parsed.role ?? "unknown",
+                        source: "opencode",
+                      });
+                    }
+                  }
+
+                  return summaries;
+                }).pipe(Effect.catchTag("SessionStorageNotFoundError", () => Effect.succeed([])));
+
+          const claudeSummaries =
+            sourceFilter === "opencode" || paths.claudeCodePath === null
+              ? []
+              : yield* getClaudeCodeSessions(paths.claudeCodePath, null).pipe(
+                  Effect.map((sessionFiles) =>
+                    filterSessions === null
+                      ? sessionFiles
+                      : sessionFiles.filter((sessionFile) =>
+                          filterSessions.has(getSessionIdFromClaudeFile(sessionFile)),
+                        ),
+                  ),
+                  Effect.flatMap(readClaudeCodeMessages),
+                  Effect.catchTag("SessionStorageNotFoundError", () => Effect.succeed([])),
+                );
+
+          const summaries = [...opencodeSummaries, ...claudeSummaries];
 
           return (
             summaries as MessageSummary[] & {

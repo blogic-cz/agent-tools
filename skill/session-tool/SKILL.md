@@ -1,11 +1,11 @@
 ---
 name: session-tool
-description: "LOAD THIS SKILL when: browsing OpenCode sessions, reading session history, or searching past conversations. Contains all session-tool commands."
+description: "LOAD THIS SKILL when: browsing OpenCode or Claude Code sessions, reading session history, or searching past conversations. Contains all session-tool commands."
 ---
 
-# session-tool (OpenCode Sessions)
+# session-tool (OpenCode + Claude Code Sessions)
 
-OpenCode session browser — list, read, and search session history. Part of [@blogic-cz/agent-tools](https://github.com/blogic-cz/agent-tools).
+Session browser for OpenCode + Claude Code — list, read, and search session history. Part of [@blogic-cz/agent-tools](https://github.com/blogic-cz/agent-tools).
 
 ## How to Run
 
@@ -19,6 +19,12 @@ bun session-tool list                   # List recent sessions
 bun session-tool read --session <session-id> # Read session messages
 bun session-tool search "query"         # Search across sessions
 ```
+
+Session ID routing:
+
+- UUID format (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) -> Claude Code sessions
+- `ses_*` format -> OpenCode sessions
+- Other IDs -> searched across both sources
 
 ## Tips
 
