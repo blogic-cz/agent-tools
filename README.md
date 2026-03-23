@@ -27,6 +27,25 @@ These tools wrap each CLI with:
 bun add -d @blogic-cz/agent-tools
 ```
 
+### Skill installation
+
+Install per-tool skills for only the tools your project uses:
+
+```bash
+npx skills add blogic-cz/agent-tools --path skill/gh-tool
+npx skills add blogic-cz/agent-tools --path skill/db-tool
+npx skills add blogic-cz/agent-tools --path skill/k8s-tool
+npx skills add blogic-cz/agent-tools --path skill/az-tool
+npx skills add blogic-cz/agent-tools --path skill/logs-tool
+npx skills add blogic-cz/agent-tools --path skill/session-tool
+```
+
+Or install the all-in-one skill that covers every tool:
+
+```bash
+npx skills add blogic-cz/agent-tools --path skill/agent-tools
+```
+
 **Requirements:** [Bun](https://bun.sh/) >=1.0.0
 
 ### For agents reading this
@@ -41,8 +60,8 @@ Follow these steps to set up agent-tools in the consumer project.
   ```
 - **Non-JavaScript project** (no `package.json`): Skip installation — run tools directly with `bunx`:
   ```bash
-  bunx agent-tools-gh pr status
-  bunx agent-tools-k8s pods --env test
+  bunx gh-tool pr status
+  bunx k8s-tool pods --env test
   ```
 
 **Step 2 — Configure**
@@ -68,32 +87,54 @@ Set up the credential guard for the agent's platform:
 
 For each tool the user selected in Step 2:
 
-1. Run `bunx agent-tools-<tool> --help` to verify it works
+1. Run `bun <tool-name> --help` to verify it works (e.g. `bun gh-tool --help`)
 2. Summarize the key commands available
 3. Show the user what data they have access to based on their `agent-tools.json5` — e.g. which environments, clusters, namespaces, databases, or profiles are configured and reachable
 
 **Step 5 — Skill & Agent Docs**
 
-Tell the user to run the following command themselves — it's interactive and lets them choose which agents to install the skill for:
+Install **only the per-tool skills the project needs** (recommended), or the all-in-one skill:
 
 ```bash
-npx skills add blogic-cz/agent-tools
+# Per-tool skills (recommended) — install only what the project uses
+npx skills add blogic-cz/agent-tools --path skill/gh-tool
+npx skills add blogic-cz/agent-tools --path skill/db-tool
+npx skills add blogic-cz/agent-tools --path skill/k8s-tool
+npx skills add blogic-cz/agent-tools --path skill/az-tool
+npx skills add blogic-cz/agent-tools --path skill/logs-tool
+npx skills add blogic-cz/agent-tools --path skill/session-tool
+
+# All-in-one skill (alternative) — all tools in a single skill
+npx skills add blogic-cz/agent-tools --path skill/agent-tools
 ```
 
-**Do not run this command for the user** — it requires interactive selection.
+**Do not run these commands for the user** — they require interactive selection.
+
+Available per-tool skills:
+
+| Skill          | Install when project uses                  |
+| -------------- | ------------------------------------------ |
+| `gh-tool`      | GitHub PRs, issues, workflows, CI checks   |
+| `db-tool`      | SQL queries, schema introspection          |
+| `k8s-tool`     | Kubernetes pods, logs, deployments         |
+| `az-tool`      | Azure DevOps pipelines, builds             |
+| `logs-tool`    | Application log reading (local and remote) |
+| `session-tool` | OpenCode session history browsing          |
+| `agent-tools`  | All of the above in a single skill         |
 
 Then update the project's `AGENTS.md` and/or `CLAUDE.md`:
 
-1. Add an `agent-tools` row to the skills table (if one exists):
+1. Add rows to the skills table for each installed skill (if one exists):
    ```markdown
-   | Agent wrapper tools (`db-tool`, `k8s-tool`, `logs-tool`, `az-tool`, `gh` patterns) | `agent-tools` |
+   | GitHub PRs, issues, workflows | `gh-tool` |
+   | Database queries, schema | `db-tool` |
    ```
 2. Add or update the **Tooling** section:
 
    ```markdown
    ## Tooling
 
-   For tool wrappers and operational patterns, load `agent-tools`.
+   For tool wrappers and operational patterns, load the relevant tool skill (`gh-tool`, `db-tool`, etc.).
    ```
 
 **Step 6 — Custom Tool Scaffold**
@@ -146,33 +187,16 @@ bun run agent-tools/example-tool/index.ts ping
 3. Run tools:
 
 ```bash
-bunx agent-tools-gh pr status
-bunx agent-tools-k8s kubectl --env test --cmd "get pods"
-bunx agent-tools-logs list --env local
-bunx agent-tools-audit list --limit 20
+bun gh-tool pr status
+bun k8s-tool kubectl --env test --cmd "get pods"
+bun logs-tool list --env local
+bun audit-tool list --limit 20
 ```
 
 ```bash
-bunx agent-tools-gh pr review-triage   # interactive summary of PR feedback
-bunx agent-tools-k8s pods --env test   # list pods (structured command)
+bun gh-tool pr review-triage   # interactive summary of PR feedback
+bun k8s-tool pods --env test   # list pods (structured command)
 ```
-
-Optionally, add script aliases to your `package.json` for shorter invocation:
-
-```json
-{
-  "scripts": {
-    "gh-tool": "agent-tools-gh",
-    "audit-tool": "agent-tools-audit",
-    "k8s-tool": "agent-tools-k8s",
-    "db-tool": "agent-tools-db",
-    "logs-tool": "agent-tools-logs",
-    "session-tool": "agent-tools-session"
-  }
-}
-```
-
-Then run via `bun run k8s-tool -- pods --env test` instead of `bunx agent-tools-k8s pods --env test`.
 
 4. Hook up the credential guard in your agent config (Claude Code, OpenCode, etc.):
 
@@ -184,19 +208,19 @@ export default { handleToolExecuteBefore };
 
 ## Tools
 
-| Binary                | Description                                                                                                      |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `agent-tools-gh`      | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
-| `agent-tools-audit`   | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
-| `agent-tools-db`      | Database query tool — SQL execution, schema introspection                                                        |
-| `agent-tools-k8s`     | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
-| `agent-tools-az`      | Azure DevOps tool — pipelines, builds, repos                                                                     |
-| `agent-tools-logs`    | Application logs — read local and remote (k8s pod) logs                                                          |
-| `agent-tools-session` | OpenCode session browser — list, read, search sessions                                                           |
+| Binary           | Description                                                                                                      |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `gh-tool`        | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
+| `audit-tool`     | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
+| `db-tool`        | Database query tool — SQL execution, schema introspection                                                        |
+| `k8s-tool`       | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
+| `az-tool`        | Azure DevOps tool — pipelines, builds, repos                                                                     |
+| `logs-tool`      | Application logs — read local and remote (k8s pod) logs                                                          |
+| `session-tool`   | OpenCode session browser — list, read, search sessions                                                           |
 
-All tools support `--help` for full usage documentation.
+All tools support `--help` for full usage documentation. Legacy `agent-tools-*` binary names (e.g. `agent-tools-gh`) still work for backwards compatibility.
 
-`agent-tools-audit` reads the same SQLite file the wrappers write to. By default that file lives at `~/.agent-tools/audit.sqlite`, and you can override both path and retention per repo with the global `audit` config section.
+`audit-tool` reads the same SQLite file the wrappers write to. By default that file lives at `~/.agent-tools/audit.sqlite`, and you can override both path and retention per repo with the global `audit` config section.
 
 ## Audit Logging
 
@@ -212,19 +236,19 @@ Entries older than `retentionDays` (default: 90) are automatically purged on eac
 
 ```bash
 # Recent 20 entries (default)
-bunx agent-tools-audit list
+bun audit-tool list
 
 # Last 50 entries, JSON format
-bunx agent-tools-audit list --limit 50 --format json
+bun audit-tool list --limit 50 --format json
 
 # Filter by tool
-bunx agent-tools-audit list --tool gh
+bun audit-tool list --tool gh
 
 # Filter by project directory
-bunx agent-tools-audit list --project /Users/me/my-repo
+bun audit-tool list --project /Users/me/my-repo
 
 # Purge entries older than 30 days
-bunx agent-tools-audit purge --days 30
+bun audit-tool purge --days 30
 ```
 
 ### Audit Configuration
@@ -293,8 +317,8 @@ Each tool section supports multiple named profiles. Select with `--profile <name
 ```
 
 ```bash
-bunx agent-tools-az cmd --cmd "pipelines list"                    # uses "default" profile
-bunx agent-tools-az cmd --cmd "pipelines list" --profile legacy   # uses "legacy" profile
+bun az-tool cmd --cmd "pipelines list"                    # uses "default" profile
+bun az-tool cmd --cmd "pipelines list" --profile legacy   # uses "legacy" profile
 ```
 
 **Profile resolution:** `--profile` flag > auto-select (single profile) > `"default"` key > error.
