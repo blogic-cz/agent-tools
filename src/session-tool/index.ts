@@ -15,7 +15,6 @@ import type { MessageSummary, SessionResult, SessionSource } from "./types";
 
 import { formatOption, formatOutput, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
-import { getClaudeCodeSessions } from "./claude-code";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
 import { formatDate, SessionService, SessionServiceLayer, truncate } from "./service";
@@ -50,9 +49,14 @@ const mapSummary = (summary: MessageSummary) => {
       title: summary.title,
       body: truncate(summary.body, 500),
       created: formatDate(summary.created),
-      messagePath: `${paths.messagesPath}/${summary.sessionID}/${summary.id}.json`,
+      ...(summary.source === "opencode"
+        ? {
+            messagePath: `${paths.messagesPath}/${summary.sessionID}/${summary.id}.json`,
+            sessionPath: `${paths.messagesPath}/${summary.sessionID}`,
+          }
+        : {}),
       role: summary.role,
-      sessionPath: `${paths.messagesPath}/${summary.sessionID}`,
+      source: summary.source,
     };
   });
 };
@@ -253,7 +257,7 @@ const readCommand = Command.make(
                   data: {
                     files: mapped
                       .map((message) =>
-                        "messagePath" in message ? message.messagePath : message.sessionFile,
+                        "messagePath" in message ? (message.messagePath as string) : null,
                       )
                       .filter((filePath): filePath is string => filePath !== null),
                     messages: mapped,
