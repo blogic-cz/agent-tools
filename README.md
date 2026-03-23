@@ -27,6 +27,25 @@ These tools wrap each CLI with:
 bun add -d @blogic-cz/agent-tools
 ```
 
+### Skill installation
+
+Install per-tool skills for only the tools your project uses:
+
+```bash
+npx skills add blogic-cz/agent-tools --path skill/gh-tool
+npx skills add blogic-cz/agent-tools --path skill/db-tool
+npx skills add blogic-cz/agent-tools --path skill/k8s-tool
+npx skills add blogic-cz/agent-tools --path skill/az-tool
+npx skills add blogic-cz/agent-tools --path skill/logs-tool
+npx skills add blogic-cz/agent-tools --path skill/session-tool
+```
+
+Or install the all-in-one skill that covers every tool:
+
+```bash
+npx skills add blogic-cz/agent-tools --path skill/agent-tools
+```
+
 **Requirements:** [Bun](https://bun.sh/) >=1.0.0
 
 ### For agents reading this
@@ -93,15 +112,15 @@ npx skills add blogic-cz/agent-tools --path skill/agent-tools
 
 Available per-tool skills:
 
-| Skill          | Install when project uses                          |
-| -------------- | -------------------------------------------------- |
-| `gh-tool`      | GitHub PRs, issues, workflows, CI checks           |
-| `db-tool`      | SQL queries, schema introspection                  |
-| `k8s-tool`     | Kubernetes pods, logs, deployments                 |
-| `az-tool`      | Azure DevOps pipelines, builds                     |
-| `logs-tool`    | Application log reading (local and remote)         |
-| `session-tool` | OpenCode session history browsing                  |
-| `agent-tools`  | All of the above in a single skill                 |
+| Skill          | Install when project uses                  |
+| -------------- | ------------------------------------------ |
+| `gh-tool`      | GitHub PRs, issues, workflows, CI checks   |
+| `db-tool`      | SQL queries, schema introspection          |
+| `k8s-tool`     | Kubernetes pods, logs, deployments         |
+| `az-tool`      | Azure DevOps pipelines, builds             |
+| `logs-tool`    | Application log reading (local and remote) |
+| `session-tool` | OpenCode session history browsing          |
+| `agent-tools`  | All of the above in a single skill         |
 
 Then update the project's `AGENTS.md` and/or `CLAUDE.md`:
 
