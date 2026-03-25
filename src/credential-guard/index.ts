@@ -392,8 +392,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           `\u{1F6AB} Access blocked: "${filePath}" is a sensitive file.\n\n` +
             `This file may contain credentials or secrets.\n` +
             `If you need this file's content, ask the user to provide relevant parts.\n\n` +
-            `Think this should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the guard, and submit a PR.\n` +
-            `→ Skill "agent-tools"`,
+            `Think this should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the guard, and submit a PR.`,
         );
       }
     }
@@ -409,8 +408,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
               `\u{1F6AB} Secret detected: Potential ${detected.name} found in content.\n\n` +
                 `Matched: ${detected.match}\n\n` +
                 `Never commit secrets to code. Use environment variables or secret managers.\n\n` +
-                `Think this is a false positive? See https://github.com/blogic-cz/agent-tools — fork, fix the pattern, and submit a PR.\n` +
-                `→ Skill "agent-tools"`,
+                `Think this is a false positive? See https://github.com/blogic-cz/agent-tools — fork, fix the pattern, and submit a PR.`,
             );
           }
         }
@@ -425,8 +423,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           `\u{1F6AB} Command blocked: This command might expose secrets.\n\n` +
             `Command: ${command}\n\n` +
             `If you need environment info, ask the user directly.\n\n` +
-            `Think this is wrong? See https://github.com/blogic-cz/agent-tools — fork, adjust the patterns, and submit a PR.\n` +
-            `→ Skill "agent-tools"`,
+            `Think this is wrong? See https://github.com/blogic-cz/agent-tools — fork, adjust the patterns, and submit a PR.`,
         );
       }
 
@@ -436,20 +433,20 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           `\u{26A0}\u{FE0F} Sleep-polling detected.\n\n` +
             `Instead of polling with sleep, use the built-in watch command:\n\n` +
             `Use instead: ${sleepSuggestion}\n\n` +
-            `Watch commands block until completion — no polling needed.\n\n` +
-            `→ Skill "agent-tools"`,
+            `Watch commands block until completion — no polling needed.`,
         );
       }
 
       const blockedTool = getBlockedCliTool(command);
       if (blockedTool) {
+        const skillName = blockedTool.wrapper.replace("agent-tools-", "") + "-tool";
         throw new Error(
           `\u{1F6AB} Direct ${blockedTool.name} usage blocked.\n\n` +
             `AI agents must use wrapper tools for security and audit.\n\n` +
-            `Use instead: bun ${blockedTool.wrapper}\n\n` +
-            `Example: bun ${blockedTool.wrapper} --help\n\n` +
+            `Use instead: bun ${skillName}\n\n` +
+            `Example: bun ${skillName} --help\n\n` +
             `Think this tool should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the whitelist, and submit a PR.\n` +
-            `→ Skill "agent-tools"`,
+            `→ Skill "${skillName}"`,
         );
       }
     }
