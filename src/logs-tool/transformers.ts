@@ -66,9 +66,28 @@ function toText(value: unknown): string | undefined {
   return undefined;
 }
 
-function firstMappedField(obj: unknown, fields: ReadonlyArray<string>): string | undefined {
+function formatTimestamp(value: unknown): string | undefined {
+  if (typeof value === "number" && value > 1_000_000_000_000) {
+    return new Date(value).toISOString();
+  }
+  if (typeof value === "number" && value > 1_000_000_000) {
+    return new Date(value * 1000).toISOString();
+  }
+  return undefined;
+}
+
+function firstMappedField(
+  obj: unknown,
+  fields: ReadonlyArray<string>,
+  isTimestamp = false,
+): string | undefined {
   for (const field of fields) {
-    const value = toText(getByPath(obj, field));
+    const raw = getByPath(obj, field);
+    if (isTimestamp) {
+      const formatted = formatTimestamp(raw);
+      if (formatted) return formatted;
+    }
+    const value = toText(raw);
     if (value) {
       return value;
     }
@@ -82,6 +101,15 @@ function normalizeLevel(rawLevel: string | undefined): LogLevel {
 
   if (!normalized) {
     return "INFO";
+  }
+
+  // Pino numeric levels: 10=trace, 20=debug, 30=info, 40=warn, 50=error, 60=fatal
+  const numericLevel = Number(normalized);
+  if (Number.isFinite(numericLevel)) {
+    if (numericLevel >= 50) return "ERROR";
+    if (numericLevel >= 40) return "WARN";
+    if (numericLevel >= 30) return "INFO";
+    return "DEBUG";
   }
 
   if (normalized === "error" || normalized === "err" || normalized === "fatal") {
@@ -114,7 +142,7 @@ function formatLine({ level, timestamp, message }: ParsedLogLine): string {
 function parseJsonLogLine(line: string, originalIndex: number): ParsedLogLine {
   try {
     const parsed = JSON.parse(line) as unknown;
-    const timestamp = firstMappedField(parsed, TIMESTAMP_FIELDS);
+    const timestamp = firstMappedField(parsed, TIMESTAMP_FIELDS, true);
     const level = normalizeLevel(firstMappedField(parsed, LEVEL_FIELDS));
     const message =
       firstMappedField(parsed, MESSAGE_FIELDS) ??
