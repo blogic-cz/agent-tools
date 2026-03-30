@@ -49,7 +49,11 @@ function createMockK8sServiceLayer(
         );
       }
 
-      return Effect.succeed(response?.output ?? "");
+      if (typeof response?.output === "string") {
+        return Effect.succeed(response.output);
+      }
+
+      return Effect.succeed("");
     },
 
     runKubectl: (cmd: string, dryRun: boolean) => {
@@ -449,7 +453,10 @@ describe("K8sService", () => {
         const service = yield* K8sService;
         const result = yield* service.runKubectl("describe pod test-pod", false);
 
-        expect(result.output?.split("\n")).toHaveLength(4);
+        if (typeof result.output !== "string") {
+          throw new Error("Expected string output");
+        }
+        expect(result.output.split("\n")).toHaveLength(4);
       }).pipe(
         Effect.provide(
           createMockK8sServiceLayer({
@@ -469,7 +476,11 @@ describe("K8sService", () => {
         const service = yield* K8sService;
         const result = yield* service.runKubectl("get pod test-pod -o json", false);
 
-        expect(() => JSON.parse(result.output ?? "")).not.toThrow();
+        if (typeof result.output !== "string") {
+          throw new Error("Expected string output");
+        }
+        const output = result.output;
+        expect(() => JSON.parse(output)).not.toThrow();
       }).pipe(
         Effect.provide(
           createMockK8sServiceLayer({
@@ -625,7 +636,10 @@ spec:
         const service = yield* K8sService;
         const result = yield* service.runKubectl("logs pod-name --tail=1000", false);
 
-        expect(result.output?.split("\n")).toHaveLength(1000);
+        if (typeof result.output !== "string") {
+          throw new Error("Expected string output");
+        }
+        expect(result.output.split("\n")).toHaveLength(1000);
       }).pipe(
         Effect.provide(
           createMockK8sServiceLayer({

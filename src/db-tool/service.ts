@@ -14,6 +14,7 @@ import {
 } from "./errors";
 import { getColumns, getRelationships, getTableNames } from "./schema";
 import { detectSchemaError, isValidTableName, isMutationQuery } from "./security";
+import { transformQueryResult } from "./transformers";
 
 const LOCALHOST_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
@@ -323,6 +324,7 @@ export class DbService extends ServiceMap.Service<
           sql: string,
           password: string,
           startTimeMs: number,
+          applyTransform = false,
         ) {
           const wrappedSql = `SELECT json_agg(t) FROM (${sql}) t;`;
           const command = buildPsqlCommand(config, wrappedSql, password, true);
@@ -376,7 +378,7 @@ export class DbService extends ServiceMap.Service<
             };
           }
 
-          const data = yield* Effect.try({
+          const rawData = yield* Effect.try({
             try: () => JSON.parse(trimmedOutput) as Record<string, unknown>[],
             catch: () =>
               new DbParseError({
@@ -385,11 +387,21 @@ export class DbService extends ServiceMap.Service<
               }),
           });
 
+          const transformed = applyTransform
+            ? transformQueryResult(rawData)
+            : {
+                data: rawData,
+                showing: rawData.length,
+                truncated: false,
+                total: rawData.length,
+              };
+
           return {
             success: true,
-            data,
-            rowCount: data.length,
+            data: transformed.data,
+            rowCount: transformed.showing,
             executionTimeMs: Number(endTime) - startTimeMs,
+            ...(transformed.truncated ? { truncated: true, total: transformed.total } : {}),
           };
         });
 
@@ -558,7 +570,7 @@ export class DbService extends ServiceMap.Service<
 
           const queryEffect = mutation
             ? executeMutationQuery(config, sql, password, Number(startTimeMs))
-            : executeSelectQuery(config, sql, password, Number(startTimeMs));
+            : executeSelectQuery(config, sql, password, Number(startTimeMs), true);
 
           return yield* runQueryWithOptionalTunnel(config, queryEffect);
         });

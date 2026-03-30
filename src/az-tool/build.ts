@@ -4,6 +4,7 @@ import type { BuildJob, BuildLogs, BuildTimeline, JobSummary, PipelineRun } from
 
 import { AzParseError } from "./errors";
 import { AzService } from "./service";
+import { transformBuildLogContent, transformTimeline } from "./transformers";
 
 /**
  * Get build timeline with all records (jobs, stages, tasks, etc.)
@@ -59,7 +60,10 @@ export const getBuildTimeline = Effect.fn("Build.getBuildTimeline")(function* (b
     ),
   );
 
-  return parsed as BuildTimeline;
+  return {
+    ...parsed,
+    records: transformTimeline(parsed.records as BuildJob[]),
+  } as BuildTimeline;
 });
 
 /**
@@ -151,14 +155,14 @@ export const getBuildLogContent = Effect.fn("Build.getBuildLogContent")(function
   );
 
   if (typeof parsed === "string") {
-    return parsed;
+    return transformBuildLogContent(parsed);
   }
 
   if (!Array.isArray(parsed.value)) {
     return "";
   }
 
-  return parsed.value.join("\n");
+  return transformBuildLogContent(parsed.value.join("\n"));
 });
 
 /**

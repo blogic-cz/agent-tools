@@ -8,6 +8,7 @@ import { K8sService, K8sServiceLayer } from "#k8s/service";
 import { ConfigService, ConfigServiceLayer, getToolConfig } from "#config/loader";
 import type { LogsConfig } from "#config/types";
 import { LogsNotFoundError, LogsReadError, type LogsError } from "./errors";
+import { transformLogOutput } from "./transformers";
 
 export const parseLogFiles = (output: string): LogFile[] => {
   const lines = output.trim().split("\n").slice(1);
@@ -43,6 +44,8 @@ export const formatPrettyOutput = (output: string): string => {
  * and wrapping in single quotes. This prevents shell injection.
  */
 export const sanitizeShellArg = (input: string): string => `'${input.replace(/'/g, "'\\''")}'`;
+
+const readCommandOutput = (output: unknown): string => (typeof output === "string" ? output : "");
 
 export class LogsService extends ServiceMap.Service<
   LogsService,
@@ -138,7 +141,7 @@ export class LogsService extends ServiceMap.Service<
             ),
           );
 
-        const pod = (podResult.output ?? "").replace(/'/g, "");
+        const pod = readCommandOutput(podResult.output).replace(/'/g, "");
 
         const listResult = yield* k8s.runKubectl(`exec ${pod} -- ls -la ${remotePath}`, false).pipe(
           Effect.mapError(
@@ -150,7 +153,7 @@ export class LogsService extends ServiceMap.Service<
           ),
         );
 
-        const files = parseLogFiles(listResult.output ?? "");
+        const files = parseLogFiles(readCommandOutput(listResult.output));
         if (files.length === 0) {
           return yield* new LogsNotFoundError({
             message: "No log files found",
@@ -210,11 +213,11 @@ export class LogsService extends ServiceMap.Service<
         }
 
         const output = result.stdout.trim();
-        if (options.pretty && output) {
-          return formatPrettyOutput(output);
+        if (!output) {
+          return "(no matching lines)";
         }
 
-        return output || "(no matching lines)";
+        return transformLogOutput(output);
       });
 
       const readRemoteLogs = Effect.fn("LogsService.readRemoteLogs")(function* (
@@ -236,7 +239,7 @@ export class LogsService extends ServiceMap.Service<
             ),
           );
 
-        const pod = (podResult.output ?? "").replace(/'/g, "");
+        const pod = readCommandOutput(podResult.output).replace(/'/g, "");
         const logFile = options.file ?? "app.log";
         const logPath = `${remotePath}/${logFile}`;
         let command = `tail -${options.tail} ${sanitizeShellArg(logPath)}`;
@@ -263,12 +266,12 @@ export class LogsService extends ServiceMap.Service<
             );
           },
           onSuccess: (result) => {
-            const trimmed = (result.output ?? "").trim();
-            if (options.pretty && trimmed) {
-              return Effect.succeed(formatPrettyOutput(trimmed));
+            const trimmed = readCommandOutput(result.output).trim();
+            if (!trimmed) {
+              return Effect.succeed("(no matching lines)");
             }
 
-            return Effect.succeed(trimmed || "(no matching lines)");
+            return Effect.succeed(transformLogOutput(trimmed));
           },
         });
       });
