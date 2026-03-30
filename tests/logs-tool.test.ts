@@ -321,7 +321,7 @@ describe("LogsService", () => {
       );
     });
 
-    it.effect("pretty prints local JSON lines and keeps malformed lines", () =>
+    it.effect("transforms local JSON lines and keeps malformed lines", () =>
       Effect.gen(function* () {
         const service = yield* LogsService;
         const options: ReadOptions = {
@@ -333,9 +333,7 @@ describe("LogsService", () => {
         const result = yield* service.readLogs("local", options);
 
         expect(result).toBe(
-          ['{\n  "level": "info",\n  "msg": "ok"\n}', "plain line", '{\n  "n": 1\n}'].join(
-            "\n---\n",
-          ),
+          ["--- info (3) ---", "[INFO] ok", "[INFO] plain line", '[INFO] {"n":1}'].join("\n"),
         );
       }).pipe(
         Effect.provide(
@@ -456,7 +454,7 @@ describe("LogsService", () => {
       );
     });
 
-    it.effect("pretty prints remote JSON lines", () =>
+    it.effect("transforms remote JSON lines", () =>
       Effect.gen(function* () {
         const service = yield* LogsService;
         const options: ReadOptions = {
@@ -467,7 +465,7 @@ describe("LogsService", () => {
 
         const result = yield* service.readLogs("prod", options);
 
-        expect(result).toBe('{\n  "x": 1\n}\n---\nnot json');
+        expect(result).toBe(["--- info (2) ---", '[INFO] {"x":1}', "[INFO] not json"].join("\n"));
       }).pipe(
         Effect.provide(
           createLogsServiceLayer({

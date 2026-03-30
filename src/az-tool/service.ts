@@ -7,6 +7,7 @@ import type { AzureConfig } from "#config/types";
 import { DIRECT_AZ_COMMANDS, STANDALONE_AZ_COMMANDS } from "./config";
 import { AzSecurityError, AzCommandError, AzTimeoutError, AzParseError } from "./errors";
 import { isCommandAllowed, isInvokeAllowed } from "./security";
+import { transformCmdOutput } from "./transformers";
 import { ConfigService, getToolConfig } from "#config";
 
 export class AzService extends ServiceMap.Service<
@@ -144,7 +145,14 @@ export class AzService extends ServiceMap.Service<
           });
         }
 
-        return result.stdout;
+        const output = result.stdout.trim();
+        const transformed = transformCmdOutput(output);
+
+        if (typeof transformed === "string") {
+          return transformed;
+        }
+
+        return JSON.stringify(transformed);
       });
 
       const runInvoke = Effect.fn("AzService.runInvoke")(function* (params: InvokeParams) {
