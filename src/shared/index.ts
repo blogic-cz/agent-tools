@@ -15,3 +15,12 @@ export const VERSION = pkg.version;
 export { execEffect, type ExecError } from "./exec";
 
 export { createThrottle, type ThrottleError } from "./throttle";
+
+export {
+  aggregateByField,
+  deduplicateLines,
+  formatCountSummary,
+  parseTextTable,
+  stripEmptyColumns,
+  truncateRows,
+} from "./transform";

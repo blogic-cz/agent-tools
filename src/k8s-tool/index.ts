@@ -11,6 +11,13 @@ import { K8sService, K8sServiceLayer } from "./service";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { K8sContextError } from "./errors";
+import {
+  transformDescribe,
+  transformGenericKubectl,
+  transformLogs,
+  transformPods,
+  transformTop,
+} from "./transformers";
 
 /**
  * Resolve environment from explicit --env flag, config defaultEnvironment, or fail with hint.
@@ -54,7 +61,7 @@ type CommonK8sCommandOptions = {
   readonly profile: Option.Option<string>;
 };
 
-const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
+const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
   Effect.gen(function* () {
     const config = yield* ConfigService;
     const profileName = Option.getOrUndefined(options.profile);
@@ -69,8 +76,7 @@ const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
           "echo '{ kubernetes: { default: { clusterId: \"my-cluster\" } } }' > agent-tools.json5",
         executionTimeMs: 0,
       };
-      yield* Console.log(formatOutput(result, options.format));
-      return;
+      return result;
     }
 
     const resolvedEnv = yield* resolveEnv(options.env, config);
@@ -126,7 +132,24 @@ const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
       }),
     );
 
-    yield* Console.log(formatOutput({ ...result, environment: resolvedEnv }, options.format));
+    return { ...result, environment: resolvedEnv };
+  });
+
+const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
+  Effect.gen(function* () {
+    const result = yield* executeK8sCommand(command, options);
+    yield* Console.log(formatOutput(result, options.format));
+  });
+
+const logTransformedResult = (
+  result: CommandResult,
+  format: CommonK8sCommandOptions["format"],
+  transform: (output: string) => string | Record<string, unknown>,
+) =>
+  Effect.gen(function* () {
+    const transformedResult =
+      typeof result.output === "string" ? { ...result, output: transform(result.output) } : result;
+    yield* Console.log(formatOutput(transformedResult, format));
   });
 
 const commonFlags = {
@@ -178,7 +201,13 @@ const kubectlCommand = Command.make(
       Flag.withDescription('kubectl command (without "kubectl" prefix)'),
     ),
   },
-  ({ cmd, dryRun, env, format, profile }) => runK8sCommand(cmd, { dryRun, env, format, profile }),
+  ({ cmd, dryRun, env, format, profile }) =>
+    Effect.gen(function* () {
+      const result = yield* executeK8sCommand(cmd, { dryRun, env, format, profile });
+      return yield* logTransformedResult(result, format, (output) =>
+        transformGenericKubectl(output, cmd),
+      );
+    }),
 ).pipe(
   Command.withDescription(
     `Kubernetes CLI Tool for Coding Agents
@@ -247,18 +276,18 @@ const podsCommand = Command.make(
       Flag.withDefault(false),
     ),
   },
-  ({ dryRun, env, format, label, namespace, profile, wide }) =>
+  ({ dryRun, env, format, label, namespace, profile }) =>
     Effect.gen(function* () {
       const resolvedNamespace = yield* resolveStructuredNamespace(namespace, env, profile);
-      const command = buildKubectlCommand("get pods", [
+      const command = buildKubectlCommand("get pods -o json", [
         Option.match(label, {
           onNone: () => "",
           onSome: (value) => `-l ${value}`,
         }),
         resolvedNamespace ? `-n ${resolvedNamespace}` : "",
-        wide ? "-o wide" : "",
       ]);
-      return yield* runK8sCommand(command, { dryRun, env, format, profile });
+      const result = yield* executeK8sCommand(command, { dryRun, env, format, profile });
+      return yield* logTransformedResult(result, format, transformPods);
     }),
 ).pipe(Command.withDescription("List pods (get pods) with optional namespace/label/wide output"));
 
@@ -297,7 +326,8 @@ const logsCommand = Command.make(
         }),
         follow ? "-f" : "",
       ]);
-      return yield* runK8sCommand(command, { dryRun, env, format, profile });
+      const result = yield* executeK8sCommand(command, { dryRun, env, format, profile });
+      return yield* logTransformedResult(result, format, transformLogs);
     }),
 ).pipe(Command.withDescription("Fetch pod logs with tail/follow/container selectors"));
 
@@ -320,7 +350,8 @@ const describeCommand = Command.make(
       const command = buildKubectlCommand(`describe ${resource} ${name}`, [
         resolvedNamespace ? `-n ${resolvedNamespace}` : "",
       ]);
-      return yield* runK8sCommand(command, { dryRun, env, format, profile });
+      const result = yield* executeK8sCommand(command, { dryRun, env, format, profile });
+      return yield* logTransformedResult(result, format, transformDescribe);
     }),
 ).pipe(Command.withDescription("Describe a Kubernetes resource by type and name"));
 
@@ -379,7 +410,8 @@ const topCommand = Command.make(
           onSome: (value) => `--sort-by=${value}`,
         }),
       ]);
-      return yield* runK8sCommand(command, { dryRun, env, format, profile });
+      const result = yield* executeK8sCommand(command, { dryRun, env, format, profile });
+      return yield* logTransformedResult(result, format, transformTop);
     }),
 ).pipe(Command.withDescription("Show pod CPU/memory usage (kubectl top pod)"));
 

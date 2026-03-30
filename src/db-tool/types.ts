@@ -25,6 +25,8 @@ export type QueryResult = {
   availableColumns?: string[];
   hint?: string;
   schemaFile?: string;
+  truncated?: boolean;
+  total?: number;
 };
 
 export type SchemaErrorInfo = {
