@@ -456,12 +456,7 @@ export function transformDescribe(textOutput: string): string {
   return outputLines.join("\n").trim();
 }
 
-export function transformLogs(textOutput: string): string {
-  return deduplicateLines(textOutput, {
-    normalizeTimestamps: true,
-    normalizeUUIDs: true,
-  });
-}
+export { transformLogOutput as transformLogs } from "#logs/transformers";
 
 export function transformGenericKubectl(
   textOutput: string,
