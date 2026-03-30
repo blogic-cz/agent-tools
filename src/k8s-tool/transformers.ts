@@ -121,11 +121,11 @@ function parseMemoryToMi(memory: string): number {
     case "ti":
       return Math.round(value * 1024 * 1024);
     case "k":
-      return Math.round(value / 1000 / 1024);
+      return Math.round((value * 1000) / (1024 * 1024));
     case "m":
-      return Math.round(value / 1000 / 1000 / 1024);
+      return Math.round((value * 1_000_000) / (1024 * 1024));
     case "g":
-      return Math.round(value / 1024);
+      return Math.round((value * 1_000_000_000) / (1024 * 1024));
     default:
       return Math.round(value);
   }
@@ -478,9 +478,8 @@ export function transformGenericKubectl(
       if (parsed && typeof parsed === "object") {
         return parsed as Record<string, unknown>;
       }
-    } catch (error) {
-      const ignored = error;
-      void ignored;
+    } catch {
+      // not JSON — fall through to table/text detection
     }
   }
 
