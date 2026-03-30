@@ -24,3 +24,5 @@ export {
   stripEmptyColumns,
   truncateRows,
 } from "./transform";
+
+export { transformLogOutput } from "./log-transform";
