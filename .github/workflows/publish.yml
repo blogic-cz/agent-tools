@@ -54,12 +54,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          NPM=(npx -y npm@11.5.1)
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
 
           is_published() {
-            [ "$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]
+            [ "$("${NPM[@]}" view "${PACKAGE_NAME}@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]
           }
+
+          "${NPM[@]}" --version
 
           if is_published; then
             echo "${PACKAGE_NAME}@${VERSION} is already published. Skipping publish."
@@ -71,7 +74,7 @@ jobs:
             echo "Publish attempt ${attempt}/${ATTEMPTS} for ${PACKAGE_NAME}@${VERSION}"
 
             set +e
-            PUBLISH_OUTPUT=$(npm publish --access public --provenance 2>&1)
+            PUBLISH_OUTPUT=$("${NPM[@]}" publish --access public --provenance 2>&1)
             PUBLISH_STATUS=$?
             set -e
 
