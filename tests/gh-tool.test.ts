@@ -1064,8 +1064,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
 
       const threads = response.repository.pullRequest.reviewThreads.nodes;
 
-      const mapped: ReviewThread[] = threads
-        .map((node) => {
+      const mapped = threads
+        .map((node): ReviewThread | null => {
           const comment = node.comments.nodes[0];
           if (!comment) {
             return null;
@@ -1078,6 +1078,12 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             line: comment.line,
             body: comment.body,
             isResolved: node.isResolved,
+            hasReply: false,
+            replyCount: 0,
+            needsHumanReply: true,
+            isVisibleOpen: true,
+            lastReplyAuthor: null,
+            lastReplyAt: null,
           };
         })
         .filter((thread): thread is ReviewThread => thread !== null);
@@ -1102,6 +1108,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
       expect(first?.line).toBe(10);
       expect(first?.body).toBe("Please fix this");
       expect(first?.isResolved).toBe(false);
+      expect(first?.hasReply).toBe(false);
+      expect(first?.isVisibleOpen).toBe(true);
 
       const second = threads[1];
       expect(second?.threadId).toBe("thread-2");
@@ -1252,6 +1260,12 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             },
           });
         },
+        runGh: () =>
+          Effect.succeed({
+            stdout: "[]",
+            stderr: "",
+            exitCode: 0,
+          }),
       });
 
       const threads = yield* fetchThreads(123, false).pipe(Effect.provide(layer));
@@ -1260,6 +1274,36 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
       expect(threads).toHaveLength(2);
       expect(threads[0]?.threadId).toBe("thread-page-1");
       expect(threads[1]?.threadId).toBe("thread-page-2");
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("fetchThreads visible-open-only includes resolved threads without reply", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(mockGraphQLThreadsResponse),
+        runGh: (args) => {
+          const apiPath = args[1] ?? "";
+          if (apiPath.includes("pulls/123/comments")) {
+            return Effect.succeed({
+              stdout: JSON.stringify(mockTriageReviewCommentsRaw),
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+          return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const threads = yield* fetchThreads(123, false, true).pipe(Effect.provide(layer));
+
+      expect(threads).toHaveLength(2);
+      expect(threads[0]?.threadId).toBe("thread-1");
+      expect(threads[0]?.hasReply).toBe(true);
+      expect(threads[0]?.isVisibleOpen).toBe(true);
+      expect(threads[1]?.threadId).toBe("thread-2");
+      expect(threads[1]?.hasReply).toBe(false);
+      expect(threads[1]?.needsHumanReply).toBe(true);
+      expect(threads[1]?.isVisibleOpen).toBe(true);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
@@ -1579,14 +1623,15 @@ describe("PR composite commands", () => {
           },
         });
 
-        const [info, threads, summary, checks] = yield* Effect.all([
+        const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
           viewPR(123),
           fetchThreads(123, true),
+          fetchThreads(123, false, true),
           fetchDiscussionSummary(123),
           fetchChecks(123, false, false, 0),
         ]).pipe(Effect.provide(layer));
 
-        const result = { info, unresolvedThreads: threads, summary, checks };
+        const result = { info, unresolvedThreads, visibleOpenThreads, summary, checks };
 
         // PR info from viewPR
         expect(result.info.number).toBe(123);
@@ -1598,10 +1643,16 @@ describe("PR composite commands", () => {
         expect(result.unresolvedThreads[0]?.threadId).toBe("thread-1");
         expect(result.unresolvedThreads[0]?.isResolved).toBe(false);
 
+        expect(result.visibleOpenThreads).toHaveLength(2);
+        expect(result.visibleOpenThreads[1]?.threadId).toBe("thread-2");
+        expect(result.visibleOpenThreads[1]?.isResolved).toBe(true);
+        expect(result.visibleOpenThreads[1]?.needsHumanReply).toBe(true);
+
         // Discussion summary aggregates from all sub-fetches
         expect(result.summary.issueCommentsCount).toBe(1);
         expect(result.summary.reviewCommentsCount).toBe(3);
         expect(result.summary.reviewThreadsCount).toBe(2);
+        expect(result.summary.visibleOpenReviewThreadsCount).toBe(2);
         expect(result.summary.repliedReviewThreadsCount).toBe(1);
         expect(result.summary.unrepliedReviewThreadsCount).toBe(1);
         expect(result.summary.resolvedUnrepliedReviewThreadsCount).toBe(1);

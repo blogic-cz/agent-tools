@@ -236,6 +236,66 @@ const fetchAllThreadNodes = Effect.fn("pr.fetchAllThreadNodes")(function* (pr: n
   }
 });
 
+const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): ReviewThread[] => {
+  const repliesByRootCommentId = new Map<number, ReviewComment[]>();
+
+  for (const comment of reviewComments) {
+    if (comment.inReplyToId === null) {
+      continue;
+    }
+
+    const replies = repliesByRootCommentId.get(comment.inReplyToId) ?? [];
+    replies.push(comment);
+    repliesByRootCommentId.set(comment.inReplyToId, replies);
+  }
+
+  return threads
+    .map((node) => {
+      const comment = node.comments.nodes[0];
+      if (!comment) {
+        return null;
+      }
+
+      const replies = repliesByRootCommentId.get(comment.databaseId) ?? [];
+      const lastReply = replies.reduce<ReviewComment | null>((latest, current) => {
+        if (latest === null) {
+          return current;
+        }
+
+        return new Date(current.createdAt).getTime() > new Date(latest.createdAt).getTime()
+          ? current
+          : latest;
+      }, null);
+      const hasReply = replies.length > 0;
+      const needsHumanReply = !hasReply;
+
+      return {
+        threadId: node.id,
+        commentId: comment.databaseId,
+        path: comment.path,
+        line: comment.line,
+        body: comment.body,
+        isResolved: node.isResolved,
+        hasReply,
+        replyCount: replies.length,
+        needsHumanReply,
+        isVisibleOpen: !node.isResolved || needsHumanReply,
+        lastReplyAuthor: lastReply?.author ?? null,
+        lastReplyAt: lastReply?.createdAt ?? null,
+      };
+    })
+    .filter((thread): thread is ReviewThread => thread !== null);
+};
+
+const fetchThreadState = Effect.fn("pr.fetchThreadState")(function* (pr: number) {
+  const [threads, reviewComments] = yield* Effect.all([
+    fetchAllThreadNodes(pr),
+    fetchComments(pr, null),
+  ]);
+
+  return enrichThreads(threads, reviewComments);
+});
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -255,29 +315,16 @@ const mapRawIssueComment = (comment: RawIssueComment): IssueComment => ({
 export const fetchThreads = Effect.fn("pr.fetchThreads")(function* (
   pr: number | null,
   unresolvedOnly: boolean,
+  visibleOpenOnly = false,
 ) {
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
-  const threads = yield* fetchAllThreadNodes(resolvedPr);
+  const threads = yield* fetchThreadState(resolvedPr);
 
-  const mapped: ReviewThread[] = threads
-    .map((node) => {
-      const comment = node.comments.nodes[0];
-      if (!comment) {
-        return null;
-      }
+  if (visibleOpenOnly) {
+    return threads.filter((thread) => thread.isVisibleOpen);
+  }
 
-      return {
-        threadId: node.id,
-        commentId: comment.databaseId,
-        path: comment.path,
-        line: comment.line,
-        body: comment.body,
-        isResolved: node.isResolved,
-      };
-    })
-    .filter((thread): thread is ReviewThread => thread !== null);
-
-  return unresolvedOnly ? mapped.filter((t) => !t.isResolved) : mapped;
+  return unresolvedOnly ? threads.filter((thread) => !thread.isResolved) : threads;
 });
 
 /**
@@ -453,6 +500,7 @@ export const fetchDiscussionSummary = Effect.fn("pr.fetchDiscussionSummary")(fun
     latestIssueComment,
     reviewCommentsCount: reviewComments.length,
     reviewThreadsCount: threads.length,
+    visibleOpenReviewThreadsCount: threads.filter((thread) => thread.isVisibleOpen).length,
     repliedReviewThreadsCount: threads.length - unrepliedReviewThreadsCount,
     unrepliedReviewThreadsCount,
     resolvedUnrepliedReviewThreadsCount: threads.filter(

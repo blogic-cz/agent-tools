@@ -20,6 +20,12 @@ export type ReviewThread = {
   line: number;
   body: string;
   isResolved: boolean;
+  hasReply: boolean;
+  replyCount: number;
+  needsHumanReply: boolean;
+  isVisibleOpen: boolean;
+  lastReplyAuthor: string | null;
+  lastReplyAt: string | null;
 };
 
 export type ReviewComment = {
