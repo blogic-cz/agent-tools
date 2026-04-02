@@ -22,7 +22,7 @@ export class GitHubService extends ServiceMap.Service<
     readonly runGhJson: <T>(args: string[]) => Effect.Effect<T, GhError>;
     readonly runGraphQL: (
       query: string,
-      variables: Record<string, string | number>,
+      variables: Record<string, string | number | null>,
     ) => Effect.Effect<unknown, GhError>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
   }
@@ -135,11 +135,15 @@ export class GitHubService extends ServiceMap.Service<
 
         const runGraphQL = Effect.fn("GitHubService.runGraphQL")(function* (
           query: string,
-          variables: Record<string, string | number>,
+          variables: Record<string, string | number | null>,
         ) {
           const args = ["api", "graphql", "-f", `query=${query}`];
 
           for (const [key, value] of Object.entries(variables)) {
+            if (value === null) {
+              continue;
+            }
+
             if (typeof value === "number") {
               args.push("-F", `${key}=${value}`);
             } else {

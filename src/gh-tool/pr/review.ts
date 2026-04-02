@@ -19,10 +19,10 @@ import { viewPR } from "./core";
 // ---------------------------------------------------------------------------
 
 const REVIEW_THREADS_QUERY = `
-  query($owner: String!, $name: String!, $pr: Int!) {
+  query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     repository(owner: $owner, name: $name) {
       pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
+        reviewThreads(first: 100, after: $after) {
           nodes {
             id
             isResolved
@@ -36,6 +36,10 @@ const REVIEW_THREADS_QUERY = `
                 author { login }
               }
             }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
           }
         }
       }
@@ -100,6 +104,10 @@ type ThreadsQueryResult = {
     pullRequest: {
       reviewThreads: {
         nodes: ThreadNode[];
+        pageInfo: {
+          hasNextPage: boolean;
+          endCursor: string | null;
+        };
       };
     };
   };
@@ -156,6 +164,78 @@ type ReviewCommentById = {
   pull_request_url: string;
 };
 
+const REST_PAGE_SIZE = 100;
+
+const parseJson = <T>(
+  stdout: string,
+  command: string,
+  parseFailurePrefix: string,
+): Effect.Effect<T, GitHubCommandError> =>
+  Effect.try({
+    try: () => JSON.parse(stdout) as T,
+    catch: (error) =>
+      new GitHubCommandError({
+        command,
+        exitCode: 0,
+        stderr: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  });
+
+const fetchAllRestPages = Effect.fn("pr.fetchAllRestPages")(function* <T>(
+  endpoint: string,
+  command: string,
+  parseFailurePrefix: string,
+) {
+  const service = yield* GitHubService;
+
+  const results: T[] = [];
+  let page = 1;
+
+  while (true) {
+    const separator = endpoint.includes("?") ? "&" : "?";
+    const result = yield* service.runGh([
+      "api",
+      `${endpoint}${separator}per_page=${REST_PAGE_SIZE}&page=${page}`,
+    ]);
+
+    const rawPage = yield* parseJson<T[]>(result.stdout, command, parseFailurePrefix);
+    results.push(...rawPage);
+
+    if (rawPage.length < REST_PAGE_SIZE) {
+      return results;
+    }
+
+    page += 1;
+  }
+});
+
+const fetchAllThreadNodes = Effect.fn("pr.fetchAllThreadNodes")(function* (pr: number) {
+  const service = yield* GitHubService;
+  const repoInfo = yield* service.getRepoInfo();
+
+  const nodes: ThreadNode[] = [];
+  let after: string | null = null;
+
+  while (true) {
+    const response = (yield* service.runGraphQL(REVIEW_THREADS_QUERY, {
+      owner: repoInfo.owner,
+      name: repoInfo.name,
+      pr,
+      after,
+    })) as ThreadsQueryResult;
+
+    const page = response.repository.pullRequest.reviewThreads;
+    nodes.push(...page.nodes);
+
+    if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) {
+      return nodes;
+    }
+
+    after = page.pageInfo.endCursor;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -176,18 +256,8 @@ export const fetchThreads = Effect.fn("pr.fetchThreads")(function* (
   pr: number | null,
   unresolvedOnly: boolean,
 ) {
-  const service = yield* GitHubService;
-  const repoInfo = yield* service.getRepoInfo();
-
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
-
-  const response = (yield* service.runGraphQL(REVIEW_THREADS_QUERY, {
-    owner: repoInfo.owner,
-    name: repoInfo.name,
-    pr: resolvedPr,
-  })) as ThreadsQueryResult;
-
-  const threads = response.repository.pullRequest.reviewThreads.nodes;
+  const threads = yield* fetchAllThreadNodes(resolvedPr);
 
   const mapped: ReviewThread[] = threads
     .map((node) => {
@@ -223,21 +293,11 @@ export const fetchComments = Effect.fn("pr.fetchComments")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const result = yield* service.runGh([
-    "api",
+  const raw = yield* fetchAllRestPages<RawReviewComment>(
     `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/comments`,
-  ]);
-
-  const raw = yield* Effect.try({
-    try: () => JSON.parse(result.stdout) as RawReviewComment[],
-    catch: (error) =>
-      new GitHubCommandError({
-        command: "gh-tool pr comments",
-        exitCode: 0,
-        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-      }),
-  });
+    "gh-tool pr comments",
+    "Failed to parse response",
+  );
 
   const comments: ReviewComment[] = raw.map((c) => ({
     id: c.id,
@@ -272,21 +332,11 @@ export const fetchIssueComments = Effect.fn("pr.fetchIssueComments")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const result = yield* service.runGh([
-    "api",
+  const raw = yield* fetchAllRestPages<RawIssueComment>(
     `repos/${repoInfo.owner}/${repoInfo.name}/issues/${resolvedPr}/comments`,
-  ]);
-
-  const raw = yield* Effect.try({
-    try: () => JSON.parse(result.stdout) as RawIssueComment[],
-    catch: (error) =>
-      new GitHubCommandError({
-        command: "gh-tool pr issue-comments",
-        exitCode: 0,
-        stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-        message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-      }),
-  });
+    "gh-tool pr issue-comments",
+    "Failed to parse response",
+  );
 
   let comments = raw.map(mapRawIssueComment);
 
@@ -388,12 +438,30 @@ export const fetchDiscussionSummary = Effect.fn("pr.fetchDiscussionSummary")(fun
             : current,
         );
 
+  const repliedThreadCommentIds = new Set(
+    reviewComments
+      .filter((comment) => comment.inReplyToId !== null)
+      .map((comment) => comment.inReplyToId),
+  );
+
+  const unrepliedReviewThreadsCount = threads.filter(
+    (thread) => !repliedThreadCommentIds.has(thread.commentId),
+  ).length;
+
   return {
     issueCommentsCount: issueComments.length,
     latestIssueComment,
     reviewCommentsCount: reviewComments.length,
     reviewThreadsCount: threads.length,
+    repliedReviewThreadsCount: threads.length - unrepliedReviewThreadsCount,
+    unrepliedReviewThreadsCount,
+    resolvedUnrepliedReviewThreadsCount: threads.filter(
+      (thread) => thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
+    ).length,
     unresolvedReviewThreadsCount: threads.filter((thread) => !thread.isResolved).length,
+    unresolvedUnrepliedReviewThreadsCount: threads.filter(
+      (thread) => !thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
+    ).length,
   };
 });
 
