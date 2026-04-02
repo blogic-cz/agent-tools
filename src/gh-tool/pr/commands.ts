@@ -228,14 +228,24 @@ export const prThreadsCommand = Command.make(
       Flag.withDescription("Only show unresolved threads"),
       Flag.withDefault(true),
     ),
+    visibleOpenOnly: Flag.boolean("visible-open-only").pipe(
+      Flag.withDescription(
+        "Show threads that still look open to humans: unresolved threads plus resolved threads with no reply",
+      ),
+      Flag.withDefault(false),
+    ),
   },
-  ({ format, pr, unresolvedOnly }) =>
+  ({ format, pr, unresolvedOnly, visibleOpenOnly }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
-      const threads = yield* fetchThreads(prNumber, unresolvedOnly);
+      const threads = yield* fetchThreads(prNumber, unresolvedOnly, visibleOpenOnly);
       yield* logFormatted(threads, format);
     }),
-).pipe(Command.withDescription("Fetch review threads for a PR (unresolved by default)"));
+).pipe(
+  Command.withDescription(
+    "Fetch review threads for a PR (unresolved by default, or use --visible-open-only for reply-aware human-visible open items)",
+  ),
+);
 
 export const prCommentsCommand = Command.make(
   "comments",
@@ -443,17 +453,18 @@ export const prReviewTriageCommand = Command.make(
   ({ format, pr }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
-      const [info, threads, summary, checks] = yield* Effect.all([
+      const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
         viewPR(prNumber),
         fetchThreads(prNumber, true),
+        fetchThreads(prNumber, false, true),
         fetchDiscussionSummary(prNumber),
         fetchChecks(prNumber, false, false, 0),
       ]);
-      yield* logFormatted({ info, unresolvedThreads: threads, summary, checks }, format);
+      yield* logFormatted({ info, unresolvedThreads, visibleOpenThreads, summary, checks }, format);
     }),
 ).pipe(
   Command.withDescription(
-    "Composite: PR info + unresolved threads + discussion summary + checks status in one call",
+    "Composite: PR info + unresolved threads + visible-open threads + discussion summary + checks status in one call",
   ),
 );
 
