@@ -11,7 +11,13 @@ import {
 } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 import { fetchChecks, viewPR } from "#gh/pr/core";
-import { fetchDiscussionSummary, fetchThreads, replyToComment, resolveThread } from "#gh/pr/review";
+import {
+  fetchComments,
+  fetchDiscussionSummary,
+  fetchThreads,
+  replyToComment,
+  resolveThread,
+} from "#gh/pr/review";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -76,6 +82,10 @@ const mockGraphQLThreadsResponse = {
             },
           },
         ],
+        pageInfo: {
+          hasNextPage: false,
+          endCursor: null,
+        },
       },
     },
   },
@@ -120,7 +130,7 @@ type MockGhOverrides = Partial<{
   runGhJson: (args: string[]) => Effect.Effect<unknown, GhError>;
   runGraphQL: (
     query: string,
-    variables: Record<string, string | number>,
+    variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
 }>;
@@ -1149,6 +1159,10 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
                   },
                 },
               ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
             },
           },
         },
@@ -1161,6 +1175,91 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
       const threads = yield* simulateFetchThreads(false).pipe(Effect.provide(layer));
 
       expect(threads).toHaveLength(0);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("fetchThreads paginates across multiple GraphQL pages", () =>
+    Effect.gen(function* () {
+      let graphQlCallCount = 0;
+
+      const layer = createMockGhLayer({
+        runGraphQL: (_query, variables) => {
+          graphQlCallCount += 1;
+
+          if (graphQlCallCount === 1) {
+            expect(variables.after).toBeNull();
+            return Effect.succeed({
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes: [
+                      {
+                        id: "thread-page-1",
+                        isResolved: false,
+                        comments: {
+                          nodes: [
+                            {
+                              id: "comment-page-1",
+                              databaseId: 111,
+                              path: "src/first.ts",
+                              line: 1,
+                              body: "First page thread",
+                              author: { login: "reviewer" },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                    pageInfo: {
+                      hasNextPage: true,
+                      endCursor: "cursor-1",
+                    },
+                  },
+                },
+              },
+            });
+          }
+
+          expect(variables.after).toBe("cursor-1");
+          return Effect.succeed({
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "thread-page-2",
+                      isResolved: true,
+                      comments: {
+                        nodes: [
+                          {
+                            id: "comment-page-2",
+                            databaseId: 222,
+                            path: "src/second.ts",
+                            line: 2,
+                            body: "Second page thread",
+                            author: { login: "reviewer" },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                  pageInfo: {
+                    hasNextPage: false,
+                    endCursor: null,
+                  },
+                },
+              },
+            },
+          });
+        },
+      });
+
+      const threads = yield* fetchThreads(123, false).pipe(Effect.provide(layer));
+
+      expect(graphQlCallCount).toBe(2);
+      expect(threads).toHaveLength(2);
+      expect(threads[0]?.threadId).toBe("thread-page-1");
+      expect(threads[1]?.threadId).toBe("thread-page-2");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
@@ -1310,6 +1409,69 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
       expect(comments).toHaveLength(0);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
+
+  it.effect("fetchComments paginates across REST pages", () =>
+    Effect.gen(function* () {
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({
+        id: index + 1,
+        in_reply_to_id: null,
+        user: { login: "reviewer" },
+        body: `Comment ${index + 1}`,
+        path: "src/file.ts",
+        line: index + 1,
+        created_at: "2025-01-15T10:00:00Z",
+      }));
+      const secondPage = [
+        {
+          id: 101,
+          in_reply_to_id: 1,
+          user: { login: "author" },
+          body: "Reply on second page",
+          path: "src/file.ts",
+          line: 1,
+          created_at: "2025-01-15T11:00:00Z",
+        },
+      ];
+
+      const seenPaths: string[] = [];
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          const apiPath = args[1] ?? "";
+          seenPaths.push(apiPath);
+
+          if (apiPath.includes("pulls/123/comments?per_page=100&page=1")) {
+            return Effect.succeed({
+              stdout: JSON.stringify(firstPage),
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+
+          if (apiPath.includes("pulls/123/comments?per_page=100&page=2")) {
+            return Effect.succeed({
+              stdout: JSON.stringify(secondPage),
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+
+          return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const comments = yield* fetchComments(123, null).pipe(Effect.provide(layer));
+
+      expect(
+        seenPaths.some((path) => path.includes("pulls/123/comments?per_page=100&page=1")),
+      ).toBe(true);
+      expect(
+        seenPaths.some((path) => path.includes("pulls/123/comments?per_page=100&page=2")),
+      ).toBe(true);
+      expect(comments).toHaveLength(101);
+      expect(comments[100]?.id).toBe(101);
+      expect(comments[100]?.inReplyToId).toBe(1);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
 });
 
 describe("GitHubService.getRepoInfo()", () => {
@@ -1351,6 +1513,36 @@ const mockIssueCommentsRaw = [
   },
 ];
 
+const mockTriageReviewCommentsRaw = [
+  {
+    id: 101,
+    in_reply_to_id: null,
+    user: { login: "reviewer" },
+    body: "Top-level thread comment",
+    path: "src/file.ts",
+    line: 10,
+    created_at: "2025-01-15T10:00:00Z",
+  },
+  {
+    id: 202,
+    in_reply_to_id: 101,
+    user: { login: "author" },
+    body: "Reply to first thread",
+    path: "src/file.ts",
+    line: 10,
+    created_at: "2025-01-15T11:00:00Z",
+  },
+  {
+    id: 102,
+    in_reply_to_id: null,
+    user: { login: "reviewer2" },
+    body: "Second top-level thread comment",
+    path: "src/other.ts",
+    line: 20,
+    created_at: "2025-01-15T12:00:00Z",
+  },
+];
+
 describe("PR composite commands", () => {
   it.effect(
     "review-triage: combined output contains PR info, unresolved threads, discussion summary, and checks",
@@ -1378,7 +1570,7 @@ describe("PR composite commands", () => {
             }
             if (apiPath.includes("pulls") && apiPath.includes("comments")) {
               return Effect.succeed({
-                stdout: JSON.stringify(mockRESTComments),
+                stdout: JSON.stringify(mockTriageReviewCommentsRaw),
                 stderr: "",
                 exitCode: 0,
               });
@@ -1410,7 +1602,11 @@ describe("PR composite commands", () => {
         expect(result.summary.issueCommentsCount).toBe(1);
         expect(result.summary.reviewCommentsCount).toBe(3);
         expect(result.summary.reviewThreadsCount).toBe(2);
+        expect(result.summary.repliedReviewThreadsCount).toBe(1);
+        expect(result.summary.unrepliedReviewThreadsCount).toBe(1);
+        expect(result.summary.resolvedUnrepliedReviewThreadsCount).toBe(1);
         expect(result.summary.unresolvedReviewThreadsCount).toBe(1);
+        expect(result.summary.unresolvedUnrepliedReviewThreadsCount).toBe(0);
         expect(result.summary.latestIssueComment).not.toBeNull();
 
         // CI checks
