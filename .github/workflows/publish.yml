@@ -50,7 +50,56 @@ jobs:
           jq --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
 
       - name: Publish to npm with OIDC
-        run: npm publish --access public --provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+
+          is_published() {
+            [ "$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>/dev/null || true)" = "$VERSION" ]
+          }
+
+          if is_published; then
+            echo "${PACKAGE_NAME}@${VERSION} is already published. Skipping publish."
+            exit 0
+          fi
+
+          ATTEMPTS=3
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "Publish attempt ${attempt}/${ATTEMPTS} for ${PACKAGE_NAME}@${VERSION}"
+
+            set +e
+            PUBLISH_OUTPUT=$(npm publish --access public --provenance 2>&1)
+            PUBLISH_STATUS=$?
+            set -e
+
+            printf '%s\n' "$PUBLISH_OUTPUT"
+
+            if [ "$PUBLISH_STATUS" -eq 0 ]; then
+              exit 0
+            fi
+
+            for verify_attempt in 1 2 3; do
+              sleep 10
+
+              if is_published; then
+                echo "${PACKAGE_NAME}@${VERSION} became visible on npm after a failed publish exit code. Continuing."
+                exit 0
+              fi
+
+              echo "Publish verification ${verify_attempt}/3 did not find ${PACKAGE_NAME}@${VERSION} on npm yet."
+            done
+
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Publish attempt ${attempt} failed and version is still not on npm. Retrying in 15 seconds."
+              sleep 15
+            fi
+          done
+
+          echo "Failed to publish ${PACKAGE_NAME}@${VERSION} after ${ATTEMPTS} attempts."
+          exit "$PUBLISH_STATUS"
 
       - name: Generate changelog
         id: changelog
