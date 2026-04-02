@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getDefaultEnvironment, getToolConfig } from "#config/loader";
+import { decodeConfig, getDefaultEnvironment, getToolConfig } from "#config/loader";
 import type { AgentToolsConfig } from "#config/types";
 
 describe("getToolConfig", () => {
@@ -237,5 +237,55 @@ describe("getDefaultEnvironment", () => {
     const config: AgentToolsConfig = {};
     const result = getDefaultEnvironment(config);
     expect(result).toBeUndefined();
+  });
+});
+
+describe("decodeConfig", () => {
+  it("ignores unknown top-level sections while keeping known sections available", () => {
+    const config = decodeConfig(
+      {
+        github: {
+          default: {
+            owner: "sabservis",
+            repo: "nexus-be",
+          },
+        },
+        grafana: {
+          default: {
+            environments: {
+              local: {
+                url: "http://grafana.local",
+              },
+            },
+          },
+        },
+      },
+      "test-config.json5",
+    );
+
+    expect(config.github).toEqual({
+      default: {
+        owner: "sabservis",
+        repo: "nexus-be",
+      },
+    });
+    expect(config).not.toHaveProperty("grafana");
+  });
+
+  it("still rejects invalid known github sections while ignoring unknown ones", () => {
+    expect(() =>
+      decodeConfig(
+        {
+          github: {
+            owner: "sabservis",
+            repo: "nexus-be",
+          },
+          grafana: {
+            anything: true,
+          },
+        },
+        "test-config.json5",
+      ),
+    ).toThrow(/Invalid agent-tools config/);
   });
 });

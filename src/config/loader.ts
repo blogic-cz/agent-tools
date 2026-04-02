@@ -64,6 +64,19 @@ const GitHubRepoConfigSchema = Schema.Struct({
   repo: Schema.String,
 });
 
+const KNOWN_TOP_LEVEL_KEYS = new Set([
+  "$schema",
+  "azure",
+  "kubernetes",
+  "database",
+  "logs",
+  "session",
+  "audit",
+  "credentialGuard",
+  "defaultEnvironment",
+  "github",
+]);
+
 const AgentToolsConfigSchema = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String),
   azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
@@ -80,6 +93,35 @@ const AgentToolsConfigSchema = Schema.Struct({
   defaultEnvironment: Schema.optionalKey(Schema.String),
   github: Schema.optionalKey(Schema.Record(Schema.String, GitHubRepoConfigSchema)),
 });
+
+function stripUnknownTopLevelKeys(parsed: unknown): unknown {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  return Object.fromEntries(
+    Object.entries(parsed).filter(([key]) => KNOWN_TOP_LEVEL_KEYS.has(key)),
+  );
+}
+
+export function decodeConfig(
+  parsed: unknown,
+  configPath: string = "agent-tools.json5",
+): AgentToolsConfig {
+  const sanitized = stripUnknownTopLevelKeys(parsed);
+
+  try {
+    const decoded = Schema.decodeUnknownSync(AgentToolsConfigSchema)(sanitized);
+    return decoded as AgentToolsConfig;
+  } catch (error) {
+    throw new Error(
+      `Invalid agent-tools config at ${configPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    );
+  }
+}
 
 async function findConfigFile(startDirectory: string = process.cwd()): Promise<string | undefined> {
   let currentDirectory = startDirectory;
@@ -114,17 +156,7 @@ export async function loadConfig(): Promise<AgentToolsConfig | undefined> {
   const fileContent = await Bun.file(configPath).text();
   const parsed = Bun.JSON5.parse(fileContent);
 
-  try {
-    const decoded = Schema.decodeUnknownSync(AgentToolsConfigSchema)(parsed);
-    return decoded as AgentToolsConfig;
-  } catch (error) {
-    throw new Error(
-      `Invalid agent-tools config at ${configPath}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { cause: error },
-    );
-  }
+  return decodeConfig(parsed, configPath);
 }
 
 export class ConfigService extends ServiceMap.Service<
