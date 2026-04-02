@@ -9,7 +9,7 @@ export type {
   CliToolOverride,
   CredentialGuardConfig,
   GitHubRepoConfig,
-} from "./types.ts";
+} from "./types";
 
 export {
   ConfigService,

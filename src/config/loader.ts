@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 
 import { Data, Effect, Layer, Schema, ServiceMap } from "effect";
 
-import type { AgentToolsConfig, GitHubRepoConfig } from "./types.ts";
+import type { AgentToolsConfig, GitHubRepoConfig } from "./types";
 
 const CliToolOverrideSchema = Schema.Struct({
   tool: Schema.String,

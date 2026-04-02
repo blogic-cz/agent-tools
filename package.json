@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.8.10",
+  "version": "0.8.11",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
@@ -36,33 +36,78 @@
   },
   "files": [
     "src/",
+    "dist/",
     "schemas/",
     "README.md",
     "LICENSE"
   ],
   "type": "module",
+  "types": "./dist/index.d.ts",
   "imports": {
-    "#shared": "./src/shared/index.ts",
-    "#shared/*": "./src/shared/*.ts",
-    "#config": "./src/config/index.ts",
-    "#config/*": "./src/config/*.ts",
-    "#gh/*": "./src/gh-tool/*.ts",
-    "#k8s/*": "./src/k8s-tool/*.ts",
-    "#db/*": "./src/db-tool/*.ts",
-    "#logs/*": "./src/logs-tool/*.ts",
-    "#az/*": "./src/az-tool/*.ts",
-    "#guard": "./src/credential-guard/index.ts",
-    "#session/*": "./src/session-tool/*.ts"
+    "#shared": {
+      "types": "./dist/shared/index.d.ts",
+      "default": "./src/shared/index.ts"
+    },
+    "#shared/*": {
+      "types": "./dist/shared/*.d.ts",
+      "default": "./src/shared/*.ts"
+    },
+    "#config": {
+      "types": "./dist/config/index.d.ts",
+      "default": "./src/config/index.ts"
+    },
+    "#config/*": {
+      "types": "./dist/config/*.d.ts",
+      "default": "./src/config/*.ts"
+    },
+    "#gh/*": {
+      "types": "./dist/gh-tool/*.d.ts",
+      "default": "./src/gh-tool/*.ts"
+    },
+    "#k8s/*": {
+      "types": "./dist/k8s-tool/*.d.ts",
+      "default": "./src/k8s-tool/*.ts"
+    },
+    "#db/*": {
+      "types": "./dist/db-tool/*.d.ts",
+      "default": "./src/db-tool/*.ts"
+    },
+    "#logs/*": {
+      "types": "./dist/logs-tool/*.d.ts",
+      "default": "./src/logs-tool/*.ts"
+    },
+    "#az/*": {
+      "types": "./dist/az-tool/*.d.ts",
+      "default": "./src/az-tool/*.ts"
+    },
+    "#guard": {
+      "types": "./dist/credential-guard/index.d.ts",
+      "default": "./src/credential-guard/index.ts"
+    },
+    "#session/*": {
+      "types": "./dist/session-tool/*.d.ts",
+      "default": "./src/session-tool/*.ts"
+    }
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./credential-guard": "./src/credential-guard/index.ts",
-    "./config": "./src/config/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    },
+    "./credential-guard": {
+      "types": "./dist/credential-guard/index.d.ts",
+      "default": "./src/credential-guard/index.ts"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "default": "./src/config/index.ts"
+    }
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
+    "build:types": "tsc -p tsconfig.declarations.json",
     "check": "bun check.ts",
     "check:ci": "bun check.ts ci",
     "format": "oxfmt",

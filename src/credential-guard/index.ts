@@ -14,7 +14,7 @@
  * at infrastructure level (K8s RBAC, file permissions, etc.)
  */
 
-import type { CliToolOverride, CredentialGuardConfig } from "#config/types.ts";
+import type { CliToolOverride, CredentialGuardConfig } from "#config/types";
 
 // ============================================================================
 // TYPES

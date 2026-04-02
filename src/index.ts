@@ -1,1 +1,1 @@
-export type { AgentToolsConfig } from "./config/index.ts";
+export type { AgentToolsConfig } from "./config/index";
