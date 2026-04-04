@@ -184,30 +184,65 @@ function parseDescribeSections(
   return sections;
 }
 
-function stripLowValueColumns(rows: Record<string, string>[]): Record<string, string>[] {
+type KubectlTableResult = {
+  headers: string[];
+  rows: Record<string, string>[];
+  uniform?: Record<string, string>;
+  stripped?: string[];
+};
+
+const PLACEHOLDER_VALUES = new Set(["<none>", "<pending>", "<unknown>", "<unset>", ""]);
+const ALWAYS_STRIP_COLUMNS = new Set(["SELECTOR", "LABELS", "NODE-SELECTORS", "NODE_SELECTORS"]);
+
+function isSelectorLikeValue(value: string): boolean {
+  if (!value.includes("=")) return false;
+  return value.includes("kubernetes.io/") || value.includes("k8s.io/") || value.includes(",");
+}
+
+function stripLowValueColumns(rows: Record<string, string>[]): {
+  rows: Record<string, string>[];
+  stripped: string[];
+} {
   if (rows.length === 0) {
-    return rows;
+    return { rows, stripped: [] };
   }
 
   const keys = Object.keys(rows[0] ?? {});
   const keysToRemove = new Set<string>();
 
   for (const key of keys) {
-    const allNone = rows.every((row) => {
-      const value = (row[key] ?? "").trim().toLowerCase();
-      return value === "<none>";
-    });
-
-    if (allNone) {
+    if (ALWAYS_STRIP_COLUMNS.has(key.toUpperCase())) {
       keysToRemove.add(key);
+      continue;
+    }
+
+    const values = rows.map((row) => (row[key] ?? "").trim());
+
+    const allPlaceholder = values.every((v) => PLACEHOLDER_VALUES.has(v.toLowerCase()));
+    if (allPlaceholder) {
+      keysToRemove.add(key);
+      continue;
+    }
+
+    const nonEmptyValues = values.filter(
+      (v) => v.length > 0 && !PLACEHOLDER_VALUES.has(v.toLowerCase()),
+    );
+    if (nonEmptyValues.length > 0) {
+      const avgLength =
+        nonEmptyValues.reduce((sum, v) => sum + v.length, 0) / nonEmptyValues.length;
+      const labelCount = nonEmptyValues.filter(isSelectorLikeValue).length;
+      if (avgLength > 50 && labelCount / nonEmptyValues.length > 0.5) {
+        keysToRemove.add(key);
+      }
     }
   }
 
   if (keysToRemove.size === 0) {
-    return rows;
+    return { rows, stripped: [] };
   }
 
-  return rows.map((row) => {
+  const stripped = keys.filter((k) => keysToRemove.has(k));
+  const filteredRows = rows.map((row) => {
     const filtered: Record<string, string> = {};
     for (const [key, value] of Object.entries(row)) {
       if (!keysToRemove.has(key)) {
@@ -216,6 +251,47 @@ function stripLowValueColumns(rows: Record<string, string>[]): Record<string, st
     }
     return filtered;
   });
+
+  return { rows: filteredRows, stripped };
+}
+
+function collapseUniformColumns(rows: Record<string, string>[]): {
+  rows: Record<string, string>[];
+  uniform: Record<string, string>;
+} {
+  if (rows.length <= 1) {
+    return { rows, uniform: {} };
+  }
+
+  const keys = Object.keys(rows[0] ?? {});
+  const uniform: Record<string, string> = {};
+  const keysToCollapse = new Set<string>();
+
+  for (const key of keys) {
+    const values = rows.map((row) => (row[key] ?? "").trim());
+    const firstValue = values[0] ?? "";
+
+    if (firstValue.length > 0 && values.every((v) => v === firstValue)) {
+      uniform[key] = firstValue;
+      keysToCollapse.add(key);
+    }
+  }
+
+  if (keysToCollapse.size === 0) {
+    return { rows, uniform: {} };
+  }
+
+  const cleanedRows = rows.map((row) => {
+    const filtered: Record<string, string> = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (!keysToCollapse.has(key)) {
+        filtered[key] = value;
+      }
+    }
+    return filtered;
+  });
+
+  return { rows: cleanedRows, uniform };
 }
 
 export function transformPods(jsonOutput: string): PodSummary | string {
@@ -487,11 +563,17 @@ export function transformGenericKubectl(
     parsedTable.headers.every((header) => /^[A-Z0-9_()\-/]+$/.test(header));
 
   if (looksLikeTable) {
-    const rows = stripLowValueColumns(parsedTable.rows);
-    const headers = parsedTable.headers.filter((headerName) =>
-      rows.length === 0 ? true : rows.some((row) => headerName in row),
-    );
-    return { headers, rows };
+    const { rows: strippedRows, stripped } = stripLowValueColumns(parsedTable.rows);
+    const { rows: finalRows, uniform } = collapseUniformColumns(strippedRows);
+
+    const remainingKeys =
+      finalRows.length > 0 ? new Set(Object.keys(finalRows[0] ?? {})) : new Set<string>();
+    const headers = parsedTable.headers.filter((h) => remainingKeys.has(h));
+
+    const result: KubectlTableResult = { headers, rows: finalRows };
+    if (Object.keys(uniform).length > 0) result.uniform = uniform;
+    if (stripped.length > 0) result.stripped = stripped;
+    return result;
   }
 
   if (lines.length > 50) {

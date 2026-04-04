@@ -271,7 +271,7 @@ describe("transformGenericKubectl", () => {
     expect(result).toEqual({ kind: "Pod", metadata: { name: "api" } });
   });
 
-  it("parses table output and strips <none> columns", () => {
+  it("strips placeholder columns, collapses uniform values, and strips label columns", () => {
     const input = [
       "NAME    READY   STATUS    NOMINATED NODE   READINESS GATES",
       "pod-1   1/1     Running   <none>           <none>",
@@ -280,12 +280,234 @@ describe("transformGenericKubectl", () => {
 
     const result = transformGenericKubectl(input, "get pods");
     expect(result).toEqual({
+      headers: ["NAME"],
+      rows: [{ NAME: "pod-1" }, { NAME: "pod-2" }],
+      uniform: { READY: "1/1", STATUS: "Running" },
+      stripped: ["NOMINATED_NODE", "READINESS_GATES"],
+    });
+  });
+
+  it("keeps columns with varying values", () => {
+    const input = [
+      "NAME    READY   STATUS",
+      "pod-1   1/1     Running",
+      "pod-2   0/1     Error",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get pods");
+    expect(result).toEqual({
       headers: ["NAME", "READY", "STATUS"],
       rows: [
         { NAME: "pod-1", READY: "1/1", STATUS: "Running" },
-        { NAME: "pod-2", READY: "1/1", STATUS: "Running" },
+        { NAME: "pod-2", READY: "0/1", STATUS: "Error" },
       ],
     });
+  });
+
+  it("strips SELECTOR column and collapses uniform AGE for service tables", () => {
+    const input = [
+      "NAME                    TYPE           CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE    SELECTOR",
+      "alertmanager            ClusterIP      None             <none>        9093/TCP       133d   app.kubernetes.io/name=alertmanager",
+      "ingress-nginx           LoadBalancer   10.97.150.227    <pending>     80:31523/TCP   133d   app.kubernetes.io/name=ingress-nginx",
+      "postgresql              ClusterIP      10.108.64.208    <none>        5432/TCP       133d   app.kubernetes.io/name=postgres",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get svc -o wide");
+    expect(result).toEqual({
+      headers: ["NAME", "TYPE", "CLUSTER-IP", "PORT(S)"],
+      rows: [
+        { NAME: "alertmanager", TYPE: "ClusterIP", "CLUSTER-IP": "None", "PORT(S)": "9093/TCP" },
+        {
+          NAME: "ingress-nginx",
+          TYPE: "LoadBalancer",
+          "CLUSTER-IP": "10.97.150.227",
+          "PORT(S)": "80:31523/TCP",
+        },
+        {
+          NAME: "postgresql",
+          TYPE: "ClusterIP",
+          "CLUSTER-IP": "10.108.64.208",
+          "PORT(S)": "5432/TCP",
+        },
+      ],
+      uniform: { AGE: "133d" },
+      stripped: ["EXTERNAL-IP", "SELECTOR"],
+    });
+  });
+
+  it("strips <pending> and <unknown> placeholders", () => {
+    const input = [
+      "NAME      STATUS      EXTERNAL-IP   NOMINATED",
+      "node-1    Ready       <pending>     <unknown>",
+      "node-2    NotReady    <pending>     <unknown>",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get nodes");
+    expect(result).toEqual({
+      headers: ["NAME", "STATUS"],
+      rows: [
+        { NAME: "node-1", STATUS: "Ready" },
+        { NAME: "node-2", STATUS: "NotReady" },
+      ],
+      stripped: ["EXTERNAL-IP", "NOMINATED"],
+    });
+  });
+
+  it("strips LABELS column even with short label values", () => {
+    const input = [
+      "NAME      READY   AGE    LABELS",
+      "node-1    True    30d    role=worker",
+      "node-2    True    30d    role=control",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get nodes");
+    expect(result).toEqual({
+      headers: ["NAME"],
+      rows: [{ NAME: "node-1" }, { NAME: "node-2" }],
+      uniform: { READY: "True", AGE: "30d" },
+      stripped: ["LABELS"],
+    });
+  });
+
+  it("strips unnamed columns with long kubernetes label values", () => {
+    const input = [
+      "NAME      TYPE         ANNOTATIONS",
+      "svc-1     ClusterIP    app.kubernetes.io/managed-by=helm,app.kubernetes.io/instance=prometheus-stack,app.kubernetes.io/version=2.51.0",
+      "svc-2     ClusterIP    app.kubernetes.io/managed-by=helm,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/version=1.14.0",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get svc");
+    expect(result).toEqual({
+      headers: ["NAME"],
+      rows: [{ NAME: "svc-1" }, { NAME: "svc-2" }],
+      uniform: { TYPE: "ClusterIP" },
+      stripped: ["ANNOTATIONS"],
+    });
+  });
+
+  it("keeps columns with long non-label values", () => {
+    const input = [
+      "NAME      MESSAGE",
+      "event-1   Back-off restarting failed container web-app in pod web-app-abc123-7d8f9_default",
+      "event-2   Successfully pulled image registry.example.com/web-app:v1.2.3 in 3.456s (4.567s total)",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get events");
+    expect(result).toEqual({
+      headers: ["NAME", "MESSAGE"],
+      rows: [
+        {
+          NAME: "event-1",
+          MESSAGE:
+            "Back-off restarting failed container web-app in pod web-app-abc123-7d8f9_default",
+        },
+        {
+          NAME: "event-2",
+          MESSAGE:
+            "Successfully pulled image registry.example.com/web-app:v1.2.3 in 3.456s (4.567s total)",
+        },
+      ],
+    });
+  });
+
+  it("does not collapse uniform columns for single-row tables", () => {
+    const input = ["NAME      READY   STATUS", "pod-1     1/1     Running"].join("\n");
+
+    const result = transformGenericKubectl(input, "get pod pod-1");
+    expect(result).toEqual({
+      headers: ["NAME", "READY", "STATUS"],
+      rows: [{ NAME: "pod-1", READY: "1/1", STATUS: "Running" }],
+    });
+  });
+
+  it("preserves column with mixed placeholder and real values", () => {
+    const input = [
+      "NAME      TYPE           EXTERNAL-IP     PORT(S)",
+      "svc-1     ClusterIP      <none>          80/TCP",
+      "svc-2     LoadBalancer   203.0.113.50    443/TCP",
+      "svc-3     ClusterIP      <none>          8080/TCP",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get svc");
+    expect(result).toEqual({
+      headers: ["NAME", "TYPE", "EXTERNAL-IP", "PORT(S)"],
+      rows: [
+        { NAME: "svc-1", TYPE: "ClusterIP", "EXTERNAL-IP": "<none>", "PORT(S)": "80/TCP" },
+        {
+          NAME: "svc-2",
+          TYPE: "LoadBalancer",
+          "EXTERNAL-IP": "203.0.113.50",
+          "PORT(S)": "443/TCP",
+        },
+        { NAME: "svc-3", TYPE: "ClusterIP", "EXTERNAL-IP": "<none>", "PORT(S)": "8080/TCP" },
+      ],
+    });
+  });
+
+  it("does not collapse column when some rows have missing trailing values", () => {
+    const input = [
+      "NAME      ENV     STATUS",
+      "pod-1     prod    Running",
+      "pod-2     prod    Running",
+      "pod-3     prod",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get pods");
+    expect(result).toEqual({
+      headers: ["NAME", "STATUS"],
+      rows: [
+        { NAME: "pod-1", STATUS: "Running" },
+        { NAME: "pod-2", STATUS: "Running" },
+        { NAME: "pod-3", STATUS: "" },
+      ],
+      uniform: { ENV: "prod" },
+    });
+  });
+
+  it("does not strip column at label-detection boundary (avg=50, ratio=0.5)", () => {
+    // Exactly 50-char avg and exactly 50% label-like — should NOT strip (threshold is >50 and >0.5)
+    const input = [
+      "NAME      INFO",
+      // 50 chars, label-like
+      "row-1     app.kubernetes.io/name=xxxxxxxxxxxxxxxxxxxxxxxxx",
+      // 50 chars, not label-like (no = sign)
+      "row-2     this-is-a-plain-text-value-that-is-fifty-chars--",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get things");
+    expect(result).toEqual({
+      headers: ["NAME", "INFO"],
+      rows: [
+        { NAME: "row-1", INFO: "app.kubernetes.io/name=xxxxxxxxxxxxxxxxxxxxxxxxx" },
+        { NAME: "row-2", INFO: "this-is-a-plain-text-value-that-is-fifty-chars--" },
+      ],
+    });
+  });
+
+  it("strips column just above label-detection threshold", () => {
+    const input = [
+      "NAME      ANNOTATIONS",
+      // 52 chars, label-like
+      "row-1     app.kubernetes.io/name=xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      // 52 chars, label-like
+      "row-2     app.kubernetes.io/instance=xxxxxxxxxxxxxxxxxxxxxxxx",
+      // 52 chars, not label-like
+      "row-3     this-is-just-a-long-plain-text-value-no-labels-ok",
+    ].join("\n");
+
+    const result = transformGenericKubectl(input, "get things");
+    // 2/3 = 0.667 > 0.5 ratio, avg > 50 → stripped
+    expect(result).toEqual({
+      headers: ["NAME"],
+      rows: [{ NAME: "row-1" }, { NAME: "row-2" }, { NAME: "row-3" }],
+      stripped: ["ANNOTATIONS"],
+    });
+  });
+
+  it("handles header-only table with zero data rows", () => {
+    const input = "NAME    READY   STATUS";
+    // Only 1 line = header, no data rows → not a table (rows.length < 1)
+    expect(transformGenericKubectl(input, "get pods")).toBe(input);
   });
 
   it("returns short plain text as-is", () => {
