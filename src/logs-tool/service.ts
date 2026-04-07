@@ -128,7 +128,7 @@ export class LogsService extends ServiceMap.Service<
 
         const podResult = yield* k8s
           .runKubectl(
-            `-n $(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo default) get pods -o jsonpath='{.items[0].metadata.name}'`,
+            `get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
             false,
           )
           .pipe(
@@ -228,7 +228,10 @@ export class LogsService extends ServiceMap.Service<
         const remotePath = logsConfig.remotePath;
 
         const podResult = yield* k8s
-          .runKubectl(`get pods -o jsonpath='{.items[0].metadata.name}'`, false)
+          .runKubectl(
+            `get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
+            false,
+          )
           .pipe(
             Effect.mapError(
               (error) =>
