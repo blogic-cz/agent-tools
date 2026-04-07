@@ -1,5 +1,5 @@
 import { Command, Flag } from "effect/unstable/cli";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import type { IssueComment } from "#gh/types";
 
@@ -8,7 +8,8 @@ import { GitHubService } from "#gh/service";
 
 import { fetchIssueComments } from "./core";
 
-type TriageVerbosity = "compact" | "full";
+const TriageVerbosity = Schema.Literals(["compact", "full"]);
+type TriageVerbosity = typeof TriageVerbosity.Type;
 
 type RawTriageIssue = {
   number: number;
