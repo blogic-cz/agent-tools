@@ -1,9 +1,10 @@
 export {
   issueCloseCommand,
   issueCommentCommand,
+  issueCommentsCommand,
   issueEditCommand,
   issueListCommand,
   issueReopenCommand,
   issueViewCommand,
 } from "./commands";
-export { issueTriageSummaryCommand } from "./triage";
+export { issueTriageCommand } from "./triage";

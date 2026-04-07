@@ -1,5 +1,7 @@
 import { Effect } from "effect";
 
+import type { GitHubIssueCommentUrl, IssueComment, IssueCommentId, IsoTimestamp } from "#gh/types";
+
 import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
@@ -31,6 +33,60 @@ export type RawIssueComment = {
   created_at: string;
   html_url: string;
 };
+
+const REST_PAGE_SIZE = 100;
+
+const parseJson = <T>(
+  stdout: string,
+  command: string,
+  parseFailurePrefix: string,
+): Effect.Effect<T, GitHubCommandError> =>
+  Effect.try({
+    try: () => JSON.parse(stdout) as T,
+    catch: (error) =>
+      new GitHubCommandError({
+        command,
+        exitCode: 0,
+        stderr: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+  });
+
+const fetchAllRestPages = Effect.fn("issue.fetchAllRestPages")(function* <T>(
+  endpoint: string,
+  command: string,
+  parseFailurePrefix: string,
+) {
+  const service = yield* GitHubService;
+
+  const results: T[] = [];
+  let page = 1;
+
+  while (true) {
+    const separator = endpoint.includes("?") ? "&" : "?";
+    const result = yield* service.runGh([
+      "api",
+      `${endpoint}${separator}per_page=${REST_PAGE_SIZE}&page=${page}`,
+    ]);
+
+    const rawPage = yield* parseJson<T[]>(result.stdout, command, parseFailurePrefix);
+    results.push(...rawPage);
+
+    if (rawPage.length < REST_PAGE_SIZE) {
+      return results;
+    }
+
+    page += 1;
+  }
+});
+
+const mapRawIssueComment = (comment: RawIssueComment): IssueComment => ({
+  id: comment.id as IssueCommentId,
+  author: comment.user.login,
+  body: comment.body,
+  createdAt: comment.created_at as IsoTimestamp,
+  url: comment.html_url as GitHubIssueCommentUrl,
+});
 
 export const listIssues = Effect.fn("issue.listIssues")(function* (opts: {
   state: string;
@@ -67,6 +123,41 @@ export const viewIssue = Effect.fn("issue.viewIssue")(function* (issueNumber: nu
     "--json",
     "number,title,state,url,labels,assignees,author,createdAt,closedAt",
   ]);
+});
+
+export const fetchIssueComments = Effect.fn("issue.fetchIssueComments")(function* (
+  issueNumber: number,
+  since: string | null,
+  author: string | null,
+  bodyContains: string | null,
+) {
+  const gh = yield* GitHubService;
+  const repoInfo = yield* gh.getRepoInfo();
+
+  const raw = yield* fetchAllRestPages<RawIssueComment>(
+    `repos/${repoInfo.owner}/${repoInfo.name}/issues/${issueNumber}/comments`,
+    "gh-tool issue comments",
+    "Failed to parse response",
+  );
+
+  let comments = raw.map(mapRawIssueComment);
+
+  if (since !== null) {
+    const sinceMs = new Date(since).getTime();
+    comments = comments.filter((comment) => new Date(comment.createdAt).getTime() >= sinceMs);
+  }
+
+  if (author !== null) {
+    const authorFilter = author.toLowerCase();
+    comments = comments.filter((comment) => comment.author.toLowerCase().includes(authorFilter));
+  }
+
+  if (bodyContains !== null) {
+    const bodyFilter = bodyContains.toLowerCase();
+    comments = comments.filter((comment) => comment.body.toLowerCase().includes(bodyFilter));
+  }
+
+  return comments;
 });
 
 export const closeIssue = Effect.fn("issue.closeIssue")(function* (opts: {

@@ -3,7 +3,15 @@ import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
 
-import { closeIssue, commentOnIssue, editIssue, listIssues, reopenIssue, viewIssue } from "./core";
+import {
+  closeIssue,
+  commentOnIssue,
+  editIssue,
+  fetchIssueComments,
+  listIssues,
+  reopenIssue,
+  viewIssue,
+} from "./core";
 
 export const issueListCommand = Command.make(
   "list",
@@ -45,6 +53,36 @@ export const issueViewCommand = Command.make(
       yield* logFormatted(info, format);
     }),
 ).pipe(Command.withDescription("View issue details"));
+
+export const issueCommentsCommand = Command.make(
+  "comments",
+  {
+    author: Flag.string("author").pipe(
+      Flag.withDescription("Filter by author login substring"),
+      Flag.optional,
+    ),
+    bodyContains: Flag.string("body-contains").pipe(
+      Flag.withDescription("Filter comments by body substring"),
+      Flag.optional,
+    ),
+    format: formatOption,
+    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number")),
+    since: Flag.string("since").pipe(
+      Flag.withDescription("ISO timestamp to filter comments created after"),
+      Flag.optional,
+    ),
+  },
+  ({ author, bodyContains, format, issue, since }) =>
+    Effect.gen(function* () {
+      const comments = yield* fetchIssueComments(
+        issue,
+        Option.getOrNull(since),
+        Option.getOrNull(author),
+        Option.getOrNull(bodyContains),
+      );
+      yield* logFormatted(comments, format);
+    }),
+).pipe(Command.withDescription("Fetch issue discussion comments"));
 
 export const issueCloseCommand = Command.make(
   "close",

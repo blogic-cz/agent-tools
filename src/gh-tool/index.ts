@@ -9,10 +9,11 @@ import { ConfigServiceLayer } from "#config";
 import {
   issueCloseCommand,
   issueCommentCommand,
+  issueCommentsCommand,
   issueEditCommand,
   issueListCommand,
   issueReopenCommand,
-  issueTriageSummaryCommand,
+  issueTriageCommand,
   issueViewCommand,
 } from "./issue";
 import {
@@ -85,16 +86,17 @@ const prCommand = Command.make("pr", {}).pipe(
 
 const issueCommand = Command.make("issue", {}).pipe(
   Command.withDescription(
-    "Issue operations (list, view, close, reopen, comment, edit, triage-summary)",
+    "Issue operations (list, view, comments, triage, close, reopen, comment, edit)",
   ),
   Command.withSubcommands([
     issueListCommand,
     issueViewCommand,
+    issueCommentsCommand,
+    issueTriageCommand,
     issueCloseCommand,
     issueReopenCommand,
     issueCommentCommand,
     issueEditCommand,
-    issueTriageSummaryCommand,
   ]),
 );
 
@@ -147,18 +149,20 @@ WORKFLOW FOR AI AGENTS:
   5. Use 'pr checks' to monitor CI status
   6. Use 'pr merge' to merge (dry-run by default)
   7. Use 'issue list' to list open/closed issues
-  8. Use 'issue close --issue N --comment "reason"' to close issues
-   9. Use 'issue comment --issue N --body "text"' to comment on issues
-  10. Use 'repo info' to get repository metadata
-  11. Use 'workflow list' to list recent workflow runs
-  12. Use 'workflow view --run N' to inspect a specific run with jobs/steps
-  13. Use 'workflow logs --run N' to get logs (failed jobs by default)
-  14. Use 'workflow job-logs --run N --job "build-web-app"' to get clean parsed logs for a specific job
-  15. Use 'workflow annotations --run N' to list CI annotations (errors, warnings, notices)
-  16. Use 'workflow watch --run N' to watch until completion
-  17. Use 'release status' to inspect latest release + repository context
-  18. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
-  19. Use 'release edit/view/list/delete' to maintain existing releases`,
+  8. Use 'issue triage --issue N --verbosity full' to inspect one issue in one call
+  9. Use 'issue comments --issue N' to read issue discussion comments separately
+  10. Use 'issue close --issue N --comment "reason"' to close issues
+  11. Use 'issue comment --issue N --body "text"' to comment on issues
+  12. Use 'repo info' to get repository metadata
+  13. Use 'workflow list' to list recent workflow runs
+  14. Use 'workflow view --run N' to inspect a specific run with jobs/steps
+  15. Use 'workflow logs --run N' to get logs (failed jobs by default)
+  16. Use 'workflow job-logs --run N --job "build-web-app"' to get clean parsed logs for a specific job
+  17. Use 'workflow annotations --run N' to list CI annotations (errors, warnings, notices)
+  18. Use 'workflow watch --run N' to watch until completion
+  19. Use 'release status' to inspect latest release + repository context
+  20. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
+  21. Use 'release edit/view/list/delete' to maintain existing releases`,
   ),
   Command.withSubcommands([prCommand, issueCommand, repoCommand, workflowCommand, releaseCommand]),
 );

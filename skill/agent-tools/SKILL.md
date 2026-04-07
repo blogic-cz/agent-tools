@@ -81,7 +81,7 @@ bun gh-tool issue close --issue 123 --reason completed --comment "Done"
 bun gh-tool issue reopen --issue 123
 bun gh-tool issue comment --issue 123 --body "text"
 bun gh-tool issue edit --issue 123 --title "New title" --add-labels bug
-bun gh-tool issue triage-summary --format json --limit 100
+bun gh-tool issue triage --issue 123 --verbosity full --format json
 ```
 
 ### db-tool (Database)
