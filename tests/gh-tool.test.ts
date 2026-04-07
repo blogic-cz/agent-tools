@@ -11,6 +11,8 @@ import {
 } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 import { fetchChecks, viewPR } from "#gh/pr/core";
+import { fetchIssueComments as fetchIssueDiscussionComments } from "#gh/issue/core";
+import { fetchIssueTriage } from "#gh/issue/triage";
 import {
   fetchComments,
   fetchDiscussionSummary,
@@ -1514,6 +1516,246 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
       expect(comments).toHaveLength(101);
       expect(comments[100]?.id).toBe(101);
       expect(comments[100]?.inReplyToId).toBe(1);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("Issue discussion comments", () => {
+  const mockIssueDiscussionCommentsRaw = [
+    {
+      id: 401,
+      user: { login: "claude[bot]" },
+      body: "Suggested fix",
+      created_at: "2026-04-07T09:00:00Z",
+      html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-401",
+    },
+    {
+      id: 402,
+      user: { login: "vivus-agent" },
+      body: "Workflow failed on CI/CD",
+      created_at: "2026-04-07T10:00:00Z",
+      html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-402",
+    },
+    {
+      id: 403,
+      user: { login: "reviewer" },
+      body: "Needs more detail",
+      created_at: "2026-04-07T11:00:00Z",
+      html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-403",
+    },
+  ];
+
+  it.effect("maps REST issue comments into IssueComment[]", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGh: () =>
+          Effect.succeed({
+            stdout: JSON.stringify(mockIssueDiscussionCommentsRaw),
+            stderr: "",
+            exitCode: 0,
+          }),
+      });
+
+      const comments = yield* fetchIssueDiscussionComments(596, null, null, null).pipe(
+        Effect.provide(layer),
+      );
+
+      expect(comments).toHaveLength(3);
+      expect(comments[0]).toMatchObject({
+        id: 401,
+        author: "claude[bot]",
+        body: "Suggested fix",
+        createdAt: "2026-04-07T09:00:00Z",
+        url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-401",
+      });
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("filters issue comments by since, author, and body substring", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGh: () =>
+          Effect.succeed({
+            stdout: JSON.stringify(mockIssueDiscussionCommentsRaw),
+            stderr: "",
+            exitCode: 0,
+          }),
+      });
+
+      const comments = yield* fetchIssueDiscussionComments(
+        596,
+        "2026-04-07T09:30:00Z",
+        "vivus",
+        "workflow failed",
+      ).pipe(Effect.provide(layer));
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.id).toBe(402);
+      expect(comments[0]?.author).toBe("vivus-agent");
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("issue comments paginates across REST pages", () =>
+    Effect.gen(function* () {
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({
+        id: index + 1,
+        user: { login: "commenter" },
+        body: `Comment ${index + 1}`,
+        created_at: "2026-04-07T09:00:00Z",
+        html_url: `https://github.com/test-owner/test-repo/issues/596#issuecomment-${index + 1}`,
+      }));
+      const secondPage = [
+        {
+          id: 101,
+          user: { login: "commenter-2" },
+          body: "Comment 101",
+          created_at: "2026-04-07T10:00:00Z",
+          html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-101",
+        },
+      ];
+
+      const seenPaths: string[] = [];
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          const apiPath = args[1] ?? "";
+          seenPaths.push(apiPath);
+
+          if (apiPath.includes("issues/596/comments?per_page=100&page=1")) {
+            return Effect.succeed({
+              stdout: JSON.stringify(firstPage),
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+
+          if (apiPath.includes("issues/596/comments?per_page=100&page=2")) {
+            return Effect.succeed({
+              stdout: JSON.stringify(secondPage),
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+
+          return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const comments = yield* fetchIssueDiscussionComments(596, null, null, null).pipe(
+        Effect.provide(layer),
+      );
+
+      expect(
+        seenPaths.some((path) => path.includes("issues/596/comments?per_page=100&page=1")),
+      ).toBe(true);
+      expect(
+        seenPaths.some((path) => path.includes("issues/596/comments?per_page=100&page=2")),
+      ).toBe(true);
+      expect(comments).toHaveLength(101);
+      expect(comments[100]?.id).toBe(101);
+      expect(comments[100]?.author).toBe("commenter-2");
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("Issue triage", () => {
+  const triageIssueBody = "A".repeat(520);
+  const triageIssueView = {
+    number: 596,
+    title: "[WORKFLOW FAILED] CI/CD (blogic-cz/andocs)",
+    state: "OPEN",
+    url: "https://github.com/test-owner/test-repo/issues/596",
+    labels: [{ name: "workflow-failure" }, { name: "github-actions" }],
+    assignees: [{ login: "gabriel-ecegi" }],
+    author: { login: "app/vivus-agent" },
+    body: triageIssueBody,
+    createdAt: "2026-04-07T05:23:31Z",
+    closedAt: null,
+  };
+
+  const triageIssueComments = [
+    {
+      id: 501,
+      user: { login: "claude[bot]" },
+      body: "First proposal",
+      created_at: "2026-04-07T09:00:00Z",
+      html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-501",
+    },
+    {
+      id: 502,
+      user: { login: "claude[bot]" },
+      body: "Latest proposal",
+      created_at: "2026-04-07T10:00:00Z",
+      html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-502",
+    },
+  ];
+
+  it.effect("returns compact issue triage with latest comment and truncated body", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "issue" && args[1] === "view") {
+            return Effect.succeed(triageIssueView);
+          }
+          return Effect.succeed({});
+        },
+        runGh: () =>
+          Effect.succeed({
+            stdout: JSON.stringify(triageIssueComments),
+            stderr: "",
+            exitCode: 0,
+          }),
+      });
+
+      const result = yield* fetchIssueTriage({ issue: 596, verbosity: "compact" }).pipe(
+        Effect.provide(layer),
+      );
+
+      expect("latestComment" in result).toBe(true);
+      if (!("latestComment" in result)) {
+        expect.fail("Expected compact issue triage result");
+      }
+
+      expect(result.issue.number).toBe(596);
+      expect(result.issue.labels).toEqual(["workflow-failure", "github-actions"]);
+      expect(result.commentsCount).toBe(2);
+      expect(result.latestComment?.id).toBe(502);
+      expect(result.body.endsWith("…")).toBe(true);
+      expect(result.body.length).toBe(501);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("returns full issue triage with full body and all comments", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "issue" && args[1] === "view") {
+            return Effect.succeed(triageIssueView);
+          }
+          return Effect.succeed({});
+        },
+        runGh: () =>
+          Effect.succeed({
+            stdout: JSON.stringify(triageIssueComments),
+            stderr: "",
+            exitCode: 0,
+          }),
+      });
+
+      const result = yield* fetchIssueTriage({ issue: 596, verbosity: "full" }).pipe(
+        Effect.provide(layer),
+      );
+
+      expect("comments" in result).toBe(true);
+      if (!("comments" in result)) {
+        expect.fail("Expected full issue triage result");
+      }
+
+      expect(result.issue.author).toBe("app/vivus-agent");
+      expect(result.body).toBe(triageIssueBody);
+      expect(result.commentsCount).toBe(2);
+      expect(result.comments).toHaveLength(2);
+      expect(result.comments[1]?.id).toBe(502);
+      expect(result.comments[1]?.body).toBe("Latest proposal");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
