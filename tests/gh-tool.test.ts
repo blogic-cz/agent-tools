@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -61,6 +61,16 @@ const inventedShellSensitiveText = [
   "I also added coverage in `DemoQueueValidatorSpec`, and `bun run check` passes.",
   "Literal shell chars: $SANDBOX & !",
 ].join("\n");
+
+const writeTextFixture = (filePath: string, content: string) => {
+  if (typeof Bun !== "undefined") {
+    return Bun.write(filePath, content).then(() => undefined);
+  }
+
+  return import("node:fs/promises").then(({ writeFile }) =>
+    writeFile(filePath, content, "utf8").then(() => undefined),
+  );
+};
 
 const mockGraphQLThreadsResponse = {
   repository: {
@@ -1993,7 +2003,7 @@ describe("PR composite commands", () => {
 
       yield* Effect.gen(function* () {
         const bodyPath = join(tempDir, "reply-body.txt");
-        yield* Effect.tryPromise(() => writeFile(bodyPath, inventedShellSensitiveText, "utf8"));
+        yield* Effect.tryPromise(() => writeTextFixture(bodyPath, inventedShellSensitiveText));
 
         const resolvedBody = yield* resolveRequiredTextInput(
           "gh-tool pr reply",

@@ -1,13 +1,15 @@
-import { readFile } from "node:fs/promises";
-
 import { Effect } from "effect";
 
 import { GitHubCommandError } from "#gh/errors";
 
 const STDIN_SENTINEL = "-";
 
-const readTextFromStdin = () =>
-  new Promise<string>((resolve, reject) => {
+const readTextFromStdin = () => {
+  if (typeof Bun !== "undefined") {
+    return Bun.stdin.text();
+  }
+
+  return new Promise<string>((resolve, reject) => {
     let body = "";
 
     process.stdin.setEncoding("utf8");
@@ -19,6 +21,15 @@ const readTextFromStdin = () =>
     });
     process.stdin.on("error", reject);
   });
+};
+
+const readTextFile = (filePath: string) => {
+  if (typeof Bun !== "undefined") {
+    return Bun.file(filePath).text();
+  }
+
+  return import("node:fs/promises").then(({ readFile }) => readFile(filePath, "utf8"));
+};
 
 type ResolveTextInputOptions = {
   command: string;
@@ -56,7 +67,7 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
     const source = fileValue === STDIN_SENTINEL ? "stdin" : fileValue;
 
     return yield* Effect.tryPromise({
-      try: () => (fileValue === STDIN_SENTINEL ? readTextFromStdin() : readFile(fileValue, "utf8")),
+      try: () => (fileValue === STDIN_SENTINEL ? readTextFromStdin() : readTextFile(fileValue)),
       catch: (error) =>
         new GitHubCommandError({
           command,
