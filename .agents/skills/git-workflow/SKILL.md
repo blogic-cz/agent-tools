@@ -5,78 +5,44 @@ description: "LOAD THIS SKILL when: creating PRs, pushing changes, creating bran
 
 # Git Workflow
 
-Git workflow automation covering PR lifecycle, branch management, CI monitoring, and review comment handling.
+PR lifecycle automation. Create PR → watch CI + reviews → fix → address → push → repeat until green.
+
+For full `bun gh-tool` command reference, run `bun gh-tool --help` or `bun gh-tool pr --help`. This skill describes the **workflow**, not the tool surface.
+
+For push, branch creation, and branch sync recipes, see [references/push-branch-sync.md](references/push-branch-sync.md).
 
 ## PR Workflow
 
-Create branch (if needed), commit, push, and create/update PR in one command.
+**Trigger**: user says "pr", "pull request", "create PR", "CI failed", "address review comments", "merge when green", or similar.
 
-### Instructions
+The entire PR lifecycle runs as one continuous aggressive loop. There is no separate "fix comments" step — it is all one workflow.
 
-Run everything as ONE chained command so user approves only once:
+### Phase 1: Create or Update PR
 
-```bash
-git checkout -b <branch> && git add -A && git commit -m "<msg>" && git push -u origin HEAD && bun run gh-tool pr create --base <base> --title "<title>" --body "<body>"
-```
-
-- If already on a feature branch, skip `git checkout -b`
-- Check if PR exists: `bun run gh-tool pr view --json number -q .number 2>/dev/null`
-- If PR exists, use `bun run gh-tool pr edit <pr_number> --title "<title>" --body "<body>"` instead of `bun run gh-tool pr create`
-- Base branch: argument provided by user (default: `test`)
-- Branch naming: `feat/`, `fix/`, `chore/` based on changes
-
-### Monitor Checks and Iterate
-
-After pushing, **automatically enter the monitoring loop**.
-
-Inform the user: "PR created. Monitoring CI checks... (say 'stop' to exit the loop)"
-
-#### Wait for CI checks to complete
-
-Poll check status every 30 seconds:
+First check whether a PR already exists:
 
 ```bash
-bun run gh-tool pr checks --pr <pr_number> --watch
+bun gh-tool pr status
 ```
 
-Or manually poll:
+**If no PR exists** — create branch, commit, push, and open PR in one chain:
 
 ```bash
-bun run gh-tool pr checks --pr <pr_number>
+git checkout -b <branch> && git add -A && git commit -m "<msg>" && git push -u origin HEAD && bun gh-tool pr create --base <base> --title "<title>" --body "<body>"
 ```
 
-States: `PENDING`, `QUEUED` → still running. `COMPLETED` → check conclusion.
+**If PR already exists** — commit, push, and update metadata:
 
-#### Handle check results
+```bash
+git add -A && git commit -m "<msg>" && git push origin HEAD
+bun gh-tool pr edit --pr <pr_number> --title "<title>" --body "<body>"
+```
 
-**If any check fails:**
+- If already on a feature branch, skip `git checkout -b`.
+- Base branch: argument provided by user (default: `test`).
+- Branch naming: `feat/`, `fix/`, `chore/` based on changes.
 
-1. Get the failed check details:
-
-   ```bash
-   bun run gh-tool pr checks-failed --pr <pr_number>
-   ```
-
-2. For build/lint/test failures, fetch logs if available or analyze the error
-3. Fix the issues locally
-4. Run validation command (e.g., `bun run check`)
-5. Commit and push the fix
-6. **Go back to monitoring** to check again
-
-**If all checks pass:**
-
-- Inform user: "All checks passed. PR is ready for review! 🎉"
-- Exit the loop
-
-#### Loop exit conditions
-
-Exit the monitoring loop when:
-
-- All checks pass
-- User says "stop" or requests to exit
-- Maximum 5 iterations reached (then ask user to continue)
-
-### PR Body Format
+#### PR Body Format
 
 ```
 ## Summary
@@ -86,385 +52,232 @@ Exit the monitoring loop when:
 - <bullet list>
 ```
 
----
+### Commit Message Standard
 
-## Push Workflow
+**Every commit MUST use proper conventional commits describing the actual change, not meta-descriptions like "address review feedback" or "fix CI".**
 
-Commit all changes and push to current branch in one command.
+Format: `<type>(<scope>): <what actually changed>`
 
-### Instructions
+- `type`: `fix`, `feat`, `refactor`, `perf`, `style`, `chore`, etc.
+- `scope`: the module/area affected (e.g., `auth`, `db`, `ui`, `api`)
+- `message`: describe the concrete change, not why you are committing
 
-Run everything as ONE chained command so user approves only once:
+**Good examples:**
 
-```bash
-git add -A && git commit -m "<msg>" && git push origin HEAD
-```
+- `fix(auth): add null check for session token before redirect`
+- `refactor(api): extract validation logic into shared middleware`
+- `fix(db): correct JOIN condition in user query`
 
-- Commit message: conventional commits (`feat:`, `fix:`, `chore:`, etc.)
-- If no changes, skip
+**Bad examples (NEVER use these):**
 
----
+- ~~`fix: address review feedback`~~
+- ~~`fix: resolve CI check failures`~~
+- ~~`chore: fix issues`~~
 
-## Branch Workflow
+If a single commit addresses multiple review comments across different scopes, make **separate commits per scope** rather than one catch-all.
 
-Create a new feature branch from base, preserving current changes.
+### Phase 2: Active Watch Loop
 
-- Base branch: argument provided by user, or `test` if not provided
-- Branch naming: `feat/`, `fix/`, `chore/` based on changes
-- Infer branch name from changes or ask user
+**Immediately after PR creation/update, enter the active watch loop. No pause, no waiting for user input.**
 
-### Instructions
-
-**If there are uncommitted changes:**
-
-```bash
-but oplog snapshot -m "before branch switch" && git checkout <base> && git pull origin <base> && git checkout -b <branch-name> && but oplog restore
-```
-
-Note: `but oplog snapshot/restore` is the GitButler-safe alternative to `git stash` (which is banned in GitButler workspaces).
-
-**If working tree is clean:**
-
-```bash
-git checkout <base> && git pull origin <base> && git checkout -b <branch-name>
-```
+Inform user: "PR created/updated. Entering active watch loop — monitoring CI and reviews. (say 'stop' to exit)"
 
 ---
 
-## PR Fix Comments Workflow
+#### LOOP START
 
-Fetch PR review comments from AI code review assistants, analyze them, apply valid fixes, respond to comments explaining how they were addressed, then commit and push.
+##### Step 1: Take a snapshot and decide what to do next
 
-### Step 1: Get PR
+**LOOP CONTRACT — mandatory behavior, not a suggestion:**
 
-If a PR number is provided as an argument, use that PR number. Otherwise, use the current branch's PR.
+- After PR creation/update, stay inside this loop until **LOOP EXIT**.
+- After **every** fix + push, immediately return to **Step 1**.
+- After **every** reply/resolve pass, immediately return to **Step 1**.
+- If CI is still running, the loop is **not done**.
+- If visible-open review feedback still exists, the loop is **not done**.
+- Do **not** stop after one pass just because one category is clean.
+- Do **not** ask the user whether to continue unless the user said `stop` or the max-iteration guard is hit.
 
-If no PR found, inform the user and exit.
-
-### Step 2: Fetch Review Comments
-
-There are two sources of review feedback:
-
-1. **Inline review threads** — code-specific comments attached to file lines
-2. **AI reviewer issue comments** — general PR comments from bots like `claude` or `sentry-io[bot]` (posted as `issuecomment-*`, not as inline threads)
-
-#### 2.1 Check inline review threads
-
-Fetch unresolved inline review threads:
+**Always start Step 1 with a snapshot:**
 
 ```bash
-bun run gh-tool pr threads --pr <pr_number> --unresolved-only
+bun gh-tool pr review-triage --pr <pr_number>
 ```
 
-Each thread includes `threadId`, `commentId`, `path`, `line`, and `body`.
+This returns `info`, `unresolvedThreads`, `visibleOpenThreads`, `summary`, and `checks` in one call. Use it as the single source of truth for branching.
 
-If unresolved comments exist, proceed directly to Step 3.
+**After the snapshot, branch immediately:**
 
-If the result is empty but you need to verify, re-run the command above to confirm.
-
-#### 2.2 Check AI reviewer issue comments
-
-**Even if inline threads are empty**, check for AI reviewer comments that contain actionable findings:
+- **Checks failed → go to Step 2**
+- **Checks passed AND visible-open feedback exists → go to Step 3**
+- **Checks passed AND no visible-open feedback → go to LOOP EXIT**
+- **Checks still running AND visible-open feedback exists → go to Step 3** (work on feedback while CI runs)
+- **Checks still running AND no feedback → block on CI:**
 
 ```bash
-bun run gh-tool pr discussion-summary --pr <pr_number>
-bun run gh-tool pr issue-comments-latest --pr <pr_number> --author claude --body-contains "Claude Code Review"
-bun run gh-tool pr issue-comments-latest --pr <pr_number> --author sentry-io --body-contains "Sentry"
+bun gh-tool pr checks --pr <pr_number> --watch
 ```
 
-AI reviewers (Claude bot, Sentry Seer) post code review findings as general PR comments, not inline threads. These comments typically contain:
+When `--watch` completes, return to **Step 1** for a fresh snapshot.
 
-- Severity-tagged findings (Critical, Major, Minor)
-- Specific file paths and line numbers
-- Code suggestions and explanations
+**Do NOT build ad-hoc `sleep` polling loops around `bun gh-tool`.** If work remains, handle it and then explicitly re-enter **Step 1**. If nothing remains except CI, use `--watch`.
 
-Parse the comment body to extract actionable items with file paths and line numbers.
+##### Step 2: Handle CI failure
 
-#### 2.3 Determine if there is work to do
+1. **First, decide: flaky or real?**
+   - If the failure looks flaky (timeout, infra/network issue, unrelated service), rerun and return to Step 1:
 
-If **both** inline threads AND AI reviewer comments are empty or have no actionable findings, inform the user and exit.
+     ```bash
+     bun gh-tool pr rerun-checks --pr <pr_number>
+     ```
 
-If either source has actionable items, proceed to Step 3 with the combined list.
+     **→ Go back to LOOP START**
 
-### Step 3: Analyze Each Comment
+   - If the failure looks real, continue below.
 
-For each comment:
+2. Get failed check details:
 
-1. **Read the file** mentioned in the comment at the specific line
+   ```bash
+   bun gh-tool pr checks-failed --pr <pr_number>
+   ```
+
+3. If the output includes a workflow run and job name, fetch logs:
+
+   ```bash
+   bun gh-tool workflow job-logs --run <run_id> --job "<job_name>" --failed-steps-only
+   ```
+
+4. Analyze the error, **fix locally** — do not ask, just fix.
+5. Run validation:
+
+   ```bash
+   bun run check
+   ```
+
+6. Commit and push:
+
+   ```bash
+   git add -A && git commit -m "<type>(<scope>): <what changed>" && git push origin HEAD
+   ```
+
+7. **→ Go back to LOOP START**
+
+##### Step 3: Check for reviews and triage feedback
+
+The snapshot from Step 1 already contains threads and summary. Drill into details:
+
+**3.1 Inline review threads that still need attention:**
+
+Use `--visible-open-only` — it includes unresolved threads **and** resolved threads that still have no reply:
+
+```bash
+bun gh-tool pr threads --pr <pr_number> --visible-open-only
+```
+
+**3.2 AI reviewer issue comments** (Claude bot, Sentry Seer, etc.):
+
+```bash
+bun gh-tool pr issue-comments --pr <pr_number> --author claude --body-contains "Claude Code Review"
+bun gh-tool pr issue-comments --pr <pr_number> --author sentry-io --body-contains "Sentry"
+```
+
+AI reviewers post findings as general PR comments with severity-tagged items (Critical, Major, Minor), file paths, and line numbers. Parse each comment body to extract actionable items.
+
+**3.3 Decision:**
+
+- **If NO visible-open threads AND NO actionable AI comments →** PR is clean. **→ Go to LOOP EXIT**
+- **If ANY feedback found → proceed to Step 4**
+
+##### Step 4: Address every comment immediately
+
+Before changing code, create **one todo item per actionable comment/finding** (use the todo-list tool if available, otherwise maintain an explicit numbered checklist in conversation).
+
+- One comment/finding = one tracked item.
+- Use a short label that identifies the source and problem.
+- Mark `in_progress` only while actively handling that single comment.
+- Mark `completed` only after the code change **and** the reply/resolve are both done.
+
+For each comment/finding:
+
+1. **Read the file** at the specific line mentioned.
 2. **Understand the suggestion** — what change is being requested?
-3. **Evaluate validity**:
-   - **Apply automatically**: Clear improvements (typos, style, obvious bugs, performance)
-   - **Apply with judgment**: Suggestions that align with CLAUDE.md conventions
-   - **Ask user**: Major architectural changes, unclear suggestions, or potentially breaking changes
+3. **Evaluate and act:**
+   - **Auto-apply** (no confirmation): typos, style fixes, missing types, import cleanup, obvious bugs, performance improvements, security fixes matching CLAUDE.md conventions.
+   - **Apply with judgment**: refactoring suggestions that improve clarity, error handling, naming improvements.
+   - **Ask user first**: removing functionality, changing public API signatures, contradicting existing patterns, unclear suggestions.
 
-### Step 4: Apply Fixes
+4. **Make the fix immediately** — track what was changed and why.
 
-For each valid suggestion:
+##### Step 5: Reply to comments and resolve threads
 
-1. Make the code change
-2. Track what was changed and why
+**CRITICAL: Every thread MUST have a reply before being resolved.**
 
-### Step 5: Respond to Comments and Resolve
-
-**CRITICAL: Every thread MUST have a reply before being resolved.** This includes:
-
-- Threads you're about to resolve
-- Threads that are already resolved but missing replies
-- Positive feedback comments (reply with acknowledgment like "Thanks for the feedback!")
-
-#### 5.1 Get thread IDs and check for missing replies
-
-First, fetch review threads to get thread IDs and resolution status:
+For inline threads — reply and resolve in one step:
 
 ```bash
-bun run gh-tool pr threads --pr <pr_number>
+bun gh-tool pr reply-and-resolve --pr <pr_number> --comment-id <comment_id> --thread-id <thread_id> --body "<response>"
 ```
 
-Then check which threads have replies:
+For general PR comments — post a reply:
 
 ```bash
-bun run gh-tool pr comments --pr <pr_number>
+bun gh-tool pr comment --pr <pr_number> --body "<response>"
 ```
 
-**Identify threads missing replies** — threads with only 1 comment (the original) need a reply added.
-
-#### 5.2 Reply to EVERY thread (including already resolved ones)
-
-For inline review comment replies:
-
-```bash
-bun run gh-tool pr reply --pr <pr_number> --comment-id <comment_id> --body "<response>"
-```
-
-For general PR comments:
-
-```bash
-bun run gh-tool pr comment --pr <pr_number> --body "<response>"
-```
-
-Response format:
+**Response format:**
 
 - **If fixed**: "Addressed - [brief description of what was changed]"
 - **If not applicable**: "Not applicable - [brief explanation why]"
 - **If positive feedback**: "Thanks for the feedback!" or similar acknowledgment
 - **If needs discussion**: "Question: [ask for clarification]"
 
-#### 5.3 Resolve the thread
+**If reply fails with a pending-review validation error:** submit the pending review first with `bun gh-tool pr submit-review --pr <pr_number>`, then retry. If it must be dismissed instead, dismiss it in GitHub first.
 
-**Only after replying**, resolve the thread:
+**Do NOT resolve** threads where you asked a question.
 
-```bash
-bun run gh-tool pr resolve --thread-id <thread_id>
-```
-
-**Do NOT resolve** threads where you asked a question or need discussion.
-
-### Step 6: Run Validation
+##### Step 6: Validate and push
 
 ```bash
 bun run check
 ```
 
-Fix any new issues introduced by the changes.
-
-### Step 7: Commit and Push
+Fix any new issues. Then commit and push:
 
 ```bash
-git add -A && git commit -m "fix(<scope>): <description of changes>" && git push origin HEAD
+git add -A && git commit -m "<type>(<scope>): <what changed>" && git push origin HEAD
 ```
 
-Generate a descriptive commit message based on what was actually changed (e.g., "fix(auth): correct token validation" or "fix(ui): improve error message display").
-
-### Step 8: Monitor Checks and Iterate
-
-After pushing, **automatically enter the monitoring loop**.
-
-Inform the user: "Fixes pushed. Monitoring CI checks... (say 'stop' to exit the loop)"
-
-#### 8.1 Wait for CI checks to complete
-
-Use the built-in `--watch` flag to wait for checks (suppress verbose output):
-
-```bash
-bun run gh-tool pr checks --pr <pr_number> --watch --fail-fast > /dev/null 2>&1; echo $?
-```
-
-**Exit codes:**
-
-- `0` — All checks passed
-- `1` — One or more checks failed
-
-The `--fail-fast` flag exits immediately when any check fails, allowing faster iteration.
-
-#### 8.2 Handle check results
-
-**If exit code is 1 (checks failed):**
-
-1. Get failed check details:
-
-   ```bash
-   bun run gh-tool pr checks-failed --pr <pr_number>
-   ```
-
-2. For build/lint/test failures, fetch logs if available or analyze the error from the link
-3. Fix the issues locally
-4. Run `bun run check` to validate
-5. Commit and push the fix:
-   ```bash
-   git add -A && git commit -m "fix: resolve CI check failures" && git push origin HEAD
-   ```
-6. **Go back to Step 8.1** to monitor again
-
-**If exit code is 0 (all checks passed):**
-
-1. Check for new review comments since last check:
-
-   ```bash
-   bun run gh-tool pr comments --pr <pr_number> --since "<last_check_timestamp>"
-   bun run gh-tool pr issue-comments --pr <pr_number> --since "<last_check_timestamp>"
-   ```
-
-2. **If new comments exist:**
-   - Inform user: "CI passed but X new review comments found. Processing..."
-   - **Go back to Step 2** to process new comments
-
-3. **If no new comments:**
-   - Inform user: "All checks passed and no new comments. PR is ready for review! 🎉"
-   - Exit the loop
-
-#### 8.3 Loop exit conditions
-
-Exit the monitoring loop when:
-
-- All checks pass AND no new comments
-- User says "stop" or requests to exit
-- Maximum 5 iterations reached (then ask user to continue)
-
-### Decision Guidelines
-
-**Auto-apply (no user confirmation needed):**
-
-- Typo fixes in comments or strings
-- Import organization/cleanup
-- Adding missing types
-- Style fixes matching CLAUDE.md (kebab-case files, absolute imports, etc.)
-- Performance improvements (Promise.all, prefetch patterns)
-- Security fixes (removing hardcoded values, adding validation)
-
-**Apply with judgment:**
-
-- Refactoring suggestions that improve code clarity
-- Adding error handling
-- Improving variable/function names
-
-**Ask user first:**
-
-- Removing functionality
-- Changing public API signatures
-- Suggestions that contradict existing patterns
-- Comments you don't understand or disagree with
+**→ Go back to LOOP START**
 
 ---
 
-## Sync Branches Workflow
+#### LOOP EXIT
 
-Merge all environment branches so test, prod, and main point to the same commit.
+When reaching here (all checks pass + no visible-open feedback):
 
-### Step 1: Safety snapshot and teardown
+Before the final success message, print a **comment resolution summary list**.
 
-```bash
-but oplog snapshot -m "pre-sync safety"
-but teardown
+Use a numbered list with **one item per handled comment/finding** and this fixed structure:
+
+```md
+1. Source: inline thread | general PR comment | AI review
+   Identifier: <thread_id / comment_id / reviewer label>
+   Problem: <short summary of the concern>
+   Resolution: <what changed, or why it was not applicable>
+   Changed files: <file A>, <file B> | none
+   Replied: yes | no | n/a
+   Resolved: yes | no | n/a
+   Link: <comment or PR URL if available>
 ```
 
-If teardown fails with "No active branches found", manually checkout test:
+If no comments were found, say so explicitly instead of printing an empty structure.
 
-```bash
-git checkout test
-```
+Inform user: "All CI checks passed. All review comments addressed. PR is ready for review!"
 
-### Step 2: Checkout test and pull
+#### Loop exit conditions
 
-```bash
-git checkout test
-git pull origin test
-```
+Exit the watch loop when:
 
-### Step 3: Merge prod and main into test
-
-```bash
-git fetch origin prod main
-git merge origin/prod --no-edit
-git merge origin/main --no-edit
-```
-
-If conflicts occur, resolve using `--theirs` (prefer incoming) and ask the user only if the conflict is ambiguous:
-
-```bash
-git checkout --theirs <conflicted-files>
-git add <conflicted-files>
-git commit --no-edit
-```
-
-### Step 4: Push test
-
-```bash
-git push origin test
-```
-
-### Step 5: Fast-forward prod from test
-
-```bash
-git fetch origin test prod main
-git checkout prod
-git pull origin prod
-git merge origin/test --no-edit
-git push origin prod
-```
-
-### Step 6: Fast-forward main from prod
-
-```bash
-git fetch origin test prod main
-git checkout main
-git pull origin main
-git merge origin/prod --no-edit
-git push origin main
-```
-
-### Step 7: Verify sync
-
-```bash
-git fetch origin test prod main
-echo "test:  $(git rev-parse origin/test)"
-echo "prod:  $(git rev-parse origin/prod)"
-echo "main:  $(git rev-parse origin/main)"
-```
-
-All three must show the same SHA. If not, investigate and fix.
-
-### Step 8: Return to GitButler workspace
-
-```bash
-git checkout test
-but setup
-```
-
-### Constraints
-
-- **ALWAYS snapshot before teardown** — protects uncommitted workspace files
-- **ALWAYS use `--no-edit`** for merge commits — no interactive editors
-- **ALWAYS set non-interactive env vars** before git commands (`GIT_MERGE_AUTOEDIT=no`, `GIT_PAGER=cat`, etc.)
-- **NEVER force push** — all merges should be fast-forward or regular merge
-- **NEVER skip verification** (Step 7) — confirm all SHAs match before returning to workspace
-
-### Output
-
-Report final state:
-
-```
-Branches synced to <SHA>
-test:  <SHA>
-prod:  <SHA>
-main:  <SHA>
-```
+- **All checks pass AND no visible-open feedback** — natural exit.
+- **User says "stop"** or requests to exit.
+- **Maximum 20 iterations reached** — ask user if they want to continue.

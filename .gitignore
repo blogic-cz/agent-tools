@@ -9,3 +9,4 @@ dist/
 .opencode/plugin/session-map.json
 .sisyphus/
 .opencode/plugin/plugin-state.json
+.opencode/package-lock.json

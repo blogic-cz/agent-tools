@@ -114,6 +114,7 @@
     "format:check": "oxfmt --check",
     "lint": "oxlint -c ./.oxlintrc.json --deny-warnings",
     "lint:fix": "oxlint -c ./.oxlintrc.json --fix",
+    "update:skills": "bun run .agents/skills/update-packages/references/skills-update-local.ts",
     "test": "vitest run"
   },
   "dependencies": {
