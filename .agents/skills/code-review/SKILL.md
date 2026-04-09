@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "LOAD THIS SKILL when: reviewing code before PR, user mentions 'code review', 'review', 'pre-PR check', 'code quality audit'. Contains project-specific review checklist covering TRPC, TanStack, Drizzle, security, performance, and Effect patterns."
+description: "LOAD THIS SKILL when: reviewing code before a PR, auditing branch changes, or checking quality, security, performance, and testing risks. Contains the project's review workflow and severity-based checklist."
 compatibility: opencode
 ---
 

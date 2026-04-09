@@ -1,6 +1,6 @@
 ---
 name: testing-patterns
-description: "LOAD THIS SKILL when: writing unit tests, TRPC integration tests, or E2E tests. Covers Vitest patterns, Effect service testing, PGlite database testing, and Playwright E2E."
+description: "LOAD THIS SKILL when: writing or reviewing Vitest, integration, Playwright, or mock-based tests, or choosing the lightest effective test type. Contains the project's testing decision process, commands, and examples."
 compatibility: opencode
 ---
 

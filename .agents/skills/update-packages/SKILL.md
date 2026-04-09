@@ -1,6 +1,6 @@
 ---
 name: update-packages
-description: "LOAD THIS SKILL when: updating npm packages, user mentions 'update packages', 'update-packages', 'outdated', 'dependency updates'. Covers autonomous npm package updates with breaking change handling, Bun updates, Playwright Docker sync, and package group coordination."
+description: "LOAD THIS SKILL when: updating dependencies, investigating outdated packages, or coordinating grouped package upgrades and release-note adoption. Contains the repo's Bun-based update workflow, report scripts, and guardrails."
 ---
 
 # Update Packages

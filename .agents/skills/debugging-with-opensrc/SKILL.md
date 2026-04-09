@@ -1,6 +1,6 @@
 ---
 name: debugging-with-opensrc
-description: "ALWAYS LOAD THIS SKILL when: something doesn't work as expected, documentation is unclear, need to understand library internals, debugging integration issues, or before making assumptions about how a library works. Contains opensrc repo paths, debugging workflows, and examples for Effect, TanStack, TRPC, Drizzle, Better Auth, OpenCode."
+description: "LOAD THIS SKILL when: debugging external library behavior, validating docs against source, or reading OpenSrc mirrors before making assumptions. Contains repo paths, source-first workflows, and library-specific debugging guidance."
 ---
 
 # Debugging with OpenSrc

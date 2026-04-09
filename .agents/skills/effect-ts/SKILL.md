@@ -1,6 +1,6 @@
 ---
 name: effect-ts
-description: Review and guide Effect TypeScript best practices based on effect.solutions standards. Use when implementing Effect patterns, services, layers, error handling, data modeling, config, testing, or CLI development.
+description: "LOAD THIS SKILL when: implementing, reviewing, or debugging Effect TypeScript services, layers, runtime boundaries, typed errors, config, or tests. Contains current Effect guidance, project rules, and reference paths."
 compatibility: opencode
 metadata:
   source: https://www.effect.solutions/

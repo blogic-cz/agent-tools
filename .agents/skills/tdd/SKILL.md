@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: "LOAD THIS SKILL when: implementing new features with TDD, user mentions 'TDD', 'test-first', 'red-green-refactor', 'failing test', or when building Effect services that need thorough testing. Covers TDD methodology, Red-Green-Refactor cycle, Effect service testing with mock layers, and test-first development workflow."
+description: "LOAD THIS SKILL when: the task calls for TDD, test-first development, a failing test first, or an explicit Red-Green-Refactor cycle. Contains the project's TDD workflow, examples, and Effect-specific testing patterns."
 ---
 
 # Test-Driven Development (TDD)
