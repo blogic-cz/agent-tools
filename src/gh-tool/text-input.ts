@@ -4,32 +4,9 @@ import { GitHubCommandError } from "#gh/errors";
 
 const STDIN_SENTINEL = "-";
 
-const readTextFromStdin = () => {
-  if (typeof Bun !== "undefined") {
-    return Bun.stdin.text();
-  }
+const readTextFromStdin = () => Bun.stdin.text();
 
-  return new Promise<string>((resolve, reject) => {
-    let body = "";
-
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk: string) => {
-      body += chunk;
-    });
-    process.stdin.on("end", () => {
-      resolve(body);
-    });
-    process.stdin.on("error", reject);
-  });
-};
-
-const readTextFile = (filePath: string) => {
-  if (typeof Bun !== "undefined") {
-    return Bun.file(filePath).text();
-  }
-
-  return import("node:fs/promises").then(({ readFile }) => readFile(filePath, "utf8"));
-};
+const readTextFile = (filePath: string) => Bun.file(filePath).text();
 
 type ResolveTextInputOptions = {
   command: string;

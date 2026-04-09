@@ -61,14 +61,23 @@ const inventedShellSensitiveText = [
   "Literal shell chars: $SANDBOX & !",
 ].join("\n");
 
-const writeTextFixture = (filePath: string, content: string) => {
-  if (typeof Bun !== "undefined") {
-    return Bun.write(filePath, content).then(() => undefined);
-  }
+if (typeof Bun === "undefined") {
+  Reflect.set(globalThis, "Bun", {
+    file: (filePath: string) => ({
+      text: () => import("node:fs/promises").then(({ readFile }) => readFile(filePath, "utf8")),
+    }),
+    stdin: {
+      text: () => Promise.reject(new Error("Bun.stdin.text() is not mocked for this test path")),
+    },
+    write: (filePath: string, content: string) =>
+      import("node:fs/promises").then(({ writeFile }) =>
+        writeFile(filePath, content, "utf8").then(() => content.length),
+      ),
+  });
+}
 
-  return import("node:fs/promises").then(({ writeFile }) =>
-    writeFile(filePath, content, "utf8").then(() => undefined),
-  );
+const writeTextFixture = (filePath: string, content: string) => {
+  return Bun.write(filePath, content).then(() => undefined);
 };
 
 const createTempFixtureDir = () =>
