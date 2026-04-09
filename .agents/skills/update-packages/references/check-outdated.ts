@@ -512,7 +512,8 @@ if (CHANGELOG_MODE) {
           return;
         }
         return fetchReleaseNotes(gh.owner, gh.repo, current, latest).then((fallbackNotes) => {
-          return releaseNoteResults.set(pkg, fallbackNotes);
+          releaseNoteResults.set(pkg, fallbackNotes);
+          return fallbackNotes;
         });
       }),
     );

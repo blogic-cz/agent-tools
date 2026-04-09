@@ -190,14 +190,16 @@ Check coverage expectations:
 
 Check deeper guidance against `effect-ts`.
 
-Apply to files in `packages/services/`, `effect-runtime.ts`, and files using `Effect.gen` or `Context.Tag`.
+Apply to files in `packages/services/`, `effect-runtime.ts`, and files using `Effect.gen`, `ServiceMap.Service`, or legacy `Context.Tag` patterns.
 
 ```typescript
-// ✅ Correct - Service with @project namespace
-export class MyService extends Context.Tag("@project/MyService")<...>() {}
+// ✅ Correct - ServiceMap.Service with namespaced identifier
+export class MyService extends ServiceMap.Service<MyService>()("@agent-tools/MyService", {
+  // service fields
+}) {}
 
-// ❌ Wrong - Missing namespace
-export class MyService extends Context.Tag("MyService")<...>() {}
+// ❌ Wrong - Context.Tag is deprecated here
+export class MyService extends Context.Tag("@agent-tools/MyService")<...>() {}
 ```
 
 ```typescript
