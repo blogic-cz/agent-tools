@@ -2,6 +2,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
+import { resolveOptionalTextInput } from "#gh/text-input";
 import { GitHubService } from "./service";
 
 type ReleaseListItem = {
@@ -343,6 +344,10 @@ export const releaseCreateCommand = Command.make(
       Flag.withDescription("Release notes body (markdown)"),
       Flag.optional,
     ),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read release notes body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     draft: Flag.boolean("draft").pipe(
       Flag.withDescription("Create as draft release"),
       Flag.withDefault(false),
@@ -388,6 +393,7 @@ export const releaseCreateCommand = Command.make(
   },
   ({
     body,
+    bodyFile,
     draft,
     format,
     generateNotes,
@@ -402,10 +408,19 @@ export const releaseCreateCommand = Command.make(
     verifyTag,
   }) =>
     Effect.gen(function* () {
+      const resolvedBody = yield* resolveOptionalTextInput(
+        "gh-tool release create",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+
       const result = yield* createRelease({
         tag,
         title: Option.getOrNull(title),
-        body: Option.getOrNull(body),
+        body: resolvedBody,
         notesFile: Option.getOrNull(notesFile),
         draft,
         prerelease,
@@ -477,6 +492,10 @@ export const releaseEditCommand = Command.make(
       Flag.withDescription("New release notes body (markdown)"),
       Flag.optional,
     ),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read release notes body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     draft: Flag.boolean("draft").pipe(
       Flag.withDescription("Set draft status (true/false). Omit to keep current value"),
       Flag.optional,
@@ -497,12 +516,21 @@ export const releaseEditCommand = Command.make(
     tag: Flag.string("tag").pipe(Flag.withDescription("Release tag to edit (e.g., v1.2.3)")),
     title: Flag.string("title").pipe(Flag.withDescription("New release title"), Flag.optional),
   },
-  ({ body, draft, format, latest, prerelease, repo, tag, title }) =>
+  ({ body, bodyFile, draft, format, latest, prerelease, repo, tag, title }) =>
     Effect.gen(function* () {
+      const resolvedBody = yield* resolveOptionalTextInput(
+        "gh-tool release edit",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+
       const edited = yield* editRelease({
         tag,
         title: Option.getOrNull(title),
-        body: Option.getOrNull(body),
+        body: resolvedBody,
         draft: Option.getOrNull(draft),
         prerelease: Option.getOrNull(prerelease),
         latest: Option.getOrNull(latest),

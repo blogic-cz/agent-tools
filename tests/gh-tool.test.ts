@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
@@ -10,16 +14,28 @@ import {
   GitHubNotFoundError,
 } from "#gh/errors";
 import { GitHubService } from "#gh/service";
-import { fetchChecks, viewPR } from "#gh/pr/core";
-import { fetchIssueComments as fetchIssueDiscussionComments } from "#gh/issue/core";
+import {
+  closeIssue,
+  commentOnIssue,
+  editIssue,
+  fetchIssueComments as fetchIssueDiscussionComments,
+  reopenIssue,
+} from "#gh/issue/core";
 import { fetchIssueTriage } from "#gh/issue/triage";
+import { createPR, editPR, fetchChecks, viewPR } from "#gh/pr/core";
 import {
   fetchComments,
   fetchDiscussionSummary,
   fetchThreads,
   replyToComment,
   resolveThread,
+  submitPendingReview,
 } from "#gh/pr/review";
+import {
+  resolveDefaultTextInput,
+  resolveOptionalTextInput,
+  resolveRequiredTextInput,
+} from "#gh/text-input";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -38,6 +54,13 @@ const mockPRInfo: PRInfo & { mergeable: string } = {
   isDraft: false,
   mergeable: "MERGEABLE",
 };
+
+const inventedShellSensitiveText = [
+  "Applied the follow-up change.",
+  "The demo pipeline now records the queue state after validation: success calls `demoQueue.MarkReady(...)` + `PersistDemoAsync(...)`, and failure calls `demoQueue.MarkBroken(...)` + `PersistDemoAsync(...)`.",
+  "I also added coverage in `DemoQueueValidatorSpec`, and `bun run check` passes.",
+  "Literal shell chars: $SANDBOX & !",
+].join("\n");
 
 const mockGraphQLThreadsResponse = {
   repository: {
@@ -1961,6 +1984,339 @@ describe("PR composite commands", () => {
       // Resolve result
       expect(resolveResult.resolved).toBe(true);
       expect(resolveResult.threadId).toBe("thread-1");
+    }),
+  );
+
+  it.effect("resolveRequiredTextInput reads shell-sensitive body text from file", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* Effect.tryPromise(() => mkdtemp(join(tmpdir(), "agent-tools-gh-")));
+
+      yield* Effect.gen(function* () {
+        const bodyPath = join(tempDir, "reply-body.txt");
+        yield* Effect.tryPromise(() => writeFile(bodyPath, inventedShellSensitiveText, "utf8"));
+
+        const resolvedBody = yield* resolveRequiredTextInput(
+          "gh-tool pr reply",
+          null,
+          bodyPath,
+          "--body",
+          "--body-file",
+          "body",
+        );
+
+        expect(resolvedBody).toBe(inventedShellSensitiveText);
+      }).pipe(
+        Effect.ensuring(Effect.tryPromise(() => rm(tempDir, { recursive: true, force: true }))),
+      );
+    }),
+  );
+
+  it.effect("replyToComment forwards shell-sensitive reply text unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedBody: string | undefined;
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "api" && (args[1] ?? "").includes("pulls/comments")) {
+            return Effect.succeed({
+              id: 101,
+              in_reply_to_id: null,
+              pull_request_url: "https://api.github.com/repos/test-owner/test-repo/pulls/123",
+            });
+          }
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          forwardedBody = args.at(-1);
+          return Effect.succeed({
+            stdout: JSON.stringify({ id: 301 }),
+            stderr: "",
+            exitCode: 0,
+          });
+        },
+      });
+
+      const replyResult = yield* replyToComment(123, 101, inventedShellSensitiveText).pipe(
+        Effect.provide(layer),
+      );
+
+      expect(replyResult.success).toBe(true);
+      expect(replyResult.commentId).toBe(301);
+      expect(forwardedBody).toBe(`body=${inventedShellSensitiveText}`);
+    }),
+  );
+
+  it.effect("resolveOptionalTextInput rejects ambiguous body sources", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveOptionalTextInput(
+        "gh-tool pr reply-and-resolve",
+        "inline body",
+        "/tmp/reply.txt",
+        "--body",
+        "--body-file",
+        "body",
+      ).pipe(Effect.result);
+
+      Result.match(result, {
+        onFailure: (error) => {
+          expect(error._tag).toBe("GitHubCommandError");
+          if (error._tag === "GitHubCommandError") {
+            expect(error.message).toBe("Provide exactly one of --body or --body-file");
+          }
+        },
+        onSuccess: () => {
+          expect.fail("Expected resolveOptionalTextInput to reject multiple body sources");
+        },
+      });
+    }),
+  );
+
+  it.effect("resolveDefaultTextInput keeps the existing empty-string default", () =>
+    Effect.gen(function* () {
+      const resolvedBody = yield* resolveDefaultTextInput(
+        "gh-tool pr create",
+        null,
+        null,
+        "--body",
+        "--body-file",
+        "body",
+        "",
+      );
+
+      expect(resolvedBody).toBe("");
+    }),
+  );
+
+  it.effect("createPR forwards shell-sensitive body unchanged on create path", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+      let listCalls = 0;
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "view") {
+            return Effect.succeed({
+              ...mockPRInfo,
+              title: "Demo PR",
+            });
+          }
+
+          if (args[0] === "pr" && args[1] === "list") {
+            listCalls += 1;
+            return Effect.succeed(
+              listCalls === 1
+                ? []
+                : [
+                    {
+                      ...mockPRInfo,
+                      title: "Demo PR",
+                    },
+                  ],
+            );
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({
+            stdout: "https://github.com/test-owner/test-repo/pull/123",
+            stderr: "",
+            exitCode: 0,
+          });
+        },
+      });
+
+      const result = yield* createPR({
+        base: "main",
+        title: "Demo PR",
+        body: inventedShellSensitiveText,
+        draft: false,
+        head: "feat/demo-body-file",
+      }).pipe(Effect.provide(layer));
+
+      expect(result.title).toBe("Demo PR");
+      expect(forwardedArgs).toEqual([
+        "pr",
+        "create",
+        "--base",
+        "main",
+        "--title",
+        "Demo PR",
+        "--body",
+        inventedShellSensitiveText,
+        "--head",
+        "feat/demo-body-file",
+      ]);
+    }),
+  );
+
+  it.effect("editPR forwards shell-sensitive body unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "view") {
+            return Effect.succeed(mockPRInfo);
+          }
+
+          return Effect.succeed({});
+        },
+      });
+
+      const result = yield* editPR({
+        pr: 123,
+        title: null,
+        body: inventedShellSensitiveText,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.number).toBe(123);
+      expect(forwardedArgs).toEqual(["pr", "edit", "123", "--body", inventedShellSensitiveText]);
+    }),
+  );
+
+  it.effect("submitPendingReview forwards shell-sensitive body unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedVariables: Record<string, string | number | null> | undefined;
+
+      const layer = createMockGhLayer({
+        runGraphQL: (_query, variables) => {
+          forwardedVariables = variables;
+          return Effect.succeed({
+            submitPullRequestReview: {
+              pullRequestReview: { id: "review-1", state: "COMMENTED" },
+            },
+          });
+        },
+      });
+
+      const result = yield* submitPendingReview(123, "review-1", inventedShellSensitiveText).pipe(
+        Effect.provide(layer),
+      );
+
+      expect(result.submitted).toBe(true);
+      expect(forwardedVariables?.body).toBe(inventedShellSensitiveText);
+    }),
+  );
+
+  it.effect("commentOnIssue forwards shell-sensitive body unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedBody: string | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedBody = args.at(-1);
+          return Effect.succeed({
+            stdout: JSON.stringify({
+              id: 900,
+              user: { login: "demo-user" },
+              body: inventedShellSensitiveText,
+              created_at: "2025-01-15T12:00:00Z",
+              html_url: "https://github.com/test-owner/test-repo/issues/1#issuecomment-900",
+            }),
+            stderr: "",
+            exitCode: 0,
+          });
+        },
+      });
+
+      const result = yield* commentOnIssue({ issue: 1, body: inventedShellSensitiveText }).pipe(
+        Effect.provide(layer),
+      );
+
+      expect(result.id).toBe(900);
+      expect(forwardedBody).toBe(`body=${inventedShellSensitiveText}`);
+    }),
+  );
+
+  it.effect("closeIssue forwards shell-sensitive comment unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGhJson: () => Effect.succeed({ ...mockPRInfo, number: 1 }),
+      });
+
+      const result = yield* closeIssue({
+        issue: 1,
+        comment: inventedShellSensitiveText,
+        reason: "completed",
+      }).pipe(Effect.provide(layer));
+
+      expect(result.number).toBe(1);
+      expect(forwardedArgs).toEqual([
+        "issue",
+        "close",
+        "1",
+        "--reason",
+        "completed",
+        "--comment",
+        inventedShellSensitiveText,
+      ]);
+    }),
+  );
+
+  it.effect("reopenIssue forwards shell-sensitive comment unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGhJson: () => Effect.succeed({ ...mockPRInfo, number: 1 }),
+      });
+
+      const result = yield* reopenIssue({
+        issue: 1,
+        comment: inventedShellSensitiveText,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.number).toBe(1);
+      expect(forwardedArgs).toEqual([
+        "issue",
+        "reopen",
+        "1",
+        "--comment",
+        inventedShellSensitiveText,
+      ]);
+    }),
+  );
+
+  it.effect("editIssue forwards shell-sensitive body unchanged", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGhJson: () => Effect.succeed({ ...mockPRInfo, number: 1 }),
+      });
+
+      const result = yield* editIssue({
+        issue: 1,
+        title: null,
+        body: inventedShellSensitiveText,
+        addLabels: null,
+        removeLabels: null,
+        addAssignee: null,
+        removeAssignee: null,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.number).toBe(1);
+      expect(forwardedArgs).toEqual(["issue", "edit", "1", "--body", inventedShellSensitiveText]);
     }),
   );
 });

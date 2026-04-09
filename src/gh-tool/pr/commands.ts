@@ -5,6 +5,11 @@ import type { PRStatusResult } from "#gh/types";
 
 import { formatOption, logFormatted } from "#shared";
 import {
+  resolveDefaultTextInput,
+  resolveOptionalTextInput,
+  resolveRequiredTextInput,
+} from "#gh/text-input";
+import {
   CI_CHECK_WATCH_TIMEOUT_MS,
   DEFAULT_DELETE_BRANCH,
   DEFAULT_MERGE_STRATEGY,
@@ -70,9 +75,10 @@ export const prCreateCommand = Command.make(
       Flag.withDescription("Base branch for the PR"),
       Flag.withDefault("test"),
     ),
-    body: Flag.string("body").pipe(
-      Flag.withDescription("PR body/description"),
-      Flag.withDefault(""),
+    body: Flag.string("body").pipe(Flag.withDescription("PR body/description"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read PR body from a file path or '-' for stdin"),
+      Flag.optional,
     ),
     draft: Flag.boolean("draft").pipe(
       Flag.withDescription("Create as draft PR"),
@@ -85,11 +91,21 @@ export const prCreateCommand = Command.make(
     ),
     title: Flag.string("title").pipe(Flag.withDescription("PR title")),
   },
-  ({ base, body, draft, format, head, title }) =>
+  ({ base, body, bodyFile, draft, format, head, title }) =>
     Effect.gen(function* () {
+      const resolvedBody = yield* resolveDefaultTextInput(
+        "gh-tool pr create",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+        "",
+      );
+
       const info = yield* createPR({
         base,
-        body,
+        body: resolvedBody,
         draft,
         head: Option.getOrNull(head),
         title,
@@ -102,16 +118,29 @@ export const prEditCommand = Command.make(
   "edit",
   {
     body: Flag.string("body").pipe(Flag.withDescription("New PR body/description"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read PR body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to edit")),
     title: Flag.string("title").pipe(Flag.withDescription("New PR title"), Flag.optional),
   },
-  ({ body, format, pr, title }) =>
+  ({ body, bodyFile, format, pr, title }) =>
     Effect.gen(function* () {
+      const resolvedBody = yield* resolveOptionalTextInput(
+        "gh-tool pr edit",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+
       const info = yield* editPR({
         pr,
         title: Option.getOrNull(title),
-        body: Option.getOrNull(body),
+        body: resolvedBody,
       });
       yield* logFormatted(info, format);
     }),
@@ -338,17 +367,32 @@ export const prIssueCommentsLatestCommand = Command.make(
 export const prCommentCommand = Command.make(
   "comment",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("General PR comment body text")),
+    body: Flag.string("body").pipe(
+      Flag.withDescription("General PR comment body text"),
+      Flag.optional,
+    ),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read general PR comment body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     pr: Flag.integer("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
   },
-  ({ body, format, pr }) =>
+  ({ body, bodyFile, format, pr }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
-      const result = yield* postIssueComment(prNumber, body);
+      const resolvedBody = yield* resolveRequiredTextInput(
+        "gh-tool pr comment",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+      const result = yield* postIssueComment(prNumber, resolvedBody);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Post a general PR discussion comment"));
@@ -375,7 +419,11 @@ export const prDiscussionSummaryCommand = Command.make(
 export const prReplyCommand = Command.make(
   "reply",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Reply body text")),
+    body: Flag.string("body").pipe(Flag.withDescription("Reply body text"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read reply body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     commentId: Flag.integer("comment-id").pipe(
       Flag.withDescription("ID of the comment to reply to"),
     ),
@@ -385,10 +433,18 @@ export const prReplyCommand = Command.make(
       Flag.optional,
     ),
   },
-  ({ body, commentId, format, pr }) =>
+  ({ body, bodyFile, commentId, format, pr }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
-      const result = yield* replyToComment(prNumber, commentId, body);
+      const resolvedBody = yield* resolveRequiredTextInput(
+        "gh-tool pr reply",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+      const result = yield* replyToComment(prNumber, commentId, resolvedBody);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Reply to an inline review comment"));
@@ -415,6 +471,10 @@ export const prSubmitReviewCommand = Command.make(
       Flag.withDescription("Optional review body text when submitting"),
       Flag.optional,
     ),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read review body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     pr: Flag.integer("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
@@ -427,11 +487,18 @@ export const prSubmitReviewCommand = Command.make(
       Flag.optional,
     ),
   },
-  ({ body, format, pr, reviewId }) =>
+  ({ body, bodyFile, format, pr, reviewId }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
       const reviewIdValue = Option.getOrNull(reviewId);
-      const bodyValue = Option.getOrNull(body);
+      const bodyValue = yield* resolveOptionalTextInput(
+        "gh-tool pr submit-review",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
       const result = yield* submitPendingReview(prNumber, reviewIdValue, bodyValue);
       yield* logFormatted(result, format);
     }),
@@ -471,7 +538,11 @@ export const prReviewTriageCommand = Command.make(
 export const prReplyAndResolveCommand = Command.make(
   "reply-and-resolve",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Reply body text")),
+    body: Flag.string("body").pipe(Flag.withDescription("Reply body text"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read reply body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     commentId: Flag.integer("comment-id").pipe(
       Flag.withDescription("ID of the comment to reply to"),
     ),
@@ -484,10 +555,18 @@ export const prReplyAndResolveCommand = Command.make(
       Flag.withDescription("GraphQL node ID of the thread to resolve"),
     ),
   },
-  ({ body, commentId, format, pr, threadId }) =>
+  ({ body, bodyFile, commentId, format, pr, threadId }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
-      const replyResult = yield* replyToComment(prNumber, commentId, body);
+      const resolvedBody = yield* resolveRequiredTextInput(
+        "gh-tool pr reply-and-resolve",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+      const replyResult = yield* replyToComment(prNumber, commentId, resolvedBody);
       const resolveResult = yield* resolveThread(threadId);
       yield* logFormatted({ reply: replyResult, resolve: resolveResult }, format);
     }),
