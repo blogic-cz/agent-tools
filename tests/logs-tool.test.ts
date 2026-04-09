@@ -228,7 +228,7 @@ describe("LogsService", () => {
         Effect.provide(
           createLogsServiceLayer({
             k8sResponses: {
-              "-n $(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo default) get pods -o jsonpath='{.items[0].metadata.name}'":
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
                 {
                   success: true,
                   output: "'app-pod-1'",
@@ -269,11 +269,11 @@ describe("LogsService", () => {
         Effect.provide(
           createLogsServiceLayer({
             k8sResponses: {
-              "-n $(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo default) get pods -o jsonpath='{.items[0].metadata.name}'":
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
                 new K8sCommandError({
                   message: "kubectl failed",
                   command:
-                    "-n $(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo default) get pods -o jsonpath='{.items[0].metadata.name}'",
+                    "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'",
                   exitCode: 1,
                 }),
             },
@@ -435,12 +435,13 @@ describe("LogsService", () => {
           createLogsServiceLayer({
             observedK8sCommands,
             k8sResponses: {
-              "get pods -o jsonpath='{.items[0].metadata.name}'": {
-                success: true,
-                output: "app-pod",
-                command: "kubectl get pods",
-                executionTimeMs: 5,
-              },
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
+                {
+                  success: true,
+                  output: "app-pod",
+                  command: "kubectl get pods",
+                  executionTimeMs: 5,
+                },
               "exec app-pod -- sh -c \"tail -50 '/var/log/app/api.log' | grep -i 'fatal'\\''; echo bad'\"":
                 {
                   success: true,
@@ -470,12 +471,13 @@ describe("LogsService", () => {
         Effect.provide(
           createLogsServiceLayer({
             k8sResponses: {
-              "get pods -o jsonpath='{.items[0].metadata.name}'": {
-                success: true,
-                output: "prod-pod",
-                command: "kubectl get pods",
-                executionTimeMs: 3,
-              },
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
+                {
+                  success: true,
+                  output: "prod-pod",
+                  command: "kubectl get pods",
+                  executionTimeMs: 3,
+                },
               "exec prod-pod -- sh -c \"tail -2 '/var/log/app/app.log'\"": {
                 success: true,
                 output: '{"x":1}\nnot json',
@@ -505,12 +507,13 @@ describe("LogsService", () => {
         Effect.provide(
           createLogsServiceLayer({
             k8sResponses: {
-              "get pods -o jsonpath='{.items[0].metadata.name}'": {
-                success: true,
-                output: "prod-pod",
-                command: "kubectl get pods",
-                executionTimeMs: 4,
-              },
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
+                {
+                  success: true,
+                  output: "prod-pod",
+                  command: "kubectl get pods",
+                  executionTimeMs: 4,
+                },
               "exec prod-pod -- sh -c \"tail -10 '/var/log/app/app.log' | grep -i 'never-happens'\"":
                 new K8sCommandError({
                   message: "grep found no results",
@@ -547,12 +550,13 @@ describe("LogsService", () => {
         Effect.provide(
           createLogsServiceLayer({
             k8sResponses: {
-              "get pods -o jsonpath='{.items[0].metadata.name}'": {
-                success: true,
-                output: "test-pod",
-                command: "kubectl get pods",
-                executionTimeMs: 4,
-              },
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
+                {
+                  success: true,
+                  output: "test-pod",
+                  command: "kubectl get pods",
+                  executionTimeMs: 4,
+                },
               "exec test-pod -- sh -c \"tail -10 '/var/log/app/app.log'\"": new K8sCommandError({
                 message: "tail failed",
                 command: "kubectl exec test-pod -- sh -c ...",
@@ -660,7 +664,7 @@ describe("env resolution with defaultEnvironment", () => {
       Effect.provide(
         createLogsServiceLayer({
           k8sResponses: {
-            "-n $(kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo default) get pods -o jsonpath='{.items[0].metadata.name}'":
+            "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
               {
                 success: true,
                 output: "'test-pod'",
