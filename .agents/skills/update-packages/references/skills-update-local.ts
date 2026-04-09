@@ -5,8 +5,8 @@
  * Lives in the skill until the CLI stabilizes.
  *
  * Usage:
- *   bun run .agents/skills/update-packages/references/skills-update-local.ts
- *   bun run .agents/skills/update-packages/references/skills-update-local.ts --dry-run
+ *   bun run update:skills
+ *   bun run update:skills --dry-run
  */
 
 import { existsSync } from "node:fs";

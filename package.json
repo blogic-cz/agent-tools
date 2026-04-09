@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.8.13",
+  "version": "0.8.14",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
@@ -114,6 +114,7 @@
     "format:check": "oxfmt --check",
     "lint": "oxlint -c ./.oxlintrc.json --deny-warnings",
     "lint:fix": "oxlint -c ./.oxlintrc.json --fix",
+    "update:skills": "bun run .agents/skills/update-packages/references/skills-update-local.ts",
     "test": "vitest run"
   },
   "dependencies": {

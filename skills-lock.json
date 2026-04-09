@@ -4,37 +4,37 @@
     "code-review": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "9cbf5528d8202ebd7ac894ca11e76151f0681430e0f97241338f8223210a8e17"
+      "computedHash": "75d28f390eabc4001f8ef08008718c21060ac0b7cb190aba64eb472663483501"
     },
     "debugging-with-opensrc": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "193331d61902227913e83bcdf877e957a06b848ad61120baf4a389fd46d7bd3e"
+      "computedHash": "9161f5d75b21d53252303be085f6ac58fa1da21bf355fa40c04054f03133bc2c"
     },
     "effect-ts": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "688dd8c0c92950093fb898fc8a70b33aeb77f6e646bc908aa1ed202674e8d9a7"
+      "computedHash": "0ff98daca566e4c570315bcefc9a8a20801261c7d2e34115f11d9a1b7673ec73"
     },
     "git-workflow": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "a653e91230009ab42768c65b7cb903d8e299c330adad61602819994a56e29b13"
+      "computedHash": "b201e8d8e731ec6ba14a696d57c4a864996b090878b7fe5880ab03f827c03773"
     },
     "tdd": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "9d9dfc89b7ec07d7f416b47b3a3f0a25b61462704e59dfcfbf0064b897f3d2c1"
+      "computedHash": "91259694c9c884d56757a86ef232dcdbe83d1ab822ded9ef5eeeddc89fbcbff3"
     },
     "testing-patterns": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "b52abcf4b2c311bf13d94a32913aa9ed4898c5a9e38fc237f52e151dc888c5fe"
+      "computedHash": "d0bbd0b946beb11ffe2c42579f3111baa1514c75289176b2df53758ee2ca66b4"
     },
     "update-packages": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",
-      "computedHash": "e409f7113a8cf95b4baba3705a2f26544758293b1e8fc73efad371b28d877a2b"
+      "computedHash": "f3cc0164508c12b3e5f599b484bda72279a3c006ace998039658ede6ef4c6b61"
     }
   }
 }
