@@ -1,4 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -71,6 +70,14 @@ const writeTextFixture = (filePath: string, content: string) => {
     writeFile(filePath, content, "utf8").then(() => undefined),
   );
 };
+
+const createTempFixtureDir = () =>
+  import("node:fs/promises").then(({ mkdtemp }) => mkdtemp(join(tmpdir(), "agent-tools-gh-")));
+
+const removeTempFixtureDir = (dirPath: string) =>
+  import("node:fs/promises").then(({ rm }) =>
+    rm(dirPath, { recursive: true, force: true }).then(() => undefined),
+  );
 
 const mockGraphQLThreadsResponse = {
   repository: {
@@ -1999,7 +2006,7 @@ describe("PR composite commands", () => {
 
   it.effect("resolveRequiredTextInput reads shell-sensitive body text from file", () =>
     Effect.gen(function* () {
-      const tempDir = yield* Effect.tryPromise(() => mkdtemp(join(tmpdir(), "agent-tools-gh-")));
+      const tempDir = yield* Effect.tryPromise(() => createTempFixtureDir());
 
       yield* Effect.gen(function* () {
         const bodyPath = join(tempDir, "reply-body.txt");
@@ -2015,9 +2022,7 @@ describe("PR composite commands", () => {
         );
 
         expect(resolvedBody).toBe(inventedShellSensitiveText);
-      }).pipe(
-        Effect.ensuring(Effect.tryPromise(() => rm(tempDir, { recursive: true, force: true }))),
-      );
+      }).pipe(Effect.ensuring(Effect.tryPromise(() => removeTempFixtureDir(tempDir))));
     }),
   );
 

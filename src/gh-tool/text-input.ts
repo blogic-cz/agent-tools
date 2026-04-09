@@ -52,7 +52,7 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
     return yield* Effect.fail(
       new GitHubCommandError({
         command,
-        exitCode: 0,
+        exitCode: 1,
         stderr: `Provide exactly one of ${valueFlag} or ${fileFlag}`,
         message: `Provide exactly one of ${valueFlag} or ${fileFlag}`,
       }),
@@ -71,7 +71,7 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
       catch: (error) =>
         new GitHubCommandError({
           command,
-          exitCode: 0,
+          exitCode: 1,
           stderr: `Failed to read ${label} from ${source}: ${error instanceof Error ? error.message : String(error)}`,
           message: `Failed to read ${label} from ${source}: ${error instanceof Error ? error.message : String(error)}`,
         }),
@@ -89,7 +89,7 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
   return yield* Effect.fail(
     new GitHubCommandError({
       command,
-      exitCode: 0,
+      exitCode: 1,
       stderr: `Missing ${label}. Provide ${valueFlag} or ${fileFlag}`,
       message: `Missing ${label}. Provide ${valueFlag} or ${fileFlag}`,
     }),
