@@ -8,6 +8,7 @@ import type {
   MergeResult,
   MergeStrategy,
   PRInfo,
+  WorkflowRunDetail,
 } from "#gh/types";
 
 import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
@@ -15,25 +16,6 @@ import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
-
-type WorkflowRunDetail = {
-  databaseId: number;
-  url: string;
-  workflowName: string | null;
-  status: string;
-  conclusion: string | null;
-  jobs: Array<{
-    name: string;
-    status: string;
-    conclusion: string | null;
-    url: string;
-    steps: Array<{
-      name: string;
-      status: string;
-      conclusion: string | null;
-    }>;
-  }>;
-};
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;

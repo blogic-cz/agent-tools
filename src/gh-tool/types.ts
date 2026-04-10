@@ -99,6 +99,25 @@ export type FailedChecksReport = {
   nextCommands: string[];
 };
 
+export type WorkflowRunDetail = {
+  databaseId: number;
+  url: string;
+  workflowName: string | null;
+  status: string;
+  conclusion: string | null;
+  jobs: Array<{
+    name: string;
+    status: string;
+    conclusion: string | null;
+    url: string;
+    steps: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+    }>;
+  }>;
+};
+
 export type MergeResult = {
   merged: boolean;
   strategy: MergeStrategy;
