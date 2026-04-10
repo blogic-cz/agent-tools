@@ -79,6 +79,17 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
   return context;
 });
 
+const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
+  const gh = yield* GitHubService;
+
+  const args = ["pr", "checks"];
+  if (pr !== null) {
+    args.push(String(pr));
+  }
+
+  return yield* gh.runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS]);
+});
+
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
   pr: number | null,
   checks: CheckResult[],
@@ -611,7 +622,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       }),
     );
 
-    const finalChecks = yield* gh.runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS]);
+    const finalChecks = yield* fetchCheckResults(pr);
 
     if (watchResult._tag === "command_error") {
       if (finalChecks.some((check) => check.bucket === "fail")) {
@@ -624,7 +635,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     return finalChecks;
   }
 
-  const results = yield* gh.runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS]);
+  const results = yield* fetchCheckResults(pr);
   if (results.some((c) => c.bucket === "pending")) {
     yield* Console.warn(
       `ℹ️  Some checks are still running. Prefer --watch to block until completion instead of polling:\n` +
@@ -635,12 +646,8 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
 });
 
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (pr: number | null) {
-  const checks = yield* fetchChecks(pr, false, false, 0);
-  if (Array.isArray(checks)) {
-    return yield* buildFailedChecksReport(pr, checks);
-  }
-
-  return checks;
+  const checks = yield* fetchCheckResults(pr);
+  return yield* buildFailedChecksReport(pr, checks);
 });
 
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
