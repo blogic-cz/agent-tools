@@ -1,6 +1,3 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
@@ -60,70 +57,6 @@ const inventedShellSensitiveText = [
   "I also added coverage in `DemoQueueValidatorSpec`, and `bun run check` passes.",
   "Literal shell chars: $SANDBOX & !",
 ].join("\n");
-
-if (typeof Bun === "undefined") {
-  Reflect.set(globalThis, "Bun", {
-    file: (filePath: string) => ({
-      text: () => import("node:fs/promises").then(({ readFile }) => readFile(filePath, "utf8")),
-    }),
-    stdin: {
-      text: () => Promise.reject(new Error("Bun.stdin.text() is not mocked for this test path")),
-    },
-    write: (filePath: string, content: string) =>
-      import("node:fs/promises").then(({ writeFile }) =>
-        writeFile(filePath, content, "utf8").then(() => content.length),
-      ),
-  });
-}
-
-const writeTextFixture = (filePath: string, content: string) => {
-  if (typeof Bun !== "undefined" && typeof Bun.write === "function") {
-    return Bun.write(filePath, content).then(() => undefined);
-  }
-
-  return import("node:fs/promises").then(({ writeFile }) =>
-    writeFile(filePath, content, "utf8").then(() => undefined),
-  );
-};
-
-const createTempFixtureDir = async () => {
-  if (typeof Bun === "undefined" || typeof Bun.spawn !== "function") {
-    return import("node:fs/promises").then(({ mkdtemp }) =>
-      mkdtemp(join(tmpdir(), "agent-tools-gh-")),
-    );
-  }
-
-  const proc = Bun.spawn(["mktemp", "-d", join(tmpdir(), "agent-tools-gh-XXXXXX")], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const exitCode = await proc.exited;
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || "Failed to create temp fixture directory");
-  }
-
-  return stdout.trim();
-};
-
-const removeTempFixtureDir = async (dirPath: string) => {
-  if (typeof Bun === "undefined" || typeof Bun.spawn !== "function") {
-    return import("node:fs/promises").then(({ rm }) =>
-      rm(dirPath, { recursive: true, force: true }).then(() => undefined),
-    );
-  }
-
-  const proc = Bun.spawn(["rm", "-rf", dirPath], { stdout: "ignore", stderr: "pipe" });
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
-    throw new Error(stderr.trim() || `Failed to remove temp fixture directory: ${dirPath}`);
-  }
-};
 
 const mockGraphQLThreadsResponse = {
   repository: {
@@ -2052,23 +1985,36 @@ describe("PR composite commands", () => {
 
   it.effect("resolveRequiredTextInput reads shell-sensitive body text from file", () =>
     Effect.gen(function* () {
-      const tempDir = yield* Effect.tryPromise(() => createTempFixtureDir());
+      const originalBun = Reflect.get(globalThis, "Bun");
 
-      yield* Effect.gen(function* () {
-        const bodyPath = join(tempDir, "reply-body.txt");
-        yield* Effect.tryPromise(() => writeTextFixture(bodyPath, inventedShellSensitiveText));
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (_filePath: string) => ({
+          text: () => Promise.resolve(inventedShellSensitiveText),
+        }),
+      });
 
-        const resolvedBody = yield* resolveRequiredTextInput(
-          "gh-tool pr reply",
-          null,
-          bodyPath,
-          "--body",
-          "--body-file",
-          "body",
-        );
+      const resolvedBody = yield* resolveRequiredTextInput(
+        "gh-tool pr reply",
+        null,
+        "/tmp/reply-body.txt",
+        "--body",
+        "--body-file",
+        "body",
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) {
+              Reflect.deleteProperty(globalThis, "Bun");
+              return;
+            }
 
-        expect(resolvedBody).toBe(inventedShellSensitiveText);
-      }).pipe(Effect.ensuring(Effect.tryPromise(() => removeTempFixtureDir(tempDir))));
+            Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+      );
+
+      expect(resolvedBody).toBe(inventedShellSensitiveText);
     }),
   );
 
