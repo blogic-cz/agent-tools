@@ -77,16 +77,53 @@ if (typeof Bun === "undefined") {
 }
 
 const writeTextFixture = (filePath: string, content: string) => {
-  return Bun.write(filePath, content).then(() => undefined);
+  if (typeof Bun !== "undefined" && typeof Bun.write === "function") {
+    return Bun.write(filePath, content).then(() => undefined);
+  }
+
+  return import("node:fs/promises").then(({ writeFile }) =>
+    writeFile(filePath, content, "utf8").then(() => undefined),
+  );
 };
 
-const createTempFixtureDir = () =>
-  import("node:fs/promises").then(({ mkdtemp }) => mkdtemp(join(tmpdir(), "agent-tools-gh-")));
+const createTempFixtureDir = async () => {
+  if (typeof Bun === "undefined" || typeof Bun.spawn !== "function") {
+    return import("node:fs/promises").then(({ mkdtemp }) =>
+      mkdtemp(join(tmpdir(), "agent-tools-gh-")),
+    );
+  }
 
-const removeTempFixtureDir = (dirPath: string) =>
-  import("node:fs/promises").then(({ rm }) =>
-    rm(dirPath, { recursive: true, force: true }).then(() => undefined),
-  );
+  const proc = Bun.spawn(["mktemp", "-d", join(tmpdir(), "agent-tools-gh-XXXXXX")], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+
+  if (exitCode !== 0) {
+    throw new Error(stderr.trim() || "Failed to create temp fixture directory");
+  }
+
+  return stdout.trim();
+};
+
+const removeTempFixtureDir = async (dirPath: string) => {
+  if (typeof Bun === "undefined" || typeof Bun.spawn !== "function") {
+    return import("node:fs/promises").then(({ rm }) =>
+      rm(dirPath, { recursive: true, force: true }).then(() => undefined),
+    );
+  }
+
+  const proc = Bun.spawn(["rm", "-rf", dirPath], { stdout: "ignore", stderr: "pipe" });
+  const exitCode = await proc.exited;
+
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(stderr.trim() || `Failed to remove temp fixture directory: ${dirPath}`);
+  }
+};
 
 const mockGraphQLThreadsResponse = {
   repository: {
