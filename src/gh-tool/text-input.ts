@@ -1,9 +1,10 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { GitHubCommandError } from "#gh/errors";
 
 const STDIN_SENTINEL = "-";
 const SENSITIVE_PATH_PATTERNS = [/\.env(\..+)?$/, /\.envrc$/, /\.(pem|key|p12|pfx|cer|crt)$/i];
+const MissingMode = Schema.Literals(["error", "null", "default"]);
 
 const readTextFromStdin = () => Bun.stdin.text();
 
@@ -29,7 +30,7 @@ type ResolveTextInputOptions = {
   fileValue: string | null;
   valueFlag: string;
   fileFlag: string;
-  missingMode: "error" | "null" | "default";
+  missingMode: Schema.Schema.Type<typeof MissingMode>;
   missingValue?: string;
   label: string;
 };
