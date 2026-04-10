@@ -107,8 +107,13 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   ];
 
   const runContexts = new Map<number, FailedCheckRunContext | null>();
-  const contexts = yield* Effect.forEach(runIds, (runId) =>
-    fetchWorkflowRunFailureContext(runId).pipe(Effect.map((context) => [runId, context] as const)),
+  const contexts = yield* Effect.forEach(
+    runIds,
+    (runId) =>
+      fetchWorkflowRunFailureContext(runId).pipe(
+        Effect.map((context) => [runId, context] as const),
+      ),
+    { concurrency: "unbounded" },
   );
 
   for (const [runId, context] of contexts) {
@@ -602,11 +607,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     }
 
     const timeoutMs = timeoutSeconds * 1000;
-    const watchResult = yield* gh.runGh(watchArgs).pipe(
-      Effect.map(() => ({ _tag: "success" as const })),
-      Effect.catchTag("GitHubCommandError", (error) =>
-        Effect.succeed({ _tag: "command_error" as const, error }),
-      ),
+    yield* gh.runGh(watchArgs).pipe(
       Effect.timeoutOrElse({
         duration: timeoutMs,
         onTimeout: () =>
@@ -622,17 +623,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       }),
     );
 
-    const finalChecks = yield* fetchCheckResults(pr);
-
-    if (watchResult._tag === "command_error") {
-      if (finalChecks.some((check) => check.bucket === "fail")) {
-        return yield* buildFailedChecksReport(pr, finalChecks);
-      }
-
-      return yield* Effect.fail(watchResult.error);
-    }
-
-    return finalChecks;
+    return yield* fetchCheckResults(pr);
   }
 
   const results = yield* fetchCheckResults(pr);
@@ -648,6 +639,34 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (pr: number | null) {
   const checks = yield* fetchCheckResults(pr);
   return yield* buildFailedChecksReport(pr, checks);
+});
+
+export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(function* (
+  pr: number | null,
+  watch: boolean,
+  failFast: boolean,
+  timeoutSeconds: number,
+) {
+  if (!watch) {
+    return yield* fetchChecks(pr, false, failFast, timeoutSeconds);
+  }
+
+  const watchedChecks = yield* fetchChecks(pr, true, failFast, timeoutSeconds).pipe(
+    Effect.catchTag("GitHubCommandError", (error) =>
+      Effect.succeed({ _tag: "command_error" as const, error }),
+    ),
+  );
+
+  if (Array.isArray(watchedChecks)) {
+    return watchedChecks;
+  }
+
+  const finalChecks = yield* fetchCheckResults(pr);
+  if (finalChecks.some((check) => check.bucket === "fail")) {
+    return yield* buildFailedChecksReport(pr, finalChecks);
+  }
+
+  return yield* Effect.fail(watchedChecks.error);
 });
 
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (

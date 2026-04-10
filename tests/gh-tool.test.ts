@@ -1,14 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type {
-  FailedChecksReport,
-  MergeResult,
-  MergeStrategy,
-  PRInfo,
-  ReviewComment,
-  ReviewThread,
-} from "#gh/types";
+import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
 
 import {
   GitHubAuthError,
@@ -25,7 +18,14 @@ import {
   reopenIssue,
 } from "#gh/issue/core";
 import { fetchIssueTriage } from "#gh/issue/triage";
-import { createPR, editPR, fetchChecks, fetchFailedChecks, viewPR } from "#gh/pr/core";
+import {
+  createPR,
+  editPR,
+  fetchChecks,
+  fetchChecksForCommand,
+  fetchFailedChecks,
+  viewPR,
+} from "#gh/pr/core";
 import {
   fetchComments,
   fetchDiscussionSummary,
@@ -1890,9 +1890,7 @@ describe("PR checks", () => {
         },
       });
 
-      const result = (yield* fetchFailedChecks(123).pipe(
-        Effect.provide(layer),
-      )) as FailedChecksReport;
+      const result = yield* fetchFailedChecks(123).pipe(Effect.provide(layer));
 
       expect(result.status).toBe("failed");
       expect(result.summary.failed).toBe(1);
@@ -1968,7 +1966,7 @@ describe("PR checks", () => {
         },
       });
 
-      const result = yield* fetchChecks(123, true, true, 30).pipe(Effect.provide(layer));
+      const result = yield* fetchChecksForCommand(123, true, true, 30).pipe(Effect.provide(layer));
 
       expect(Array.isArray(result)).toBe(false);
       expect("status" in result).toBe(true);
@@ -2059,10 +2057,6 @@ describe("PR composite commands", () => {
         expect(result.summary.latestIssueComment).not.toBeNull();
 
         // CI checks
-        expect(Array.isArray(result.checks)).toBe(true);
-        if (!Array.isArray(result.checks)) {
-          expect.fail("Expected raw checks array in review-triage result");
-        }
         expect(result.checks).toHaveLength(2);
         expect(result.checks[0]?.name).toBe("CI / build");
         expect(result.checks[0]?.bucket).toBe("pass");
