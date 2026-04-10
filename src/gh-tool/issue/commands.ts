@@ -2,6 +2,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
+import { resolveOptionalTextInput, resolveRequiredTextInput } from "#gh/text-input";
 
 import {
   closeIssue,
@@ -91,6 +92,10 @@ export const issueCloseCommand = Command.make(
       Flag.withDescription("Comment to add when closing"),
       Flag.optional,
     ),
+    commentFile: Flag.string("comment-file").pipe(
+      Flag.withDescription("Read close comment from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to close")),
     reason: Flag.choice("reason", ["completed", "not planned"]).pipe(
@@ -98,10 +103,19 @@ export const issueCloseCommand = Command.make(
       Flag.withDefault("completed"),
     ),
   },
-  ({ comment, format, issue, reason }) =>
+  ({ comment, commentFile, format, issue, reason }) =>
     Effect.gen(function* () {
+      const resolvedComment = yield* resolveOptionalTextInput(
+        "gh-tool issue close",
+        Option.getOrNull(comment),
+        Option.getOrNull(commentFile),
+        "--comment",
+        "--comment-file",
+        "comment",
+      );
+
       const result = yield* closeIssue({
-        comment: Option.getOrNull(comment),
+        comment: resolvedComment,
         issue,
         reason,
       });
@@ -116,13 +130,26 @@ export const issueReopenCommand = Command.make(
       Flag.withDescription("Comment to add when reopening"),
       Flag.optional,
     ),
+    commentFile: Flag.string("comment-file").pipe(
+      Flag.withDescription("Read reopen comment from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to reopen")),
   },
-  ({ comment, format, issue }) =>
+  ({ comment, commentFile, format, issue }) =>
     Effect.gen(function* () {
+      const resolvedComment = yield* resolveOptionalTextInput(
+        "gh-tool issue reopen",
+        Option.getOrNull(comment),
+        Option.getOrNull(commentFile),
+        "--comment",
+        "--comment-file",
+        "comment",
+      );
+
       const result = yield* reopenIssue({
-        comment: Option.getOrNull(comment),
+        comment: resolvedComment,
         issue,
       });
       yield* logFormatted(result, format);
@@ -132,13 +159,26 @@ export const issueReopenCommand = Command.make(
 export const issueCommentCommand = Command.make(
   "comment",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Comment body text")),
+    body: Flag.string("body").pipe(Flag.withDescription("Comment body text"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read comment body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to comment on")),
   },
-  ({ body, format, issue }) =>
+  ({ body, bodyFile, format, issue }) =>
     Effect.gen(function* () {
-      const result = yield* commentOnIssue({ body, issue });
+      const resolvedBody = yield* resolveRequiredTextInput(
+        "gh-tool issue comment",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+
+      const result = yield* commentOnIssue({ body: resolvedBody, issue });
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Post a comment on an issue"));
@@ -155,6 +195,10 @@ export const issueEditCommand = Command.make(
       Flag.optional,
     ),
     body: Flag.string("body").pipe(Flag.withDescription("New issue body"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read issue body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
     format: formatOption,
     issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to edit")),
     removeAssignee: Flag.string("remove-assignee").pipe(
@@ -167,12 +211,31 @@ export const issueEditCommand = Command.make(
     ),
     title: Flag.string("title").pipe(Flag.withDescription("New issue title"), Flag.optional),
   },
-  ({ addAssignee, addLabels, body, format, issue, removeAssignee, removeLabels, title }) =>
+  ({
+    addAssignee,
+    addLabels,
+    body,
+    bodyFile,
+    format,
+    issue,
+    removeAssignee,
+    removeLabels,
+    title,
+  }) =>
     Effect.gen(function* () {
+      const resolvedBody = yield* resolveOptionalTextInput(
+        "gh-tool issue edit",
+        Option.getOrNull(body),
+        Option.getOrNull(bodyFile),
+        "--body",
+        "--body-file",
+        "body",
+      );
+
       const result = yield* editIssue({
         addAssignee: Option.getOrNull(addAssignee),
         addLabels: Option.getOrNull(addLabels),
-        body: Option.getOrNull(body),
+        body: resolvedBody,
         issue,
         removeAssignee: Option.getOrNull(removeAssignee),
         removeLabels: Option.getOrNull(removeLabels),
