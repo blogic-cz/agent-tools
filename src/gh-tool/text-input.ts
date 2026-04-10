@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { GitHubCommandError } from "#gh/errors";
 
 const STDIN_SENTINEL = "-";
-const SENSITIVE_PATH_PATTERNS = [/\.env(\..+)?$/, /\.(pem|key|p12|pfx|cer|crt)$/i];
+const SENSITIVE_PATH_PATTERNS = [/\.env(\..+)?$/, /\.envrc$/, /\.(pem|key|p12|pfx|cer|crt)$/i];
 
 const readTextFromStdin = () => Bun.stdin.text();
 

@@ -2080,26 +2080,28 @@ describe("PR composite commands", () => {
 
   it.effect("resolveRequiredTextInput rejects sensitive file paths", () =>
     Effect.gen(function* () {
-      const result = yield* resolveRequiredTextInput(
-        "gh-tool pr reply",
-        null,
-        "/workspace/.env.local",
-        "--body",
-        "--body-file",
-        "body",
-      ).pipe(Effect.result);
+      for (const filePath of ["/workspace/.env.local", "/workspace/.envrc"]) {
+        const result = yield* resolveRequiredTextInput(
+          "gh-tool pr reply",
+          null,
+          filePath,
+          "--body",
+          "--body-file",
+          "body",
+        ).pipe(Effect.result);
 
-      Result.match(result, {
-        onFailure: (error) => {
-          expect(error._tag).toBe("GitHubCommandError");
-          if (error._tag === "GitHubCommandError") {
-            expect(error.message).toMatch(/sensitive/i);
-          }
-        },
-        onSuccess: () => {
-          expect.fail("Expected sensitive path to be rejected");
-        },
-      });
+        Result.match(result, {
+          onFailure: (error) => {
+            expect(error._tag).toBe("GitHubCommandError");
+            if (error._tag === "GitHubCommandError") {
+              expect(error.message).toMatch(/sensitive/i);
+            }
+          },
+          onSuccess: () => {
+            expect.fail(`Expected sensitive path to be rejected: ${filePath}`);
+          },
+        });
+      }
     }),
   );
 
