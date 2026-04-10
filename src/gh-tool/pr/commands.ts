@@ -21,6 +21,7 @@ import {
   detectPRStatus,
   editPR,
   fetchChecks,
+  fetchChecksForCommand,
   fetchFailedChecks,
   mergePR,
   rerunChecks,
@@ -200,7 +201,7 @@ export const prChecksCommand = Command.make(
   ({ failFast, format, pr, timeout, watch }) =>
     Effect.gen(function* () {
       const prNumber = Option.getOrNull(pr);
-      const checks = yield* fetchChecks(prNumber, watch, failFast, timeout);
+      const checks = yield* fetchChecksForCommand(prNumber, watch, failFast, timeout);
       yield* logFormatted(checks, format);
     }),
 ).pipe(Command.withDescription("Fetch CI check status for a PR (optionally watch with timeout)"));
