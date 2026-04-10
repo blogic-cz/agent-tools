@@ -9,7 +9,7 @@ const readTextFromStdin = () => Bun.stdin.text();
 
 const readTextFile = (filePath: string) => {
   if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath))) {
-    throw new Error(`Refusing to read sensitive file: ${filePath}`);
+    return Promise.reject(new Error(`Refusing to read sensitive file: ${filePath}`));
   }
 
   return Bun.file(filePath).text();
