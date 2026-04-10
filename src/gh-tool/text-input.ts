@@ -3,10 +3,25 @@ import { Effect } from "effect";
 import { GitHubCommandError } from "#gh/errors";
 
 const STDIN_SENTINEL = "-";
+const SENSITIVE_PATH_PATTERNS = [/\.env(\..+)?$/, /\.(pem|key|p12|pfx|cer|crt)$/i];
 
 const readTextFromStdin = () => Bun.stdin.text();
 
-const readTextFile = (filePath: string) => Bun.file(filePath).text();
+const readTextFile = (filePath: string) => {
+  if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath))) {
+    throw new Error(`Refusing to read sensitive file: ${filePath}`);
+  }
+
+  return Bun.file(filePath).text();
+};
+
+const ensureResolvedText = (resolvedValue: string | null, context: string) => {
+  if (resolvedValue === null) {
+    throw new Error(`Invariant violation: ${context} resolved to null`);
+  }
+
+  return resolvedValue;
+};
 
 type ResolveTextInputOptions = {
   command: string;
@@ -89,7 +104,7 @@ export const resolveRequiredTextInput = (
     fileFlag,
     missingMode: "error",
     label,
-  }).pipe(Effect.map((resolvedValue) => resolvedValue ?? ""));
+  }).pipe(Effect.map((resolvedValue) => ensureResolvedText(resolvedValue, "required text input")));
 
 export const resolveOptionalTextInput = (
   command: string,
@@ -127,4 +142,4 @@ export const resolveDefaultTextInput = (
     missingMode: "default",
     missingValue: defaultValue,
     label,
-  }).pipe(Effect.map((resolvedValue) => resolvedValue ?? defaultValue));
+  }).pipe(Effect.map((resolvedValue) => ensureResolvedText(resolvedValue, "default text input")));

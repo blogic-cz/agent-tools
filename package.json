@@ -112,8 +112,10 @@
     "check:ci": "bun check.ts ci",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
+    "gh-tool": "bun src/gh-tool/index.ts",
     "lint": "oxlint -c ./.oxlintrc.json --deny-warnings",
     "lint:fix": "oxlint -c ./.oxlintrc.json --fix",
+    "session-tool": "bun src/session-tool/index.ts",
     "update:skills": "bun run .agents/skills/update-packages/references/skills-update-local.ts",
     "test": "vitest run"
   },
