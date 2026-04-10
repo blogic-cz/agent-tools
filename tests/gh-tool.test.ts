@@ -1,7 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
+import type {
+  FailedChecksReport,
+  MergeResult,
+  MergeStrategy,
+  PRInfo,
+  ReviewComment,
+  ReviewThread,
+} from "#gh/types";
 
 import {
   GitHubAuthError,
@@ -18,7 +25,7 @@ import {
   reopenIssue,
 } from "#gh/issue/core";
 import { fetchIssueTriage } from "#gh/issue/triage";
-import { createPR, editPR, fetchChecks, viewPR } from "#gh/pr/core";
+import { createPR, editPR, fetchChecks, fetchFailedChecks, viewPR } from "#gh/pr/core";
 import {
   fetchComments,
   fetchDiscussionSummary,
@@ -1848,6 +1855,136 @@ const mockTriageReviewCommentsRaw = [
   },
 ];
 
+describe("PR checks", () => {
+  it.effect("checks-failed returns structured failure context with next commands", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed(mockChecksData);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
+            return Effect.succeed({
+              databaseId: 2,
+              url: "https://github.com/test-owner/test-repo/actions/runs/2",
+              workflowName: "CI",
+              status: "completed",
+              conclusion: "failure",
+              jobs: [
+                {
+                  name: "lint",
+                  status: "completed",
+                  conclusion: "failure",
+                  url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+                  steps: [
+                    { name: "Install", status: "completed", conclusion: "success" },
+                    { name: "Run lint", status: "completed", conclusion: "failure" },
+                  ],
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+      });
+
+      const result = (yield* fetchFailedChecks(123).pipe(
+        Effect.provide(layer),
+      )) as FailedChecksReport;
+
+      expect(result.status).toBe("failed");
+      expect(result.summary.failed).toBe(1);
+      expect(result.summary.passed).toBe(1);
+      expect(result.failedChecks).toHaveLength(1);
+      expect(result.failedChecks[0]?.name).toBe("CI / lint");
+      expect(result.failedChecks[0]?.runId).toBe(2);
+      expect(result.failedChecks[0]?.run?.workflowName).toBe("CI");
+      expect(result.failedChecks[0]?.run?.failedJobs[0]?.name).toBe("lint");
+      expect(result.failedChecks[0]?.run?.failedJobs[0]?.failedSteps).toEqual(["Run lint"]);
+      expect(result.nextCommands).toContain("bun agent-tools-gh workflow view --run 2");
+      expect(result.nextCommands).toContain(
+        'bun agent-tools-gh workflow job-logs --run 2 --job "lint" --failed-steps-only',
+      );
+    }),
+  );
+
+  it.effect("checks watch failure returns structured report instead of raw command error", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          if (args[0] === "pr" && args[1] === "checks" && args.includes("--watch")) {
+            return Effect.fail(
+              new GitHubCommandError({
+                message: "check run failed",
+                command: "gh pr checks 123 --watch",
+                exitCode: 1,
+                stderr: "",
+              }),
+            );
+          }
+
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed([
+              {
+                name: "CI / lint",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/2",
+              },
+              {
+                name: "CI / build",
+                state: "in_progress",
+                bucket: "pending",
+                link: "https://github.com/test-owner/test-repo/actions/runs/3",
+              },
+            ]);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
+            return Effect.succeed({
+              databaseId: 2,
+              url: "https://github.com/test-owner/test-repo/actions/runs/2",
+              workflowName: "CI",
+              status: "completed",
+              conclusion: "failure",
+              jobs: [
+                {
+                  name: "lint",
+                  status: "completed",
+                  conclusion: "failure",
+                  url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+                  steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }],
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+      });
+
+      const result = yield* fetchChecks(123, true, true, 30).pipe(Effect.provide(layer));
+
+      expect(Array.isArray(result)).toBe(false);
+      expect("status" in result).toBe(true);
+      if (!("status" in result)) {
+        expect.fail("Expected structured failed checks report");
+      }
+
+      expect(result.status).toBe("failed");
+      expect(result.summary.failed).toBe(1);
+      expect(result.summary.pending).toBe(1);
+      expect(result.message).toContain("while 1 check(s) are still running");
+      expect(result.nextCommands).toContain("bun agent-tools-gh pr checks --pr 123 --watch");
+    }),
+  );
+});
+
 describe("PR composite commands", () => {
   it.effect(
     "review-triage: combined output contains PR info, unresolved threads, discussion summary, and checks",
@@ -1922,6 +2059,10 @@ describe("PR composite commands", () => {
         expect(result.summary.latestIssueComment).not.toBeNull();
 
         // CI checks
+        expect(Array.isArray(result.checks)).toBe(true);
+        if (!Array.isArray(result.checks)) {
+          expect.fail("Expected raw checks array in review-triage result");
+        }
         expect(result.checks).toHaveLength(2);
         expect(result.checks[0]?.name).toBe("CI / build");
         expect(result.checks[0]?.bucket).toBe("pass");

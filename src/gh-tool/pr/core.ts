@@ -1,12 +1,191 @@
 import { Console, Effect, Option } from "effect";
 
-import type { BranchPRDetail, CheckResult, MergeResult, MergeStrategy, PRInfo } from "#gh/types";
+import type {
+  BranchPRDetail,
+  CheckResult,
+  FailedCheckDetail,
+  FailedCheckRunContext,
+  MergeResult,
+  MergeStrategy,
+  PRInfo,
+} from "#gh/types";
 
 import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
+
+type WorkflowRunDetail = {
+  databaseId: number;
+  url: string;
+  workflowName: string | null;
+  status: string;
+  conclusion: string | null;
+  jobs: Array<{
+    name: string;
+    status: string;
+    conclusion: string | null;
+    url: string;
+    steps: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+    }>;
+  }>;
+};
+
+const CHECK_JSON_FIELDS = "name,state,bucket,link";
+const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
+
+const buildChecksCommand = (pr: number | null, includeWatch: boolean): string =>
+  `bun agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""}${includeWatch ? " --watch" : ""}`;
+
+const buildChecksFailedCommand = (pr: number | null): string =>
+  `bun agent-tools-gh pr checks-failed${pr !== null ? ` --pr ${pr}` : ""}`;
+
+const extractRunIdFromCheckLink = (link: string): number | null => {
+  const match = link.match(GITHUB_ACTIONS_RUN_ID_RE);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const runId = Number(match[1]);
+  return Number.isFinite(runId) ? runId : null;
+};
+
+const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureContext")(function* (
+  runId: number,
+) {
+  const gh = yield* GitHubService;
+
+  const run = yield* gh
+    .runGhJson<WorkflowRunDetail>([
+      "run",
+      "view",
+      String(runId),
+      "--json",
+      "databaseId,url,workflowName,status,conclusion,jobs",
+    ])
+    .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+
+  if (run === null) {
+    return null;
+  }
+
+  const failedJobs = run.jobs
+    .filter((job) => job.conclusion === "failure" || job.status === "failure")
+    .map((job) => ({
+      name: job.name,
+      status: job.status,
+      conclusion: job.conclusion,
+      url: job.url,
+      failedSteps: job.steps
+        .filter((step) => step.conclusion === "failure" || step.status === "failure")
+        .map((step) => step.name),
+    }));
+
+  const context: FailedCheckRunContext = {
+    runId: run.databaseId,
+    url: run.url,
+    workflowName: run.workflowName,
+    status: run.status,
+    conclusion: run.conclusion,
+    failedJobs,
+  };
+
+  return context;
+});
+
+const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
+  pr: number | null,
+  checks: CheckResult[],
+) {
+  const failedChecks = checks.filter((check) => check.bucket === "fail");
+  const pendingChecks = checks.filter((check) => check.bucket === "pending");
+  const passedChecks = checks.filter((check) => check.bucket === "pass");
+
+  const runIds = [
+    ...new Set(
+      failedChecks
+        .map((check) => extractRunIdFromCheckLink(check.link))
+        .filter((id) => id !== null),
+    ),
+  ];
+
+  const runContexts = new Map<number, FailedCheckRunContext | null>();
+  const contexts = yield* Effect.forEach(runIds, (runId) =>
+    fetchWorkflowRunFailureContext(runId).pipe(Effect.map((context) => [runId, context] as const)),
+  );
+
+  for (const [runId, context] of contexts) {
+    runContexts.set(runId, context);
+  }
+
+  const enrichedFailedChecks: FailedCheckDetail[] = failedChecks.map((check) => {
+    const runId = extractRunIdFromCheckLink(check.link);
+    return {
+      ...check,
+      runId,
+      run: runId === null ? null : (runContexts.get(runId) ?? null),
+    };
+  });
+
+  const nextCommands = [
+    buildChecksFailedCommand(pr),
+    ...new Set(
+      enrichedFailedChecks.flatMap((check) => {
+        if (check.runId === null) {
+          return [];
+        }
+
+        const commands = [`bun agent-tools-gh workflow view --run ${check.runId}`];
+        const firstFailedJob = check.run?.failedJobs[0];
+        if (firstFailedJob) {
+          commands.push(
+            `bun agent-tools-gh workflow job-logs --run ${check.runId} --job ${JSON.stringify(firstFailedJob.name)} --failed-steps-only`,
+          );
+        }
+
+        return commands;
+      }),
+    ),
+    ...(pendingChecks.length > 0 ? [buildChecksCommand(pr, true)] : []),
+  ];
+
+  const message =
+    failedChecks.length === 0
+      ? pendingChecks.length > 0
+        ? `No failed checks yet; ${pendingChecks.length} check(s) are still running.`
+        : "No failed checks detected."
+      : pendingChecks.length > 0
+        ? `Detected ${failedChecks.length} failed check(s) while ${pendingChecks.length} check(s) are still running.`
+        : `Detected ${failedChecks.length} failed check(s).`;
+
+  const hint =
+    failedChecks.length === 0
+      ? pendingChecks.length > 0
+        ? "Wait for the remaining checks to finish, or use --watch to block until CI settles."
+        : "All current checks are green."
+      : pendingChecks.length > 0
+        ? "Inspect the failed workflow run first. Other checks are still running and may change overall merge readiness."
+        : "Inspect the failed workflow run and failed job logs to get the first concrete error, then rerun only if the failure is understood.";
+
+  return {
+    status: failedChecks.length > 0 ? "failed" : "no_failures",
+    message,
+    summary: {
+      total: checks.length,
+      failed: failedChecks.length,
+      pending: pendingChecks.length,
+      passed: passedChecks.length,
+    },
+    failedChecks: enrichedFailedChecks,
+    pendingChecks,
+    hint,
+    nextCommands,
+  };
+});
 
 export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null) {
   const gh = yield* GitHubService;
@@ -430,7 +609,11 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     }
 
     const timeoutMs = timeoutSeconds * 1000;
-    yield* gh.runGh(watchArgs).pipe(
+    const watchResult = yield* gh.runGh(watchArgs).pipe(
+      Effect.map(() => ({ _tag: "success" as const })),
+      Effect.catchTag("GitHubCommandError", (error) =>
+        Effect.succeed({ _tag: "command_error" as const, error }),
+      ),
       Effect.timeoutOrElse({
         duration: timeoutMs,
         onTimeout: () =>
@@ -446,14 +629,24 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       }),
     );
 
-    return yield* gh.runGhJson<CheckResult[]>([...args, "--json", "name,state,bucket,link"]);
+    const finalChecks = yield* gh.runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS]);
+
+    if (watchResult._tag === "command_error") {
+      if (finalChecks.some((check) => check.bucket === "fail")) {
+        return yield* buildFailedChecksReport(pr, finalChecks);
+      }
+
+      return yield* Effect.fail(watchResult.error);
+    }
+
+    return finalChecks;
   }
 
-  const results = yield* gh.runGhJson<CheckResult[]>([...args, "--json", "name,state,bucket,link"]);
+  const results = yield* gh.runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS]);
   if (results.some((c) => c.bucket === "pending")) {
     yield* Console.warn(
       `ℹ️  Some checks are still running. Prefer --watch to block until completion instead of polling:\n` +
-        `   bun agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""} --watch`,
+        `   ${buildChecksCommand(pr, true)}`,
     );
   }
   return results;
@@ -461,7 +654,11 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
 
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (pr: number | null) {
   const checks = yield* fetchChecks(pr, false, false, 0);
-  return checks.filter((check) => check.bucket === "fail");
+  if (Array.isArray(checks)) {
+    return yield* buildFailedChecksReport(pr, checks);
+  }
+
+  return checks;
 });
 
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (

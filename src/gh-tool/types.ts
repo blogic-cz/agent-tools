@@ -62,6 +62,43 @@ export type CheckResult = {
   link: string;
 };
 
+export type FailedCheckJob = {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string;
+  failedSteps: string[];
+};
+
+export type FailedCheckRunContext = {
+  runId: number;
+  url: string | null;
+  workflowName: string | null;
+  status: string;
+  conclusion: string | null;
+  failedJobs: FailedCheckJob[];
+};
+
+export type FailedCheckDetail = CheckResult & {
+  runId: number | null;
+  run: FailedCheckRunContext | null;
+};
+
+export type FailedChecksReport = {
+  status: "failed" | "no_failures";
+  message: string;
+  summary: {
+    total: number;
+    failed: number;
+    pending: number;
+    passed: number;
+  };
+  failedChecks: FailedCheckDetail[];
+  pendingChecks: CheckResult[];
+  hint: string;
+  nextCommands: string[];
+};
+
 export type MergeResult = {
   merged: boolean;
   strategy: MergeStrategy;
