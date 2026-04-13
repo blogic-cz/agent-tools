@@ -190,14 +190,14 @@ Check coverage expectations:
 
 Check deeper guidance against `effect-ts`.
 
-Apply to files in `packages/services/`, `effect-runtime.ts`, and files using `Effect.gen` or `Context.Tag`.
+Apply to files in `packages/services/`, `effect-runtime.ts`, and files using `Effect.gen` or `Context.Service`.
 
 ```typescript
 // ✅ Correct - Service with @project namespace
-export class MyService extends Context.Tag("@project/MyService")<...>() {}
+export class MyService extends Context.Service<MyService, { ... }>()("@project/MyService") {}
 
 // ❌ Wrong - Missing namespace
-export class MyService extends Context.Tag("MyService")<...>() {}
+export class MyService extends Context.Service<MyService, { ... }>()("MyService") {}
 ```
 
 ```typescript
