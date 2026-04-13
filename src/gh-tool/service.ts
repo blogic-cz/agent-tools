@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Effect, Layer, ServiceMap, Stream } from "effect";
+import { Context, Effect, Layer, Stream } from "effect";
 
 import type { RepoInfo } from "./types";
 
@@ -15,7 +15,7 @@ type GhResult = {
 
 type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
-export class GitHubService extends ServiceMap.Service<
+export class GitHubService extends Context.Service<
   GitHubService,
   {
     readonly runGh: (args: string[]) => Effect.Effect<GhResult, GhError>;

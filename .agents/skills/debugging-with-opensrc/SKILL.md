@@ -1,6 +1,6 @@
 ---
 name: debugging-with-opensrc
-description: "LOAD THIS SKILL when: debugging external library behavior, validating docs against source, or reading OpenSrc mirrors before making assumptions. Contains repo paths, source-first workflows, and library-specific debugging guidance."
+description: "Load this skill when debugging behavior in external libraries by reading local OpenSrc mirrors (Effect, TanStack, TRPC, Drizzle, Better Auth, Sentry, Pino), or when docs conflict with runtime behavior and source-level verification is required."
 ---
 
 # Debugging with OpenSrc

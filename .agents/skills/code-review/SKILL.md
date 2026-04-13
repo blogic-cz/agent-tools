@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "LOAD THIS SKILL when: reviewing code before a PR, auditing branch changes, or checking quality, security, performance, and testing risks. Contains the project's review workflow and severity-based checklist."
+description: "This skill should be used when running a code review or pre-PR review in template-ts repositories. It provides a severity-based checklist for architecture, security, performance, and testing quality gates."
 compatibility: opencode
 ---
 

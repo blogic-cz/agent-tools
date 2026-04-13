@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Effect, Layer, Result, ServiceMap, Stream } from "effect";
+import { Context, Effect, Layer, Result, Stream } from "effect";
 
 import type { Environment, LogFile, ReadOptions } from "./types";
 
@@ -47,7 +47,7 @@ export const sanitizeShellArg = (input: string): string => `'${input.replace(/'/
 
 const readCommandOutput = (output: unknown): string => (typeof output === "string" ? output : "");
 
-export class LogsService extends ServiceMap.Service<
+export class LogsService extends Context.Service<
   LogsService,
   {
     readonly listLogs: (env: Environment, profile?: string) => Effect.Effect<LogFile[], LogsError>;

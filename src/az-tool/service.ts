@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Effect, Layer, ServiceMap, Stream, Option } from "effect";
+import { Context, Effect, Layer, Option, Stream } from "effect";
 
 import type { InvokeParams } from "./types";
 import type { AzureConfig } from "#config/types";
@@ -10,7 +10,7 @@ import { isCommandAllowed, isInvokeAllowed } from "./security";
 import { transformCmdOutput } from "./transformers";
 import { ConfigService, getToolConfig } from "#config";
 
-export class AzService extends ServiceMap.Service<
+export class AzService extends Context.Service<
   AzService,
   {
     readonly runCommand: (

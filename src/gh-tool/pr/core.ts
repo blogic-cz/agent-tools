@@ -1,4 +1,4 @@
-import { Console, Effect, Option } from "effect";
+import { Console, Effect, Option, Result } from "effect";
 
 import type {
   BranchPRDetail,
@@ -610,7 +610,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     yield* gh.runGh(watchArgs).pipe(
       Effect.timeoutOrElse({
         duration: timeoutMs,
-        onTimeout: () =>
+        orElse: () =>
           Effect.fail(
             new GitHubTimeoutError({
               message: `CI check monitoring timed out after ${timeoutSeconds}s`,
@@ -652,13 +652,18 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
   }
 
   const watchedChecks = yield* fetchChecks(pr, true, failFast, timeoutSeconds).pipe(
-    Effect.catchTag("GitHubCommandError", (error) =>
-      Effect.succeed({ _tag: "command_error" as const, error }),
-    ),
+    Effect.result,
+    Effect.flatMap((result) => {
+      if (Result.isFailure(result) && result.failure._tag !== "GitHubCommandError") {
+        return Effect.fail(result.failure);
+      }
+
+      return Effect.succeed(result);
+    }),
   );
 
-  if (Array.isArray(watchedChecks)) {
-    return watchedChecks;
+  if (Result.isSuccess(watchedChecks)) {
+    return watchedChecks.success;
   }
 
   const finalChecks = yield* fetchCheckResults(pr);
@@ -666,7 +671,7 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
     return yield* buildFailedChecksReport(pr, finalChecks);
   }
 
-  return yield* Effect.fail(watchedChecks.error);
+  return yield* Effect.fail(watchedChecks.failure);
 });
 
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (

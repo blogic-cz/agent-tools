@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Effect, Layer, Option, Ref, ServiceMap, Stream } from "effect";
+import { Context, Effect, Layer, Option, Ref, Stream } from "effect";
 
 import type { CommandResult, Environment } from "./types";
 
@@ -13,7 +13,7 @@ import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { isKubectlCommandAllowed } from "./security";
 
-export class K8sService extends ServiceMap.Service<
+export class K8sService extends Context.Service<
   K8sService,
   {
     readonly runCommand: (

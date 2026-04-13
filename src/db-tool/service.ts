@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Clock, Duration, Effect, Layer, Ref, ServiceMap, Stream } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Ref, Stream } from "effect";
 
 import type { DbConfig, QueryResult, SchemaMode } from "./types";
 
@@ -33,7 +33,7 @@ export function resolveDbAccessMode(
   };
 }
 
-export class DbService extends ServiceMap.Service<
+export class DbService extends Context.Service<
   DbService,
   {
     readonly executeQuery: (env: string, sql: string) => Effect.Effect<QueryResult, DbError>;

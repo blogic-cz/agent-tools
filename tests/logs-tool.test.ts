@@ -58,6 +58,7 @@ function createMockProcess(result: ShellResult) {
     all: Stream.fromIterable([encoder.encode(result.stdout), encoder.encode(result.stderr)]),
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void),
   });
 }
 

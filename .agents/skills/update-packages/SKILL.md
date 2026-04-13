@@ -1,6 +1,6 @@
 ---
 name: update-packages
-description: "LOAD THIS SKILL when: updating dependencies, investigating outdated packages, or coordinating grouped package upgrades and release-note adoption. Contains the repo's Bun-based update workflow, report scripts, and guardrails."
+description: "This skill should be used when upgrading dependencies, bumping packages, resolving outdated dependencies, or performing dependency updates. It guides safe Bun-based package upgrades with breaking-change handling, runtime pin alignment, and grouped version coordination."
 ---
 
 # Update Packages
@@ -24,23 +24,23 @@ Use these references during execution:
 
 ## Step 0: Prepare Session (Execution mode only)
 
-Refresh local skills and create a dedicated branch before touching packages.
+Update skills and create a dedicated branch before touching packages.
 
 ```bash
-# Refresh local skills from skills-lock.json
-bun run update:skills
+# Update all skills from skills-lock.json (reads sources + skill names from lock)
+bun run .agents/skills/update-packages/references/skills-update-local.ts
 
-# Dry run to inspect the planned skill updates first
-bun run update:skills --dry-run
+# Dry run to see what would be executed
+bun run .agents/skills/update-packages/references/skills-update-local.ts --dry-run
 
-# Create a fresh GitButler branch
-but branch new chore/update-packages-$(date +%y%m%d-%H%M)
+# Create a fresh branch
+git checkout -b chore/update-packages-$(date +%y%m%d-%H%M)
 ```
 
 Apply these rules:
 
-- Refresh skills first.
-- Create a new GitButler branch for execution work.
+- Update skills first.
+- Create a new update branch for execution work.
 - Reuse no previous update branch.
 - Place all update commits on the execution branch.
 

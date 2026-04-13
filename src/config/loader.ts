@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 
-import { Data, Effect, Layer, Schema, ServiceMap } from "effect";
+import { Context, Data, Effect, Layer, Schema } from "effect";
 
 import type { AgentToolsConfig, GitHubRepoConfig } from "./types";
 
@@ -159,10 +159,9 @@ export async function loadConfig(): Promise<AgentToolsConfig | undefined> {
   return decodeConfig(parsed, configPath);
 }
 
-export class ConfigService extends ServiceMap.Service<
-  ConfigService,
-  AgentToolsConfig | undefined
->()("@agent-tools/ConfigService") {}
+export class ConfigService extends Context.Service<ConfigService, AgentToolsConfig | undefined>()(
+  "@agent-tools/ConfigService",
+) {}
 
 export class ConfigLoadError extends Data.TaggedError("ConfigLoadError")<{
   readonly cause: unknown;

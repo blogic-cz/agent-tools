@@ -1,6 +1,6 @@
 ---
 name: git-workflow
-description: "LOAD THIS SKILL when: creating or updating PRs, pushing changes, creating branches, syncing branches, or working through CI and review feedback. Contains the repo's PR loop, commit standards, and branch workflow."
+description: "Automates the full PR lifecycle — create or update a pull request, then aggressively monitor CI checks and review feedback in a continuous loop, fixing failures and addressing comments until the PR is fully green. Also covers push, branch creation, and branch sync workflows."
 ---
 
 # Git Workflow
