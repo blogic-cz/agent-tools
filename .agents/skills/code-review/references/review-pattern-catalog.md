@@ -194,7 +194,7 @@ Apply to files in `packages/services/`, `effect-runtime.ts`, and files using `Ef
 
 ```typescript
 // ✅ Correct - Service with @project namespace
-export class MyService extends Context.Service<MyService, { ... }>()("@project/MyService") {}
+export class MyService extends Context.Service<MyService, { ... }>()("@agent-tools/MyService") {}
 
 // ❌ Wrong - Missing namespace
 export class MyService extends Context.Service<MyService, { ... }>()("MyService") {}
