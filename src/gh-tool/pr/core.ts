@@ -651,7 +651,16 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
     return yield* fetchChecks(pr, false, failFast, timeoutSeconds);
   }
 
-  const watchedChecks = yield* fetchChecks(pr, true, failFast, timeoutSeconds).pipe(Effect.result);
+  const watchedChecks = yield* fetchChecks(pr, true, failFast, timeoutSeconds).pipe(
+    Effect.result,
+    Effect.flatMap((result) => {
+      if (Result.isFailure(result) && result.failure._tag !== "GitHubCommandError") {
+        return Effect.fail(result.failure);
+      }
+
+      return Effect.succeed(result);
+    }),
+  );
 
   if (Result.isSuccess(watchedChecks)) {
     return watchedChecks.success;
