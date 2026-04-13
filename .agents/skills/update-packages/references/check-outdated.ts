@@ -210,7 +210,7 @@ async function fetchPackageInfo(pkg: string): Promise<{
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return { latest: null, repoUrl: null };
-    const json: NpmRegistryResponse = await res.json();
+    const json = (await res.json()) as NpmRegistryResponse;
 
     let repoUrl: string | null = null;
     if (typeof json.repository === "string") {
@@ -296,19 +296,21 @@ async function fetchReleaseNotes(
     }
 
     const notes: ReleaseNote[] = [];
-    let foundLatest = false;
-    let url: string | null = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`;
+    const initialUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`;
 
-    for (let page = 0; page < MAX_PAGES && url; page++) {
-      // eslint-disable-next-line no-await-in-loop -- sequential pagination: next URL depends on previous response's Link header
-      const res = await fetch(url, {
+    const collectPage = async (url: string | null, page: number): Promise<void> => {
+      if (!url || page >= MAX_PAGES) return;
+
+      const res: Response = await fetch(url, {
         headers,
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) break;
-      // eslint-disable-next-line no-await-in-loop
-      const releases: GitHubRelease[] = await res.json();
-      if (releases.length === 0) break;
+      if (!res.ok) return;
+
+      const releases = (await res.json()) as GitHubRelease[];
+      if (releases.length === 0) return;
+
+      let shouldStop = false;
 
       for (const release of releases) {
         if (release.draft || release.prerelease) continue;
@@ -328,23 +330,25 @@ async function fetchReleaseNotes(
             url: release.html_url,
             body: (release.body ?? "").trim(),
           });
-          if (version === latest) foundLatest = true;
+          if (version === latest) shouldStop = true;
         }
 
         // Stop paginating once we've passed the current version (releases are newest-first)
         if (compareSemver(version, current) <= 0) {
-          foundLatest = true;
+          shouldStop = true;
           break;
         }
       }
 
-      if (foundLatest) break;
+      if (shouldStop) return;
 
       // Parse Link header for next page
       const linkHeader = res.headers.get("link");
       const nextMatch = linkHeader?.match(/<([^>]+)>;\s*rel="next"/);
-      url = nextMatch?.[1] ?? null;
-    }
+      await collectPage(nextMatch?.[1] ?? null, page + 1);
+    };
+
+    await collectPage(initialUrl, 0);
 
     // Sort oldest → newest
     notes.sort((a, b) => compareSemver(a.version, b.version));
@@ -435,7 +439,7 @@ const packageInfoResults = await Promise.all(
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(8000),
     }).catch(() => null);
-    const json: { version?: string } = res && res.ok ? await res.json() : {};
+    const json = (res && res.ok ? await res.json() : {}) as { version?: string };
     return {
       name,
       latest: json.version ?? null,
@@ -506,16 +510,17 @@ if (CHANGELOG_MODE) {
     }
 
     fetchPromises.push(
-      fetchReleaseNotes(gh.owner, gh.repo, current, latest, `${pkg}@`).then((notes) => {
+      (async () => {
+        const notes = await fetchReleaseNotes(gh.owner, gh.repo, current, latest, `${pkg}@`);
+
         if (notes.length > 0) {
           releaseNoteResults.set(pkg, notes);
           return;
         }
-        return fetchReleaseNotes(gh.owner, gh.repo, current, latest).then((fallbackNotes) => {
-          releaseNoteResults.set(pkg, fallbackNotes);
-          return fallbackNotes;
-        });
-      }),
+
+        const fallbackNotes = await fetchReleaseNotes(gh.owner, gh.repo, current, latest);
+        releaseNoteResults.set(pkg, fallbackNotes);
+      })(),
     );
   }
 

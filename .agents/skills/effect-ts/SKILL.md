@@ -1,6 +1,6 @@
 ---
 name: effect-ts
-description: "LOAD THIS SKILL when: implementing, reviewing, or debugging Effect TypeScript services, layers, runtime boundaries, typed errors, config, or tests. Contains current Effect guidance, project rules, and reference paths."
+description: This skill should be used when implementing, reviewing, or debugging Effect TypeScript code, especially service/layer design, typed error handling, testing strategy, and runtime-boundary integration with frameworks (for example TRPC/HTTP/worker entrypoints).
 compatibility: opencode
 metadata:
   source: https://www.effect.solutions/

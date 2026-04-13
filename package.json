@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.8.16",
+  "version": "0.8.17",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
@@ -116,22 +116,26 @@
     "lint": "oxlint -c ./.oxlintrc.json --deny-warnings",
     "lint:fix": "oxlint -c ./.oxlintrc.json --fix",
     "session-tool": "bun src/session-tool/index.ts",
+    "update:packages": "bun update -i -r",
     "update:skills": "bun run .agents/skills/update-packages/references/skills-update-local.ts",
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-beta.25",
+    "@effect/platform-bun": "4.0.0-beta.48",
     "@toon-format/toon": "2.1.0",
-    "effect": "4.0.0-beta.25"
+    "effect": "4.0.0-beta.48"
   },
   "devDependencies": {
-    "@effect/language-service": "0.77.0",
-    "@effect/vitest": "4.0.0-beta.25",
-    "@types/bun": "1.3.9",
-    "oxfmt": "0.35.0",
-    "oxlint": "1.50.0",
-    "typescript": "5.9.3",
-    "vitest": "^4.0.18"
+    "@effect/language-service": "0.85.1",
+    "@effect/vitest": "4.0.0-beta.48",
+    "@types/bun": "1.3.12",
+    "oxfmt": "0.44.0",
+    "oxlint": "1.59.0",
+    "typescript": "6.0.2",
+    "vitest": "^4.1.4"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-beta.48"
   },
   "engines": {
     "bun": ">=1.0.0"

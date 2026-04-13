@@ -1,6 +1,6 @@
 ---
 name: testing-patterns
-description: "LOAD THIS SKILL when: writing or reviewing Vitest, integration, Playwright, or mock-based tests, or choosing the lightest effective test type. Contains the project's testing decision process, commands, and examples."
+description: "This skill should be used when implementing or reviewing testing workflows in template-ts projects, especially for testing, Vitest, Playwright, integration test, and mocking scenarios."
 compatibility: opencode
 ---
 

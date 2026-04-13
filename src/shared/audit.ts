@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import { Cause, Effect, Layer, ServiceMap } from "effect";
+import { Cause, Context, Effect, Layer } from "effect";
 
 import { loadConfig } from "#config";
 
@@ -65,7 +65,7 @@ type TableInfoRow = {
   name: string;
 };
 
-export class AuditService extends ServiceMap.Service<AuditService, AuditServiceShape>()(
+export class AuditService extends Context.Service<AuditService, AuditServiceShape>()(
   "@agent-tools/AuditService",
 ) {}
 
