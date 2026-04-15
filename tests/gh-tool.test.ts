@@ -24,6 +24,7 @@ import {
   fetchChecks,
   fetchChecksForCommand,
   fetchFailedChecks,
+  rerunChecks,
   viewPR,
 } from "#gh/pr/core";
 import {
@@ -1979,6 +1980,189 @@ describe("PR checks", () => {
       expect(result.summary.pending).toBe(1);
       expect(result.message).toContain("while 1 check(s) are still running");
       expect(result.nextCommands).toContain("bun agent-tools-gh pr checks --pr 123 --watch");
+    }),
+  );
+
+  it.effect("rerun-checks reruns matched failed jobs atomically", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed([
+              {
+                name: "deploy / deploy",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/42",
+              },
+            ]);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "42") {
+            return Effect.succeed({
+              databaseId: 42,
+              jobs: [
+                {
+                  databaseId: 420,
+                  name: "deploy",
+                  status: "completed",
+                  conclusion: "failure",
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          calls.push(args);
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
+
+      expect(calls).toEqual([["run", "rerun", "--job", "420"]]);
+      expect(result.rerun).toBe(1);
+      expect(result.failed).toBe(0);
+      expect(result.runs).toEqual([{ runId: "42", success: true }]);
+    }),
+  );
+
+  it.effect("rerun-checks dedupes multiple failed checks mapped to the same job", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed([
+              {
+                name: "Deploy / deploy",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/42",
+              },
+              {
+                name: "deploy",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/42",
+              },
+            ]);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "42") {
+            return Effect.succeed({
+              databaseId: 42,
+              jobs: [
+                {
+                  databaseId: 420,
+                  name: "deploy",
+                  status: "completed",
+                  conclusion: "failure",
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          calls.push(args);
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
+
+      expect(calls).toEqual([["run", "rerun", "--job", "420"]]);
+      expect(result.rerun).toBe(1);
+      expect(result.failed).toBe(0);
+    }),
+  );
+
+  it.effect("rerun-checks falls back to run-level rerun when job mapping is ambiguous", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed([
+              {
+                name: "deploy",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/42",
+              },
+            ]);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "42") {
+            return Effect.succeed({
+              databaseId: 42,
+              jobs: [
+                {
+                  databaseId: 420,
+                  name: "deploy-a",
+                  status: "completed",
+                  conclusion: "failure",
+                },
+                {
+                  databaseId: 421,
+                  name: "deploy-b",
+                  status: "completed",
+                  conclusion: "failure",
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          calls.push(args);
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
+
+      expect(calls).toEqual([["run", "rerun", "42", "--failed"]]);
+      expect(result.rerun).toBe(1);
+      expect(result.failed).toBe(0);
+    }),
+  );
+
+  it.effect("rerun-checks keeps full rerun mode at run scope", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed(mockChecksData);
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          calls.push(args);
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* rerunChecks(123, false).pipe(Effect.provide(layer));
+
+      expect(calls).toEqual([
+        ["run", "rerun", "1"],
+        ["run", "rerun", "2"],
+      ]);
+      expect(result.rerun).toBe(2);
+      expect(result.failed).toBe(0);
+      expect(result.runs).toEqual([
+        { runId: "1", success: true },
+        { runId: "2", success: true },
+      ]);
     }),
   );
 });
