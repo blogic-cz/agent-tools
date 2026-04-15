@@ -20,6 +20,16 @@ import { runLocalCommand } from "./helpers";
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
 
+type WorkflowRunJobsForRerun = {
+  databaseId: number;
+  jobs: Array<{
+    databaseId: number;
+    name: string;
+    status: string;
+    conclusion: string | null;
+  }>;
+};
+
 const buildChecksCommand = (pr: number | null, includeWatch: boolean): string =>
   `bun agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""}${includeWatch ? " --watch" : ""}`;
 
@@ -34,6 +44,47 @@ const extractRunIdFromCheckLink = (link: string): number | null => {
 
   const runId = Number(match[1]);
   return Number.isFinite(runId) ? runId : null;
+};
+
+const isFailedWorkflowJob = (job: { status: string; conclusion: string | null }) =>
+  job.conclusion === "failure" || job.status === "failure";
+
+const getCheckJobNameCandidates = (checkName: string): string[] => {
+  const exact = checkName.trim();
+  const suffixParts = exact.split("/").map((part) => part.trim());
+  let suffix: string | undefined;
+  for (let index = suffixParts.length - 1; index >= 0; index -= 1) {
+    const part = suffixParts[index];
+    if (part !== undefined && part.length > 0) {
+      suffix = part;
+      break;
+    }
+  }
+
+  return [...new Set([exact, suffix].filter((value): value is string => value !== undefined))];
+};
+
+const resolveJobIdsForFailedChecks = (
+  checks: CheckResult[],
+  jobs: WorkflowRunJobsForRerun["jobs"],
+): number[] | null => {
+  const failedJobs = jobs.filter(isFailedWorkflowJob);
+  const jobIds = new Set<number>();
+
+  for (const check of checks) {
+    const candidates = getCheckJobNameCandidates(check.name);
+    const matches = failedJobs.filter((job) =>
+      candidates.some((candidate) => job.name.toLowerCase() === candidate.toLowerCase()),
+    );
+
+    if (matches.length !== 1) {
+      return null;
+    }
+
+    jobIds.add(matches[0].databaseId);
+  }
+
+  return [...jobIds];
 };
 
 const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureContext")(function* (
@@ -680,21 +731,20 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
 ) {
   const gh = yield* GitHubService;
 
-  const checks = yield* gh.runGhJson<
-    Array<{
-      name: string;
-      link: string;
-      bucket: string;
-      state: string;
-    }>
-  >(["pr", "checks", ...(pr !== null ? [String(pr)] : []), "--json", "name,link,bucket,state"]);
+  const checks = yield* fetchCheckResults(pr);
+
+  const targetChecks = failedOnly ? checks.filter((check) => check.bucket === "fail") : checks;
 
   // Extract unique GitHub Actions run IDs from links
   const runIds = new Set<string>();
-  for (const check of failedOnly ? checks.filter((c) => c.bucket === "fail") : checks) {
-    const match = check.link.match(/github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/);
+  const checksByRun = new Map<string, CheckResult[]>();
+  for (const check of targetChecks) {
+    const match = check.link.match(GITHUB_ACTIONS_RUN_ID_RE);
     if (match?.[1]) {
       runIds.add(match[1]);
+      const existing = checksByRun.get(match[1]) ?? [];
+      existing.push(check);
+      checksByRun.set(match[1], existing);
     }
   }
 
@@ -712,11 +762,40 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
     success: boolean;
   }> = [];
   for (const runId of runIds) {
-    const rerunArgs = failedOnly ? ["run", "rerun", runId, "--failed"] : ["run", "rerun", runId];
-    const success = yield* gh.runGh(rerunArgs).pipe(
-      Effect.map(() => true),
-      Effect.catch(() => Effect.succeed(false)),
-    );
+    const success = yield* Effect.gen(function* () {
+      if (!failedOnly) {
+        return yield* gh.runGh(["run", "rerun", runId]).pipe(
+          Effect.map(() => true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+      }
+
+      const checksForRun = checksByRun.get(runId) ?? [];
+      const run = yield* gh
+        .runGhJson<WorkflowRunJobsForRerun>(["run", "view", runId, "--json", "databaseId,jobs"])
+        .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+
+      const jobIds = run === null ? null : resolveJobIdsForFailedChecks(checksForRun, run.jobs);
+      if (jobIds === null || jobIds.length === 0) {
+        return yield* gh.runGh(["run", "rerun", runId, "--failed"]).pipe(
+          Effect.map(() => true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+      }
+
+      const rerunResults = yield* Effect.forEach(
+        jobIds,
+        (jobId) =>
+          gh.runGh(["run", "rerun", "--job", String(jobId)]).pipe(
+            Effect.map(() => true),
+            Effect.catch(() => Effect.succeed(false)),
+          ),
+        { concurrency: 1 },
+      );
+
+      return rerunResults.every(Boolean);
+    });
+
     results.push({ runId, success });
   }
 
