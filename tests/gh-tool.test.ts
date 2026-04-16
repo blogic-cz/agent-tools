@@ -35,6 +35,7 @@ import {
   resolveThread,
   submitPendingReview,
 } from "#gh/pr/review";
+import { renameBranch } from "#gh/branch";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -2733,4 +2734,127 @@ describe("error recovery hints - unit tests", () => {
     expect(error.hint).toBeUndefined();
     expect(error.nextCommand).toBeUndefined();
   });
+});
+
+describe("Branch rename", () => {
+  it.effect("dry-run returns renamed: false without calling gh api", () =>
+    Effect.gen(function* () {
+      let apiWasCalled = false;
+
+      const layer = createMockGhLayer({
+        runGh: () => {
+          apiWasCalled = true;
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* renameBranch({
+        oldName: "feat/old",
+        newName: "feat/new",
+        confirm: false,
+        repo: null,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.renamed).toBe(false);
+      expect(result.oldName).toBe("feat/old");
+      expect(result.newName).toBe("feat/new");
+      expect(result.dryRun).toBe(true);
+      expect(result.message).toContain("Dry run");
+      expect(result.message).toContain("feat/old");
+      expect(result.message).toContain("feat/new");
+      expect(apiWasCalled).toBe(false);
+    }),
+  );
+
+  it.effect("dry-run includes repo scope in message when repo is provided", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer();
+
+      const result = yield* renameBranch({
+        oldName: "feat/old",
+        newName: "feat/new",
+        confirm: false,
+        repo: "owner/repo",
+      }).pipe(Effect.provide(layer));
+
+      expect(result.dryRun).toBe(true);
+      expect(result.message).toContain("in owner/repo");
+    }),
+  );
+
+  it.effect("with --confirm calls gh api with correct rename endpoint", () =>
+    Effect.gen(function* () {
+      let capturedArgs: string[] = [];
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          capturedArgs = args;
+          return Effect.succeed({ stdout: "{}", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* renameBranch({
+        oldName: "feat/old",
+        newName: "feat/new",
+        confirm: true,
+        repo: "owner/repo",
+      }).pipe(Effect.provide(layer));
+
+      expect(result.renamed).toBe(true);
+      expect(result.oldName).toBe("feat/old");
+      expect(result.newName).toBe("feat/new");
+      expect(result.dryRun).toBeUndefined();
+      expect(capturedArgs[0]).toBe("api");
+      expect(capturedArgs[1]).toBe("repos/owner/repo/branches/feat%2Fold/rename");
+      expect(capturedArgs[2]).toBe("-X");
+      expect(capturedArgs[3]).toBe("POST");
+      expect(capturedArgs[4]).toBe("-f");
+      expect(capturedArgs[5]).toBe("new_name=feat/new");
+    }),
+  );
+
+  it.effect("with --confirm and no repo auto-detects from getRepoInfo", () =>
+    Effect.gen(function* () {
+      let capturedArgs: string[] = [];
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          capturedArgs = args;
+          return Effect.succeed({ stdout: "{}", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* renameBranch({
+        oldName: "main",
+        newName: "trunk",
+        confirm: true,
+        repo: null,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.renamed).toBe(true);
+      expect(capturedArgs[1]).toBe("repos/test-owner/test-repo/branches/main/rename");
+    }),
+  );
+
+  it.effect("encodeURIComponent is applied to branch name with special chars", () =>
+    Effect.gen(function* () {
+      let capturedArgs: string[] = [];
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          capturedArgs = args;
+          return Effect.succeed({ stdout: "{}", stderr: "", exitCode: 0 });
+        },
+      });
+
+      yield* renameBranch({
+        oldName: "feature/my branch",
+        newName: "feature/renamed",
+        confirm: true,
+        repo: "owner/repo",
+      }).pipe(Effect.provide(layer));
+
+      expect(capturedArgs[1]).toBe("repos/owner/repo/branches/feature%2Fmy%20branch/rename");
+    }),
+  );
 });

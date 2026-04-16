@@ -37,6 +37,7 @@ import {
   prReplyAndResolveCommand,
   prReviewTriageCommand,
 } from "./pr/index";
+import { branchRenameCommand } from "./branch";
 import {
   releaseCreateCommand,
   releaseDeleteCommand,
@@ -98,6 +99,11 @@ const issueCommand = Command.make("issue", {}).pipe(
     issueCommentCommand,
     issueEditCommand,
   ]),
+);
+
+const branchCommand = Command.make("branch", {}).pipe(
+  Command.withDescription("Branch operations (rename)"),
+  Command.withSubcommands([branchRenameCommand]),
 );
 
 const repoCommand = Command.make("repo", {}).pipe(
@@ -162,9 +168,17 @@ WORKFLOW FOR AI AGENTS:
   18. Use 'workflow watch --run N' to watch until completion
   19. Use 'release status' to inspect latest release + repository context
   20. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
-  21. Use 'release edit/view/list/delete' to maintain existing releases`,
+  21. Use 'release edit/view/list/delete' to maintain existing releases
+  22. Use 'branch rename --old-name X --new-name Y --confirm' to rename a branch`,
   ),
-  Command.withSubcommands([prCommand, issueCommand, repoCommand, workflowCommand, releaseCommand]),
+  Command.withSubcommands([
+    prCommand,
+    issueCommand,
+    repoCommand,
+    branchCommand,
+    workflowCommand,
+    releaseCommand,
+  ]),
 );
 
 const cli = Command.run(mainCommand, {
