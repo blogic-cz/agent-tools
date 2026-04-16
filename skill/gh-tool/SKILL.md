@@ -1,6 +1,6 @@
 ---
 name: gh-tool
-description: "LOAD THIS SKILL when: working with GitHub PRs, issues, workflows, CI checks, reviews, or merging. Contains all gh-tool commands for PR management, workflow monitoring, and issue tracking."
+description: "LOAD THIS SKILL when: working with GitHub PRs, issues, workflows, CI checks, reviews, merging, or branch management. Contains all gh-tool commands for PR management, workflow monitoring, issue tracking, and branch operations."
 ---
 
 # gh-tool (GitHub)
@@ -54,6 +54,14 @@ bun gh-tool issue reopen --issue 123
 bun gh-tool issue comment --issue 123 --body "text"
 bun gh-tool issue edit --issue 123 --title "New title" --add-labels bug
 bun gh-tool issue triage --issue 123 --verbosity full --format json
+```
+
+## Branch Commands
+
+```bash
+bun gh-tool branch rename --old-name feature/old --new-name feature/new          # Dry-run
+bun gh-tool branch rename --old-name feature/old --new-name feature/new --confirm # Execute
+bun gh-tool branch rename --old-name feature/old --new-name feature/new --repo owner/repo --confirm
 ```
 
 ## Tips
