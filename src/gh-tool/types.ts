@@ -159,6 +159,14 @@ export type PRStatusNone = {
 
 export type PRStatusResult = PRStatusSingle | PRStatusMultiple | PRStatusNone;
 
+export type BranchRenameResult = {
+  renamed: boolean;
+  oldName: string;
+  newName: string;
+  dryRun?: true;
+  message?: string;
+};
+
 export type CheckRunAnnotation = {
   path: string;
   start_line: number;

@@ -2,25 +2,14 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
+import type { BranchRenameResult } from "./types";
 import { GitHubService } from "./service";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type BranchRenameResult = {
-  renamed: boolean;
-  oldName: string;
-  newName: string;
-  dryRun?: true;
-  message?: string;
-};
 
 // ---------------------------------------------------------------------------
 // Internal handlers
 // ---------------------------------------------------------------------------
 
-const renameBranch = Effect.fn("branch.renameBranch")(function* (opts: {
+export const renameBranch = Effect.fn("branch.renameBranch")(function* (opts: {
   oldName: string;
   newName: string;
   confirm: boolean;
