@@ -606,6 +606,28 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   return result;
 });
 
+export const closePR = Effect.fn("pr.closePR")(function* (opts: {
+  pr: number;
+  comment: string | null;
+  deleteBranch: boolean;
+}) {
+  const gh = yield* GitHubService;
+
+  const args = ["pr", "close", String(opts.pr)];
+
+  if (opts.comment !== null) {
+    args.push("--comment", opts.comment);
+  }
+
+  if (opts.deleteBranch) {
+    args.push("--delete-branch");
+  }
+
+  yield* gh.runGh(args);
+
+  return yield* viewPR(opts.pr);
+});
+
 export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   pr: number;
   title: string | null;

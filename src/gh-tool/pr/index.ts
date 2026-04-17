@@ -1,6 +1,7 @@
 export {
   prChecksCommand,
   prChecksFailedCommand,
+  prCloseCommand,
   prCommentCommand,
   prCommentsCommand,
   prCreateCommand,
