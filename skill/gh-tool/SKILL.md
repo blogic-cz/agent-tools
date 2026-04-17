@@ -21,6 +21,7 @@ bun gh-tool pr view --pr 123           # View PR details
 bun gh-tool pr checks --pr 123         # Check CI status
 bun gh-tool pr checks --pr 123 --watch # Watch CI until complete
 bun gh-tool pr checks-failed --pr 123  # Get failed check details
+bun gh-tool pr close --pr 123 --comment "Closing, no longer needed" --delete-branch
 bun gh-tool pr merge --pr 123 --strategy squash --delete-branch --confirm
 bun gh-tool pr threads --pr 123 --unresolved-only  # Review comments
 bun gh-tool pr reply --pr 123 --comment-id 456 --body "Fixed"

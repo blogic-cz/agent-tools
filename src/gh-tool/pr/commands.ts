@@ -17,6 +17,7 @@ import {
 } from "#gh/config";
 
 import {
+  closePR,
   createPR,
   detectPRStatus,
   editPR,
@@ -146,6 +147,44 @@ export const prEditCommand = Command.make(
       yield* logFormatted(info, format);
     }),
 ).pipe(Command.withDescription("Edit an existing PR's title, body, or other metadata"));
+
+export const prCloseCommand = Command.make(
+  "close",
+  {
+    comment: Flag.string("comment").pipe(
+      Flag.withDescription("Comment to add when closing"),
+      Flag.optional,
+    ),
+    commentFile: Flag.string("comment-file").pipe(
+      Flag.withDescription("Read close comment from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
+    deleteBranch: Flag.boolean("delete-branch").pipe(
+      Flag.withDescription("Delete the branch after closing"),
+      Flag.withDefault(false),
+    ),
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to close")),
+  },
+  ({ comment, commentFile, deleteBranch, format, pr }) =>
+    Effect.gen(function* () {
+      const resolvedComment = yield* resolveOptionalTextInput(
+        "gh-tool pr close",
+        Option.getOrNull(comment),
+        Option.getOrNull(commentFile),
+        "--comment",
+        "--comment-file",
+        "comment",
+      );
+
+      const result = yield* closePR({
+        comment: resolvedComment,
+        deleteBranch,
+        pr,
+      });
+      yield* logFormatted(result, format);
+    }),
+).pipe(Command.withDescription("Close a PR with optional comment and branch deletion"));
 
 export const prMergeCommand = Command.make(
   "merge",
