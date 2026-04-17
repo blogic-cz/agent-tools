@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
