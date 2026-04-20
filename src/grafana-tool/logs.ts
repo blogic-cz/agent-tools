@@ -43,9 +43,10 @@ const queryCommand = Command.make(
       Flag.withDefault("now"),
     ),
   },
-  ({ logql, format, env, profile, limit, start, end }) =>
-    Effect.gen(function* () {
-      const startedAt = Date.now();
+  ({ logql, format, env, profile, limit, start, end }) => {
+    const startedAt = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
       const response = yield* grafanaDsQuery(config, config.lokiUid, "loki", logql, {
         from: start,
@@ -112,13 +113,14 @@ const queryCommand = Command.make(
             message: "Failed to execute LogQL query",
             error: formatGrafanaError(error),
             hint: "Check LogQL syntax and Grafana/Loki connectivity",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - startedAt,
           };
 
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("Query logs via Grafana/Loki"));
 
 export const logsCommand = Command.make("logs", {}).pipe(

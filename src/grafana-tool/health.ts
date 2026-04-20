@@ -14,9 +14,10 @@ import {
 export const healthCommand = Command.make(
   "health",
   { format: formatOption, env: envOption, profile: profileOption },
-  ({ format, env, profile }) =>
-    Effect.gen(function* () {
-      const start = Date.now();
+  ({ format, env, profile }) => {
+    const start = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
 
       const body = yield* grafanaFetch<{ database?: string; version?: string; commit?: string }>(
@@ -45,11 +46,12 @@ export const healthCommand = Command.make(
             message: "Grafana is unreachable",
             error: formatGrafanaError(error),
             hint: "Check Grafana is running and accessible",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - start,
           };
 
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("Check Grafana health and connectivity"));

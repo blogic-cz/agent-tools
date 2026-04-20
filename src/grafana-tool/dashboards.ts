@@ -42,9 +42,10 @@ const listCommand = Command.make(
       Flag.string("folder").pipe(Flag.withDescription("Filter by folder title (case-insensitive)")),
     ),
   },
-  ({ format, env, profile, folder }) =>
-    Effect.gen(function* () {
-      const start = Date.now();
+  ({ format, env, profile, folder }) => {
+    const start = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
 
       const items = yield* grafanaFetch<DashboardSearchItem[]>(
@@ -83,20 +84,22 @@ const listCommand = Command.make(
             message: "Failed to list dashboards",
             error: formatGrafanaError(error),
             hint: "Check Grafana is running and accessible",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - start,
           };
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("List all dashboards"));
 
 const getCommand = Command.make(
   "get",
   { uid: Argument.string("uid"), format: formatOption, env: envOption, profile: profileOption },
-  ({ uid, format, env, profile }) =>
-    Effect.gen(function* () {
-      const start = Date.now();
+  ({ uid, format, env, profile }) => {
+    const start = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
 
       const detail = yield* grafanaFetch<DashboardDetail>(
@@ -133,12 +136,13 @@ const getCommand = Command.make(
             message: `Failed to get dashboard '${uid}'`,
             error: formatGrafanaError(error),
             hint: "Check the dashboard UID is correct",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - start,
           };
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("Get dashboard details by UID"));
 
 export const dashboardsCommand = Command.make("dashboards", {}).pipe(

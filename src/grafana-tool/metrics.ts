@@ -79,9 +79,10 @@ const queryCommand = Command.make(
     env: envOption,
     profile: profileOption,
   },
-  ({ promql, format, env, profile }) =>
-    Effect.gen(function* () {
-      const startedAt = Date.now();
+  ({ promql, format, env, profile }) => {
+    const startedAt = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
       const response = yield* grafanaDsQuery(config, config.prometheusUid, "prometheus", promql, {
         instant: true,
@@ -121,12 +122,13 @@ const queryCommand = Command.make(
             message: "Failed to execute PromQL query",
             error: formatGrafanaError(error),
             hint: "Check PromQL syntax and Grafana/Prometheus connectivity",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - startedAt,
           };
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("Execute instant PromQL query via Grafana"));
 
 const rangeCommand = Command.make(
@@ -148,9 +150,10 @@ const rangeCommand = Command.make(
       Flag.withDefault(60),
     ),
   },
-  ({ promql, format, env, profile, start, end, step }) =>
-    Effect.gen(function* () {
-      const startedAt = Date.now();
+  ({ promql, format, env, profile, start, end, step }) => {
+    const startedAt = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
       const response = yield* grafanaDsQuery(config, config.prometheusUid, "prometheus", promql, {
         instant: false,
@@ -209,12 +212,13 @@ const rangeCommand = Command.make(
             message: "Failed to execute PromQL range query",
             error: formatGrafanaError(error),
             hint: "Check PromQL syntax and Grafana/Prometheus connectivity",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - startedAt,
           };
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("Execute range PromQL query via Grafana"));
 
 export const metricsCommand = Command.make("metrics", {}).pipe(

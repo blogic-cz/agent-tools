@@ -36,9 +36,10 @@ type AlertInstance = {
 const listCommand = Command.make(
   "list",
   { format: formatOption, env: envOption, profile: profileOption },
-  ({ format, env, profile }) =>
-    Effect.gen(function* () {
-      const start = Date.now();
+  ({ format, env, profile }) => {
+    const start = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
       const data = yield* grafanaFetch<AlertRulesResponse>(
         config,
@@ -75,13 +76,14 @@ const listCommand = Command.make(
             message: "Failed to list alert rules",
             error: formatGrafanaError(error),
             hint: "Check Grafana is running and accessible",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - start,
           };
 
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("List all alert rules"));
 
 const statusCommand = Command.make(
@@ -95,9 +97,10 @@ const statusCommand = Command.make(
       Flag.withDefault(false),
     ),
   },
-  ({ format, env, profile, all }) =>
-    Effect.gen(function* () {
-      const start = Date.now();
+  ({ format, env, profile, all }) => {
+    const start = Date.now();
+
+    return Effect.gen(function* () {
       const config = yield* resolveConfig(env, profile);
       const alerts = yield* grafanaFetch<AlertInstance[]>(
         config,
@@ -140,13 +143,14 @@ const statusCommand = Command.make(
             message: "Failed to get alert status",
             error: formatGrafanaError(error),
             hint: "Check Grafana is running and accessible",
-            executionTimeMs: 0,
+            executionTimeMs: Date.now() - start,
           };
 
           yield* Console.log(formatOutput(result, format));
         }),
       ),
-    ),
+    );
+  },
 ).pipe(Command.withDescription("Show firing and pending alerts"));
 
 export const alertsCommand = Command.make("alerts", {}).pipe(
