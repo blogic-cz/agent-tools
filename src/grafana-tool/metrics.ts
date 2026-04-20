@@ -3,15 +3,15 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
+import { GrafanaToolError } from "./errors";
 import {
-  type DsQueryResponse,
   envOption,
   formatGrafanaError,
   grafanaDsQuery,
-  GrafanaToolError,
   profileOption,
   resolveConfig,
 } from "./shared";
+import type { DsQueryResponse } from "./types";
 
 function parsePrometheusFrames(frames: DsQueryResponse["results"]["A"]["frames"]) {
   if (!frames || frames.length === 0) {
@@ -105,13 +105,14 @@ const queryCommand = Command.make(
         return;
       }
 
+      const parsed = parsePrometheusFrames(response.results.A.frames);
       const result = {
         success: true,
-        message: `PromQL query returned ${parsePrometheusFrames(response.results.A.frames).length} result(s)`,
+        message: `PromQL query returned ${parsed.length} result(s)`,
         data: {
-          results: parsePrometheusFrames(response.results.A.frames),
+          results: parsed,
           query: promql,
-          resultCount: parsePrometheusFrames(response.results.A.frames).length,
+          resultCount: parsed.length,
         },
         executionTimeMs: Date.now() - startedAt,
       };

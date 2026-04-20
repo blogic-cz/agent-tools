@@ -1,22 +1,14 @@
-import { Data, Effect, Option } from "effect";
+import { Effect, Option } from "effect";
 import { Flag } from "effect/unstable/cli";
 
 import { ConfigService, getToolConfig, type GrafanaConfig } from "#config";
 
+import { GrafanaToolError } from "./errors";
+import type { DsQueryOpts, DsQueryResponse, GrafanaEnvConfig } from "./types";
+
 const DEFAULT_LOCAL_URL = "http://localhost:40300";
 const DEFAULT_PROMETHEUS_UID = "prometheus";
 const DEFAULT_LOKI_UID = "loki";
-
-export type GrafanaEnvConfig = {
-  url: string;
-  token?: string;
-  prometheusUid: string;
-  lokiUid: string;
-};
-
-export class GrafanaToolError extends Data.TaggedError("GrafanaToolError")<{
-  readonly cause: unknown;
-}> {}
 
 export function formatGrafanaError(error: unknown): string {
   if (error instanceof GrafanaToolError) {
@@ -108,7 +100,11 @@ export const resolveConfig = (env: string, profile: Option.Option<string>) =>
     const config = yield* ConfigService;
     const profileName = Option.getOrUndefined(profile);
     const grafanaConfig = getToolConfig<GrafanaConfig>(config, "grafana", profileName);
-    return resolveFromProfile(grafanaConfig, env) ?? resolveFromEnv(env);
+
+    return yield* Effect.try({
+      try: () => resolveFromProfile(grafanaConfig, env) ?? resolveFromEnv(env),
+      catch: (cause) => new GrafanaToolError({ cause }),
+    });
   });
 
 export function buildHeaders(token?: string): Headers {
@@ -119,8 +115,6 @@ export function buildHeaders(token?: string): Headers {
 
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
-  } else {
-    headers.set("Authorization", `Basic ${btoa("admin:admin")}`);
   }
 
   return headers;
@@ -151,30 +145,6 @@ export async function grafanaFetch<T>(
 
   return response.json() as Promise<T>;
 }
-
-export type DsQueryOpts = {
-  instant?: boolean;
-  from?: string;
-  to?: string;
-  maxLines?: number;
-  intervalMs?: number;
-  maxDataPoints?: number;
-  step?: number;
-};
-
-export type DsQueryResponse = {
-  results: {
-    A: {
-      status?: number;
-      frames?: Array<{
-        schema: { fields: Array<{ name: string; type: string }> };
-        data: { values: unknown[][] };
-      }>;
-      error?: string;
-    };
-  };
-};
-
 export function grafanaDsQuery(
   config: GrafanaEnvConfig,
   datasourceUid: string,

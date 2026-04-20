@@ -3,11 +3,11 @@ import { Command } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
+import { GrafanaToolError } from "./errors";
 import {
   buildHeaders,
   envOption,
   formatGrafanaError,
-  GrafanaToolError,
   profileOption,
   resolveConfig,
 } from "./shared";
