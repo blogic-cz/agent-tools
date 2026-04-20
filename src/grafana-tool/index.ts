@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, type Cause } from "effect";
+import { Console, Effect, Layer } from "effect";
+import type { Cause } from "effect";
 import { Command } from "effect/unstable/cli";
 
 import { ConfigServiceLayer } from "#config";

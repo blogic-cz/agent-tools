@@ -3,7 +3,6 @@ import { Command } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
-import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -29,10 +28,7 @@ const listCommand = Command.make(
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
 
-      const items = yield* Effect.tryPromise({
-        try: () => grafanaFetch<Datasource[]>(config, "/api/datasources"),
-        catch: (error) => new GrafanaToolError({ cause: error }),
-      });
+      const items = yield* grafanaFetch<Datasource[]>(config, "/api/datasources");
 
       const result = {
         success: true,

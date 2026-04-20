@@ -3,11 +3,11 @@ import { Command } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
-import { GrafanaToolError } from "./errors";
 import {
   buildHeaders,
   envOption,
   formatGrafanaError,
+  grafanaFetch,
   profileOption,
   resolveConfig,
 } from "./shared";
@@ -20,30 +20,21 @@ export const healthCommand = Command.make(
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
 
-      const data = yield* Effect.tryPromise({
-        try: async () => {
-          const response = await fetch(`${config.url}/api/health`, {
-            headers: buildHeaders(config.token),
-          });
-
-          return {
-            status: response.status,
-            ok: response.ok,
-            body: await response.json().catch(() => null),
-          };
+      const body = yield* grafanaFetch<{ database?: string; version?: string; commit?: string }>(
+        config,
+        "/api/health",
+        {
+          headers: buildHeaders(config.token),
         },
-        catch: (error) => new GrafanaToolError({ cause: error }),
-      });
+      );
 
       const result = {
-        success: data.ok,
-        message: data.ok
-          ? `Grafana is healthy (${config.url})`
-          : `Grafana unhealthy: HTTP ${data.status}`,
+        success: true,
+        message: `Grafana is healthy (${config.url})`,
         data: {
           url: config.url,
-          httpStatus: data.status,
-          response: data.body,
+          httpStatus: 200,
+          response: body,
           env,
         },
         executionTimeMs: Date.now() - start,

@@ -1,7 +1,8 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { Flag } from "effect/unstable/cli";
 
-import { ConfigService, getToolConfig, type GrafanaConfig } from "#config";
+import { ConfigService, getToolConfig } from "#config";
+import type { GrafanaConfig } from "#config";
 
 import { GrafanaToolError } from "./errors";
 import type { DsQueryOpts, DsQueryResponse, GrafanaEnvConfig } from "./types";
@@ -9,6 +10,7 @@ import type { DsQueryOpts, DsQueryResponse, GrafanaEnvConfig } from "./types";
 const DEFAULT_LOCAL_URL = "http://localhost:40300";
 const DEFAULT_PROMETHEUS_UID = "prometheus";
 const DEFAULT_LOKI_UID = "loki";
+const EnvLiterals = Schema.Literals(["local", "test", "prod"]);
 
 export function formatGrafanaError(error: unknown): string {
   if (error instanceof GrafanaToolError) {
@@ -22,7 +24,7 @@ export function formatGrafanaError(error: unknown): string {
   return String(error);
 }
 
-export const envOption = Flag.choice("env", ["local", "test", "prod"]).pipe(
+export const envOption = Flag.choice("env", EnvLiterals.literals as readonly string[]).pipe(
   Flag.withDescription("Target environment: local (default), test, or prod"),
   Flag.withDefault("local"),
 );
@@ -120,30 +122,35 @@ export function buildHeaders(token?: string): Headers {
   return headers;
 }
 
-export async function grafanaFetch<T>(
+export function grafanaFetch<T>(
   config: GrafanaEnvConfig,
   path: string,
   init?: RequestInit,
-): Promise<T> {
-  const headers = buildHeaders(config.token);
-  if (init?.headers) {
-    const extraHeaders = new Headers(init.headers);
-    extraHeaders.forEach((value, key) => {
-      headers.set(key, value);
-    });
-  }
+): Effect.Effect<T, GrafanaToolError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const headers = buildHeaders(config.token);
+      if (init?.headers) {
+        const extraHeaders = new Headers(init.headers);
+        extraHeaders.forEach((value, key) => {
+          headers.set(key, value);
+        });
+      }
 
-  const response = await fetch(`${config.url}${path}`, {
-    ...init,
-    headers,
+      const response = await fetch(`${config.url}${path}`, {
+        ...init,
+        headers,
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`Grafana API ${response.status}: ${path} — ${body}`);
+      }
+
+      return (await response.json()) as T;
+    },
+    catch: (cause) => new GrafanaToolError({ cause }),
   });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Grafana API ${response.status}: ${path} — ${body}`);
-  }
-
-  return response.json() as Promise<T>;
 }
 
 export function grafanaDsQuery(
@@ -152,7 +159,7 @@ export function grafanaDsQuery(
   datasourceType: string,
   expr: string,
   options?: DsQueryOpts,
-): Promise<DsQueryResponse> {
+): Effect.Effect<DsQueryResponse, GrafanaToolError> {
   const opts = options ?? {};
   const query: Record<string, unknown> = {
     refId: "A",

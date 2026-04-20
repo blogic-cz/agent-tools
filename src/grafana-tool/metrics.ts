@@ -3,7 +3,6 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
-import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -84,13 +83,9 @@ const queryCommand = Command.make(
     Effect.gen(function* () {
       const startedAt = Date.now();
       const config = yield* resolveConfig(env, profile);
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          grafanaDsQuery(config, config.prometheusUid, "prometheus", promql, {
-            instant: true,
-            maxDataPoints: 1,
-          }),
-        catch: (error) => new GrafanaToolError({ cause: error }),
+      const response = yield* grafanaDsQuery(config, config.prometheusUid, "prometheus", promql, {
+        instant: true,
+        maxDataPoints: 1,
       });
 
       if (response.results.A.error) {
@@ -157,15 +152,11 @@ const rangeCommand = Command.make(
     Effect.gen(function* () {
       const startedAt = Date.now();
       const config = yield* resolveConfig(env, profile);
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          grafanaDsQuery(config, config.prometheusUid, "prometheus", promql, {
-            instant: false,
-            from: start,
-            to: end,
-            step,
-          }),
-        catch: (error) => new GrafanaToolError({ cause: error }),
+      const response = yield* grafanaDsQuery(config, config.prometheusUid, "prometheus", promql, {
+        instant: false,
+        from: start,
+        to: end,
+        step,
       });
 
       if (response.results.A.error) {

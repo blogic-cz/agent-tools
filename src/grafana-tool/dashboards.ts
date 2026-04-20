@@ -3,7 +3,6 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
-import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -48,11 +47,10 @@ const listCommand = Command.make(
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
 
-      const items = yield* Effect.tryPromise({
-        try: () =>
-          grafanaFetch<DashboardSearchItem[]>(config, "/api/search?type=dash-db&limit=1000"),
-        catch: (error) => new GrafanaToolError({ cause: error }),
-      });
+      const items = yield* grafanaFetch<DashboardSearchItem[]>(
+        config,
+        "/api/search?type=dash-db&limit=1000",
+      );
 
       const folderFilter = Option.getOrUndefined(folder)?.toLowerCase();
       const dashboards = items
@@ -101,10 +99,7 @@ const getCommand = Command.make(
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
 
-      const detail = yield* Effect.tryPromise({
-        try: () => grafanaFetch<DashboardDetail>(config, `/api/dashboards/uid/${uid}`),
-        catch: (error) => new GrafanaToolError({ cause: error }),
-      });
+      const detail = yield* grafanaFetch<DashboardDetail>(config, `/api/dashboards/uid/${uid}`);
 
       const panels = (detail.dashboard.panels ?? []).map((panel) => ({
         id: panel.id,

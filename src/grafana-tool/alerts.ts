@@ -3,7 +3,6 @@ import { Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
-import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -41,10 +40,10 @@ const listCommand = Command.make(
     Effect.gen(function* () {
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
-      const data = yield* Effect.tryPromise({
-        try: () => grafanaFetch<AlertRulesResponse>(config, "/api/ruler/grafana/api/v1/rules"),
-        catch: (error) => new GrafanaToolError({ cause: error }),
-      });
+      const data = yield* grafanaFetch<AlertRulesResponse>(
+        config,
+        "/api/ruler/grafana/api/v1/rules",
+      );
 
       const rules = Object.entries(data).flatMap(([namespace, groups]) =>
         groups.flatMap((group) =>
@@ -100,10 +99,10 @@ const statusCommand = Command.make(
     Effect.gen(function* () {
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
-      const alerts = yield* Effect.tryPromise({
-        try: () => grafanaFetch<AlertInstance[]>(config, "/api/alertmanager/grafana/api/v2/alerts"),
-        catch: (error) => new GrafanaToolError({ cause: error }),
-      });
+      const alerts = yield* grafanaFetch<AlertInstance[]>(
+        config,
+        "/api/alertmanager/grafana/api/v2/alerts",
+      );
 
       const filtered = all
         ? alerts

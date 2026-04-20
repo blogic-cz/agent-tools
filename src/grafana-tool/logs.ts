@@ -3,7 +3,6 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
-import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -48,14 +47,10 @@ const queryCommand = Command.make(
     Effect.gen(function* () {
       const startedAt = Date.now();
       const config = yield* resolveConfig(env, profile);
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          grafanaDsQuery(config, config.lokiUid, "loki", logql, {
-            from: start,
-            to: end,
-            maxLines: limit,
-          }),
-        catch: (error) => new GrafanaToolError({ cause: error }),
+      const response = yield* grafanaDsQuery(config, config.lokiUid, "loki", logql, {
+        from: start,
+        to: end,
+        maxLines: limit,
       });
 
       if (response.results.A.error) {
