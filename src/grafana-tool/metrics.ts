@@ -135,6 +135,7 @@ const rangeCommand = Command.make(
     profile: profileOption,
     start: Flag.string("start").pipe(
       Flag.withDescription("Start time (ISO 8601 or relative, e.g. now-1h)"),
+      Flag.withDefault("now-1h"),
     ),
     end: Flag.string("end").pipe(
       Flag.withDescription("End time (ISO 8601 or relative, e.g. now)"),

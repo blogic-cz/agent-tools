@@ -33,6 +33,7 @@ Install per-tool skills for only the tools your project uses:
 
 ```bash
 npx skills add blogic-cz/agent-tools --path skill/gh-tool
+npx skills add blogic-cz/agent-tools --path skill/grafana-tool
 npx skills add blogic-cz/agent-tools --path skill/db-tool
 npx skills add blogic-cz/agent-tools --path skill/k8s-tool
 npx skills add blogic-cz/agent-tools --path skill/az-tool
@@ -99,6 +100,7 @@ Install **only the per-tool skills the project needs** (recommended), or the all
 ```bash
 # Per-tool skills (recommended) — install only what the project uses
 npx skills add blogic-cz/agent-tools --path skill/gh-tool
+npx skills add blogic-cz/agent-tools --path skill/grafana-tool
 npx skills add blogic-cz/agent-tools --path skill/db-tool
 npx skills add blogic-cz/agent-tools --path skill/k8s-tool
 npx skills add blogic-cz/agent-tools --path skill/az-tool
@@ -116,6 +118,7 @@ Available per-tool skills:
 | Skill          | Install when project uses                  |
 | -------------- | ------------------------------------------ |
 | `gh-tool`      | GitHub PRs, issues, workflows, CI checks   |
+| `grafana-tool` | Grafana dashboards, alerts, PromQL, LogQL  |
 | `db-tool`      | SQL queries, schema introspection          |
 | `k8s-tool`     | Kubernetes pods, logs, deployments         |
 | `az-tool`      | Azure DevOps pipelines, builds             |
