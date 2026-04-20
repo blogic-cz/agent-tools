@@ -145,6 +145,7 @@ export async function grafanaFetch<T>(
 
   return response.json() as Promise<T>;
 }
+
 export function grafanaDsQuery(
   config: GrafanaEnvConfig,
   datasourceUid: string,
@@ -162,8 +163,9 @@ export function grafanaDsQuery(
   };
 
   if (datasourceType === "prometheus") {
-    query.instant = opts.instant ?? true;
-    query.range = !opts.instant;
+    const instant = opts.instant ?? true;
+    query.instant = instant;
+    query.range = !instant;
     if (opts.step) {
       query.intervalMs = opts.step * 1000;
     }

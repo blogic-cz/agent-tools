@@ -18,7 +18,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import type { Readable } from "node:stream";
 
 const TOOLS_ROOT = join(__dirname, "..");
 
@@ -235,9 +234,9 @@ describe("Integration: tools --help with config file", () => {
     mkdirSync(homeDir, { recursive: true });
     mkdirSync(workDir, { recursive: true });
 
-    let server: ReturnType<typeof spawn> | undefined;
+    let stopServer: (() => void) | undefined;
     const serverUrl = await new Promise<string>((resolve, reject) => {
-      server = spawn(
+      const server = spawn(
         "bun",
         [
           "-e",
@@ -272,18 +271,20 @@ setInterval(() => {}, 1000);`,
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
+      stopServer = () => {
+        server.kill();
+      };
 
       let stderr = "";
-      server?.stderr?.on("data", (chunk) => {
+      server.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
       });
 
-      const stdout = server?.stdout as Readable | undefined;
-      stdout?.once("data", (chunk) => {
+      server.stdout.once("data", (chunk) => {
         resolve(`http://127.0.0.1:${chunk.toString().trim()}`);
       });
 
-      server?.once("exit", (code) => {
+      server.once("exit", (code) => {
         reject(new Error(`Mock Grafana server exited early with code ${code}: ${stderr}`));
       });
     });
@@ -334,7 +335,7 @@ setInterval(() => {}, 1000);`,
     expect(rows[1]?.tool).toBe("grafana");
     expect(rows[0]?.project).toBe(realpathSync(workDir));
 
-    server?.kill("SIGTERM");
+    stopServer?.();
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(workDir, { recursive: true, force: true });
   }, 35000);
