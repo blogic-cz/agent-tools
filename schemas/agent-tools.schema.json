@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
   "title": "Agent Tools Configuration",
-  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, kubernetes, database, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session, audit, and credentialGuard are global sections.",
+  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, kubernetes, database, grafana, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session, audit, and credentialGuard are global sections.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -32,6 +32,14 @@
       "additionalProperties": {
         "description": "Database profile configuration containing one or more environments.",
         "$ref": "#/definitions/DatabaseConfig"
+      }
+    },
+    "grafana": {
+      "description": "Named Grafana profiles as Record<string, GrafanaConfig>.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "Grafana profile configuration containing one or more environments.",
+        "$ref": "#/definitions/GrafanaConfig"
       }
     },
     "logs": {
@@ -188,6 +196,45 @@
         "remotePort": {
           "description": "Optional remote database port used by the tunnel.",
           "type": "number"
+        }
+      },
+      "required": ["environments"]
+    },
+    "GrafanaEnvTarget": {
+      "description": "Single Grafana environment target.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "Base Grafana URL.",
+          "type": "string"
+        },
+        "tokenEnvVar": {
+          "description": "Environment variable containing a Grafana API token.",
+          "type": "string"
+        },
+        "prometheusUid": {
+          "description": "Grafana datasource UID for Prometheus queries.",
+          "type": "string"
+        },
+        "lokiUid": {
+          "description": "Grafana datasource UID for Loki queries.",
+          "type": "string"
+        }
+      },
+      "required": ["url"]
+    },
+    "GrafanaConfig": {
+      "description": "Grafana profile configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "environments": {
+          "description": "Named Grafana environments as Record<string, GrafanaEnvTarget>.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/GrafanaEnvTarget"
+          }
         }
       },
       "required": ["environments"]

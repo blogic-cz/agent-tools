@@ -1,11 +1,11 @@
 ---
 name: agent-tools
-description: "LOAD THIS SKILL when: using CLI wrapper tools (gh-tool, db-tool, k8s-tool, az-tool, logs-tool, session-tool), working with databases, GitHub PRs, Kubernetes, Azure DevOps, or application logs. Contains tool overview, usage patterns, and project-specific aliases."
+description: "LOAD THIS SKILL when: using CLI wrapper tools (gh-tool, grafana-tool, db-tool, k8s-tool, az-tool, logs-tool, session-tool), working with Grafana, databases, GitHub PRs, Kubernetes, Azure DevOps, or application logs. Contains tool overview, usage patterns, and project-specific aliases."
 ---
 
 # Agent Tools
 
-Safe CLI wrappers for AI coding agents — GitHub, databases, Kubernetes, Azure DevOps, logs, and OpenCode sessions.
+Safe CLI wrappers for AI coding agents — GitHub, Grafana, databases, Kubernetes, Azure DevOps, logs, and OpenCode sessions.
 
 **Full documentation**: Read the [README](https://github.com/blogic-cz/agent-tools) for complete API reference, configuration, and credential setup.
 
@@ -15,6 +15,7 @@ Run tools via `bun <tool-name>` (requires `@blogic-cz/agent-tools` as a dev depe
 
 ```bash
 bun gh-tool pr status
+bun grafana-tool health --env local
 bun k8s-tool pods --env test
 bun db-tool sql --env local --sql "SELECT 1"
 ```
@@ -28,6 +29,7 @@ Legacy `agent-tools-*` binary names (e.g. `bun gh-tool`) still work but prefer t
 | Tool             | Description                                                         | Help                      |
 | ---------------- | ------------------------------------------------------------------- | ------------------------- |
 | **gh-tool**      | GitHub CLI wrapper — PRs, issues, workflows, checks, reviews, merge | `bun gh-tool --help`      |
+| **grafana-tool** | Grafana API wrapper — dashboards, alerts, PromQL, and LogQL         | `bun grafana-tool --help` |
 | **db-tool**      | Database query tool — SQL execution, schema introspection           | `bun db-tool --help`      |
 | **k8s-tool**     | Kubernetes tool — kubectl with config-driven context resolution     | `bun k8s-tool --help`     |
 | **az-tool**      | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun az-tool --help`      |
@@ -82,6 +84,18 @@ bun gh-tool issue reopen --issue 123
 bun gh-tool issue comment --issue 123 --body "text"
 bun gh-tool issue edit --issue 123 --title "New title" --add-labels bug
 bun gh-tool issue triage --issue 123 --verbosity full --format json
+```
+
+### grafana-tool (Grafana)
+
+```bash
+bun grafana-tool health --env local
+bun grafana-tool dashboards list --env local
+bun grafana-tool dashboards get abc123 --env local
+bun grafana-tool datasources list --env local
+bun grafana-tool alerts status --env prod --all
+bun grafana-tool metrics query 'up' --env local
+bun grafana-tool logs query '{service_name="web-app"}' --env local --limit 100
 ```
 
 ### db-tool (Database)

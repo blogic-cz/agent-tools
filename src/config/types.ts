@@ -43,6 +43,19 @@ export type LogsConfig = {
   remotePath: string;
 };
 
+/** Single Grafana environment connection details */
+export type GrafanaEnvTarget = {
+  url: string;
+  tokenEnvVar?: string;
+  prometheusUid?: string;
+  lokiUid?: string;
+};
+
+/** Grafana profile configuration */
+export type GrafanaConfig = {
+  environments: Record<string, GrafanaEnvTarget>;
+};
+
 export type CliToolOverride = {
   tool: string;
   suggestion: string;
@@ -86,6 +99,8 @@ export type AgentToolsConfig = {
   database?: Record<string, DatabaseConfig>;
   /** Named logs profiles. e.g. { default: { localDir: "...", remotePath: "..." } } */
   logs?: Record<string, LogsConfig>;
+  /** Named Grafana profiles. e.g. { default: { environments: { local: {...}, prod: {...} } } } */
+  grafana?: Record<string, GrafanaConfig>;
   /** Global session config (not per-profile) */
   session?: {
     storagePath: string;

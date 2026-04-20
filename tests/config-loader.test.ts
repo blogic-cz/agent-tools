@@ -269,7 +269,15 @@ describe("decodeConfig", () => {
         repo: "nexus-be",
       },
     });
-    expect(config).not.toHaveProperty("grafana");
+    expect(config.grafana).toEqual({
+      default: {
+        environments: {
+          local: {
+            url: "http://grafana.local",
+          },
+        },
+      },
+    });
   });
 
   it("still rejects invalid known github sections while ignoring unknown ones", () => {

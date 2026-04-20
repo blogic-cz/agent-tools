@@ -68,6 +68,27 @@
     },
   },
 
+  // Grafana profiles
+  grafana: {
+    // Profile name selected via --profile (or auto-selected when only one profile exists)
+    default: {
+      // Environment name selected via --env
+      environments: {
+        local: {
+          url: "http://localhost:40300",
+          prometheusUid: "prometheus",
+          lokiUid: "loki",
+        },
+        prod: {
+          url: "https://grafana.example.com",
+          tokenEnvVar: "AGENT_TOOLS_GRAFANA_PROD_TOKEN",
+          prometheusUid: "prometheus",
+          lokiUid: "loki",
+        },
+      },
+    },
+  },
+
   // Global session storage path
   session: {
     storagePath: "~/.local/share/opencode/storage",

@@ -16,6 +16,7 @@
       "#gh/*": ["./src/gh-tool/*"],
       "#k8s/*": ["./src/k8s-tool/*"],
       "#db/*": ["./src/db-tool/*"],
+      "#grafana/*": ["./src/grafana-tool/*"],
       "#logs/*": ["./src/logs-tool/*"],
       "#az/*": ["./src/az-tool/*"],
       "#guard": ["./src/credential-guard/index.ts"],

@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const TOOLS_ROOT = join(__dirname, "..");
 
@@ -71,11 +71,11 @@ afterAll(() => {
   }
 });
 
-function runTool(toolPath: string, args: string[], cwd?: string) {
+function runTool(toolPath: string, args: string[], cwd?: string, timeout = 15000) {
   return spawnSync("bun", ["run", join(TOOLS_ROOT, toolPath), ...args], {
     cwd: cwd ?? TOOLS_ROOT,
     encoding: "utf8",
-    timeout: 15000,
+    timeout,
   });
 }
 
@@ -84,11 +84,12 @@ function runToolWithEnv(
   args: string[],
   cwd: string,
   envOverrides: Record<string, string>,
+  timeout = 15000,
 ) {
   return spawnSync("bun", ["run", join(TOOLS_ROOT, toolPath), ...args], {
     cwd,
     encoding: "utf8",
-    timeout: 15000,
+    timeout,
     env: {
       ...process.env,
       ...envOverrides,
@@ -224,6 +225,120 @@ describe("Integration: tools --help with config file", () => {
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(workDir, { recursive: true, force: true });
   });
+
+  it("grafana-tool commands work with config and create audit rows", async () => {
+    const homeDir = join(tmpdir(), `agent-tools-grafana-home-${Date.now()}`);
+    const workDir = join(tmpdir(), `agent-tools-grafana-work-${Date.now()}`);
+    const auditDbPath = join(homeDir, ".agent-tools", "audit.sqlite");
+
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+
+    let stopServer: (() => void) | undefined;
+    const serverUrl = await new Promise<string>((resolve, reject) => {
+      const server = spawn(
+        "bun",
+        [
+          "-e",
+          `import { createServer } from "node:http";
+const server = createServer((req, res) => {
+  if (req.url === "/api/health") {
+    const body = JSON.stringify({ database: "ok", version: "1.0.0", commit: "test" });
+    res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+    res.end(body);
+    return;
+  }
+  if (req.url?.startsWith("/api/search")) {
+    const body = JSON.stringify([{ id: 1, uid: "dash-1", title: "Mock Dashboard", url: "/d/dash-1/mock-dashboard", type: "dash-db", tags: ["test"], folderTitle: "Test Folder" }]);
+    res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+    res.end(body);
+    return;
+  }
+  res.writeHead(404, { "content-type": "application/json" });
+  res.end(JSON.stringify({ message: "not found" }));
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    process.exit(1);
+  }
+  process.stdout.write(String(address.port));
+});
+setInterval(() => {}, 1000);`,
+        ],
+        {
+          cwd: TOOLS_ROOT,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      stopServer = () => {
+        server.kill();
+      };
+
+      let stderr = "";
+      server.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      server.stdout.once("data", (chunk) => {
+        resolve(`http://127.0.0.1:${chunk.toString().trim()}`);
+      });
+
+      server.once("exit", (code) => {
+        reject(new Error(`Mock Grafana server exited early with code ${code}: ${stderr}`));
+      });
+    });
+
+    writeFileSync(
+      join(workDir, "agent-tools.json5"),
+      JSON.stringify({
+        grafana: {
+          default: {
+            environments: {
+              local: {
+                url: serverUrl,
+                prometheusUid: "prometheus",
+                lokiUid: "loki",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const healthResult = runToolWithEnv(
+      "src/grafana-tool/index.ts",
+      ["health", "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(healthResult.status).toBe(0);
+    expect(JSON.parse(healthResult.stdout.trim())).toMatchObject({ success: true });
+
+    const dashboardsResult = runToolWithEnv(
+      "src/grafana-tool/index.ts",
+      ["dashboards", "list", "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(dashboardsResult.status).toBe(0);
+    expect(JSON.parse(dashboardsResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: { count: 1 },
+    });
+
+    expect(existsSync(auditDbPath)).toBe(true);
+    const rows = readAuditRows(auditDbPath, 2);
+    expect(rows[0]?.tool).toBe("grafana");
+    expect(rows[1]?.tool).toBe("grafana");
+    expect(rows[0]?.project).toBe(realpathSync(workDir));
+
+    stopServer?.();
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
+  }, 35000);
 });
 
 describe("Integration: credential-guard import", () => {
