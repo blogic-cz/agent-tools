@@ -4,7 +4,6 @@ import { Command } from "effect/unstable/cli";
 import { formatOption, formatOutput } from "#shared";
 
 import {
-  buildHeaders,
   envOption,
   formatGrafanaError,
   grafanaFetch,
@@ -23,9 +22,6 @@ export const healthCommand = Command.make(
       const body = yield* grafanaFetch<{ database?: string; version?: string; commit?: string }>(
         config,
         "/api/health",
-        {
-          headers: buildHeaders(config.token),
-        },
       );
 
       const result = {
