@@ -99,7 +99,10 @@ const getCommand = Command.make(
       const start = Date.now();
       const config = yield* resolveConfig(env, profile);
 
-      const detail = yield* grafanaFetch<DashboardDetail>(config, `/api/dashboards/uid/${uid}`);
+      const detail = yield* grafanaFetch<DashboardDetail>(
+        config,
+        `/api/dashboards/uid/${encodeURIComponent(uid)}`,
+      );
 
       const panels = (detail.dashboard.panels ?? []).map((panel) => ({
         id: panel.id,
