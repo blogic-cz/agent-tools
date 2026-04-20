@@ -3,6 +3,7 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
+import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -55,15 +56,9 @@ const queryCommand = Command.make(
       });
 
       if (response.results.A.error) {
-        const result = {
-          success: false,
-          message: "LogQL query failed",
-          error: response.results.A.error,
-          hint: "Check LogQL syntax and Grafana/Loki connectivity",
-          executionTimeMs: Date.now() - startedAt,
-        };
-        yield* Console.log(formatOutput(result, format));
-        return;
+        return yield* new GrafanaToolError({
+          cause: new Error(response.results.A.error),
+        });
       }
 
       const logs: Array<{ timestamp: string; line: string; labels: Record<string, string> }> = [];

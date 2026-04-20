@@ -3,6 +3,7 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
 
+import { GrafanaToolError } from "./errors";
 import {
   envOption,
   formatGrafanaError,
@@ -90,15 +91,9 @@ const queryCommand = Command.make(
       });
 
       if (response.results.A.error) {
-        const result = {
-          success: false,
-          message: "PromQL query failed",
-          error: response.results.A.error,
-          hint: "Check PromQL syntax and Grafana/Prometheus connectivity",
-          executionTimeMs: Date.now() - startedAt,
-        };
-        yield* Console.log(formatOutput(result, format));
-        return;
+        return yield* new GrafanaToolError({
+          cause: new Error(response.results.A.error),
+        });
       }
 
       const parsed = parsePrometheusFrames(response.results.A.frames);
@@ -163,15 +158,9 @@ const rangeCommand = Command.make(
       });
 
       if (response.results.A.error) {
-        const result = {
-          success: false,
-          message: "PromQL range query failed",
-          error: response.results.A.error,
-          hint: "Check PromQL syntax and time range",
-          executionTimeMs: Date.now() - startedAt,
-        };
-        yield* Console.log(formatOutput(result, format));
-        return;
+        return yield* new GrafanaToolError({
+          cause: new Error(response.results.A.error),
+        });
       }
 
       const series = (response.results.A.frames ?? []).map((frame) => {

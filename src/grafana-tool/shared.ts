@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import { Flag } from "effect/unstable/cli";
 
 import { ConfigService, getToolConfig } from "#config";
@@ -10,8 +10,6 @@ import type { DsQueryOpts, DsQueryResponse, GrafanaEnvConfig } from "./types";
 const DEFAULT_LOCAL_URL = "http://localhost:40300";
 const DEFAULT_PROMETHEUS_UID = "prometheus";
 const DEFAULT_LOKI_UID = "loki";
-const EnvLiterals = Schema.Literals(["local", "test", "prod"]);
-
 export function formatGrafanaError(error: unknown): string {
   if (error instanceof GrafanaToolError) {
     return formatGrafanaError(error.cause);
@@ -24,8 +22,8 @@ export function formatGrafanaError(error: unknown): string {
   return String(error);
 }
 
-export const envOption = Flag.choice("env", EnvLiterals.literals as readonly string[]).pipe(
-  Flag.withDescription("Target environment: local (default), test, or prod"),
+export const envOption = Flag.string("env").pipe(
+  Flag.withDescription("Target environment name from agent-tools config (default: local)"),
   Flag.withDefault("local"),
 );
 
