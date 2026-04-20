@@ -1,6 +1,6 @@
 # @blogic-cz/agent-tools
 
-Safe CLI wrappers for AI coding agents. 7 tools for GitHub, databases, Kubernetes, Azure DevOps, logs, OpenCode sessions, and audit history — with JSON5 config and a credential guard that blocks agents from touching secrets.
+Safe CLI wrappers for AI coding agents. 8 tools for GitHub, Grafana, databases, Kubernetes, Azure DevOps, logs, OpenCode sessions, and audit history — with JSON5 config and a credential guard that blocks agents from touching secrets.
 
 ## Why
 
@@ -61,12 +61,13 @@ Follow these steps to set up agent-tools in the consumer project.
 - **Non-JavaScript project** (no `package.json`): Skip installation — run tools directly with `bunx`:
   ```bash
   bunx gh-tool pr status
+  bunx grafana-tool health
   bunx k8s-tool pods --env test
   ```
 
 **Step 2 — Configure**
 
-Ask the user which tools they need (gh, db, k8s, az, logs, session, audit). Create `agent-tools.json5` in the project root with **only the selected tools configured**. See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for the full config reference with all options documented.
+Ask the user which tools they need (gh, grafana, db, k8s, az, logs, session, audit). Create `agent-tools.json5` in the project root with **only the selected tools configured**. See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for the full config reference with all options documented.
 
 Minimal starting config:
 
@@ -181,6 +182,19 @@ bun run agent-tools/example-tool/index.ts ping
       remotePath: "/app/logs",
     },
   },
+  grafana: {
+    // Profile name (selected via --profile, or used automatically when it's the only one)
+    default: {
+      // Environment name (selected via --env)
+      environments: {
+        local: {
+          url: "http://localhost:40300",
+          prometheusUid: "prometheus",
+          lokiUid: "loki",
+        },
+      },
+    },
+  },
 }
 ```
 
@@ -188,6 +202,7 @@ bun run agent-tools/example-tool/index.ts ping
 
 ```bash
 bun gh-tool pr status
+bun grafana-tool dashboards list --env local
 bun k8s-tool kubectl --env test --cmd "get pods"
 bun logs-tool list --env local
 bun audit-tool list --limit 20
@@ -211,6 +226,7 @@ export default { handleToolExecuteBefore };
 | Binary         | Description                                                                                                      |
 | -------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `gh-tool`      | GitHub CLI wrapper — PR management, issues, workflows, composite commands (`review-triage`, `reply-and-resolve`) |
+| `grafana-tool` | Grafana API wrapper — health, dashboards, datasources, alerts, PromQL, and LogQL queries                         |
 | `audit-tool`   | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
 | `db-tool`      | Database query tool — SQL execution, schema introspection                                                        |
 | `k8s-tool`     | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
@@ -228,7 +244,7 @@ Every tool invocation is automatically recorded to a local SQLite database — z
 
 ### How it works
 
-Each CLI wrapper (`gh`, `k8s`, `db`, `az`, `logs`, `session`, `audit`) writes a row to `~/.agent-tools/audit.sqlite` on every execution. Logging is fire-and-forget — if the database is unavailable or write fails, the tool continues normally. Audit never blocks or slows down your workflow.
+Each CLI wrapper (`gh`, `grafana`, `k8s`, `db`, `az`, `logs`, `session`, `audit`) writes a row to `~/.agent-tools/audit.sqlite` on every execution. Logging is fire-and-forget — if the database is unavailable or write fails, the tool continues normally. Audit never blocks or slows down your workflow.
 
 Entries older than `retentionDays` (default: 90) are automatically purged on each write.
 
@@ -268,16 +284,16 @@ All settings are optional — audit works out of the box with sensible defaults.
 
 ### What gets recorded
 
-| Column      | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| `ts`        | ISO 8601 timestamp                                     |
-| `tool`      | Tool name (`gh`, `k8s`, `db`, `az`, `logs`, `session`) |
-| `project`   | Working directory (`process.cwd()`)                    |
-| `args`      | Command-line arguments (JSON array)                    |
-| `duration`  | Execution time in milliseconds                         |
-| `success`   | `1` (success) or `0` (failure)                         |
-| `error`     | Error message if failed, `null` otherwise              |
-| `exit_code` | Process exit code                                      |
+| Column      | Description                                                       |
+| ----------- | ----------------------------------------------------------------- |
+| `ts`        | ISO 8601 timestamp                                                |
+| `tool`      | Tool name (`gh`, `grafana`, `k8s`, `db`, `az`, `logs`, `session`) |
+| `project`   | Working directory (`process.cwd()`)                               |
+| `args`      | Command-line arguments (JSON array)                               |
+| `duration`  | Execution time in milliseconds                                    |
+| `success`   | `1` (success) or `0` (failure)                                    |
+| `error`     | Error message if failed, `null` otherwise                         |
+| `exit_code` | Process exit code                                                 |
 
 ## Configuration
 
@@ -331,13 +347,14 @@ See [`examples/agent-tools.json5`](./examples/agent-tools.json5) for a complete 
 
 Each tool uses its own auth method — no unified token store:
 
-| Tool        | Auth Method                                                                                  |
-| ----------- | -------------------------------------------------------------------------------------------- |
-| `gh-tool`   | `gh` CLI session (`gh auth login`) or `GITHUB_TOKEN` env var                                 |
-| `k8s-tool`  | Existing kubectl context (kubeconfig). Cluster ID from config resolves context automatically |
-| `az-tool`   | `az` CLI session (`az login`)                                                                |
-| `db-tool`   | Password from env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWORD`) |
-| `logs-tool` | No auth — reads local files or uses k8s-tool for remote access                               |
+| Tool           | Auth Method                                                                                  |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| `gh-tool`      | `gh` CLI session (`gh auth login`) or `GITHUB_TOKEN` env var                                 |
+| `grafana-tool` | Grafana URL from config plus optional token from `tokenEnvVar`                               |
+| `k8s-tool`     | Existing kubectl context (kubeconfig). Cluster ID from config resolves context automatically |
+| `az-tool`      | `az` CLI session (`az login`)                                                                |
+| `db-tool`      | Password from env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWORD`) |
+| `logs-tool`    | No auth — reads local files or uses k8s-tool for remote access                               |
 
 Secrets are **never** stored in the config file. The `db-tool` config references env var **names** only:
 

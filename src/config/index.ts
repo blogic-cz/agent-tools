@@ -4,6 +4,8 @@ export type {
   K8sConfig,
   DbEnvConfig,
   DatabaseConfig,
+  GrafanaConfig,
+  GrafanaEnvTarget,
   LogsConfig,
   AuditConfig,
   CliToolOverride,

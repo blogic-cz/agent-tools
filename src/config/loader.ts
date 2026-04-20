@@ -54,6 +54,17 @@ const LogsConfigSchema = Schema.Struct({
   remotePath: Schema.String,
 });
 
+const GrafanaEnvTargetSchema = Schema.Struct({
+  url: Schema.String,
+  tokenEnvVar: Schema.optionalKey(Schema.String),
+  prometheusUid: Schema.optionalKey(Schema.String),
+  lokiUid: Schema.optionalKey(Schema.String),
+});
+
+const GrafanaConfigSchema = Schema.Struct({
+  environments: Schema.Record(Schema.String, GrafanaEnvTargetSchema),
+});
+
 const AuditConfigSchema = Schema.Struct({
   retentionDays: Schema.optionalKey(Schema.Number),
   dbPath: Schema.optionalKey(Schema.String),
@@ -69,6 +80,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "azure",
   "kubernetes",
   "database",
+  "grafana",
   "logs",
   "session",
   "audit",
@@ -82,6 +94,7 @@ const AgentToolsConfigSchema = Schema.Struct({
   azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
   kubernetes: Schema.optionalKey(Schema.Record(Schema.String, K8sConfigSchema)),
   database: Schema.optionalKey(Schema.Record(Schema.String, DatabaseConfigSchema)),
+  grafana: Schema.optionalKey(Schema.Record(Schema.String, GrafanaConfigSchema)),
   logs: Schema.optionalKey(Schema.Record(Schema.String, LogsConfigSchema)),
   session: Schema.optionalKey(
     Schema.Struct({
@@ -175,7 +188,10 @@ export const ConfigServiceLayer = Layer.effect(
   }),
 );
 
-type ProfiledSection = keyof Pick<AgentToolsConfig, "azure" | "kubernetes" | "database" | "logs">;
+type ProfiledSection = keyof Pick<
+  AgentToolsConfig,
+  "azure" | "kubernetes" | "database" | "grafana" | "logs"
+>;
 
 export function getToolConfig<T>(
   config: AgentToolsConfig | undefined,

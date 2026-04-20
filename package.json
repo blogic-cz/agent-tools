@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
@@ -9,6 +9,7 @@
     "database",
     "devops",
     "github",
+    "grafana",
     "kubernetes",
     "tools"
   ],
@@ -23,6 +24,7 @@
     "agent-tools-az": "./src/az-tool/index.ts",
     "agent-tools-db": "./src/db-tool/index.ts",
     "agent-tools-gh": "./src/gh-tool/index.ts",
+    "agent-tools-grafana": "./src/grafana-tool/index.ts",
     "agent-tools-k8s": "./src/k8s-tool/index.ts",
     "agent-tools-logs": "./src/logs-tool/index.ts",
     "agent-tools-session": "./src/session-tool/index.ts",
@@ -30,6 +32,7 @@
     "az-tool": "./src/az-tool/index.ts",
     "db-tool": "./src/db-tool/index.ts",
     "gh-tool": "./src/gh-tool/index.ts",
+    "grafana-tool": "./src/grafana-tool/index.ts",
     "k8s-tool": "./src/k8s-tool/index.ts",
     "logs-tool": "./src/logs-tool/index.ts",
     "session-tool": "./src/session-tool/index.ts"
@@ -72,6 +75,10 @@
       "types": "./dist/db-tool/*.d.ts",
       "default": "./src/db-tool/*.ts"
     },
+    "#grafana/*": {
+      "types": "./dist/grafana-tool/*.d.ts",
+      "default": "./src/grafana-tool/*.ts"
+    },
     "#logs/*": {
       "types": "./dist/logs-tool/*.d.ts",
       "default": "./src/logs-tool/*.ts"
@@ -101,6 +108,10 @@
     "./config": {
       "types": "./dist/config/index.d.ts",
       "default": "./src/config/index.ts"
+    },
+    "./audit": {
+      "types": "./dist/shared/audit.d.ts",
+      "default": "./src/shared/audit.ts"
     }
   },
   "publishConfig": {
@@ -112,6 +123,7 @@
     "check:ci": "bun check.ts ci",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
+    "grafana-tool": "bun src/grafana-tool/index.ts",
     "gh-tool": "bun src/gh-tool/index.ts",
     "lint": "oxlint -c ./.oxlintrc.json --deny-warnings",
     "lint:fix": "oxlint -c ./.oxlintrc.json --fix",
