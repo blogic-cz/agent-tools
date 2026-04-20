@@ -156,7 +156,7 @@ export function grafanaFetch<T>(
 export function grafanaDsQuery(
   config: GrafanaEnvConfig,
   datasourceUid: string,
-  datasourceType: string,
+  datasourceType: "prometheus" | "loki",
   expr: string,
   options?: DsQueryOpts,
 ): Effect.Effect<DsQueryResponse, GrafanaToolError> {
