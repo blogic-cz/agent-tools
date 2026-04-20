@@ -57,4 +57,4 @@ Environment is any string from the selected Grafana profile's `environments` map
 - Use `--profile <name>` when a project defines multiple Grafana profiles.
 - Use `metrics query` for instant PromQL and `metrics range` for time-series windows.
 - Use `logs query` for LogQL via the configured Loki datasource.
-- Error responses include `hint`, `nextCommand`, and `retryable` fields — always check them on failure.
+- Error responses include a `hint` field when available. Some commands also include `nextCommand` and `retryable` when the underlying tool can suggest a concrete recovery path.
