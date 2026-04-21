@@ -72,7 +72,8 @@ type LatestRelease = {
   tagName: string;
   name: string;
   createdAt: string;
-  url: string;
+  publishedAt: string | null;
+  isLatest: boolean;
 };
 
 type ReleaseStatusResult = {
@@ -314,7 +315,14 @@ const deleteRelease = Effect.fn("release.deleteRelease")(function* (opts: {
 const releaseStatus = Effect.fn("release.releaseStatus")(function* (repo: string | null) {
   const gh = yield* GitHubService;
 
-  const args = ["release", "list", "--json", "tagName,name,createdAt,url", "--limit", "1"];
+  const args = [
+    "release",
+    "list",
+    "--json",
+    "tagName,name,createdAt,publishedAt,isLatest",
+    "--limit",
+    "1",
+  ];
   if (repo !== null) {
     args.push("--repo", repo);
   }
