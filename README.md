@@ -32,19 +32,19 @@ bun add -d @blogic-cz/agent-tools
 Install per-tool skills for only the tools your project uses:
 
 ```bash
-npx skills add blogic-cz/agent-tools --path skill/gh-tool
-npx skills add blogic-cz/agent-tools --path skill/grafana-tool
-npx skills add blogic-cz/agent-tools --path skill/db-tool
-npx skills add blogic-cz/agent-tools --path skill/k8s-tool
-npx skills add blogic-cz/agent-tools --path skill/az-tool
-npx skills add blogic-cz/agent-tools --path skill/logs-tool
-npx skills add blogic-cz/agent-tools --path skill/session-tool
+npx skills add blogic-cz/agent-tools --path skills/gh-tool
+npx skills add blogic-cz/agent-tools --path skills/grafana-tool
+npx skills add blogic-cz/agent-tools --path skills/db-tool
+npx skills add blogic-cz/agent-tools --path skills/k8s-tool
+npx skills add blogic-cz/agent-tools --path skills/az-tool
+npx skills add blogic-cz/agent-tools --path skills/logs-tool
+npx skills add blogic-cz/agent-tools --path skills/session-tool
 ```
 
 Or install the all-in-one skill that covers every tool:
 
 ```bash
-npx skills add blogic-cz/agent-tools --path skill/agent-tools
+npx skills add blogic-cz/agent-tools --path skills/agent-tools
 ```
 
 **Requirements:** [Bun](https://bun.sh/) >=1.0.0
@@ -99,16 +99,16 @@ Install **only the per-tool skills the project needs** (recommended), or the all
 
 ```bash
 # Per-tool skills (recommended) — install only what the project uses
-npx skills add blogic-cz/agent-tools --path skill/gh-tool
-npx skills add blogic-cz/agent-tools --path skill/grafana-tool
-npx skills add blogic-cz/agent-tools --path skill/db-tool
-npx skills add blogic-cz/agent-tools --path skill/k8s-tool
-npx skills add blogic-cz/agent-tools --path skill/az-tool
-npx skills add blogic-cz/agent-tools --path skill/logs-tool
-npx skills add blogic-cz/agent-tools --path skill/session-tool
+npx skills add blogic-cz/agent-tools --path skills/gh-tool
+npx skills add blogic-cz/agent-tools --path skills/grafana-tool
+npx skills add blogic-cz/agent-tools --path skills/db-tool
+npx skills add blogic-cz/agent-tools --path skills/k8s-tool
+npx skills add blogic-cz/agent-tools --path skills/az-tool
+npx skills add blogic-cz/agent-tools --path skills/logs-tool
+npx skills add blogic-cz/agent-tools --path skills/session-tool
 
 # All-in-one skill (alternative) — all tools in a single skill
-npx skills add blogic-cz/agent-tools --path skill/agent-tools
+npx skills add blogic-cz/agent-tools --path skills/agent-tools
 ```
 
 **Do not run these commands for the user** — they require interactive selection.
