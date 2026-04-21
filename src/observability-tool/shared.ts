@@ -138,12 +138,12 @@ export const resolveConfig = (env: string, profile: Option.Option<string>) =>
 
     return yield* Effect.tryPromise({
       try: async () => {
-        const resolved =
-          (await resolveFromProfile(observabilityConfig, env)) ?? resolveFromEnv(env);
-
-        if (typeof Reflect.get(resolved, "tempoUid") === "string") {
-          return resolved as ObservabilityEnvConfig;
+        const profileResolved = await resolveFromProfile(observabilityConfig, env);
+        if (profileResolved) {
+          return profileResolved;
         }
+
+        const resolved = resolveFromEnv(env);
 
         const datasources = await discoverDatasources(resolved.url, resolved.token);
         const tempoUid =
