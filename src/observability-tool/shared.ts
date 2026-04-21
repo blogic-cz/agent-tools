@@ -141,6 +141,10 @@ export const resolveConfig = (env: string, profile: Option.Option<string>) =>
         const resolved =
           (await resolveFromProfile(observabilityConfig, env)) ?? resolveFromEnv(env);
 
+        if (typeof Reflect.get(resolved, "tempoUid") === "string") {
+          return resolved as ObservabilityEnvConfig;
+        }
+
         const datasources = await discoverDatasources(resolved.url, resolved.token);
         const tempoUid =
           datasources.find((datasource) => datasource.uid === DEFAULT_TEMPO_UID)?.uid ??
