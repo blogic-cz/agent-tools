@@ -250,7 +250,7 @@ describe("decodeConfig", () => {
             repo: "nexus-be",
           },
         },
-        grafana: {
+        observability: {
           default: {
             environments: {
               local: {
@@ -269,7 +269,7 @@ describe("decodeConfig", () => {
         repo: "nexus-be",
       },
     });
-    expect(config.grafana).toEqual({
+    expect(config.observability).toEqual({
       default: {
         environments: {
           local: {
@@ -288,7 +288,7 @@ describe("decodeConfig", () => {
             owner: "sabservis",
             repo: "nexus-be",
           },
-          grafana: {
+          observability: {
             anything: true,
           },
         },

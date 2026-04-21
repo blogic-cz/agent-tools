@@ -164,6 +164,12 @@ describe("Integration: tools --help with config file", () => {
     expect(result.stdout).toContain("Logs");
   });
 
+  it("observability-tool --help exits 0 with config", () => {
+    const result = runTool("src/observability-tool/index.ts", ["--help"], configDir);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("LGTM");
+  });
+
   it("session-tool --help exits 0 with config", () => {
     const result = runTool("src/session-tool/index.ts", ["--help"], configDir);
     expect(result.status).toBe(0);
@@ -226,9 +232,9 @@ describe("Integration: tools --help with config file", () => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("grafana-tool commands work with config and create audit rows", async () => {
-    const homeDir = join(tmpdir(), `agent-tools-grafana-home-${Date.now()}`);
-    const workDir = join(tmpdir(), `agent-tools-grafana-work-${Date.now()}`);
+  it("observability-tool commands work with config and create audit rows", async () => {
+    const homeDir = join(tmpdir(), `agent-tools-observability-home-${Date.now()}`);
+    const workDir = join(tmpdir(), `agent-tools-observability-work-${Date.now()}`);
     const auditDbPath = join(homeDir, ".agent-tools", "audit.sqlite");
 
     mkdirSync(homeDir, { recursive: true });
@@ -242,16 +248,121 @@ describe("Integration: tools --help with config file", () => {
           "-e",
           `import { createServer } from "node:http";
 const server = createServer((req, res) => {
-  if (req.url === "/api/health") {
-    const body = JSON.stringify({ database: "ok", version: "1.0.0", commit: "test" });
+  if (req.url === "/api/datasources") {
+    const body = JSON.stringify([
+      { id: 1, uid: "prometheus", name: "Prometheus", type: "prometheus", url: "http://prometheus:9090" },
+      { id: 2, uid: "loki", name: "Loki", type: "loki", url: "http://loki:3100" },
+      { id: 3, uid: "tempo", name: "Tempo", type: "tempo", url: "http://tempo:3200" }
+    ]);
     res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
     res.end(body);
     return;
   }
-  if (req.url?.startsWith("/api/search")) {
-    const body = JSON.stringify([{ id: 1, uid: "dash-1", title: "Mock Dashboard", url: "/d/dash-1/mock-dashboard", type: "dash-db", tags: ["test"], folderTitle: "Test Folder" }]);
+  if (req.url?.startsWith("/api/datasources/proxy/uid/tempo/api/traces/0b7bdf0dde1c55458364ba5588a8075e")) {
+    const body = JSON.stringify({
+      batches: [{
+        resource: {
+          attributes: [
+            { key: "service.name", value: { stringValue: "mock-service" } },
+            { key: "deployment.environment.name", value: { stringValue: "local" } }
+          ]
+        },
+        scopeSpans: [{
+          scope: { name: "mock-scope" },
+          spans: [
+            {
+              traceId: "C3vfDd4cVUWDZLpViKgHXg==",
+              spanId: "S0N7+zAcy2E=",
+              name: "GET /health",
+              kind: "SPAN_KIND_SERVER",
+              startTimeUnixNano: "1000000000",
+              endTimeUnixNano: "2000000000",
+              status: { code: "STATUS_CODE_OK" },
+              attributes: [{ key: "http.request.method", value: { stringValue: "GET" } }]
+            },
+            {
+              traceId: "C3vfDd4cVUWDZLpViKgHXg==",
+              spanId: "lpm/1p/QGE0=",
+              parentSpanId: "S0N7+zAcy2E=",
+              name: "select 1",
+              kind: "SPAN_KIND_CLIENT",
+              startTimeUnixNano: "1200000000",
+              endTimeUnixNano: "1500000000",
+              status: { code: "STATUS_CODE_OK" },
+              attributes: [{ key: "db.system", value: { stringValue: "postgresql" } }]
+            }
+          ]
+        }]
+      }]
+    });
     res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
     res.end(body);
+    return;
+  }
+  if (req.url === "/api/ds/query" && req.method === "POST") {
+    let raw = "";
+    req.on("data", chunk => { raw += chunk.toString(); });
+    req.on("end", () => {
+      const payload = JSON.parse(raw);
+      const expr = payload?.queries?.[0]?.expr;
+
+      if (expr === '{job=~".+"} |= "0b7bdf0dde1c55458364ba5588a8075e"') {
+        const body = JSON.stringify({
+          results: {
+            A: {
+              frames: [{
+                schema: {
+                  fields: [
+                    { name: "timestamp", type: "time" },
+                    { name: "line", type: "string" },
+                    { name: "labels", type: "string" }
+                  ]
+                },
+                data: {
+                  values: [
+                    [1710000000000],
+                    ['{"level":"info","trace_id":"0b7bdf0dde1c55458364ba5588a8075e"}'],
+                    ['{"job":"mock-app"}']
+                  ]
+                }
+              }]
+            }
+          }
+        });
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+
+      if (expr === "up") {
+        const body = JSON.stringify({
+          results: {
+            A: {
+              frames: [{
+                schema: {
+                  fields: [
+                    { name: "Time", type: "time" },
+                    { name: "Value", type: "number", labels: { job: "tempo", instance: "tempo:3200" } }
+                  ]
+                },
+                data: {
+                  values: [
+                    [1710000000000, 1710000060000],
+                    [1, 1]
+                  ]
+                }
+              }]
+            }
+          }
+        });
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ message: "unexpected expr: " + expr }));
+    });
     return;
   }
   res.writeHead(404, { "content-type": "application/json" });
@@ -292,7 +403,7 @@ setInterval(() => {}, 1000);`,
     writeFileSync(
       join(workDir, "agent-tools.json5"),
       JSON.stringify({
-        grafana: {
+        observability: {
           default: {
             environments: {
               local: {
@@ -306,33 +417,50 @@ setInterval(() => {}, 1000);`,
       }),
     );
 
-    const healthResult = runToolWithEnv(
-      "src/grafana-tool/index.ts",
-      ["health", "--format", "json"],
+    const traceResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["trace", "get", "0b7bdf0dde1c55458364ba5588a8075e", "--format", "json"],
       workDir,
       { HOME: homeDir },
       30000,
     );
-    expect(healthResult.status).toBe(0);
-    expect(JSON.parse(healthResult.stdout.trim())).toMatchObject({ success: true });
-
-    const dashboardsResult = runToolWithEnv(
-      "src/grafana-tool/index.ts",
-      ["dashboards", "list", "--format", "json"],
-      workDir,
-      { HOME: homeDir },
-      30000,
-    );
-    expect(dashboardsResult.status).toBe(0);
-    expect(JSON.parse(dashboardsResult.stdout.trim())).toMatchObject({
+    expect(traceResult.status).toBe(0);
+    expect(JSON.parse(traceResult.stdout.trim())).toMatchObject({
       success: true,
-      data: { count: 1 },
+      data: { summary: { spanCount: 2 } },
+    });
+
+    const logsResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["trace", "logs", "0b7bdf0dde1c55458364ba5588a8075e", "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(logsResult.status).toBe(0);
+    expect(JSON.parse(logsResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: { logCount: 1 },
+    });
+
+    const metricsResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["metrics", "query", "up", "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(metricsResult.status).toBe(0);
+    expect(JSON.parse(metricsResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: { seriesCount: 1 },
     });
 
     expect(existsSync(auditDbPath)).toBe(true);
-    const rows = readAuditRows(auditDbPath, 2);
-    expect(rows[0]?.tool).toBe("grafana");
-    expect(rows[1]?.tool).toBe("grafana");
+    const rows = readAuditRows(auditDbPath, 3);
+    expect(rows[0]?.tool).toBe("observability");
+    expect(rows[1]?.tool).toBe("observability");
+    expect(rows[2]?.tool).toBe("observability");
     expect(rows[0]?.project).toBe(realpathSync(workDir));
 
     stopServer?.();

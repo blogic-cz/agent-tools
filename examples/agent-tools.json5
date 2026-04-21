@@ -68,8 +68,8 @@
     },
   },
 
-  // Grafana profiles
-  grafana: {
+  // Observability profiles (Grafana-backed Tempo/Loki/Prometheus)
+  observability: {
     // Profile name selected via --profile (or auto-selected when only one profile exists)
     default: {
       // Environment name selected via --env
@@ -81,7 +81,7 @@
         },
         prod: {
           url: "https://grafana.example.com",
-          tokenEnvVar: "AGENT_TOOLS_GRAFANA_PROD_TOKEN",
+          tokenEnvVar: "AGENT_TOOLS_OBSERVABILITY_PROD_TOKEN",
           prometheusUid: "prometheus",
           lokiUid: "loki",
         },

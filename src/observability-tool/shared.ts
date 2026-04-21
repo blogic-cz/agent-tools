@@ -2,17 +2,24 @@ import { Effect, Option } from "effect";
 import { Flag } from "effect/unstable/cli";
 
 import { ConfigService, getToolConfig } from "#config";
-import type { GrafanaConfig } from "#config";
+import type { ObservabilityConfig } from "#config";
 
-import { GrafanaToolError } from "./errors";
-import type { DsQueryOpts, DsQueryResponse, GrafanaEnvConfig } from "./types";
+import { ObservabilityToolError } from "./errors";
+import type {
+  DsQueryOpts,
+  DsQueryResponse,
+  GrafanaDatasource,
+  ObservabilityEnvConfig,
+} from "./types";
 
 const DEFAULT_LOCAL_URL = "http://localhost:40300";
 const DEFAULT_PROMETHEUS_UID = "prometheus";
 const DEFAULT_LOKI_UID = "loki";
-export function formatGrafanaError(error: unknown): string {
-  if (error instanceof GrafanaToolError) {
-    return formatGrafanaError(error.cause);
+const DEFAULT_TEMPO_UID = "tempo";
+
+export function formatObservabilityError(error: unknown): string {
+  if (error instanceof ObservabilityToolError) {
+    return formatObservabilityError(error.cause);
   }
 
   if (error instanceof Error) {
@@ -30,7 +37,7 @@ export const envOption = Flag.string("env").pipe(
 export const profileOption = Flag.optional(
   Flag.string("profile").pipe(
     Flag.withDescription(
-      "Grafana profile name from agent-tools config (default: 'default' key or single entry)",
+      "Observability profile name from agent-tools config (default: 'default' key or single entry)",
     ),
   ),
 );
@@ -48,43 +55,67 @@ function resolveToken(tokenEnvVar?: string): string | undefined {
   return token;
 }
 
-function resolveFromProfile(
-  profile: GrafanaConfig | undefined,
+async function discoverDatasources(url: string, token?: string): Promise<GrafanaDatasource[]> {
+  const headers = buildHeaders(token);
+  const response = await fetch(`${url}/api/datasources`, { headers });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Grafana API ${response.status}: /api/datasources — ${body}`);
+  }
+
+  return (await response.json()) as GrafanaDatasource[];
+}
+
+async function resolveFromProfile(
+  profile: ObservabilityConfig | undefined,
   env: string,
-): GrafanaEnvConfig | undefined {
+): Promise<ObservabilityEnvConfig | undefined> {
   const environment = profile?.environments[env];
   if (!environment) {
     return undefined;
   }
 
+  const token = resolveToken(environment.tokenEnvVar);
+  const datasources = await discoverDatasources(environment.url, token);
+
+  const tempoUid =
+    datasources.find((datasource) => datasource.uid === DEFAULT_TEMPO_UID)?.uid ??
+    datasources.find((datasource) => datasource.type === "tempo")?.uid;
+
+  if (!tempoUid) {
+    throw new Error(`No Tempo datasource found in observability.${env} config`);
+  }
+
   return {
     url: environment.url,
-    token: resolveToken(environment.tokenEnvVar),
+    token,
     prometheusUid: environment.prometheusUid ?? DEFAULT_PROMETHEUS_UID,
     lokiUid: environment.lokiUid ?? DEFAULT_LOKI_UID,
+    tempoUid,
   };
 }
 
-function resolveFromEnv(env: string): GrafanaEnvConfig {
+function resolveFromEnv(
+  env: string,
+): Pick<ObservabilityEnvConfig, "url" | "token" | "prometheusUid" | "lokiUid"> {
   if (env === "local") {
     return {
-      url: process.env.GRAFANA_URL_LOCAL ?? DEFAULT_LOCAL_URL,
-      token: process.env.GRAFANA_TOKEN_LOCAL,
+      url: process.env.OBSERVABILITY_URL_LOCAL ?? DEFAULT_LOCAL_URL,
+      token: process.env.OBSERVABILITY_TOKEN_LOCAL,
       prometheusUid: DEFAULT_PROMETHEUS_UID,
       lokiUid: DEFAULT_LOKI_UID,
     };
   }
 
   const upper = env.toUpperCase();
-  const url = process.env[`GRAFANA_URL_${upper}`];
-  const token = process.env[`GRAFANA_TOKEN_${upper}`];
+  const url = process.env[`OBSERVABILITY_URL_${upper}`];
+  const token = process.env[`OBSERVABILITY_TOKEN_${upper}`];
 
   if (!url) {
-    throw new Error(`No grafana.${env} config found and GRAFANA_URL_${upper} is not set`);
-  }
-
-  if (!token) {
-    throw new Error(`No grafana.${env} config found and GRAFANA_TOKEN_${upper} is not set`);
+    throw new Error(
+      `No observability.${env} config found and OBSERVABILITY_URL_${upper} is not set`,
+    );
   }
 
   return {
@@ -99,11 +130,32 @@ export const resolveConfig = (env: string, profile: Option.Option<string>) =>
   Effect.gen(function* () {
     const config = yield* ConfigService;
     const profileName = Option.getOrUndefined(profile);
-    const grafanaConfig = getToolConfig<GrafanaConfig>(config, "grafana", profileName);
+    const observabilityConfig = getToolConfig<ObservabilityConfig>(
+      config,
+      "observability",
+      profileName,
+    );
 
-    return yield* Effect.try({
-      try: () => resolveFromProfile(grafanaConfig, env) ?? resolveFromEnv(env),
-      catch: (cause) => new GrafanaToolError({ cause }),
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const resolved =
+          (await resolveFromProfile(observabilityConfig, env)) ?? resolveFromEnv(env);
+
+        const datasources = await discoverDatasources(resolved.url, resolved.token);
+        const tempoUid =
+          datasources.find((datasource) => datasource.uid === DEFAULT_TEMPO_UID)?.uid ??
+          datasources.find((datasource) => datasource.type === "tempo")?.uid;
+
+        if (!tempoUid) {
+          throw new Error(`No Tempo datasource found for environment '${env}'`);
+        }
+
+        return {
+          ...resolved,
+          tempoUid,
+        } satisfies ObservabilityEnvConfig;
+      },
+      catch: (cause) => new ObservabilityToolError({ cause }),
     });
   });
 
@@ -120,11 +172,11 @@ export function buildHeaders(token?: string): Headers {
   return headers;
 }
 
-export function grafanaFetch<T>(
-  config: GrafanaEnvConfig,
+export function observabilityFetch<T>(
+  config: ObservabilityEnvConfig,
   path: string,
   init?: RequestInit,
-): Effect.Effect<T, GrafanaToolError> {
+): Effect.Effect<T, ObservabilityToolError> {
   return Effect.tryPromise({
     try: async () => {
       const headers = buildHeaders(config.token);
@@ -147,17 +199,17 @@ export function grafanaFetch<T>(
 
       return (await response.json()) as T;
     },
-    catch: (cause) => new GrafanaToolError({ cause }),
+    catch: (cause) => new ObservabilityToolError({ cause }),
   });
 }
 
-export function grafanaDsQuery(
-  config: GrafanaEnvConfig,
+export function observabilityDsQuery(
+  config: ObservabilityEnvConfig,
   datasourceUid: string,
   datasourceType: "prometheus" | "loki",
   expr: string,
   options?: DsQueryOpts,
-): Effect.Effect<DsQueryResponse, GrafanaToolError> {
+): Effect.Effect<DsQueryResponse, ObservabilityToolError> {
   const opts = options ?? {};
   const query: Record<string, unknown> = {
     refId: "A",
@@ -183,7 +235,7 @@ export function grafanaDsQuery(
     }
   }
 
-  return grafanaFetch<DsQueryResponse>(config, "/api/ds/query", {
+  return observabilityFetch<DsQueryResponse>(config, "/api/ds/query", {
     method: "POST",
     body: JSON.stringify({
       queries: [query],

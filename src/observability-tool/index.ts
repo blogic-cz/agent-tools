@@ -9,32 +9,23 @@ import { ConfigServiceLayer } from "#config";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { VERSION } from "#shared";
 
-import { alertsCommand } from "./alerts";
-import { dashboardsCommand } from "./dashboards";
-import { datasourcesCommand } from "./datasources";
-import { healthCommand } from "./health";
-import { logsCommand } from "./logs";
 import { metricsCommand } from "./metrics";
+import { traceCommand } from "./trace";
 
 const renderCauseToStderr = (cause: Cause.Cause<unknown>) => Console.error(cause.toString());
 
-const mainCommand = Command.make("grafana-tool", {}).pipe(
-  Command.withDescription("Grafana queries — dashboards, alerts, Prometheus metrics, Loki logs"),
-  Command.withSubcommands([
-    healthCommand,
-    dashboardsCommand,
-    alertsCommand,
-    datasourcesCommand,
-    metricsCommand,
-    logsCommand,
-  ]),
+const mainCommand = Command.make("observability-tool", {}).pipe(
+  Command.withDescription(
+    "LGTM observability queries — Tempo traces, Loki logs, Prometheus metrics",
+  ),
+  Command.withSubcommands([traceCommand, metricsCommand]),
 );
 
 const cli = Command.run(mainCommand, { version: VERSION });
 
 const MainLayer = Layer.mergeAll(BunServices.layer, ConfigServiceLayer, AuditServiceLayer);
 
-const program = withAudit("grafana", cli).pipe(
+const program = withAudit("observability", cli).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );
