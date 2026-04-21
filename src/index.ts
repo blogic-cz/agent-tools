@@ -1,4 +1,4 @@
-export type { AgentToolsConfig, GrafanaConfig, GrafanaEnvTarget } from "./config/index";
+export type { AgentToolsConfig, ObservabilityConfig, ObservabilityEnvTarget } from "./config/index";
 
 export {
   AuditService,
