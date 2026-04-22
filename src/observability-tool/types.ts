@@ -109,7 +109,13 @@ export type TempoSearchResponse = {
   readonly metrics?: Record<string, unknown>;
 };
 
-export type IdKind = "trace_id" | "span_id";
+import { Schema } from "effect";
+
+export const IdKind = Schema.Literals(["trace_id", "span_id"]);
+export type IdKind = typeof IdKind.Type;
+
+export const ResolutionVia = Schema.Literals(["direct_trace_id", "span_search"]);
+export type ResolutionVia = typeof ResolutionVia.Type;
 
 export type ParsedId = {
   readonly rawId: string;
@@ -123,13 +129,12 @@ export type SearchWindow = {
 };
 
 export type SpanResolution = {
-  readonly via: "direct_trace_id" | "span_search";
+  readonly via: ResolutionVia;
   readonly resolvedTraceId: string;
   readonly searchedSpanId?: string;
   readonly focusSpan?: FlattenedSpan;
   readonly attemptedWindows?: SearchWindow[];
   readonly usedWindow?: SearchWindow;
-  readonly candidateTraceIds?: string[];
 };
 
 export type DsQueryOpts = {

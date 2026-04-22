@@ -1,7 +1,8 @@
-import { Console, Effect } from "effect";
+import { Console, Effect, type Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { formatOption, formatOutput } from "#shared";
+import type { OutputFormat } from "#shared";
 
 import { ObservabilityToolError } from "./errors";
 import {
@@ -351,13 +352,71 @@ function resolveTraceFromId(
         via: "span_search" as const,
         resolvedTraceId: traceId,
         searchedSpanId: parsed.normalizedId,
-        focusSpan: focusSpan ?? undefined,
+        focusSpan,
         attemptedWindows,
         usedWindow,
       },
       spans,
     };
   });
+}
+
+function handleTraceGet(
+  id: string,
+  format: OutputFormat,
+  env: string,
+  profile: Option.Option<string>,
+) {
+  const startedAt = Date.now();
+
+  return Effect.gen(function* () {
+    const parsed = parseId(id);
+    if (!parsed) {
+      return yield* new ObservabilityToolError({
+        cause: {
+          message: `Invalid ID format: expected 32-char trace ID or 16-char span ID, got ${id.length} characters`,
+          code: "INVALID_ID_FORMAT",
+          retryable: false,
+        },
+      });
+    }
+
+    const config = yield* resolveConfig(env, profile);
+    const { resolution, spans } = yield* resolveTraceFromId(config, parsed);
+
+    const result = {
+      success: true,
+      message:
+        parsed.kind === "span_id"
+          ? `Found trace ${resolution.resolvedTraceId} via span ${parsed.normalizedId} with ${spans.length} span(s)`
+          : `Resolved trace ${resolution.resolvedTraceId} with ${spans.length} span(s)`,
+      data: {
+        environment: env,
+        grafanaUrl: config.url,
+        tempoDatasourceUid: config.tempoUid,
+        input: parsed,
+        resolution,
+        summary: summarizeTrace(resolution.resolvedTraceId, spans),
+        spans,
+      },
+      executionTimeMs: Date.now() - startedAt,
+    };
+
+    yield* Console.log(formatOutput(result, format));
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        const result = {
+          success: false,
+          message: "Failed to resolve trace from Tempo",
+          error: formatObservabilityError(error),
+          hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Tempo connectivity",
+          executionTimeMs: Date.now() - startedAt,
+        };
+        yield* Console.log(formatOutput(result, format));
+      }),
+    ),
+  );
 }
 
 const getCommand = Command.make(
@@ -368,58 +427,7 @@ const getCommand = Command.make(
     env: envOption,
     profile: profileOption,
   },
-  ({ id, format, env, profile }) => {
-    const startedAt = Date.now();
-
-    return Effect.gen(function* () {
-      const parsed = parseId(id);
-      if (!parsed) {
-        return yield* new ObservabilityToolError({
-          cause: {
-            message: `Invalid ID format: expected 32-char trace ID or 16-char span ID, got ${id.length} characters`,
-            code: "INVALID_ID_FORMAT",
-            retryable: false,
-          },
-        });
-      }
-
-      const config = yield* resolveConfig(env, profile);
-      const { resolution, spans } = yield* resolveTraceFromId(config, parsed);
-
-      const result = {
-        success: true,
-        message:
-          parsed.kind === "span_id"
-            ? `Found trace ${resolution.resolvedTraceId} via span ${parsed.normalizedId} with ${spans.length} span(s)`
-            : `Resolved trace ${resolution.resolvedTraceId} with ${spans.length} span(s)`,
-        data: {
-          environment: env,
-          grafanaUrl: config.url,
-          tempoDatasourceUid: config.tempoUid,
-          input: parsed,
-          resolution,
-          summary: summarizeTrace(resolution.resolvedTraceId, spans),
-          spans,
-        },
-        executionTimeMs: Date.now() - startedAt,
-      };
-
-      yield* Console.log(formatOutput(result, format));
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          const result = {
-            success: false,
-            message: "Failed to resolve trace from Tempo",
-            error: formatObservabilityError(error),
-            hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Tempo connectivity",
-            executionTimeMs: Date.now() - startedAt,
-          };
-          yield* Console.log(formatOutput(result, format));
-        }),
-      ),
-    );
-  },
+  ({ id, format, env, profile }) => handleTraceGet(id, format, env, profile),
 ).pipe(Command.withDescription("Resolve a trace by trace ID or span ID via Grafana/Tempo"));
 
 const logsCommand = Command.make(
@@ -548,58 +556,7 @@ const findCommand = Command.make(
     env: envOption,
     profile: profileOption,
   },
-  ({ id, format, env, profile }) => {
-    const startedAt = Date.now();
-
-    return Effect.gen(function* () {
-      const parsed = parseId(id);
-      if (!parsed) {
-        return yield* new ObservabilityToolError({
-          cause: {
-            message: `Invalid ID format: expected 32-char trace ID or 16-char span ID, got ${id.length} characters`,
-            code: "INVALID_ID_FORMAT",
-            retryable: false,
-          },
-        });
-      }
-
-      const config = yield* resolveConfig(env, profile);
-      const { resolution, spans } = yield* resolveTraceFromId(config, parsed);
-
-      const result = {
-        success: true,
-        message:
-          parsed.kind === "span_id"
-            ? `Found trace ${resolution.resolvedTraceId} via span ${parsed.normalizedId} with ${spans.length} span(s)`
-            : `Resolved trace ${resolution.resolvedTraceId} with ${spans.length} span(s)`,
-        data: {
-          environment: env,
-          grafanaUrl: config.url,
-          tempoDatasourceUid: config.tempoUid,
-          input: parsed,
-          resolution,
-          summary: summarizeTrace(resolution.resolvedTraceId, spans),
-          spans,
-        },
-        executionTimeMs: Date.now() - startedAt,
-      };
-
-      yield* Console.log(formatOutput(result, format));
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          const result = {
-            success: false,
-            message: "Failed to resolve trace",
-            error: formatObservabilityError(error),
-            hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Tempo connectivity",
-            executionTimeMs: Date.now() - startedAt,
-          };
-          yield* Console.log(formatOutput(result, format));
-        }),
-      ),
-    );
-  },
+  ({ id, format, env, profile }) => handleTraceGet(id, format, env, profile),
 ).pipe(Command.withDescription("Alias for 'trace get' — resolve a trace by trace ID or span ID"));
 
 export const traceCommand = Command.make("trace", {}).pipe(
