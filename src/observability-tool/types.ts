@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 export type ObservabilityEnvConfig = {
   url: string;
   token?: string;
@@ -109,8 +111,6 @@ export type TempoSearchResponse = {
   readonly metrics?: Record<string, unknown>;
 };
 
-import { Schema } from "effect";
-
 export const IdKind = Schema.Literals(["trace_id", "span_id"]);
 export type IdKind = typeof IdKind.Type;
 
@@ -133,7 +133,7 @@ export type SpanResolution = {
   readonly resolvedTraceId: string;
   readonly searchedSpanId?: string;
   readonly focusSpan?: FlattenedSpan;
-  readonly attemptedWindows?: SearchWindow[];
+  readonly attemptedWindows?: ReadonlyArray<SearchWindow>;
   readonly usedWindow?: SearchWindow;
 };
 

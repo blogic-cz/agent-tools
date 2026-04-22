@@ -295,7 +295,7 @@ function resolveTraceFromId(
 
     const attemptedWindows: SearchWindow[] = [];
     let usedWindow: SearchWindow | undefined;
-    let candidateTraceIds: string[] = [];
+    let uniqueTraceIds: string[] = [];
 
     for (const window of windows) {
       attemptedWindows.push(window);
@@ -304,11 +304,11 @@ function resolveTraceFromId(
 
       if (traces.length === 0) continue;
 
-      candidateTraceIds = traces
+      const candidateTraceIds = traces
         .map((trace) => trace.traceID?.toLowerCase())
         .filter((id): id is string => id !== undefined);
 
-      const uniqueTraceIds = [...new Set(candidateTraceIds)];
+      uniqueTraceIds = [...new Set(candidateTraceIds)];
 
       if (uniqueTraceIds.length > 1) {
         return yield* new ObservabilityToolError({
@@ -325,7 +325,7 @@ function resolveTraceFromId(
       break;
     }
 
-    if (candidateTraceIds.length === 0 || !usedWindow) {
+    if (uniqueTraceIds.length === 0 || !usedWindow) {
       const windowDesc = attemptedWindows
         .map((window) => `${window.start} → ${window.end}`)
         .join(", ");
@@ -336,7 +336,7 @@ function resolveTraceFromId(
       });
     }
 
-    const traceId = candidateTraceIds[0];
+    const traceId = uniqueTraceIds[0];
     const spans = yield* fetchFullTrace(config, traceId);
 
     if (spans.length === 0) {
@@ -466,7 +466,7 @@ const logsCommand = Command.make(
       }
 
       const config = yield* resolveConfig(env, profile);
-      const { resolution } = yield* resolveTraceFromId(config, parsed);
+      const { resolution } = yield* resolveTraceFromId(config, parsed, { start, end });
       const resolvedTraceId = resolution.resolvedTraceId;
 
       const logql = `{job=~".+"} |= "${resolvedTraceId}"`;
