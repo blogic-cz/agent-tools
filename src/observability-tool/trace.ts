@@ -14,14 +14,31 @@ import {
 } from "./shared";
 import type {
   FlattenedSpan,
+  ObservabilityEnvConfig,
   OtlpAnyValue,
   OtlpAttribute,
+  ParsedId,
+  SearchWindow,
+  SpanResolution,
+  TempoSearchResponse,
   TempoTraceResponse,
   TraceSummary,
 } from "./types";
 
-function isHexTraceId(value: string): boolean {
-  return /^[\da-f]{32}$/i.test(value);
+const SPAN_SEARCH_WINDOWS: SearchWindow[] = [
+  { start: "now-1h", end: "now" },
+  { start: "now-24h", end: "now" },
+];
+
+function parseId(value: string): ParsedId | undefined {
+  const trimmed = value.trim().toLowerCase();
+  if (/^[\da-f]{32}$/.test(trimmed)) {
+    return { rawId: value, normalizedId: trimmed, kind: "trace_id" };
+  }
+  if (/^[\da-f]{16}$/.test(trimmed)) {
+    return { rawId: value, normalizedId: trimmed, kind: "span_id" };
+  }
+  return undefined;
 }
 
 function getStringAttribute(
@@ -109,6 +126,16 @@ function computeDurationMs(start?: string, end?: string): number | undefined {
   }
 
   return Number(endNano - startNano) / 1_000_000;
+}
+
+function relativeToEpoch(value: string, nowEpoch: number): number {
+  const match = /^now-(\d+)([smhd])$/.exec(value.trim());
+  if (!match) return nowEpoch;
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const multipliers: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+  return nowEpoch - amount * (multipliers[unit] ?? 1);
 }
 
 function isErrorStatus(code?: string | number): boolean {
@@ -205,45 +232,173 @@ function parseLabel(value: string | Record<string, string>): Record<string, stri
   }
 }
 
+type ResolvedTrace = {
+  readonly resolution: SpanResolution;
+  readonly spans: FlattenedSpan[];
+};
+
+function searchTempoBySpanId(
+  config: ObservabilityEnvConfig,
+  spanId: string,
+  window: SearchWindow,
+): Effect.Effect<TempoSearchResponse, ObservabilityToolError> {
+  const now = Math.floor(Date.now() / 1000);
+  const startEpoch = relativeToEpoch(window.start, now);
+  const endEpoch = relativeToEpoch(window.end, now);
+  const traceql = encodeURIComponent(`{ span:id = "${spanId}" }`);
+  const searchUrl =
+    `/api/datasources/proxy/uid/${config.tempoUid}/api/search` +
+    `?q=${traceql}&start=${startEpoch}&end=${endEpoch}&limit=5`;
+
+  return observabilityFetch<TempoSearchResponse>(config, searchUrl);
+}
+
+function fetchFullTrace(
+  config: ObservabilityEnvConfig,
+  traceId: string,
+): Effect.Effect<FlattenedSpan[], ObservabilityToolError> {
+  return Effect.gen(function* () {
+    const raw = yield* observabilityFetch<TempoTraceResponse>(
+      config,
+      `/api/datasources/proxy/uid/${config.tempoUid}/api/traces/${traceId}`,
+    );
+    return flattenTrace(raw);
+  });
+}
+
+function resolveTraceFromId(
+  config: ObservabilityEnvConfig,
+  parsed: ParsedId,
+  explicitWindows?: { start: string; end: string },
+): Effect.Effect<ResolvedTrace, ObservabilityToolError> {
+  return Effect.gen(function* () {
+    if (parsed.kind === "trace_id") {
+      const spans = yield* fetchFullTrace(config, parsed.normalizedId);
+      if (spans.length === 0) {
+        return yield* new ObservabilityToolError({
+          cause: new Error(`Trace ${parsed.normalizedId} returned zero spans`),
+        });
+      }
+      return {
+        resolution: {
+          via: "direct_trace_id" as const,
+          resolvedTraceId: parsed.normalizedId,
+        },
+        spans,
+      };
+    }
+
+    const windows = explicitWindows
+      ? [{ start: explicitWindows.start, end: explicitWindows.end }]
+      : SPAN_SEARCH_WINDOWS;
+
+    const attemptedWindows: SearchWindow[] = [];
+    let usedWindow: SearchWindow | undefined;
+    let candidateTraceIds: string[] = [];
+
+    for (const window of windows) {
+      attemptedWindows.push(window);
+      const searchResult = yield* searchTempoBySpanId(config, parsed.normalizedId, window);
+      const traces = searchResult.traces ?? [];
+
+      if (traces.length === 0) continue;
+
+      candidateTraceIds = traces
+        .map((trace) => trace.traceID?.toLowerCase())
+        .filter((id): id is string => id !== undefined);
+
+      const uniqueTraceIds = [...new Set(candidateTraceIds)];
+
+      if (uniqueTraceIds.length > 1) {
+        return yield* new ObservabilityToolError({
+          cause: {
+            message: `Ambiguous span ID ${parsed.normalizedId} — found in ${uniqueTraceIds.length} traces`,
+            code: "AMBIGUOUS_SPAN_ID",
+            retryable: true,
+            details: { candidateTraceIds: uniqueTraceIds },
+          },
+        });
+      }
+
+      usedWindow = window;
+      break;
+    }
+
+    if (candidateTraceIds.length === 0 || !usedWindow) {
+      const windowDesc = attemptedWindows
+        .map((window) => `${window.start} → ${window.end}`)
+        .join(", ");
+      return yield* new ObservabilityToolError({
+        cause: new Error(
+          `No trace found containing span ${parsed.normalizedId} (searched windows: ${windowDesc})`,
+        ),
+      });
+    }
+
+    const traceId = candidateTraceIds[0];
+    const spans = yield* fetchFullTrace(config, traceId);
+
+    if (spans.length === 0) {
+      return yield* new ObservabilityToolError({
+        cause: new Error(`Trace ${traceId} returned zero spans`),
+      });
+    }
+
+    const focusSpan = spans.find((span) => span.spanId === parsed.normalizedId);
+
+    return {
+      resolution: {
+        via: "span_search" as const,
+        resolvedTraceId: traceId,
+        searchedSpanId: parsed.normalizedId,
+        focusSpan: focusSpan ?? undefined,
+        attemptedWindows,
+        usedWindow,
+      },
+      spans,
+    };
+  });
+}
+
 const getCommand = Command.make(
   "get",
   {
-    traceId: Argument.string("traceId"),
+    id: Argument.string("id"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
   },
-  ({ traceId, format, env, profile }) => {
+  ({ id, format, env, profile }) => {
     const startedAt = Date.now();
 
     return Effect.gen(function* () {
-      if (!isHexTraceId(traceId)) {
+      const parsed = parseId(id);
+      if (!parsed) {
         return yield* new ObservabilityToolError({
-          cause: new Error("trace get requires a 32-character hex trace ID"),
+          cause: {
+            message: `Invalid ID format: expected 32-char trace ID or 16-char span ID, got ${id.length} characters`,
+            code: "INVALID_ID_FORMAT",
+            retryable: false,
+          },
         });
       }
 
       const config = yield* resolveConfig(env, profile);
-      const raw = yield* observabilityFetch<TempoTraceResponse>(
-        config,
-        `/api/datasources/proxy/uid/${config.tempoUid}/api/traces/${traceId.toLowerCase()}`,
-      );
-      const spans = flattenTrace(raw);
-
-      if (spans.length === 0) {
-        return yield* new ObservabilityToolError({
-          cause: new Error(`Trace ${traceId} returned zero spans`),
-        });
-      }
+      const { resolution, spans } = yield* resolveTraceFromId(config, parsed);
 
       const result = {
         success: true,
-        message: `Resolved trace ${traceId.toLowerCase()} with ${spans.length} span(s)`,
+        message:
+          parsed.kind === "span_id"
+            ? `Found trace ${resolution.resolvedTraceId} via span ${parsed.normalizedId} with ${spans.length} span(s)`
+            : `Resolved trace ${resolution.resolvedTraceId} with ${spans.length} span(s)`,
         data: {
           environment: env,
           grafanaUrl: config.url,
           tempoDatasourceUid: config.tempoUid,
-          summary: summarizeTrace(traceId.toLowerCase(), spans),
+          input: parsed,
+          resolution,
+          summary: summarizeTrace(resolution.resolvedTraceId, spans),
           spans,
         },
         executionTimeMs: Date.now() - startedAt,
@@ -257,7 +412,7 @@ const getCommand = Command.make(
             success: false,
             message: "Failed to resolve trace from Tempo",
             error: formatObservabilityError(error),
-            hint: "Check trace ID format and Grafana/Tempo connectivity",
+            hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Tempo connectivity",
             executionTimeMs: Date.now() - startedAt,
           };
           yield* Console.log(formatOutput(result, format));
@@ -265,12 +420,12 @@ const getCommand = Command.make(
       ),
     );
   },
-).pipe(Command.withDescription("Resolve a trace by ID via Grafana/Tempo"));
+).pipe(Command.withDescription("Resolve a trace by trace ID or span ID via Grafana/Tempo"));
 
 const logsCommand = Command.make(
   "logs",
   {
-    traceId: Argument.string("traceId"),
+    id: Argument.string("id"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
@@ -287,19 +442,26 @@ const logsCommand = Command.make(
       Flag.withDefault("now"),
     ),
   },
-  ({ traceId, format, env, profile, limit, start, end }) => {
+  ({ id, format, env, profile, limit, start, end }) => {
     const startedAt = Date.now();
 
     return Effect.gen(function* () {
-      if (!isHexTraceId(traceId)) {
+      const parsed = parseId(id);
+      if (!parsed) {
         return yield* new ObservabilityToolError({
-          cause: new Error("trace logs requires a 32-character hex trace ID"),
+          cause: {
+            message: `Invalid ID format: expected 32-char trace ID or 16-char span ID, got ${id.length} characters`,
+            code: "INVALID_ID_FORMAT",
+            retryable: false,
+          },
         });
       }
 
       const config = yield* resolveConfig(env, profile);
-      const normalizedTraceId = traceId.toLowerCase();
-      const logql = `{job=~".+"} |= "${normalizedTraceId}"`;
+      const { resolution } = yield* resolveTraceFromId(config, parsed);
+      const resolvedTraceId = resolution.resolvedTraceId;
+
+      const logql = `{job=~".+"} |= "${resolvedTraceId}"`;
       const response = yield* observabilityDsQuery(config, config.lokiUid, "loki", logql, {
         from: start,
         to: end,
@@ -343,11 +505,16 @@ const logsCommand = Command.make(
 
       const result = {
         success: true,
-        message: `Found ${logs.length} log line(s) mentioning trace ${normalizedTraceId}`,
+        message:
+          parsed.kind === "span_id"
+            ? `Found ${logs.length} log line(s) for trace ${resolvedTraceId} (resolved from span ${parsed.normalizedId})`
+            : `Found ${logs.length} log line(s) mentioning trace ${resolvedTraceId}`,
         data: {
           environment: env,
           grafanaUrl: config.url,
           lokiDatasourceUid: config.lokiUid,
+          input: parsed,
+          resolution,
           query: logql,
           logCount: logs.length,
           logs: logs.toSorted((left, right) => right.timestamp.localeCompare(left.timestamp)),
@@ -363,7 +530,7 @@ const logsCommand = Command.make(
             success: false,
             message: "Failed to execute trace log lookup",
             error: formatObservabilityError(error),
-            hint: "Check trace ID format and Grafana/Loki connectivity",
+            hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Loki connectivity",
             executionTimeMs: Date.now() - startedAt,
           };
           yield* Console.log(formatOutput(result, format));
@@ -371,9 +538,71 @@ const logsCommand = Command.make(
       ),
     );
   },
-).pipe(Command.withDescription("Find Loki logs mentioning a trace ID"));
+).pipe(Command.withDescription("Find Loki logs mentioning a trace (accepts trace ID or span ID)"));
+
+const findCommand = Command.make(
+  "find",
+  {
+    id: Argument.string("id"),
+    format: formatOption,
+    env: envOption,
+    profile: profileOption,
+  },
+  ({ id, format, env, profile }) => {
+    const startedAt = Date.now();
+
+    return Effect.gen(function* () {
+      const parsed = parseId(id);
+      if (!parsed) {
+        return yield* new ObservabilityToolError({
+          cause: {
+            message: `Invalid ID format: expected 32-char trace ID or 16-char span ID, got ${id.length} characters`,
+            code: "INVALID_ID_FORMAT",
+            retryable: false,
+          },
+        });
+      }
+
+      const config = yield* resolveConfig(env, profile);
+      const { resolution, spans } = yield* resolveTraceFromId(config, parsed);
+
+      const result = {
+        success: true,
+        message:
+          parsed.kind === "span_id"
+            ? `Found trace ${resolution.resolvedTraceId} via span ${parsed.normalizedId} with ${spans.length} span(s)`
+            : `Resolved trace ${resolution.resolvedTraceId} with ${spans.length} span(s)`,
+        data: {
+          environment: env,
+          grafanaUrl: config.url,
+          tempoDatasourceUid: config.tempoUid,
+          input: parsed,
+          resolution,
+          summary: summarizeTrace(resolution.resolvedTraceId, spans),
+          spans,
+        },
+        executionTimeMs: Date.now() - startedAt,
+      };
+
+      yield* Console.log(formatOutput(result, format));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          const result = {
+            success: false,
+            message: "Failed to resolve trace",
+            error: formatObservabilityError(error),
+            hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Tempo connectivity",
+            executionTimeMs: Date.now() - startedAt,
+          };
+          yield* Console.log(formatOutput(result, format));
+        }),
+      ),
+    );
+  },
+).pipe(Command.withDescription("Alias for 'trace get' — resolve a trace by trace ID or span ID"));
 
 export const traceCommand = Command.make("trace", {}).pipe(
   Command.withDescription("Tempo trace operations"),
-  Command.withSubcommands([getCommand, logsCommand]),
+  Command.withSubcommands([getCommand, logsCommand, findCommand]),
 );

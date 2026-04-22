@@ -89,6 +89,49 @@ export type TraceSummary = {
   readonly endedAtUnixNano?: string;
 };
 
+export type TempoSearchResponse = {
+  readonly traces?: ReadonlyArray<{
+    readonly traceID?: string;
+    readonly rootServiceName?: string;
+    readonly rootTraceName?: string;
+    readonly startTimeUnixNano?: string;
+    readonly durationMs?: number;
+    readonly spanSets?: ReadonlyArray<{
+      readonly spans?: ReadonlyArray<{
+        readonly spanID?: string;
+        readonly startTimeUnixNano?: string;
+        readonly durationNanos?: string;
+        readonly attributes?: ReadonlyArray<OtlpAttribute>;
+      }>;
+      readonly matched?: number;
+    }>;
+  }>;
+  readonly metrics?: Record<string, unknown>;
+};
+
+export type IdKind = "trace_id" | "span_id";
+
+export type ParsedId = {
+  readonly rawId: string;
+  readonly normalizedId: string;
+  readonly kind: IdKind;
+};
+
+export type SearchWindow = {
+  readonly start: string;
+  readonly end: string;
+};
+
+export type SpanResolution = {
+  readonly via: "direct_trace_id" | "span_search";
+  readonly resolvedTraceId: string;
+  readonly searchedSpanId?: string;
+  readonly focusSpan?: FlattenedSpan;
+  readonly attemptedWindows?: SearchWindow[];
+  readonly usedWindow?: SearchWindow;
+  readonly candidateTraceIds?: string[];
+};
+
 export type DsQueryOpts = {
   instant?: boolean;
   from?: string;
