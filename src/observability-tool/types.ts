@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 export type ObservabilityEnvConfig = {
   url: string;
   token?: string;
@@ -87,6 +89,52 @@ export type TraceSummary = {
   readonly totalDurationMs?: number;
   readonly startedAtUnixNano?: string;
   readonly endedAtUnixNano?: string;
+};
+
+export type TempoSearchResponse = {
+  readonly traces?: ReadonlyArray<{
+    readonly traceID?: string;
+    readonly rootServiceName?: string;
+    readonly rootTraceName?: string;
+    readonly startTimeUnixNano?: string;
+    readonly durationMs?: number;
+    readonly spanSets?: ReadonlyArray<{
+      readonly spans?: ReadonlyArray<{
+        readonly spanID?: string;
+        readonly startTimeUnixNano?: string;
+        readonly durationNanos?: string;
+        readonly attributes?: ReadonlyArray<OtlpAttribute>;
+      }>;
+      readonly matched?: number;
+    }>;
+  }>;
+  readonly metrics?: Record<string, unknown>;
+};
+
+export const IdKind = Schema.Literals(["trace_id", "span_id"]);
+export type IdKind = typeof IdKind.Type;
+
+export const ResolutionVia = Schema.Literals(["direct_trace_id", "span_search"]);
+export type ResolutionVia = typeof ResolutionVia.Type;
+
+export type ParsedId = {
+  readonly rawId: string;
+  readonly normalizedId: string;
+  readonly kind: IdKind;
+};
+
+export type SearchWindow = {
+  readonly start: string;
+  readonly end: string;
+};
+
+export type SpanResolution = {
+  readonly via: ResolutionVia;
+  readonly resolvedTraceId: string;
+  readonly searchedSpanId?: string;
+  readonly focusSpan?: FlattenedSpan;
+  readonly attemptedWindows?: ReadonlyArray<SearchWindow>;
+  readonly usedWindow?: SearchWindow;
 };
 
 export type DsQueryOpts = {
