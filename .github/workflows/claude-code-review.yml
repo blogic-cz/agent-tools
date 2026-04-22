@@ -55,7 +55,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ steps.load-prompt.outputs.prompt }}
-          use_sticky_comment: true
+          use_sticky_comment: false
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(bun:*),Bash(git:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
 
