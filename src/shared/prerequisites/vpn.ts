@@ -47,7 +47,7 @@ const resolveExplicitDriver = (
     if (platform !== "win32") {
       return {
         success: false,
-        error: `VPN driver "" is not supported on .`,
+        error: `VPN driver "${driver.type}" is not supported on ${platform}.`,
         hint: "Configure a driver for the current OS or enable auto detection.",
       };
     }
