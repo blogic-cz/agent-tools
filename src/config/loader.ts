@@ -16,10 +16,7 @@ const CredentialGuardConfigSchema = Schema.Struct({
   additionalDangerousBashPatterns: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
-const CleanupPolicySchema = Schema.Union([
-  Schema.Literal("leave-running"),
-  Schema.Literal("stop-if-started"),
-]);
+const CleanupPolicySchema = Schema.Literals(["leave-running", "stop-if-started"]);
 
 const VpnPrerequisiteSchema = Schema.Struct({
   type: Schema.Literal("vpn"),
