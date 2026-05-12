@@ -11,6 +11,9 @@ import {
 } from "./errors";
 import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
+import { collectProcessOutput } from "#shared/exec";
+import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
+import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { isKubectlCommandAllowed } from "./security";
 
 export class K8sService extends Context.Service<
@@ -102,6 +105,24 @@ export class K8sService extends Context.Service<
             ),
           );
 
+        const runPrerequisiteCommand = (command: ChildProcess.Command, label: string) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const process = yield* executor.spawn(command);
+              return yield* collectProcessOutput(process);
+            }),
+          ).pipe(
+            Effect.mapError(
+              (platformError) =>
+                new K8sCommandError({
+                  message: `Prerequisite command failed (${label}): ${String(platformError)}`,
+                  command: label,
+                  exitCode: -1,
+                  stderr: String(platformError),
+                }),
+            ),
+          );
+
         const resolveContext = Effect.fn("K8sService.resolveContext")(function* (
           profile: string | undefined,
           k8sConfig: K8sConfig,
@@ -172,27 +193,44 @@ export class K8sService extends Context.Service<
         ) {
           const k8sConfig = yield* requireK8sConfig(profile);
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
-          const context = yield* resolveContext(profile, k8sConfig);
-          const fullCommand = `kubectl --context ${context} ${cmd}`;
+          return yield* runWithProfilePrerequisites(
+            config ?? {},
+            k8sConfig,
+            runPrerequisiteCommand,
+            Effect.gen(function* () {
+              const context = yield* resolveContext(profile, k8sConfig);
+              const fullCommand = `kubectl --context ${context} ${cmd}`;
 
-          const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
+              const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
 
-          if (Option.isNone(resultOption)) {
-            return yield* new K8sTimeoutError({
-              message: `Command timed out after ${timeoutMs}ms`,
-              command: fullCommand,
-              timeoutMs,
-            });
-          }
+              if (Option.isNone(resultOption)) {
+                return yield* new K8sTimeoutError({
+                  message: `Command timed out after ${timeoutMs}ms`,
+                  command: fullCommand,
+                  timeoutMs,
+                });
+              }
 
-          const result = resultOption.value;
+              const result = resultOption.value;
 
-          return {
-            stdout: result.stdout,
-            stderr: result.stderr,
-            exitCode: result.exitCode,
-            command: fullCommand,
-          };
+              return {
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exitCode: result.exitCode,
+                command: fullCommand,
+              };
+            }),
+          ).pipe(
+            Effect.mapError((error) =>
+              isPrerequisiteRunError(error)
+                ? new K8sContextError({
+                    message: error.message,
+                    clusterId: k8sConfig.clusterId,
+                    hint: error.hint,
+                  })
+                : error,
+            ),
+          );
         });
 
         const runCommand = Effect.fn("K8sService.runCommand")(function* (

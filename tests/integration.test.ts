@@ -611,20 +611,37 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     expect(parsed.command).toContain("-n mapped-test-ns");
   });
 
-  const runDbTunnelTest = (service: string | undefined, expectedService: string) => {
+  const runDbTunnelTest = (
+    service: string | undefined,
+    expectedService: string,
+    options?: { withVpn?: boolean },
+  ) => {
     const dbDir = join(tmpdir(), `agent-tools-db-tunnel-${Date.now()}`);
     const binDir = join(dbDir, "bin");
     const tunnelReadyPath = join(dbDir, "tunnel-ready");
+    const vpnReadyPath = join(dbDir, "vpn-ready");
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
     const psqlArgsPath = join(dbDir, "psql-args.txt");
+    const vpnArgsPath = join(dbDir, "vpn-args.txt");
 
     mkdirSync(binDir, { recursive: true });
 
     writeFileSync(
       join(dbDir, "agent-tools.json5"),
       JSON.stringify({
+        ...(options?.withVpn
+          ? {
+              vpns: {
+                appVpn: {
+                  name: "ExampleVPN",
+                  connectTimeoutMs: 1000,
+                },
+              },
+            }
+          : {}),
         database: {
           default: {
+            ...(options?.withVpn ? { vpn: "appVpn" } : {}),
             environments: {
               local: {
                 host: "127.0.0.1",
@@ -666,6 +683,69 @@ done
     );
     chmodSync(kubectlPath, 0o755);
 
+    if (options?.withVpn) {
+      const vpnToolName =
+        process.platform === "darwin"
+          ? "scutil"
+          : process.platform === "linux"
+            ? "nmcli"
+            : "rasdial";
+      const vpnPath = join(binDir, vpnToolName);
+      writeFileSync(
+        vpnPath,
+        `#!/bin/sh
+printf '%s\\n' "$*" >> "${vpnArgsPath}"
+if [ "${vpnToolName}" = "scutil" ]; then
+  if [ "$1" = "--nc" ] && [ "$2" = "status" ]; then
+    if [ -f "${vpnReadyPath}" ]; then
+      echo "Connected"
+    else
+      echo "Disconnected"
+    fi
+    exit 0
+  fi
+  if [ "$1" = "--nc" ] && [ "$2" = "start" ]; then
+    touch "${vpnReadyPath}"
+    exit 0
+  fi
+  if [ "$1" = "--nc" ] && [ "$2" = "stop" ]; then
+    rm -f "${vpnReadyPath}"
+    exit 0
+  fi
+fi
+if [ "${vpnToolName}" = "nmcli" ]; then
+  if [ "$1" = "-t" ]; then
+    if [ -f "${vpnReadyPath}" ]; then
+      echo "ExampleVPN"
+    fi
+    exit 0
+  fi
+  if [ "$1" = "connection" ] && [ "$2" = "up" ]; then
+    touch "${vpnReadyPath}"
+    exit 0
+  fi
+  if [ "$1" = "connection" ] && [ "$2" = "down" ]; then
+    rm -f "${vpnReadyPath}"
+    exit 0
+  fi
+fi
+if [ "${vpnToolName}" = "rasdial" ]; then
+  if [ "$2" = "/disconnect" ]; then
+    rm -f "${vpnReadyPath}"
+    exit 0
+  fi
+  if [ "$1" = "ExampleVPN" ]; then
+    touch "${vpnReadyPath}"
+    exit 0
+  fi
+  exit 0
+fi
+exit 1
+`,
+      );
+      chmodSync(vpnPath, 0o755);
+    }
+
     const ncPath = join(binDir, "nc");
     writeFileSync(
       ncPath,
@@ -704,6 +784,7 @@ printf '[{"ok":1}]\n'
     };
     const kubectlArgs = readFileSync(kubectlArgsPath, "utf8");
     const psqlArgs = readFileSync(psqlArgsPath, "utf8");
+    const vpnArgs = options?.withVpn ? readFileSync(vpnArgsPath, "utf8") : "";
 
     rmSync(dbDir, { recursive: true, force: true });
 
@@ -714,6 +795,10 @@ printf '[{"ok":1}]\n'
       `port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`,
     );
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
+
+    if (options?.withVpn) {
+      expect(vpnArgs).toContain("ExampleVPN");
+    }
   };
 
   it("db-tool opens a tunnel to the default PostgreSQL service", () => {
@@ -722,5 +807,9 @@ printf '[{"ok":1}]\n'
 
   it("db-tool opens a tunnel to a configured service", () => {
     runDbTunnelTest("database", "database");
+  });
+
+  it("db-tool starts VPN prerequisites before opening the database tunnel", () => {
+    runDbTunnelTest("database", "database", { withVpn: true });
   });
 });
