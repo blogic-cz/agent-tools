@@ -5,7 +5,6 @@ export type AzureConfig = {
   timeoutMs?: number;
 };
 
-/** Kubernetes cluster profile configuration */
 export type CleanupPolicy = "leave-running" | "stop-if-started";
 
 export type VpnPrerequisite = {

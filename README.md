@@ -185,6 +185,8 @@ bun run agent-tools/example-tool/index.ts ping
       clusterId: "your-cluster-id",
       namespaces: { test: "your-ns-test", prod: "your-ns-prod" },
       prerequisites: [{ type: "vpn", key: "blogic" }],
+      // Prerequisites are currently decoded and validated as config metadata;
+      // automatic VPN connect/disconnect execution is planned for a follow-up release.
     },
   },
   logs: {
