@@ -43,18 +43,23 @@ const resolveExplicitDriver = (
     };
   }
 
-  if (platform !== "win32") {
+  if (driver.type === "windows-rasdial") {
+    if (platform !== "win32") {
+      return {
+        success: false,
+        error: `VPN driver "" is not supported on .`,
+        hint: "Configure a driver for the current OS or enable auto detection.",
+      };
+    }
+
     return {
-      success: false,
-      error: `VPN driver "${driver.type}" is not supported on ${platform}.`,
-      hint: "Configure a driver for the current OS or enable auto detection.",
+      success: true,
+      driver: { platform, type: driver.type, entryName: driver.entryName ?? config.name },
     };
   }
 
-  return {
-    success: true,
-    driver: { platform, type: driver.type, entryName: driver.entryName ?? config.name },
-  };
+  const exhaustive: never = driver;
+  return exhaustive;
 };
 
 export function resolveVpnDriverConfig(

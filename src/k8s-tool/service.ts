@@ -102,8 +102,10 @@ export class K8sService extends Context.Service<
             ),
           );
 
-        const resolveContext = Effect.fn("K8sService.resolveContext")(function* (profile?: string) {
-          const k8sConfig = yield* requireK8sConfig(profile);
+        const resolveContext = Effect.fn("K8sService.resolveContext")(function* (
+          profile: string | undefined,
+          k8sConfig: K8sConfig,
+        ) {
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
           const cacheKey = profile ?? `cluster:${k8sConfig.clusterId}`;
           const cached = yield* Ref.get(contextRef);
@@ -170,7 +172,7 @@ export class K8sService extends Context.Service<
         ) {
           const k8sConfig = yield* requireK8sConfig(profile);
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
-          const context = yield* resolveContext(profile);
+          const context = yield* resolveContext(profile, k8sConfig);
           const fullCommand = `kubectl --context ${context} ${cmd}`;
 
           const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
@@ -240,7 +242,8 @@ export class K8sService extends Context.Service<
 
           const startTime = Date.now();
           if (dryRun) {
-            const context = yield* resolveContext(profile);
+            const k8sConfig = yield* requireK8sConfig(profile);
+            const context = yield* resolveContext(profile, k8sConfig);
             const fullCommand = `kubectl --context ${context} ${cmd}`;
             return {
               success: true,

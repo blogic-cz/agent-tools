@@ -24,7 +24,8 @@ const VpnPrerequisiteSchema = Schema.Struct({
   cleanup: Schema.optionalKey(CleanupPolicySchema),
 });
 
-const PrerequisitesSchema = Schema.Array(VpnPrerequisiteSchema);
+const PrerequisiteSchema = Schema.Union([VpnPrerequisiteSchema]);
+const PrerequisitesSchema = Schema.Array(PrerequisiteSchema);
 
 const MacosScutilVpnDriverConfigSchema = Schema.Struct({
   type: Schema.Literal("macos-scutil"),
