@@ -611,7 +611,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     expect(parsed.command).toContain("-n mapped-test-ns");
   });
 
-  it("db-tool opens a tunnel for remote envs that use localhost forwarded ports", () => {
+  const runDbTunnelTest = (service: string | undefined, expectedService: string) => {
     const dbDir = join(tmpdir(), `agent-tools-db-tunnel-${Date.now()}`);
     const binDir = join(dbDir, "bin");
     const tunnelReadyPath = join(dbDir, "tunnel-ready");
@@ -643,6 +643,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
             kubectl: {
               context: "cloud2-example-cz",
               namespace: "bl-system",
+              ...(service === undefined ? {} : { service }),
             },
             remotePort: 5432,
             tunnelTimeoutMs: 1000,
@@ -710,8 +711,16 @@ printf '[{"ok":1}]\n'
     expect(parsed.success).toBe(true);
     expect(parsed.data).toEqual([{ ok: 1 }]);
     expect(kubectlArgs).toContain(
-      "port-forward --context cloud2-example-cz --namespace bl-system svc/postgresql 25437:5432",
+      `port-forward --context cloud2-example-cz --namespace bl-system svc/${expectedService} 25437:5432`,
     );
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
+  };
+
+  it("db-tool opens a tunnel to the default PostgreSQL service", () => {
+    runDbTunnelTest(undefined, "postgresql");
+  });
+
+  it("db-tool opens a tunnel to a configured service", () => {
+    runDbTunnelTest("timescaledb", "timescaledb");
   });
 });

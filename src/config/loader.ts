@@ -95,6 +95,7 @@ const DatabaseConfigSchema = Schema.Struct({
     Schema.Struct({
       context: Schema.String,
       namespace: Schema.String,
+      service: Schema.optionalKey(Schema.String),
     }),
   ),
   tunnelTimeoutMs: Schema.optionalKey(Schema.Number),

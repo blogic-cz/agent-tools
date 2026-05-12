@@ -209,6 +209,10 @@
             "namespace": {
               "description": "Kubectl namespace for tunnel commands.",
               "type": "string"
+            },
+            "service": {
+              "description": "Kubernetes service name used as the port-forward target. Defaults to postgresql.",
+              "type": "string"
             }
           },
           "required": ["context", "namespace"]

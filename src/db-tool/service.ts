@@ -67,6 +67,7 @@ export class DbService extends Context.Service<
 
         const kubectlContext = dbConfig.kubectl?.context;
         const kubectlNamespace = dbConfig.kubectl?.namespace;
+        const kubectlService = dbConfig.kubectl?.service ?? "postgresql";
         const tunnelTimeoutMs = dbConfig.tunnelTimeoutMs ?? 5000;
         const remotePort = dbConfig.remotePort ?? 5432;
 
@@ -213,7 +214,7 @@ export class DbService extends Context.Service<
                   kubectlContext,
                   "--namespace",
                   kubectlNamespace,
-                  "svc/postgresql",
+                  `svc/${kubectlService}`,
                   `${config.port}:${remotePort}`,
                 ],
                 { stdout: "pipe", stderr: "pipe" },
