@@ -1,12 +1,12 @@
 import type {
   LinuxNmcliVpnDriverConfig,
   MacosScutilVpnDriverConfig,
-  Prerequisite,
+  VpnPrerequisite,
   WindowsRasdialVpnDriverConfig,
 } from "#config/types";
 
 export type PrerequisiteResolution =
-  | { success: true; prerequisites: readonly Prerequisite[] }
+  | { success: true; prerequisites: readonly VpnPrerequisite[] }
   | { success: false; error: string; hint: string };
 
 export type SupportedPlatform = "darwin" | "linux" | "win32";

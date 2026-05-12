@@ -110,7 +110,7 @@ export class K8sService extends Context.Service<
           const cacheKey = profile ?? `cluster:${k8sConfig.clusterId}`;
           const cached = yield* Ref.get(contextRef);
           const cachedContext = cached[cacheKey];
-          if (cachedContext) {
+          if (cachedContext !== undefined) {
             return cachedContext;
           }
 

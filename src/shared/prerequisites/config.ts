@@ -1,9 +1,9 @@
-import type { AgentToolsConfig, Prerequisite, ProfilePrerequisites } from "#config/types";
+import type { AgentToolsConfig, VpnPrerequisite, ProfilePrerequisites } from "#config/types";
 import type { PrerequisiteResolution } from "#shared/prerequisites/types";
 
 export function normalizeProfilePrerequisites(
   profile: ProfilePrerequisites,
-): readonly Prerequisite[] {
+): readonly VpnPrerequisite[] {
   const prerequisites = [...(profile.prerequisites ?? [])];
 
   if (

@@ -14,8 +14,6 @@ export type VpnPrerequisite = {
   cleanup?: CleanupPolicy;
 };
 
-export type Prerequisite = VpnPrerequisite;
-
 export type MacosScutilVpnDriverConfig = {
   type: "macos-scutil";
   serviceName?: string;
@@ -55,7 +53,7 @@ export type VpnConfig = {
 };
 
 export type ProfilePrerequisites = {
-  prerequisites?: readonly Prerequisite[];
+  prerequisites?: readonly VpnPrerequisite[];
   /** Convenience input sugar; normalize to prerequisites before execution. */
   vpn?: string;
 };

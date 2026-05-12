@@ -5,7 +5,7 @@ import type {
   VpnDriverResolution,
 } from "#shared/prerequisites/types";
 
-const isSupportedPlatform = (platform: NodeJS.Platform): platform is SupportedPlatform =>
+const isSupportedPlatform = (platform: typeof process.platform): platform is SupportedPlatform =>
   platform === "darwin" || platform === "linux" || platform === "win32";
 
 const resolveExplicitDriver = (
@@ -64,7 +64,7 @@ const resolveExplicitDriver = (
 
 export function resolveVpnDriverConfig(
   config: VpnConfig,
-  platform: NodeJS.Platform = process.platform,
+  platform: typeof process.platform = process.platform,
 ): VpnDriverResolution {
   if (!isSupportedPlatform(platform)) {
     return {
