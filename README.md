@@ -173,10 +173,18 @@ bun run agent-tools/example-tool/index.ts ping
     retentionDays: 90,
     dbPath: "~/.agent-tools/audit.sqlite",
   },
+  vpns: {
+    blogic: {
+      // auto defaults to true:
+      // darwin -> macos-scutil, linux -> linux-nmcli, win32 -> windows-rasdial
+      name: "BLVPN",
+    },
+  },
   kubernetes: {
     default: {
       clusterId: "your-cluster-id",
       namespaces: { test: "your-ns-test", prod: "your-ns-prod" },
+      prerequisites: [{ type: "vpn", key: "blogic" }],
     },
   },
   logs: {

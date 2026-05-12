@@ -72,6 +72,13 @@
       "additionalProperties": {
         "$ref": "#/definitions/GitHubRepoConfig"
       }
+    },
+    "vpns": {
+      "description": "Named VPN definitions referenced by profile prerequisites.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/VpnConfig"
+      }
     }
   },
   "definitions": {
@@ -81,8 +88,14 @@
       "additionalProperties": false,
       "required": ["owner", "repo"],
       "properties": {
-        "owner": { "type": "string", "description": "GitHub organization or user name." },
-        "repo": { "type": "string", "description": "Repository name." }
+        "owner": {
+          "type": "string",
+          "description": "GitHub organization or user name."
+        },
+        "repo": {
+          "type": "string",
+          "description": "Repository name."
+        }
       }
     },
     "AzureConfig": {
@@ -125,6 +138,17 @@
         "timeoutMs": {
           "description": "Optional command timeout in milliseconds.",
           "type": "number"
+        },
+        "prerequisites": {
+          "description": "Ordered prerequisite references required before remote tool execution.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Prerequisite"
+          }
+        },
+        "vpn": {
+          "type": "string",
+          "description": "Convenience sugar for a VPN prerequisite key. Runtime normalizes this to prerequisites."
         }
       },
       "required": ["clusterId", "namespaces"]
@@ -251,6 +275,21 @@
         "remotePath": {
           "description": "Remote logs path used in container or host environments.",
           "type": "string"
+        },
+        "prerequisites": {
+          "description": "Ordered prerequisite references required before remote tool execution.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Prerequisite"
+          }
+        },
+        "vpn": {
+          "type": "string",
+          "description": "Convenience sugar for a VPN prerequisite key. Runtime normalizes this to prerequisites."
+        },
+        "kubernetesProfile": {
+          "type": "string",
+          "description": "Kubernetes profile used for remote logs."
         }
       },
       "required": ["localDir", "remotePath"]
@@ -336,6 +375,138 @@
           }
         }
       }
+    },
+    "VpnPrerequisite": {
+      "description": "VPN prerequisite reference used by tool profiles.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "vpn",
+          "description": "Prerequisite type."
+        },
+        "key": {
+          "type": "string",
+          "description": "Key from the top-level vpns registry."
+        },
+        "cleanup": {
+          "description": "VPN cleanup policy.",
+          "type": "string",
+          "enum": ["leave-running", "stop-if-started"]
+        }
+      },
+      "required": ["type", "key"]
+    },
+    "Prerequisite": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/VpnPrerequisite"
+        }
+      ]
+    },
+    "MacosScutilVpnDriverConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "macos-scutil"
+        },
+        "serviceName": {
+          "type": "string"
+        }
+      },
+      "required": ["type"]
+    },
+    "LinuxNmcliVpnDriverConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "linux-nmcli"
+        },
+        "connectionName": {
+          "type": "string"
+        }
+      },
+      "required": ["type"]
+    },
+    "WindowsRasdialVpnDriverConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "windows-rasdial"
+        },
+        "entryName": {
+          "type": "string"
+        }
+      },
+      "required": ["type"]
+    },
+    "VpnDriverConfig": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/MacosScutilVpnDriverConfig"
+        },
+        {
+          "$ref": "#/definitions/LinuxNmcliVpnDriverConfig"
+        },
+        {
+          "$ref": "#/definitions/WindowsRasdialVpnDriverConfig"
+        }
+      ]
+    },
+    "VpnConfig": {
+      "description": "VPN configuration. auto defaults to true and maps name to a deterministic OS-specific driver.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "VPN connection/service name used by auto driver mapping."
+        },
+        "auto": {
+          "type": "boolean",
+          "default": true,
+          "description": "Defaults to true. Maps by process.platform without heuristic discovery."
+        },
+        "defaultCleanup": {
+          "description": "VPN cleanup policy.",
+          "type": "string",
+          "enum": ["leave-running", "stop-if-started"]
+        },
+        "connectTimeoutMs": {
+          "type": "number"
+        },
+        "disconnectTimeoutMs": {
+          "type": "number"
+        },
+        "cooldownMs": {
+          "type": "number"
+        },
+        "leaseTtlMs": {
+          "type": "number"
+        },
+        "drivers": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "darwin": {
+              "$ref": "#/definitions/MacosScutilVpnDriverConfig"
+            },
+            "linux": {
+              "$ref": "#/definitions/LinuxNmcliVpnDriverConfig"
+            },
+            "win32": {
+              "$ref": "#/definitions/WindowsRasdialVpnDriverConfig"
+            }
+          }
+        },
+        "driver": {
+          "$ref": "#/definitions/VpnDriverConfig"
+        }
+      },
+      "required": ["name"]
     }
   },
   "examples": [

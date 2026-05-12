@@ -82,7 +82,7 @@ const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
     const resolvedEnv = yield* resolveEnv(options.env, config);
 
     const k8sService = yield* K8sService;
-    const result = yield* k8sService.runKubectl(command, options.dryRun).pipe(
+    const result = yield* k8sService.runKubectl(command, options.dryRun, profileName).pipe(
       Effect.catchTags({
         K8sContextError: (error) => {
           const errorResult: CommandResult = {

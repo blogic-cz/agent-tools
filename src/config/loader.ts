@@ -16,6 +16,58 @@ const CredentialGuardConfigSchema = Schema.Struct({
   additionalDangerousBashPatterns: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const CleanupPolicySchema = Schema.Union([
+  Schema.Literal("leave-running"),
+  Schema.Literal("stop-if-started"),
+]);
+
+const VpnPrerequisiteSchema = Schema.Struct({
+  type: Schema.Literal("vpn"),
+  key: Schema.String,
+  cleanup: Schema.optionalKey(CleanupPolicySchema),
+});
+
+const PrerequisitesSchema = Schema.Array(VpnPrerequisiteSchema);
+
+const MacosScutilVpnDriverConfigSchema = Schema.Struct({
+  type: Schema.Literal("macos-scutil"),
+  serviceName: Schema.optionalKey(Schema.String),
+});
+
+const LinuxNmcliVpnDriverConfigSchema = Schema.Struct({
+  type: Schema.Literal("linux-nmcli"),
+  connectionName: Schema.optionalKey(Schema.String),
+});
+
+const WindowsRasdialVpnDriverConfigSchema = Schema.Struct({
+  type: Schema.Literal("windows-rasdial"),
+  entryName: Schema.optionalKey(Schema.String),
+});
+
+const VpnDriverConfigSchema = Schema.Union([
+  MacosScutilVpnDriverConfigSchema,
+  LinuxNmcliVpnDriverConfigSchema,
+  WindowsRasdialVpnDriverConfigSchema,
+]);
+
+const VpnConfigSchema = Schema.Struct({
+  name: Schema.String,
+  auto: Schema.optionalKey(Schema.Boolean),
+  defaultCleanup: Schema.optionalKey(CleanupPolicySchema),
+  connectTimeoutMs: Schema.optionalKey(Schema.Number),
+  disconnectTimeoutMs: Schema.optionalKey(Schema.Number),
+  cooldownMs: Schema.optionalKey(Schema.Number),
+  leaseTtlMs: Schema.optionalKey(Schema.Number),
+  drivers: Schema.optionalKey(
+    Schema.Struct({
+      darwin: Schema.optionalKey(MacosScutilVpnDriverConfigSchema),
+      linux: Schema.optionalKey(LinuxNmcliVpnDriverConfigSchema),
+      win32: Schema.optionalKey(WindowsRasdialVpnDriverConfigSchema),
+    }),
+  ),
+  driver: Schema.optionalKey(VpnDriverConfigSchema),
+});
+
 const AzureConfigSchema = Schema.Struct({
   organization: Schema.String,
   defaultProject: Schema.String,
@@ -26,6 +78,8 @@ const K8sConfigSchema = Schema.Struct({
   clusterId: Schema.String,
   namespaces: Schema.Record(Schema.String, Schema.String),
   timeoutMs: Schema.optionalKey(Schema.Number),
+  prerequisites: Schema.optionalKey(PrerequisitesSchema),
+  vpn: Schema.optionalKey(Schema.String),
 });
 
 const DbEnvConfigSchema = Schema.Struct({
@@ -52,6 +106,9 @@ const DatabaseConfigSchema = Schema.Struct({
 const LogsConfigSchema = Schema.Struct({
   localDir: Schema.String,
   remotePath: Schema.String,
+  kubernetesProfile: Schema.optionalKey(Schema.String),
+  prerequisites: Schema.optionalKey(PrerequisitesSchema),
+  vpn: Schema.optionalKey(Schema.String),
 });
 
 const ObservabilityEnvTargetSchema = Schema.Struct({
@@ -78,6 +135,7 @@ const GitHubRepoConfigSchema = Schema.Struct({
 const KNOWN_TOP_LEVEL_KEYS = new Set([
   "$schema",
   "azure",
+  "vpns",
   "kubernetes",
   "database",
   "observability",
@@ -92,6 +150,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
 const AgentToolsConfigSchema = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String),
   azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
+  vpns: Schema.optionalKey(Schema.Record(Schema.String, VpnConfigSchema)),
   kubernetes: Schema.optionalKey(Schema.Record(Schema.String, K8sConfigSchema)),
   database: Schema.optionalKey(Schema.Record(Schema.String, DatabaseConfigSchema)),
   observability: Schema.optionalKey(Schema.Record(Schema.String, ObservabilityConfigSchema)),

@@ -297,3 +297,57 @@ describe("decodeConfig", () => {
     ).toThrow(/Invalid agent-tools config/);
   });
 });
+
+describe("VPN prerequisites config", () => {
+  it("keeps top-level vpns and profile prerequisites during decode", () => {
+    const config = decodeConfig({
+      vpns: {
+        blogic: { name: "BLVPN" },
+      },
+      kubernetes: {
+        nexus: {
+          clusterId: "nexus-k8s-dev",
+          namespaces: { app: "app" },
+          prerequisites: [{ type: "vpn", key: "blogic", cleanup: "stop-if-started" }],
+        },
+      },
+    });
+
+    expect(config.vpns?.blogic?.name).toBe("BLVPN");
+    expect(config.vpns?.blogic?.auto).toBeUndefined();
+    expect(config.kubernetes?.nexus?.prerequisites).toEqual([
+      { type: "vpn", key: "blogic", cleanup: "stop-if-started" },
+    ]);
+  });
+
+  it("accepts vpn profile sugar without normalizing at decode time", () => {
+    const config = decodeConfig({
+      vpns: { blogic: { name: "BLVPN" } },
+      logs: {
+        default: {
+          localDir: "logs",
+          remotePath: "/app/logs",
+          kubernetesProfile: "nexus",
+          vpn: "blogic",
+        },
+      },
+    });
+
+    expect(config.logs?.default?.vpn).toBe("blogic");
+    expect(config.logs?.default?.kubernetesProfile).toBe("nexus");
+  });
+
+  it("rejects unsupported VPN prerequisite cleanup policies", () => {
+    expect(() =>
+      decodeConfig({
+        kubernetes: {
+          default: {
+            clusterId: "cluster",
+            namespaces: { test: "test" },
+            prerequisites: [{ type: "vpn", key: "blogic", cleanup: "always" }],
+          },
+        },
+      }),
+    ).toThrow("Invalid agent-tools config");
+  });
+});
