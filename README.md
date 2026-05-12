@@ -174,17 +174,17 @@ bun run agent-tools/example-tool/index.ts ping
     dbPath: "~/.agent-tools/audit.sqlite",
   },
   vpns: {
-    blogic: {
+    exampleVpn: {
       // auto defaults to true:
       // darwin -> macos-scutil, linux -> linux-nmcli, win32 -> windows-rasdial
-      name: "BLVPN",
+      name: "ExampleVPN",
     },
   },
   kubernetes: {
     default: {
       clusterId: "your-cluster-id",
       namespaces: { test: "your-ns-test", prod: "your-ns-prod" },
-      prerequisites: [{ type: "vpn", key: "blogic" }],
+      prerequisites: [{ type: "vpn", key: "exampleVpn" }],
       // Prerequisites are currently decoded and validated as config metadata;
       // automatic VPN connect/disconnect execution is planned for a follow-up release.
     },

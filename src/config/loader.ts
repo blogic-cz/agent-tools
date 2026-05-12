@@ -100,6 +100,8 @@ const DatabaseConfigSchema = Schema.Struct({
   ),
   tunnelTimeoutMs: Schema.optionalKey(Schema.Number),
   remotePort: Schema.optionalKey(Schema.Number),
+  prerequisites: Schema.optionalKey(PrerequisitesSchema),
+  vpn: Schema.optionalKey(Schema.String),
 });
 
 const LogsConfigSchema = Schema.Struct({

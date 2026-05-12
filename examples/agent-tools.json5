@@ -26,7 +26,7 @@
       namespaces: {
         test: "my-app-test",
         prod: "my-app-prod",
-        system: "bl-system",
+        system: "system",
       },
       timeoutMs: 60000,
     },
@@ -52,8 +52,8 @@
         },
       },
       kubectl: {
-        context: "cloud2-example-cz",
-        namespace: "bl-system",
+        context: "example-cluster",
+        namespace: "system",
       },
       tunnelTimeoutMs: 5000,
       remotePort: 5432,

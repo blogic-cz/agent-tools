@@ -78,7 +78,7 @@ export type DbEnvConfig = {
 };
 
 /** Database profile configuration */
-export type DatabaseConfig = {
+export type DatabaseConfig = ProfilePrerequisites & {
   /** Named database environments, e.g. { local: {...}, test: {...}, prod: {...} } */
   environments: Record<string, DbEnvConfig>;
   kubectl?: {

@@ -246,8 +246,8 @@ describe("decodeConfig", () => {
       {
         github: {
           default: {
-            owner: "sabservis",
-            repo: "nexus-be",
+            owner: "example-owner",
+            repo: "example-repo",
           },
         },
         observability: {
@@ -265,8 +265,8 @@ describe("decodeConfig", () => {
 
     expect(config.github).toEqual({
       default: {
-        owner: "sabservis",
-        repo: "nexus-be",
+        owner: "example-owner",
+        repo: "example-repo",
       },
     });
     expect(config.observability).toEqual({
@@ -285,8 +285,8 @@ describe("decodeConfig", () => {
       decodeConfig(
         {
           github: {
-            owner: "sabservis",
-            repo: "nexus-be",
+            owner: "example-owner",
+            repo: "example-repo",
           },
           observability: {
             anything: true,
@@ -302,39 +302,66 @@ describe("VPN prerequisites config", () => {
   it("keeps top-level vpns and profile prerequisites during decode", () => {
     const config = decodeConfig({
       vpns: {
-        blogic: { name: "BLVPN" },
+        exampleVpn: { name: "ExampleVPN" },
       },
       kubernetes: {
-        nexus: {
-          clusterId: "nexus-k8s-dev",
+        appCluster: {
+          clusterId: "example-cluster",
           namespaces: { app: "app" },
-          prerequisites: [{ type: "vpn", key: "blogic", cleanup: "stop-if-started" }],
+          prerequisites: [{ type: "vpn", key: "exampleVpn", cleanup: "stop-if-started" }],
         },
       },
     });
 
-    expect(config.vpns?.blogic?.name).toBe("BLVPN");
-    expect(config.vpns?.blogic?.auto).toBeUndefined();
-    expect(config.kubernetes?.nexus?.prerequisites).toEqual([
-      { type: "vpn", key: "blogic", cleanup: "stop-if-started" },
+    expect(config.vpns?.exampleVpn?.name).toBe("ExampleVPN");
+    expect(config.vpns?.exampleVpn?.auto).toBeUndefined();
+    expect(config.kubernetes?.appCluster?.prerequisites).toEqual([
+      { type: "vpn", key: "exampleVpn", cleanup: "stop-if-started" },
     ]);
   });
 
   it("accepts vpn profile sugar without normalizing at decode time", () => {
     const config = decodeConfig({
-      vpns: { blogic: { name: "BLVPN" } },
+      vpns: { exampleVpn: { name: "ExampleVPN" } },
       logs: {
         default: {
           localDir: "logs",
           remotePath: "/app/logs",
-          kubernetesProfile: "nexus",
-          vpn: "blogic",
+          kubernetesProfile: "appCluster",
+          vpn: "exampleVpn",
         },
       },
     });
 
-    expect(config.logs?.default?.vpn).toBe("blogic");
-    expect(config.logs?.default?.kubernetesProfile).toBe("nexus");
+    expect(config.logs?.default?.vpn).toBe("exampleVpn");
+    expect(config.logs?.default?.kubernetesProfile).toBe("appCluster");
+  });
+
+  it("accepts VPN prerequisites on database profiles", () => {
+    const config = decodeConfig({
+      vpns: { exampleVpn: { name: "ExampleVPN" } },
+      database: {
+        default: {
+          environments: {
+            staging: {
+              host: "127.0.0.1",
+              port: 25439,
+              user: "app-readonly",
+              database: "app",
+            },
+          },
+          kubectl: {
+            context: "example-cluster",
+            namespace: "data",
+            service: "database",
+          },
+          vpn: "exampleVpn",
+        },
+      },
+    });
+
+    expect(config.database?.default?.vpn).toBe("exampleVpn");
+    expect(config.database?.default?.kubectl?.service).toBe("database");
   });
 
   it("rejects unsupported VPN prerequisite cleanup policies", () => {
@@ -344,7 +371,7 @@ describe("VPN prerequisites config", () => {
           default: {
             clusterId: "cluster",
             namespaces: { test: "test" },
-            prerequisites: [{ type: "vpn", key: "blogic", cleanup: "always" }],
+            prerequisites: [{ type: "vpn", key: "exampleVpn", cleanup: "always" }],
           },
         },
       }),

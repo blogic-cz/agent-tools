@@ -641,8 +641,8 @@ describe("Integration: env safety + k8s namespace fallback", () => {
               },
             },
             kubectl: {
-              context: "cloud2-example-cz",
-              namespace: "bl-system",
+              context: "example-cluster",
+              namespace: "system",
               ...(service === undefined ? {} : { service }),
             },
             remotePort: 5432,
@@ -711,7 +711,7 @@ printf '[{"ok":1}]\n'
     expect(parsed.success).toBe(true);
     expect(parsed.data).toEqual([{ ok: 1 }]);
     expect(kubectlArgs).toContain(
-      `port-forward --context cloud2-example-cz --namespace bl-system svc/${expectedService} 25437:5432`,
+      `port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`,
     );
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
   };
@@ -721,6 +721,6 @@ printf '[{"ok":1}]\n'
   });
 
   it("db-tool opens a tunnel to a configured service", () => {
-    runDbTunnelTest("timescaledb", "timescaledb");
+    runDbTunnelTest("database", "database");
   });
 });

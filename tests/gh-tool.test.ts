@@ -1559,7 +1559,7 @@ describe("Issue discussion comments", () => {
     },
     {
       id: 402,
-      user: { login: "vivus-agent" },
+      user: { login: "example-agent" },
       body: "Workflow failed on CI/CD",
       created_at: "2026-04-07T10:00:00Z",
       html_url: "https://github.com/test-owner/test-repo/issues/596#issuecomment-402",
@@ -1613,13 +1613,13 @@ describe("Issue discussion comments", () => {
       const comments = yield* fetchIssueDiscussionComments(
         596,
         "2026-04-07T09:30:00Z",
-        "vivus",
+        "example",
         "workflow failed",
       ).pipe(Effect.provide(layer));
 
       expect(comments).toHaveLength(1);
       expect(comments[0]?.id).toBe(402);
-      expect(comments[0]?.author).toBe("vivus-agent");
+      expect(comments[0]?.author).toBe("example-agent");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 
@@ -1689,12 +1689,12 @@ describe("Issue triage", () => {
   const triageIssueBody = "A".repeat(520);
   const triageIssueView = {
     number: 596,
-    title: "[WORKFLOW FAILED] CI/CD (blogic-cz/andocs)",
+    title: "[WORKFLOW FAILED] CI/CD (example-org/example-app)",
     state: "OPEN",
     url: "https://github.com/test-owner/test-repo/issues/596",
     labels: [{ name: "workflow-failure" }, { name: "github-actions" }],
     assignees: [{ login: "gabriel-ecegi" }],
-    author: { login: "app/vivus-agent" },
+    author: { login: "app/example-agent" },
     body: triageIssueBody,
     createdAt: "2026-04-07T05:23:31Z",
     closedAt: null,
@@ -1778,7 +1778,7 @@ describe("Issue triage", () => {
         expect.fail("Expected full issue triage result");
       }
 
-      expect(result.issue.author).toBe("app/vivus-agent");
+      expect(result.issue.author).toBe("app/example-agent");
       expect(result.body).toBe(triageIssueBody);
       expect(result.commentsCount).toBe(2);
       expect(result.comments).toHaveLength(2);

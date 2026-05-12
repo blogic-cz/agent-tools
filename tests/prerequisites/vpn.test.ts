@@ -4,49 +4,49 @@ import { missingVpnToolHint, resolveVpnDriverConfig } from "#shared/prerequisite
 
 describe("resolveVpnDriverConfig", () => {
   it("maps minimal VPN config to macos scutil on darwin", () => {
-    const result = resolveVpnDriverConfig({ name: "BLVPN" }, "darwin");
+    const result = resolveVpnDriverConfig({ name: "ExampleVPN" }, "darwin");
 
     expect(result).toEqual({
       success: true,
-      driver: { platform: "darwin", type: "macos-scutil", serviceName: "BLVPN" },
+      driver: { platform: "darwin", type: "macos-scutil", serviceName: "ExampleVPN" },
     });
   });
 
   it("maps minimal VPN config to nmcli on linux", () => {
-    const result = resolveVpnDriverConfig({ name: "BLVPN" }, "linux");
+    const result = resolveVpnDriverConfig({ name: "ExampleVPN" }, "linux");
 
     expect(result).toEqual({
       success: true,
-      driver: { platform: "linux", type: "linux-nmcli", connectionName: "BLVPN" },
+      driver: { platform: "linux", type: "linux-nmcli", connectionName: "ExampleVPN" },
     });
   });
 
   it("maps minimal VPN config to rasdial on windows", () => {
-    const result = resolveVpnDriverConfig({ name: "BLVPN" }, "win32");
+    const result = resolveVpnDriverConfig({ name: "ExampleVPN" }, "win32");
 
     expect(result).toEqual({
       success: true,
-      driver: { platform: "win32", type: "windows-rasdial", entryName: "BLVPN" },
+      driver: { platform: "win32", type: "windows-rasdial", entryName: "ExampleVPN" },
     });
   });
 
   it("uses per-platform override before auto mapping", () => {
     const result = resolveVpnDriverConfig(
       {
-        name: "BLVPN",
-        drivers: { linux: { type: "linux-nmcli", connectionName: "BLVPN-prod" } },
+        name: "ExampleVPN",
+        drivers: { linux: { type: "linux-nmcli", connectionName: "ExampleVPN-prod" } },
       },
       "linux",
     );
 
     expect(result).toEqual({
       success: true,
-      driver: { platform: "linux", type: "linux-nmcli", connectionName: "BLVPN-prod" },
+      driver: { platform: "linux", type: "linux-nmcli", connectionName: "ExampleVPN-prod" },
     });
   });
 
   it("fails when auto is false without current-platform driver", () => {
-    const result = resolveVpnDriverConfig({ name: "BLVPN", auto: false }, "darwin");
+    const result = resolveVpnDriverConfig({ name: "ExampleVPN", auto: false }, "darwin");
 
     expect(result).toEqual({
       success: false,
@@ -56,7 +56,7 @@ describe("resolveVpnDriverConfig", () => {
   });
 
   it("returns actionable hints for missing platform tools", () => {
-    const result = resolveVpnDriverConfig({ name: "BLVPN" }, "linux");
+    const result = resolveVpnDriverConfig({ name: "ExampleVPN" }, "linux");
 
     expect(result.success).toBe(true);
     if (result.success) {
