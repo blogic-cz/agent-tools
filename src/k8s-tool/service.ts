@@ -19,6 +19,7 @@ export class K8sService extends Context.Service<
     readonly runCommand: (
       cmd: string,
       env: Environment,
+      profile?: string,
     ) => Effect.Effect<
       string,
       K8sContextError | K8sCommandError | K8sTimeoutError | K8sDangerousCommandError
@@ -26,6 +27,7 @@ export class K8sService extends Context.Service<
     readonly runKubectl: (
       cmd: string,
       dryRun: boolean,
+      profile?: string,
     ) => Effect.Effect<
       CommandResult,
       K8sContextError | K8sCommandError | K8sTimeoutError | K8sDangerousCommandError
@@ -39,24 +41,27 @@ export class K8sService extends Context.Service<
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
 
         const config = yield* ConfigService;
-        const k8sConfig = getToolConfig<K8sConfig>(config, "kubernetes");
 
-        if (!k8sConfig) {
-          const noConfigError = new K8sContextError({
-            message:
-              "No Kubernetes configuration found. Add a 'kubernetes' section to agent-tools.json5.",
-            clusterId: "unknown",
+        const getK8sConfig = (profile?: string) =>
+          getToolConfig<K8sConfig>(config, "kubernetes", profile);
+
+        const requireK8sConfig = (profile?: string) =>
+          Effect.gen(function* () {
+            const k8sConfig = getK8sConfig(profile);
+            if (!k8sConfig) {
+              return yield* new K8sContextError({
+                message: profile
+                  ? `No Kubernetes configuration found for profile: ${profile}.`
+                  : "No Kubernetes configuration found. Add a 'kubernetes' section to agent-tools.json5.",
+                clusterId: profile ?? "unknown",
+              });
+            }
+
+            return k8sConfig;
           });
-          return {
-            runCommand: (_cmd: string, _env: Environment) => Effect.fail(noConfigError),
-            runKubectl: (_cmd: string, _dryRun: boolean) => Effect.fail(noConfigError),
-          };
-        }
 
-        const KUBECTL_TIMEOUT_MS = k8sConfig.timeoutMs ?? 60000;
-
-        // Create Ref for context caching (replaces module-level let)
-        const contextRef = yield* Ref.make<string | null>(null);
+        // Cache context by selected profile/cluster instead of a single default profile.
+        const contextRef = yield* Ref.make<Record<string, string>>({});
 
         // Helper that uses executor.spawn() to avoid ChildProcessSpawner requirement in return type
         const runShellCommand = (commandStr: string, timeoutMs: number) =>
@@ -97,22 +102,27 @@ export class K8sService extends Context.Service<
             ),
           );
 
-        const resolveContext = Effect.fn("K8sService.resolveContext")(function* () {
-          // Check cache first
+        const resolveContext = Effect.fn("K8sService.resolveContext")(function* (
+          profile: string | undefined,
+          k8sConfig: K8sConfig,
+        ) {
+          const timeoutMs = k8sConfig.timeoutMs ?? 60000;
+          const cacheKey = profile ?? `cluster:${k8sConfig.clusterId}`;
           const cached = yield* Ref.get(contextRef);
-          if (cached !== null) {
-            return cached;
+          const cachedContext = cached[cacheKey];
+          if (cachedContext !== undefined) {
+            return cachedContext;
           }
 
           const jqCommand = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "${k8sConfig.clusterId}") | .name' | head -1`;
 
-          const contextResultOption = yield* runShellCommand(jqCommand, KUBECTL_TIMEOUT_MS);
+          const contextResultOption = yield* runShellCommand(jqCommand, timeoutMs);
 
           if (Option.isNone(contextResultOption)) {
             return yield* new K8sTimeoutError({
-              message: `Context resolution timed out after ${KUBECTL_TIMEOUT_MS}ms`,
+              message: `Context resolution timed out after ${timeoutMs}ms`,
               command: jqCommand,
-              timeoutMs: KUBECTL_TIMEOUT_MS,
+              timeoutMs,
             });
           }
 
@@ -120,19 +130,22 @@ export class K8sService extends Context.Service<
 
           if (contextResult.exitCode === 0 && contextResult.stdout.trim()) {
             const resolvedContextValue = contextResult.stdout.trim();
-            yield* Ref.set(contextRef, resolvedContextValue);
+            yield* Ref.update(contextRef, (contexts) => ({
+              ...contexts,
+              [cacheKey]: resolvedContextValue,
+            }));
             return resolvedContextValue;
           }
 
           const fallbackCommand = `kubectl config view -o json | jq -r '.contexts[] as $ctx | .clusters[] | select(.name == $ctx.context.cluster and (.cluster.server | contains("${k8sConfig.clusterId}"))) | $ctx.name' | head -1`;
 
-          const fallbackResultOption = yield* runShellCommand(fallbackCommand, KUBECTL_TIMEOUT_MS);
+          const fallbackResultOption = yield* runShellCommand(fallbackCommand, timeoutMs);
 
           if (Option.isNone(fallbackResultOption)) {
             return yield* new K8sTimeoutError({
-              message: `Context resolution timed out after ${KUBECTL_TIMEOUT_MS}ms`,
+              message: `Context resolution timed out after ${timeoutMs}ms`,
               command: fallbackCommand,
-              timeoutMs: KUBECTL_TIMEOUT_MS,
+              timeoutMs,
             });
           }
 
@@ -140,7 +153,10 @@ export class K8sService extends Context.Service<
 
           if (fallbackResult.exitCode === 0 && fallbackResult.stdout.trim()) {
             const resolvedContextValue = fallbackResult.stdout.trim();
-            yield* Ref.set(contextRef, resolvedContextValue);
+            yield* Ref.update(contextRef, (contexts) => ({
+              ...contexts,
+              [cacheKey]: resolvedContextValue,
+            }));
             return resolvedContextValue;
           }
 
@@ -150,17 +166,22 @@ export class K8sService extends Context.Service<
           });
         });
 
-        const executeCommand = Effect.fn("K8sService.executeCommand")(function* (cmd: string) {
-          const context = yield* resolveContext();
+        const executeCommand = Effect.fn("K8sService.executeCommand")(function* (
+          cmd: string,
+          profile?: string,
+        ) {
+          const k8sConfig = yield* requireK8sConfig(profile);
+          const timeoutMs = k8sConfig.timeoutMs ?? 60000;
+          const context = yield* resolveContext(profile, k8sConfig);
           const fullCommand = `kubectl --context ${context} ${cmd}`;
 
-          const resultOption = yield* runShellCommand(fullCommand, KUBECTL_TIMEOUT_MS);
+          const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
 
           if (Option.isNone(resultOption)) {
             return yield* new K8sTimeoutError({
-              message: `Command timed out after ${KUBECTL_TIMEOUT_MS}ms`,
+              message: `Command timed out after ${timeoutMs}ms`,
               command: fullCommand,
-              timeoutMs: KUBECTL_TIMEOUT_MS,
+              timeoutMs,
             });
           }
 
@@ -177,6 +198,7 @@ export class K8sService extends Context.Service<
         const runCommand = Effect.fn("K8sService.runCommand")(function* (
           cmd: string,
           _env: Environment,
+          profile?: string,
         ) {
           // Security: block dangerous commands before execution
           const securityCheck = isKubectlCommandAllowed(cmd);
@@ -189,7 +211,7 @@ export class K8sService extends Context.Service<
             });
           }
 
-          const result = yield* executeCommand(cmd);
+          const result = yield* executeCommand(cmd, profile);
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
               message: result.stderr ?? `kubectl exited with code ${result.exitCode}`,
@@ -205,6 +227,7 @@ export class K8sService extends Context.Service<
         const runKubectl = Effect.fn("K8sService.runKubectl")(function* (
           cmd: string,
           dryRun: boolean,
+          profile?: string,
         ) {
           // Security: block dangerous commands before execution (even dry-run)
           const securityCheck = isKubectlCommandAllowed(cmd);
@@ -219,7 +242,8 @@ export class K8sService extends Context.Service<
 
           const startTime = Date.now();
           if (dryRun) {
-            const context = yield* resolveContext();
+            const k8sConfig = yield* requireK8sConfig(profile);
+            const context = yield* resolveContext(profile, k8sConfig);
             const fullCommand = `kubectl --context ${context} ${cmd}`;
             return {
               success: true,
@@ -229,7 +253,7 @@ export class K8sService extends Context.Service<
             };
           }
 
-          const result = yield* executeCommand(cmd);
+          const result = yield* executeCommand(cmd, profile);
 
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({

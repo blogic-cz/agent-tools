@@ -5,8 +5,60 @@ export type AzureConfig = {
   timeoutMs?: number;
 };
 
+export type CleanupPolicy = "leave-running" | "stop-if-started";
+
+export type VpnPrerequisite = {
+  type: "vpn";
+  key: string;
+  cleanup?: CleanupPolicy;
+};
+
+export type MacosScutilVpnDriverConfig = {
+  type: "macos-scutil";
+  serviceName?: string;
+};
+
+export type LinuxNmcliVpnDriverConfig = {
+  type: "linux-nmcli";
+  connectionName?: string;
+};
+
+export type WindowsRasdialVpnDriverConfig = {
+  type: "windows-rasdial";
+  entryName?: string;
+};
+
+export type VpnDriverConfig =
+  | MacosScutilVpnDriverConfig
+  | LinuxNmcliVpnDriverConfig
+  | WindowsRasdialVpnDriverConfig;
+
+export type VpnConfig = {
+  name: string;
+  /** Defaults to true. Auto maps name to the current OS driver deterministically. */
+  auto?: boolean;
+  defaultCleanup?: CleanupPolicy;
+  connectTimeoutMs?: number;
+  disconnectTimeoutMs?: number;
+  cooldownMs?: number;
+  leaseTtlMs?: number;
+  drivers?: {
+    darwin?: MacosScutilVpnDriverConfig;
+    linux?: LinuxNmcliVpnDriverConfig;
+    win32?: WindowsRasdialVpnDriverConfig;
+  };
+  /** Explicit current-platform driver, required when auto is false and no per-OS driver is available. */
+  driver?: VpnDriverConfig;
+};
+
+export type ProfilePrerequisites = {
+  prerequisites?: readonly VpnPrerequisite[];
+  /** Convenience input sugar; normalize to prerequisites before execution. */
+  vpn?: string;
+};
+
 /** Kubernetes cluster profile configuration */
-export type K8sConfig = {
+export type K8sConfig = ProfilePrerequisites & {
   clusterId: string;
   /** Named namespaces, e.g. { test: "my-app-test", prod: "my-app-prod" } */
   namespaces: Record<string, string>;
@@ -38,9 +90,10 @@ export type DatabaseConfig = {
 };
 
 /** Logs profile configuration */
-export type LogsConfig = {
+export type LogsConfig = ProfilePrerequisites & {
   localDir: string;
   remotePath: string;
+  kubernetesProfile?: string;
 };
 
 /** Single observability environment connection details */
@@ -93,6 +146,8 @@ export type AgentToolsConfig = {
   $schema?: string;
   /** Named Azure DevOps profiles. e.g. { default: { organization: "...", defaultProject: "..." } } */
   azure?: Record<string, AzureConfig>;
+  /** Named VPN definitions referenced by profile prerequisites. */
+  vpns?: Record<string, VpnConfig>;
   /** Named Kubernetes cluster profiles. e.g. { default: {...}, staging: {...} } */
   kubernetes?: Record<string, K8sConfig>;
   /** Named database profiles. e.g. { default: {...}, analytics: {...} } */

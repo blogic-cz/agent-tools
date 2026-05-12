@@ -4,7 +4,9 @@ import {
   BLOCKED_KUBECTL_VERBS,
 } from "#k8s/security";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Match, Option, Result } from "effect";
+import { Effect, Layer, Match, Option, Result, Sink, Stream } from "effect";
+import type { ChildProcess } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { CommandResult, Environment } from "#k8s/types";
 
@@ -14,10 +16,71 @@ import {
   K8sDangerousCommandError,
   K8sTimeoutError,
 } from "#k8s/errors";
+import { ConfigService } from "#config/loader";
 import { K8sService } from "#k8s/service";
 import { formatOutput } from "#shared";
 
 type K8sError = K8sCommandError | K8sContextError | K8sTimeoutError | K8sDangerousCommandError;
+
+type ShellResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
+function commandToShellString(command: ChildProcess.Command): string {
+  if (command._tag === "StandardCommand") {
+    if (command.command === "sh" && command.args[0] === "-c") {
+      return command.args[1] ?? "";
+    }
+
+    return [command.command, ...command.args].join(" ").trim();
+  }
+
+  return [commandToShellString(command.left), commandToShellString(command.right)].join(" | ");
+}
+
+function createMockProcess(result: ShellResult) {
+  const encoder = new TextEncoder();
+
+  const stdout = Stream.fromIterable([encoder.encode(result.stdout)]);
+  const stderr = Stream.fromIterable([encoder.encode(result.stderr)]);
+
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.exitCode)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.succeed(undefined),
+    stderr,
+    stdin: Sink.drain,
+    stdout,
+    all: Stream.fromIterable([encoder.encode(result.stdout), encoder.encode(result.stderr)]),
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void),
+  });
+}
+
+function createMockChildProcessSpawnerLayer(
+  shellResponses: Record<string, ShellResult>,
+  observedShellCommands?: Array<string>,
+) {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const shellCommand = commandToShellString(command);
+      observedShellCommands?.push(shellCommand);
+
+      const response = shellResponses[shellCommand] ?? {
+        stdout: "",
+        stderr: `No mock shell response for command: ${shellCommand}`,
+        exitCode: 1,
+      };
+
+      return Effect.succeed(createMockProcess(response));
+    }),
+  );
+}
 
 function createMockK8sServiceLayer(
   mockResponses: Record<string, CommandResult | string | K8sError>,
@@ -90,6 +153,50 @@ function createMockK8sServiceLayer(
 
 describe("K8sService", () => {
   describe("runKubectl - successful execution", () => {
+    it.effect("uses the selected profile for context resolution and timeout", () => {
+      const observedShellCommands: Array<string> = [];
+      const selectedContextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+
+      return Effect.gen(function* () {
+        const service = yield* K8sService;
+        const result = yield* service.runKubectl("get pods", false, "selected");
+
+        expect(result.success).toBe(true);
+        expect(result.command).toBe("kubectl --context selected-context get pods");
+        expect(observedShellCommands).toEqual([
+          selectedContextQuery,
+          "kubectl --context selected-context get pods",
+        ]);
+      }).pipe(
+        Effect.provide(K8sService.layer),
+        Effect.provide(
+          createMockChildProcessSpawnerLayer(
+            {
+              [selectedContextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              "kubectl --context selected-context get pods": {
+                stdout: "pod-a\n",
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+            observedShellCommands,
+          ),
+        ),
+        Effect.provide(
+          Layer.succeed(ConfigService, {
+            kubernetes: {
+              default: { clusterId: "default-cluster", namespaces: { test: "default" } },
+              selected: {
+                clusterId: "selected-cluster",
+                namespaces: { test: "selected" },
+                timeoutMs: 12345,
+              },
+            },
+          }),
+        ),
+      );
+    });
+
     it.effect("executes kubectl command successfully", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;

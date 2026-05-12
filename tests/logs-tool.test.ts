@@ -89,8 +89,8 @@ function createMockK8sServiceLayer(
 ) {
   return Layer.succeed(K8sService, {
     runCommand: (_cmd: string, _env: Environment) => Effect.succeed(""),
-    runKubectl: (cmd: string, _dryRun: boolean) => {
-      observedK8sCommands?.push(cmd);
+    runKubectl: (cmd: string, _dryRun: boolean, profile?: string) => {
+      observedK8sCommands?.push(profile ? `${profile}:${cmd}` : cmd);
       const response = k8sResponses[cmd];
 
       if (response instanceof K8sCommandError) {
@@ -280,6 +280,51 @@ describe("LogsService", () => {
             },
           }),
         ),
+      ),
+    );
+  });
+
+  it.effect("uses the logs profile Kubernetes profile for remote calls", () => {
+    const observedK8sCommands: Array<string> = [];
+
+    return Effect.gen(function* () {
+      const service = yield* LogsService;
+      const result = yield* service.listLogs("test", "appLogs");
+
+      expect(result).toEqual([{ name: "app.log", size: "120", date: "Jan 1 10:00" }]);
+      expect(observedK8sCommands).toEqual([
+        "nexus:get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'",
+        "nexus:exec app-pod -- ls -la /remote/logs",
+      ]);
+    }).pipe(
+      Effect.provide(
+        createLogsServiceLayer({
+          config: {
+            logs: {
+              appLogs: {
+                localDir: "/app/logs",
+                remotePath: "/remote/logs",
+                kubernetesProfile: "nexus",
+              },
+            },
+          },
+          observedK8sCommands,
+          k8sResponses: {
+            "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
+              {
+                success: true,
+                output: "app-pod",
+                command: "kubectl get pods",
+                executionTimeMs: 1,
+              },
+            "exec app-pod -- ls -la /remote/logs": {
+              success: true,
+              output: ["total 4", "-rw-r--r-- 1 app app 120 Jan 1 10:00 app.log"].join("\n"),
+              command: "kubectl exec",
+              executionTimeMs: 1,
+            },
+          },
+        }),
       ),
     );
   });

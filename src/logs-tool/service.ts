@@ -125,11 +125,13 @@ export class LogsService extends Context.Service<
         logsConfig: LogsConfig,
       ) {
         const remotePath = logsConfig.remotePath;
+        const kubernetesProfile = logsConfig.kubernetesProfile;
 
         const podResult = yield* k8s
           .runKubectl(
             `get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
             false,
+            kubernetesProfile,
           )
           .pipe(
             Effect.mapError(
@@ -143,15 +145,17 @@ export class LogsService extends Context.Service<
 
         const pod = readCommandOutput(podResult.output).replace(/'/g, "");
 
-        const listResult = yield* k8s.runKubectl(`exec ${pod} -- ls -la ${remotePath}`, false).pipe(
-          Effect.mapError(
-            (error) =>
-              new LogsReadError({
-                message: error instanceof Error ? error.message : "Failed to list remote logs",
-                source: `${pod}:${remotePath}`,
-              }),
-          ),
-        );
+        const listResult = yield* k8s
+          .runKubectl(`exec ${pod} -- ls -la ${remotePath}`, false, kubernetesProfile)
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new LogsReadError({
+                  message: error instanceof Error ? error.message : "Failed to list remote logs",
+                  source: `${pod}:${remotePath}`,
+                }),
+            ),
+          );
 
         const files = parseLogFiles(readCommandOutput(listResult.output));
         if (files.length === 0) {
@@ -226,11 +230,13 @@ export class LogsService extends Context.Service<
         logsConfig: LogsConfig,
       ) {
         const remotePath = logsConfig.remotePath;
+        const kubernetesProfile = logsConfig.kubernetesProfile;
 
         const podResult = yield* k8s
           .runKubectl(
             `get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
             false,
+            kubernetesProfile,
           )
           .pipe(
             Effect.mapError(
@@ -252,7 +258,7 @@ export class LogsService extends Context.Service<
         }
 
         const execResult = yield* k8s
-          .runKubectl(`exec ${pod} -- sh -c "${command}"`, false)
+          .runKubectl(`exec ${pod} -- sh -c "${command}"`, false, kubernetesProfile)
           .pipe(Effect.result);
 
         return yield* Result.match(execResult, {
