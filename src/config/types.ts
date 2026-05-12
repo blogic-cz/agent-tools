@@ -84,6 +84,7 @@ export type DatabaseConfig = {
   kubectl?: {
     context: string;
     namespace: string;
+    service?: string;
   };
   tunnelTimeoutMs?: number;
   remotePort?: number;

@@ -643,6 +643,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
             kubectl: {
               context: "cloud2-example-cz",
               namespace: "bl-system",
+              service: "timescaledb",
             },
             remotePort: 5432,
             tunnelTimeoutMs: 1000,
@@ -710,7 +711,7 @@ printf '[{"ok":1}]\n'
     expect(parsed.success).toBe(true);
     expect(parsed.data).toEqual([{ ok: 1 }]);
     expect(kubectlArgs).toContain(
-      "port-forward --context cloud2-example-cz --namespace bl-system svc/postgresql 25437:5432",
+      "port-forward --context cloud2-example-cz --namespace bl-system svc/timescaledb 25437:5432",
     );
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
   });
