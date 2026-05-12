@@ -293,8 +293,8 @@ describe("LogsService", () => {
 
       expect(result).toEqual([{ name: "app.log", size: "120", date: "Jan 1 10:00" }]);
       expect(observedK8sCommands).toEqual([
-        "nexus:get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'",
-        "nexus:exec app-pod -- ls -la /remote/logs",
+        "appCluster:get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'",
+        "appCluster:exec app-pod -- ls -la /remote/logs",
       ]);
     }).pipe(
       Effect.provide(
@@ -304,7 +304,7 @@ describe("LogsService", () => {
               appLogs: {
                 localDir: "/app/logs",
                 remotePath: "/remote/logs",
-                kubernetesProfile: "nexus",
+                kubernetesProfile: "appCluster",
               },
             },
           },

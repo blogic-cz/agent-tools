@@ -224,6 +224,17 @@
         "remotePort": {
           "description": "Optional remote database port used by the tunnel.",
           "type": "number"
+        },
+        "prerequisites": {
+          "description": "Ordered prerequisite references required before remote database access.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Prerequisite"
+          }
+        },
+        "vpn": {
+          "type": "string",
+          "description": "Convenience sugar for a VPN prerequisite key. Runtime normalizes this to prerequisites."
         }
       },
       "required": ["environments"]
@@ -529,7 +540,7 @@
           "namespaces": {
             "test": "my-app-test",
             "prod": "my-app-prod",
-            "system": "bl-system"
+            "system": "system"
           },
           "timeoutMs": 60000
         }
@@ -553,8 +564,8 @@
             }
           },
           "kubectl": {
-            "context": "cloud2-example-cz",
-            "namespace": "bl-system"
+            "context": "example-cluster",
+            "namespace": "system"
           },
           "tunnelTimeoutMs": 5000,
           "remotePort": 5432

@@ -7,38 +7,38 @@ import {
 
 describe("normalizeProfilePrerequisites", () => {
   it("turns vpn sugar into a canonical VPN prerequisite", () => {
-    expect(normalizeProfilePrerequisites({ vpn: "blogic" })).toEqual([
-      { type: "vpn", key: "blogic" },
+    expect(normalizeProfilePrerequisites({ vpn: "exampleVpn" })).toEqual([
+      { type: "vpn", key: "exampleVpn" },
     ]);
   });
 
   it("does not duplicate vpn sugar when the same prerequisite already exists", () => {
     expect(
       normalizeProfilePrerequisites({
-        vpn: "blogic",
-        prerequisites: [{ type: "vpn", key: "blogic", cleanup: "stop-if-started" }],
+        vpn: "exampleVpn",
+        prerequisites: [{ type: "vpn", key: "exampleVpn", cleanup: "stop-if-started" }],
       }),
-    ).toEqual([{ type: "vpn", key: "blogic", cleanup: "stop-if-started" }]);
+    ).toEqual([{ type: "vpn", key: "exampleVpn", cleanup: "stop-if-started" }]);
   });
 });
 
 describe("resolveProfilePrerequisites", () => {
   it("validates referenced VPN keys", () => {
     const result = resolveProfilePrerequisites(
-      { vpns: { blogic: { name: "BLVPN" } } },
-      { prerequisites: [{ type: "vpn", key: "blogic" }] },
+      { vpns: { exampleVpn: { name: "ExampleVPN" } } },
+      { prerequisites: [{ type: "vpn", key: "exampleVpn" }] },
     );
 
-    expect(result).toEqual({ success: true, prerequisites: [{ type: "vpn", key: "blogic" }] });
+    expect(result).toEqual({ success: true, prerequisites: [{ type: "vpn", key: "exampleVpn" }] });
   });
 
   it("fails with an actionable hint when the VPN key is missing", () => {
-    const result = resolveProfilePrerequisites({}, { vpn: "blogic" });
+    const result = resolveProfilePrerequisites({}, { vpn: "exampleVpn" });
 
     expect(result).toEqual({
       success: false,
-      error: 'VPN prerequisite "blogic" is not defined.',
-      hint: "Add vpns.blogic to agent-tools.json5 or remove the prerequisite.",
+      error: 'VPN prerequisite "exampleVpn" is not defined.',
+      hint: "Add vpns.exampleVpn to agent-tools.json5 or remove the prerequisite.",
     });
   });
 });
