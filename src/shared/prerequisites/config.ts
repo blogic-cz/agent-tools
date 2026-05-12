@@ -1,8 +1,5 @@
 import type { AgentToolsConfig, Prerequisite, ProfilePrerequisites } from "#config/types";
-
-export type PrerequisiteResolution =
-  | { success: true; prerequisites: readonly Prerequisite[] }
-  | { success: false; error: string; hint: string };
+import type { PrerequisiteResolution } from "#shared/prerequisites/types";
 
 export function normalizeProfilePrerequisites(
   profile: ProfilePrerequisites,

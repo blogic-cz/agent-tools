@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeProfilePrerequisites, resolveProfilePrerequisites } from "#prerequisites/config";
+import {
+  normalizeProfilePrerequisites,
+  resolveProfilePrerequisites,
+} from "#shared/prerequisites/config";
 
 describe("normalizeProfilePrerequisites", () => {
   it("turns vpn sugar into a canonical VPN prerequisite", () => {

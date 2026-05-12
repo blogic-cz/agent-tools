@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { missingVpnToolHint, resolveVpnDriverConfig } from "#prerequisites/vpn";
+import { missingVpnToolHint, resolveVpnDriverConfig } from "#shared/prerequisites/vpn";
 
 describe("resolveVpnDriverConfig", () => {
   it("maps minimal VPN config to macos scutil on darwin", () => {

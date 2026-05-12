@@ -1,21 +1,9 @@
+import type { VpnConfig, VpnDriverConfig } from "#config/types";
 import type {
-  LinuxNmcliVpnDriverConfig,
-  MacosScutilVpnDriverConfig,
-  VpnConfig,
-  VpnDriverConfig,
-  WindowsRasdialVpnDriverConfig,
-} from "#config/types";
-
-export type SupportedPlatform = "darwin" | "linux" | "win32";
-
-export type ResolvedVpnDriver =
-  | (Required<MacosScutilVpnDriverConfig> & { platform: "darwin" })
-  | (Required<LinuxNmcliVpnDriverConfig> & { platform: "linux" })
-  | (Required<WindowsRasdialVpnDriverConfig> & { platform: "win32" });
-
-export type VpnDriverResolution =
-  | { success: true; driver: ResolvedVpnDriver }
-  | { success: false; error: string; hint: string };
+  ResolvedVpnDriver,
+  SupportedPlatform,
+  VpnDriverResolution,
+} from "#shared/prerequisites/types";
 
 const isSupportedPlatform = (platform: NodeJS.Platform): platform is SupportedPlatform =>
   platform === "darwin" || platform === "linux" || platform === "win32";

@@ -14,7 +14,6 @@
       "#shared/*": ["./src/shared/*"],
       "#config": ["./src/config/index.ts"],
       "#config/*": ["./src/config/*"],
-      "#prerequisites/*": ["./src/prerequisites/*"],
       "#gh/*": ["./src/gh-tool/*"],
       "#k8s/*": ["./src/k8s-tool/*"],
       "#db/*": ["./src/db-tool/*"],

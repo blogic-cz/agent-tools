@@ -63,10 +63,6 @@
       "types": "./dist/config/*.d.ts",
       "default": "./src/config/*.ts"
     },
-    "#prerequisites/*": {
-      "types": "./dist/prerequisites/*.d.ts",
-      "default": "./src/prerequisites/*.ts"
-    },
     "#gh/*": {
       "types": "./dist/gh-tool/*.d.ts",
       "default": "./src/gh-tool/*.ts"
