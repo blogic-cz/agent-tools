@@ -126,83 +126,105 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
   }
 
   return Effect.gen(function* () {
-    if (options?.tryWithoutPrerequisites) {
-      const directResult = yield* effect.pipe(Effect.result);
+    const shouldTryDirect = options?.tryWithoutPrerequisites === true;
+
+    const tryDirect = () => effect.pipe(Effect.result);
+
+    if (shouldTryDirect) {
+      const directResult = yield* tryDirect();
       if (Result.isSuccess(directResult)) {
         return directResult.success;
       }
     }
 
-    const startedDrivers: Array<{ driver: ResolvedVpnDriver; cooldownMs: number }> = [];
+    const prerequisiteResult = yield* Effect.gen(function* () {
+      const startedDrivers: Array<{ driver: ResolvedVpnDriver; cooldownMs: number }> = [];
 
-    for (const prerequisite of vpnPrerequisites) {
-      const vpnConfig = config.vpns?.[prerequisite.key];
-      if (!vpnConfig) {
-        return yield* new PrerequisiteRunError({
-          message: `VPN prerequisite "${prerequisite.key}" is not defined.`,
-          hint: `Add vpns.${prerequisite.key} to agent-tools.json5 or remove the prerequisite.`,
-        });
+      for (const prerequisite of vpnPrerequisites) {
+        const vpnConfig = config.vpns?.[prerequisite.key];
+        if (!vpnConfig) {
+          return yield* new PrerequisiteRunError({
+            message: `VPN prerequisite "${prerequisite.key}" is not defined.`,
+            hint: `Add vpns.${prerequisite.key} to agent-tools.json5 or remove the prerequisite.`,
+          });
+        }
+
+        const driverResolution = resolveVpnDriverConfig(vpnConfig);
+        if (!driverResolution.success) {
+          return yield* new PrerequisiteRunError({
+            message: driverResolution.error,
+            hint: driverResolution.hint,
+          });
+        }
+
+        const driver = driverResolution.driver;
+        const wasConnected = yield* isVpnConnected(driver, runCommand);
+        if (wasConnected) {
+          continue;
+        }
+
+        const startCommand = makeVpnCommand(driver, "start");
+        const startResult = yield* runCommand(startCommand.command, startCommand.label).pipe(
+          Effect.mapError(
+            () =>
+              new PrerequisiteRunError({
+                message: `Failed to start VPN prerequisite "${prerequisite.key}".`,
+                hint: missingVpnToolHint(driver),
+              }),
+          ),
+        );
+
+        if (startResult.exitCode !== 0) {
+          const stderr = startResult.stderr.trim();
+          return yield* new PrerequisiteRunError({
+            message:
+              stderr !== "" ? stderr : `Failed to start VPN prerequisite "${prerequisite.key}".`,
+            hint: missingVpnToolHint(driver),
+          });
+        }
+
+        const ready = yield* waitForVpn(driver, vpnConfig.connectTimeoutMs ?? 30000, runCommand);
+        if (!ready) {
+          return yield* new PrerequisiteRunError({
+            message: `VPN prerequisite "${prerequisite.key}" did not connect within timeout.`,
+            hint: missingVpnToolHint(driver),
+          });
+        }
+
+        const cleanup = prerequisite.cleanup ?? vpnConfig.defaultCleanup ?? "stop-if-started";
+        if (cleanup === "stop-if-started") {
+          startedDrivers.push({ driver, cooldownMs: vpnConfig.cooldownMs ?? 0 });
+        }
       }
 
-      const driverResolution = resolveVpnDriverConfig(vpnConfig);
-      if (!driverResolution.success) {
-        return yield* new PrerequisiteRunError({
-          message: driverResolution.error,
-          hint: driverResolution.hint,
-        });
+      const cleanup = Effect.gen(function* () {
+        for (const started of startedDrivers.toReversed()) {
+          if (started.cooldownMs > 0) {
+            yield* Effect.sleep(Duration.millis(started.cooldownMs));
+          }
+
+          const stopCommand = makeVpnCommand(started.driver, "stop");
+          yield* runCommand(stopCommand.command, stopCommand.label).pipe(Effect.ignore);
+        }
+      });
+
+      return yield* effect.pipe(Effect.ensuring(cleanup));
+    }).pipe(Effect.result);
+
+    if (Result.isSuccess(prerequisiteResult)) {
+      return prerequisiteResult.success;
+    }
+
+    if (shouldTryDirect && prerequisiteResult.failure instanceof PrerequisiteRunError) {
+      const directRetryResult = yield* tryDirect();
+      if (Result.isSuccess(directRetryResult)) {
+        return directRetryResult.success;
       }
-
-      const driver = driverResolution.driver;
-      const wasConnected = yield* isVpnConnected(driver, runCommand);
-      if (wasConnected) {
-        continue;
-      }
-
-      const startCommand = makeVpnCommand(driver, "start");
-      const startResult = yield* runCommand(startCommand.command, startCommand.label).pipe(
-        Effect.mapError(
-          () =>
-            new PrerequisiteRunError({
-              message: `Failed to start VPN prerequisite "${prerequisite.key}".`,
-              hint: missingVpnToolHint(driver),
-            }),
-        ),
-      );
-
-      if (startResult.exitCode !== 0) {
-        const stderr = startResult.stderr.trim();
-        return yield* new PrerequisiteRunError({
-          message:
-            stderr !== "" ? stderr : `Failed to start VPN prerequisite "${prerequisite.key}".`,
-          hint: missingVpnToolHint(driver),
-        });
-      }
-
-      const ready = yield* waitForVpn(driver, vpnConfig.connectTimeoutMs ?? 30000, runCommand);
-      if (!ready) {
-        return yield* new PrerequisiteRunError({
-          message: `VPN prerequisite "${prerequisite.key}" did not connect within timeout.`,
-          hint: missingVpnToolHint(driver),
-        });
-      }
-
-      const cleanup = prerequisite.cleanup ?? vpnConfig.defaultCleanup ?? "stop-if-started";
-      if (cleanup === "stop-if-started") {
-        startedDrivers.push({ driver, cooldownMs: vpnConfig.cooldownMs ?? 0 });
+      if (!(directRetryResult.failure instanceof PrerequisiteRunError)) {
+        return yield* Effect.fail(directRetryResult.failure);
       }
     }
 
-    const cleanup = Effect.gen(function* () {
-      for (const started of startedDrivers.toReversed()) {
-        if (started.cooldownMs > 0) {
-          yield* Effect.sleep(Duration.millis(started.cooldownMs));
-        }
-
-        const stopCommand = makeVpnCommand(started.driver, "stop");
-        yield* runCommand(stopCommand.command, stopCommand.label).pipe(Effect.ignore);
-      }
-    });
-
-    return yield* effect.pipe(Effect.ensuring(cleanup));
+    return yield* Effect.fail(prerequisiteResult.failure);
   });
 };
