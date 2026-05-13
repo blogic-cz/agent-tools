@@ -150,4 +150,54 @@ describe("runWithProfilePrerequisites", () => {
       expect(observedCommands).toEqual([]);
     });
   });
+
+  it.effect("retries the operation when fallback prerequisites fail after a direct miss", () => {
+    const observedCommands: string[] = [];
+    const expected = expectedVpnCommands();
+    let attempts = 0;
+
+    const operation = Effect.try({
+      try: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("direct miss");
+        }
+        return "ok";
+      },
+      catch: (error) => error as Error,
+    });
+
+    return Effect.gen(function* () {
+      const result = yield* runWithProfilePrerequisites(
+        {
+          vpns: {
+            workVpn: {
+              name: vpnName,
+              connectTimeoutMs: 0,
+            },
+          },
+        },
+        { vpn: "workVpn" },
+        (_command, label) => {
+          observedCommands.push(label);
+
+          if (label === expected.status) {
+            return Effect.succeed({ stdout: "Disconnected\n", stderr: "", exitCode: 0 });
+          }
+
+          if (label === expected.start) {
+            return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+          }
+
+          return Effect.fail(new Error(`unexpected command: ${label}`));
+        },
+        operation,
+        { tryWithoutPrerequisites: true },
+      );
+
+      expect(result).toBe("ok");
+      expect(attempts).toBe(2);
+      expect(observedCommands).toEqual([expected.status, expected.start, expected.status]);
+    });
+  });
 });
