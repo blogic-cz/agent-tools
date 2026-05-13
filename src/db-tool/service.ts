@@ -167,7 +167,8 @@ export class DbService extends Context.Service<
           config: DbConfig,
           env: string,
         ) {
-          const zshrcEnv = yield* loadEnvFromZshrc();
+          const needsEnvResolution = config.user.includes("${") || config.database.includes("${");
+          const zshrcEnv = needsEnvResolution ? yield* loadEnvFromZshrc() : {};
           return {
             ...config,
             user: yield* resolveConfigString(config.user, env, "user", zshrcEnv),
