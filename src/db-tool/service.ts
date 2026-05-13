@@ -158,7 +158,7 @@ export class DbService extends Context.Service<
           if (fromZsh) return fromZsh;
 
           return yield* new DbConnectionError({
-            message: `Environment variable ${envVar} is not set for database ${label}.`,
+            message: `Environment variable ${envVar} (required for '${label}' config field) is not set in environment ${env}.`,
             environment: env,
           });
         });
