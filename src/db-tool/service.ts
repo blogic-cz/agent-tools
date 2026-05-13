@@ -145,15 +145,15 @@ export class DbService extends Context.Service<
           value: string,
           env: string,
           label: string,
+          zshrcEnv: Record<string, string>,
         ) {
           const match = value.match(/^\$\{([A-Z0-9_]+)\}$/);
           if (!match) return value;
 
           const envVar = match[1];
-          const fromEnv = process.env[envVar];
+          const fromEnv = Bun.env[envVar];
           if (fromEnv !== undefined) return fromEnv;
 
-          const zshrcEnv = yield* loadEnvFromZshrc();
           const fromZsh = zshrcEnv[envVar];
           if (fromZsh !== undefined) return fromZsh;
 
@@ -167,10 +167,11 @@ export class DbService extends Context.Service<
           config: DbConfig,
           env: string,
         ) {
+          const zshrcEnv = yield* loadEnvFromZshrc();
           return {
             ...config,
-            user: yield* resolveConfigString(config.user, env, "user"),
-            database: yield* resolveConfigString(config.database, env, "database"),
+            user: yield* resolveConfigString(config.user, env, "user", zshrcEnv),
+            database: yield* resolveConfigString(config.database, env, "database", zshrcEnv),
           };
         });
 

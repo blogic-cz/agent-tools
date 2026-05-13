@@ -623,7 +623,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
     const psqlArgsPath = join(dbDir, "psql-args.txt");
     const vpnArgsPath = join(dbDir, "vpn-args.txt");
-    const testDbUserTemplate = ["$", "{TEST_DB_USER}"].join("");
+    const testDbUserTemplate = `${String.fromCharCode(36)}{TEST_DB_USER}`;
 
     mkdirSync(binDir, { recursive: true });
 
