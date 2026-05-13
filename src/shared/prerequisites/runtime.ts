@@ -116,6 +116,7 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
   profile: ProfilePrerequisites,
   runCommand: PrerequisiteCommandRunner<CommandError>,
   effect: Effect.Effect<A, E, never>,
+  options?: { tryWithoutPrerequisites?: boolean },
 ): Effect.Effect<A, E | PrerequisiteRunError, never> => {
   const prerequisites = normalizeProfilePrerequisites(profile);
   const vpnPrerequisites = prerequisites.filter((prerequisite) => prerequisite.type === "vpn");
@@ -125,6 +126,13 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
   }
 
   return Effect.gen(function* () {
+    if (options?.tryWithoutPrerequisites) {
+      const directResult = yield* effect.pipe(Effect.result);
+      if (Result.isSuccess(directResult)) {
+        return directResult.success;
+      }
+    }
+
     const startedDrivers: Array<{ driver: ResolvedVpnDriver; cooldownMs: number }> = [];
 
     for (const prerequisite of vpnPrerequisites) {

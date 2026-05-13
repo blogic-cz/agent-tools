@@ -124,4 +124,30 @@ describe("runWithProfilePrerequisites", () => {
       expect(observedCommands).toEqual([expected.status]);
     });
   });
+
+  it.effect("skips VPN commands when the operation already succeeds", () => {
+    const observedCommands: string[] = [];
+
+    return Effect.gen(function* () {
+      const result = yield* runWithProfilePrerequisites(
+        {
+          vpns: {
+            workVpn: {
+              name: vpnName,
+            },
+          },
+        },
+        { vpn: "workVpn" },
+        (_command, label) => {
+          observedCommands.push(label);
+          return Effect.fail(new Error(`unexpected command: ${label}`));
+        },
+        Effect.succeed("ok"),
+        { tryWithoutPrerequisites: true },
+      );
+
+      expect(result).toBe("ok");
+      expect(observedCommands).toEqual([]);
+    });
+  });
 });
