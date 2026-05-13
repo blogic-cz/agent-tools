@@ -614,7 +614,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
   const runDbTunnelTest = (
     service: string | undefined,
     expectedService: string,
-    options?: { withVpn?: boolean },
+    options?: { withVpn?: boolean; requireVpnForTunnel?: boolean },
   ) => {
     const dbDir = join(tmpdir(), `agent-tools-db-tunnel-${Date.now()}`);
     const binDir = join(dbDir, "bin");
@@ -674,7 +674,9 @@ describe("Integration: env safety + k8s namespace fallback", () => {
       kubectlPath,
       `#!/bin/sh
 printf '%s' "$*" > "${kubectlArgsPath}"
-touch "${tunnelReadyPath}"
+if [ "${options?.requireVpnForTunnel ? "yes" : "no"}" = "no" ] || [ -f "${vpnReadyPath}" ]; then
+  touch "${tunnelReadyPath}"
+fi
 trap 'exit 0' TERM INT
 while true; do
   sleep 1
@@ -784,7 +786,8 @@ printf '[{"ok":1}]\n'
     };
     const kubectlArgs = readFileSync(kubectlArgsPath, "utf8");
     const psqlArgs = readFileSync(psqlArgsPath, "utf8");
-    const vpnArgs = options?.withVpn ? readFileSync(vpnArgsPath, "utf8") : "";
+    const vpnArgs =
+      options?.withVpn && existsSync(vpnArgsPath) ? readFileSync(vpnArgsPath, "utf8") : "";
 
     rmSync(dbDir, { recursive: true, force: true });
 
@@ -796,8 +799,10 @@ printf '[{"ok":1}]\n'
     );
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
 
-    if (options?.withVpn) {
+    if (options?.withVpn && options.requireVpnForTunnel) {
       expect(vpnArgs).toContain("ExampleVPN");
+    } else if (options?.withVpn) {
+      expect(existsSync(vpnArgsPath)).toBe(false);
     }
   };
 
@@ -809,7 +814,11 @@ printf '[{"ok":1}]\n'
     runDbTunnelTest("database", "database");
   });
 
-  it("db-tool starts VPN prerequisites before opening the database tunnel", () => {
+  it("db-tool skips VPN prerequisites when the database tunnel already works", () => {
     runDbTunnelTest("database", "database", { withVpn: true });
+  });
+
+  it("db-tool starts VPN prerequisites when direct database access fails", () => {
+    runDbTunnelTest("database", "database", { withVpn: true, requireVpnForTunnel: true });
   });
 });

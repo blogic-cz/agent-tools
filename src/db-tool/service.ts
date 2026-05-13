@@ -183,6 +183,7 @@ export class DbService extends Context.Service<
             dbConfig,
             (command, _label) => executeShellCommand(command),
             effect,
+            { tryWithoutPrerequisites: true },
           ).pipe(
             Effect.mapError((error) =>
               isPrerequisiteRunError(error)
