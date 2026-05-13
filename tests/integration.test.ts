@@ -19,8 +19,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-/* eslint-disable eslint/no-template-curly-in-string */
-
 const TOOLS_ROOT = join(__dirname, "..");
 
 // Temp dir with valid config for tools that need it
@@ -625,6 +623,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
     const psqlArgsPath = join(dbDir, "psql-args.txt");
     const vpnArgsPath = join(dbDir, "vpn-args.txt");
+    // eslint-disable-next-line eslint/no-template-curly-in-string -- verifies config env-template expansion
     const testDbUserTemplate = "${TEST_DB_USER}";
 
     mkdirSync(binDir, { recursive: true });

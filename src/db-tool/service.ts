@@ -76,6 +76,7 @@ export class DbService extends Context.Service<
         const remotePort = dbConfig.remotePort ?? 5432;
 
         const zshrcEnvCache = yield* Ref.make<Record<string, string> | null>(null);
+        const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
 
         const loadEnvFromZshrc = Effect.fn("DbService.loadEnvFromZshrc")(function* () {
           const cached = yield* Ref.get(zshrcEnvCache);
@@ -147,7 +148,7 @@ export class DbService extends Context.Service<
           label: string,
           zshrcEnv: Record<string, string>,
         ) {
-          const match = value.match(/^\$\{([A-Z0-9_]+)\}$/);
+          const match = value.match(envTemplateRegex);
           if (!match) return value;
 
           const envVar = match[1];
@@ -167,7 +168,8 @@ export class DbService extends Context.Service<
           config: DbConfig,
           env: string,
         ) {
-          const needsEnvResolution = config.user.includes("${") || config.database.includes("${");
+          const needsEnvResolution =
+            envTemplateRegex.test(config.user) || envTemplateRegex.test(config.database);
           const zshrcEnv = needsEnvResolution ? yield* loadEnvFromZshrc() : {};
           return {
             ...config,
