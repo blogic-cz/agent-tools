@@ -76,6 +76,7 @@ export class DbService extends Context.Service<
         const remotePort = dbConfig.remotePort ?? 5432;
 
         const zshrcEnvCache = yield* Ref.make<Record<string, string> | null>(null);
+        const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
 
         const loadEnvFromZshrc = Effect.fn("DbService.loadEnvFromZshrc")(function* () {
           const cached = yield* Ref.get(zshrcEnvCache);
@@ -139,6 +140,42 @@ export class DbService extends Context.Service<
 
           // Local databases typically don't need a password
           return "";
+        });
+
+        const resolveConfigString = Effect.fn("DbService.resolveConfigString")(function* (
+          value: string,
+          env: string,
+          label: string,
+          zshrcEnv: Record<string, string>,
+        ) {
+          const match = value.match(envTemplateRegex);
+          if (!match) return value;
+
+          const envVar = match[1];
+          const fromEnv = Bun.env[envVar];
+          if (fromEnv !== undefined) return fromEnv;
+
+          const fromZsh = zshrcEnv[envVar];
+          if (fromZsh !== undefined) return fromZsh;
+
+          return yield* new DbConnectionError({
+            message: `Environment variable ${envVar} (required for '${label}' config field) is not set in environment ${env}.`,
+            environment: env,
+          });
+        });
+
+        const resolveDbConfig = Effect.fn("DbService.resolveDbConfig")(function* (
+          config: DbConfig,
+          env: string,
+        ) {
+          const needsEnvResolution =
+            envTemplateRegex.test(config.user) || envTemplateRegex.test(config.database);
+          const zshrcEnv = needsEnvResolution ? yield* loadEnvFromZshrc() : {};
+          return {
+            ...config,
+            user: yield* resolveConfigString(config.user, env, "user", zshrcEnv),
+            database: yield* resolveConfigString(config.database, env, "database", zshrcEnv),
+          };
         });
 
         const executeShellCommand = (command: ChildProcess.Command) =>
@@ -584,10 +621,11 @@ export class DbService extends Context.Service<
         ) {
           const config = getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
-          const password = yield* resolvePassword(config, env);
+          const resolvedConfig = yield* resolveDbConfig(config, env);
+          const password = yield* resolvePassword(resolvedConfig, env);
           const mutation = isMutationQuery(sql);
 
-          if (mutation && !config.allowMutations) {
+          if (mutation && !resolvedConfig.allowMutations) {
             return yield* new DbMutationBlockedError({
               message:
                 "Mutation queries (UPDATE, INSERT, DELETE, etc.) are not allowed on this environment. Use a local environment for mutations.",
@@ -596,12 +634,12 @@ export class DbService extends Context.Service<
           }
 
           const queryEffect = mutation
-            ? executeMutationQuery(config, sql, password, Number(startTimeMs))
-            : executeSelectQuery(config, sql, password, Number(startTimeMs), true);
+            ? executeMutationQuery(resolvedConfig, sql, password, Number(startTimeMs))
+            : executeSelectQuery(resolvedConfig, sql, password, Number(startTimeMs), true);
 
           return yield* runWithVpnPrerequisites(
-            config.port,
-            runQueryWithOptionalTunnel(config, queryEffect),
+            resolvedConfig.port,
+            runQueryWithOptionalTunnel(resolvedConfig, queryEffect),
           );
         });
 
@@ -612,7 +650,8 @@ export class DbService extends Context.Service<
         ) {
           const config = getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
-          const password = yield* resolvePassword(config, env);
+          const resolvedConfig = yield* resolveDbConfig(config, env);
+          const password = yield* resolvePassword(resolvedConfig, env);
 
           if (mode === "columns" && !table) {
             const endTime = yield* Clock.currentTimeMillis;
@@ -637,16 +676,26 @@ export class DbService extends Context.Service<
 
           const queryEffect =
             mode === "tables"
-              ? executeSelectQuery(config, getTableNames(), password, Number(startTimeMs))
+              ? executeSelectQuery(resolvedConfig, getTableNames(), password, Number(startTimeMs))
               : mode === "columns"
-                ? executeSelectQuery(config, getColumns(table ?? ""), password, Number(startTimeMs))
+                ? executeSelectQuery(
+                    resolvedConfig,
+                    getColumns(table ?? ""),
+                    password,
+                    Number(startTimeMs),
+                  )
                 : mode === "relationships"
-                  ? executeSelectQuery(config, getRelationships(), password, Number(startTimeMs))
-                  : executeFullSchemaQuery(config, password, Number(startTimeMs));
+                  ? executeSelectQuery(
+                      resolvedConfig,
+                      getRelationships(),
+                      password,
+                      Number(startTimeMs),
+                    )
+                  : executeFullSchemaQuery(resolvedConfig, password, Number(startTimeMs));
 
           const result = yield* runWithVpnPrerequisites(
-            config.port,
-            runQueryWithOptionalTunnel(config, queryEffect),
+            resolvedConfig.port,
+            runQueryWithOptionalTunnel(resolvedConfig, queryEffect),
           );
 
           if (result.success) {

@@ -623,6 +623,8 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
     const psqlArgsPath = join(dbDir, "psql-args.txt");
     const vpnArgsPath = join(dbDir, "vpn-args.txt");
+    // eslint-disable-next-line eslint/no-template-curly-in-string -- verifies config env-template expansion
+    const testDbUserTemplate = "${TEST_DB_USER}";
 
     mkdirSync(binDir, { recursive: true });
 
@@ -652,7 +654,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
               test: {
                 host: "127.0.0.1",
                 port: 25437,
-                user: "readonly-user",
+                user: testDbUserTemplate,
                 database: "app-test",
                 passwordEnvVar: "TEST_DB_PASSWORD",
               },
@@ -776,6 +778,7 @@ printf '[{"ok":1}]\n'
       dbDir,
       {
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        TEST_DB_USER: "readonly-user",
         TEST_DB_PASSWORD: "secret",
       },
     );
