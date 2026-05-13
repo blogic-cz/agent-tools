@@ -1,3 +1,6 @@
+import type { Effect } from "effect";
+import type { ChildProcess } from "effect/unstable/process";
+
 import type {
   LinuxNmcliVpnDriverConfig,
   MacosScutilVpnDriverConfig,
@@ -19,3 +22,14 @@ export type ResolvedVpnDriver =
 export type VpnDriverResolution =
   | { success: true; driver: ResolvedVpnDriver }
   | { success: false; error: string; hint: string };
+
+export type PrerequisiteCommandResult = {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number;
+};
+
+export type PrerequisiteCommandRunner<E> = (
+  command: ChildProcess.Command,
+  label: string,
+) => Effect.Effect<PrerequisiteCommandResult, E, never>;

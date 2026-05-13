@@ -3,6 +3,9 @@ import { Clock, Context, Duration, Effect, Layer, Ref, Stream } from "effect";
 
 import type { DbConfig, QueryResult, SchemaMode } from "./types";
 
+import { ConfigService } from "#config";
+import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
+import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { DbConfigService, DbConfigServiceLayer, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import {
   DbConnectionError,
@@ -49,6 +52,7 @@ export class DbService extends Context.Service<
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const agentToolsConfig = yield* ConfigService;
         const dbConfig = yield* DbConfigService;
 
         if (!dbConfig) {
@@ -168,6 +172,27 @@ export class DbService extends Context.Service<
               stdout: "pipe",
               stderr: "pipe",
             }),
+          );
+
+        const runWithVpnPrerequisites = <E>(
+          port: number,
+          effect: Effect.Effect<QueryResult, E>,
+        ): Effect.Effect<QueryResult, E | DbTunnelError> =>
+          runWithProfilePrerequisites(
+            agentToolsConfig ?? {},
+            dbConfig,
+            (command, _label) => executeShellCommand(command),
+            effect,
+          ).pipe(
+            Effect.mapError((error) =>
+              isPrerequisiteRunError(error)
+                ? new DbTunnelError({
+                    message: error.message,
+                    port,
+                    hint: error.hint,
+                  })
+                : error,
+            ),
           );
 
         const waitForPort = (port: number, timeoutMs: number, intervalMs: number) =>
@@ -573,7 +598,10 @@ export class DbService extends Context.Service<
             ? executeMutationQuery(config, sql, password, Number(startTimeMs))
             : executeSelectQuery(config, sql, password, Number(startTimeMs), true);
 
-          return yield* runQueryWithOptionalTunnel(config, queryEffect);
+          return yield* runWithVpnPrerequisites(
+            config.port,
+            runQueryWithOptionalTunnel(config, queryEffect),
+          );
         });
 
         const executeSchemaQuery = Effect.fn("DbService.executeSchemaQuery")(function* (
@@ -615,7 +643,10 @@ export class DbService extends Context.Service<
                   ? executeSelectQuery(config, getRelationships(), password, Number(startTimeMs))
                   : executeFullSchemaQuery(config, password, Number(startTimeMs));
 
-          const result = yield* runQueryWithOptionalTunnel(config, queryEffect);
+          const result = yield* runWithVpnPrerequisites(
+            config.port,
+            runQueryWithOptionalTunnel(config, queryEffect),
+          );
 
           if (result.success) {
             const descriptor =

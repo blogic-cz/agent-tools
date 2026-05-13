@@ -10,6 +10,18 @@ export class ExecError extends Schema.TaggedErrorClass<ExecError>()("ExecError",
   stderr: Schema.String,
 }) {}
 
+export const collectProcessOutput = (process: ChildProcessSpawner.ChildProcessHandle) =>
+  Effect.gen(function* () {
+    const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
+    const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
+
+    const stdout = stdoutChunk.join("");
+    const stderr = stderrChunk.join("");
+    const exitCode = yield* process.exitCode;
+
+    return { stdout, stderr, exitCode };
+  });
+
 export const execEffect = (
   commandStr: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
@@ -29,12 +41,7 @@ export const execEffect = (
 
       const process = yield* executor.spawn(command);
 
-      const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
-      const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
-
-      const stdout = stdoutChunk.join("");
-      const stderr = stderrChunk.join("");
-      const exitCode = yield* process.exitCode;
+      const { stdout, stderr, exitCode } = yield* collectProcessOutput(process);
 
       if (exitCode !== 0) {
         return yield* new ExecError({
