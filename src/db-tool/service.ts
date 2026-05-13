@@ -151,16 +151,27 @@ export class DbService extends Context.Service<
 
           const envVar = match[1];
           const fromEnv = process.env[envVar];
-          if (fromEnv) return fromEnv;
+          if (fromEnv !== undefined) return fromEnv;
 
           const zshrcEnv = yield* loadEnvFromZshrc();
           const fromZsh = zshrcEnv[envVar];
-          if (fromZsh) return fromZsh;
+          if (fromZsh !== undefined) return fromZsh;
 
           return yield* new DbConnectionError({
             message: `Environment variable ${envVar} (required for '${label}' config field) is not set in environment ${env}.`,
             environment: env,
           });
+        });
+
+        const resolveDbConfig = Effect.fn("DbService.resolveDbConfig")(function* (
+          config: DbConfig,
+          env: string,
+        ) {
+          return {
+            ...config,
+            user: yield* resolveConfigString(config.user, env, "user"),
+            database: yield* resolveConfigString(config.database, env, "database"),
+          };
         });
 
         const executeShellCommand = (command: ChildProcess.Command) =>
@@ -606,11 +617,7 @@ export class DbService extends Context.Service<
         ) {
           const config = getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
-          const resolvedConfig = {
-            ...config,
-            user: yield* resolveConfigString(config.user, env, "user"),
-            database: yield* resolveConfigString(config.database, env, "database"),
-          };
+          const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);
           const mutation = isMutationQuery(sql);
 
@@ -639,11 +646,7 @@ export class DbService extends Context.Service<
         ) {
           const config = getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
-          const resolvedConfig = {
-            ...config,
-            user: yield* resolveConfigString(config.user, env, "user"),
-            database: yield* resolveConfigString(config.database, env, "database"),
-          };
+          const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);
 
           if (mode === "columns" && !table) {
