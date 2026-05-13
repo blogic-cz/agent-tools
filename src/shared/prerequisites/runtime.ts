@@ -220,6 +220,9 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
       if (Result.isSuccess(directRetryResult)) {
         return directRetryResult.success;
       }
+      if (!(directRetryResult.failure instanceof PrerequisiteRunError)) {
+        return yield* Effect.fail(directRetryResult.failure);
+      }
     }
 
     return yield* Effect.fail(prerequisiteResult.failure);
