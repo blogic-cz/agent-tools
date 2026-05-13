@@ -141,6 +141,28 @@ export class DbService extends Context.Service<
           return "";
         });
 
+        const resolveConfigString = Effect.fn("DbService.resolveConfigString")(function* (
+          value: string,
+          env: string,
+          label: string,
+        ) {
+          const match = value.match(/^\$\{([A-Z0-9_]+)\}$/);
+          if (!match) return value;
+
+          const envVar = match[1];
+          const fromEnv = process.env[envVar];
+          if (fromEnv) return fromEnv;
+
+          const zshrcEnv = yield* loadEnvFromZshrc();
+          const fromZsh = zshrcEnv[envVar];
+          if (fromZsh) return fromZsh;
+
+          return yield* new DbConnectionError({
+            message: `Environment variable ${envVar} is not set for database ${label}.`,
+            environment: env,
+          });
+        });
+
         const executeShellCommand = (command: ChildProcess.Command) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -584,10 +606,15 @@ export class DbService extends Context.Service<
         ) {
           const config = getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
-          const password = yield* resolvePassword(config, env);
+          const resolvedConfig = {
+            ...config,
+            user: yield* resolveConfigString(config.user, env, "user"),
+            database: yield* resolveConfigString(config.database, env, "database"),
+          };
+          const password = yield* resolvePassword(resolvedConfig, env);
           const mutation = isMutationQuery(sql);
 
-          if (mutation && !config.allowMutations) {
+          if (mutation && !resolvedConfig.allowMutations) {
             return yield* new DbMutationBlockedError({
               message:
                 "Mutation queries (UPDATE, INSERT, DELETE, etc.) are not allowed on this environment. Use a local environment for mutations.",
@@ -596,12 +623,12 @@ export class DbService extends Context.Service<
           }
 
           const queryEffect = mutation
-            ? executeMutationQuery(config, sql, password, Number(startTimeMs))
-            : executeSelectQuery(config, sql, password, Number(startTimeMs), true);
+            ? executeMutationQuery(resolvedConfig, sql, password, Number(startTimeMs))
+            : executeSelectQuery(resolvedConfig, sql, password, Number(startTimeMs), true);
 
           return yield* runWithVpnPrerequisites(
-            config.port,
-            runQueryWithOptionalTunnel(config, queryEffect),
+            resolvedConfig.port,
+            runQueryWithOptionalTunnel(resolvedConfig, queryEffect),
           );
         });
 
@@ -612,7 +639,12 @@ export class DbService extends Context.Service<
         ) {
           const config = getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
-          const password = yield* resolvePassword(config, env);
+          const resolvedConfig = {
+            ...config,
+            user: yield* resolveConfigString(config.user, env, "user"),
+            database: yield* resolveConfigString(config.database, env, "database"),
+          };
+          const password = yield* resolvePassword(resolvedConfig, env);
 
           if (mode === "columns" && !table) {
             const endTime = yield* Clock.currentTimeMillis;
@@ -637,16 +669,26 @@ export class DbService extends Context.Service<
 
           const queryEffect =
             mode === "tables"
-              ? executeSelectQuery(config, getTableNames(), password, Number(startTimeMs))
+              ? executeSelectQuery(resolvedConfig, getTableNames(), password, Number(startTimeMs))
               : mode === "columns"
-                ? executeSelectQuery(config, getColumns(table ?? ""), password, Number(startTimeMs))
+                ? executeSelectQuery(
+                    resolvedConfig,
+                    getColumns(table ?? ""),
+                    password,
+                    Number(startTimeMs),
+                  )
                 : mode === "relationships"
-                  ? executeSelectQuery(config, getRelationships(), password, Number(startTimeMs))
-                  : executeFullSchemaQuery(config, password, Number(startTimeMs));
+                  ? executeSelectQuery(
+                      resolvedConfig,
+                      getRelationships(),
+                      password,
+                      Number(startTimeMs),
+                    )
+                  : executeFullSchemaQuery(resolvedConfig, password, Number(startTimeMs));
 
           const result = yield* runWithVpnPrerequisites(
-            config.port,
-            runQueryWithOptionalTunnel(config, queryEffect),
+            resolvedConfig.port,
+            runQueryWithOptionalTunnel(resolvedConfig, queryEffect),
           );
 
           if (result.success) {
