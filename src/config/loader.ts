@@ -30,6 +30,7 @@ const PrerequisitesSchema = Schema.Array(PrerequisiteSchema);
 const MacosScutilVpnDriverConfigSchema = Schema.Struct({
   type: Schema.Literal("macos-scutil"),
   serviceName: Schema.optionalKey(Schema.String),
+  secretEnvVar: Schema.optionalKey(Schema.String),
 });
 
 const LinuxNmcliVpnDriverConfigSchema = Schema.Struct({
@@ -56,6 +57,7 @@ const VpnConfigSchema = Schema.Struct({
   disconnectTimeoutMs: Schema.optionalKey(Schema.Number),
   cooldownMs: Schema.optionalKey(Schema.Number),
   leaseTtlMs: Schema.optionalKey(Schema.Number),
+  secretEnvVar: Schema.optionalKey(Schema.String),
   drivers: Schema.optionalKey(
     Schema.Struct({
       darwin: Schema.optionalKey(MacosScutilVpnDriverConfigSchema),

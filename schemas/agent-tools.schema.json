@@ -428,6 +428,10 @@
         },
         "serviceName": {
           "type": "string"
+        },
+        "secretEnvVar": {
+          "type": "string",
+          "description": "Name of environment variable holding the IPSec shared secret for scutil --nc start."
         }
       },
       "required": ["type"]
@@ -501,6 +505,10 @@
         },
         "leaseTtlMs": {
           "type": "number"
+        },
+        "secretEnvVar": {
+          "type": "string",
+          "description": "Name of environment variable holding the VPN shared secret for supported drivers."
         },
         "drivers": {
           "type": "object",

@@ -178,6 +178,8 @@ bun run agent-tools/example-tool/index.ts ping
       // auto defaults to true:
       // darwin -> macos-scutil, linux -> linux-nmcli, win32 -> windows-rasdial
       name: "ExampleVPN",
+      // Optional: pass IPSec shared secret to macOS scutil from env without storing the value in config.
+      secretEnvVar: "EXAMPLE_VPN_IPSEC_SHARED_SECRET",
     },
   },
   kubernetes: {

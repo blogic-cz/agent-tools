@@ -5,6 +5,10 @@ import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 
 const vpnName = "ExampleVPN";
 
+type BunEnvTestGlobal = typeof globalThis & { Bun?: { env: NodeJS.ProcessEnv } };
+
+(globalThis as BunEnvTestGlobal).Bun ??= { env: process.env } as unknown as typeof Bun;
+
 const expectedVpnCommands = () => {
   if (process.platform === "darwin") {
     return {
@@ -198,6 +202,103 @@ describe("runWithProfilePrerequisites", () => {
       expect(result).toBe("ok");
       expect(attempts).toBe(2);
       expect(observedCommands).toEqual([expected.status, expected.start, expected.status]);
+    });
+  });
+
+  it.effect("passes macOS VPN shared secrets from configured env vars", () => {
+    const observedCommands: string[] = [];
+    const previousSecret = process.env.TEST_VPN_SECRET;
+    process.env.TEST_VPN_SECRET = "vpn-secret";
+
+    return Effect.gen(function* () {
+      try {
+        const result = yield* runWithProfilePrerequisites(
+          {
+            vpns: {
+              workVpn: {
+                name: vpnName,
+                auto: false,
+                connectTimeoutMs: 1000,
+                driver: { type: "macos-scutil", secretEnvVar: "TEST_VPN_SECRET" },
+              },
+            },
+          },
+          { vpn: "workVpn" },
+          (_command, label) => {
+            observedCommands.push(label);
+
+            if (label === `scutil --nc status ${vpnName}`) {
+              const isConnected = observedCommands.some((command) =>
+                command.includes("--secret <redacted>"),
+              );
+              return Effect.succeed({
+                stdout: isConnected ? "Connected\n" : "Disconnected\n",
+                stderr: "",
+                exitCode: 0,
+              });
+            }
+
+            if (label === `scutil --nc start ${vpnName} --secret <redacted>`) {
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            }
+
+            if (label === `scutil --nc stop ${vpnName}`) {
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            }
+
+            return Effect.fail(new Error(`unexpected command: ${label}`));
+          },
+          Effect.succeed("ok"),
+        );
+
+        expect(result).toBe("ok");
+        expect(observedCommands).toContain(`scutil --nc start ${vpnName} --secret <redacted>`);
+        expect(observedCommands.join("\n")).not.toContain("vpn-secret");
+      } finally {
+        if (previousSecret === undefined) {
+          delete process.env.TEST_VPN_SECRET;
+        } else {
+          process.env.TEST_VPN_SECRET = previousSecret;
+        }
+      }
+    });
+  });
+
+  it.effect("fails fast when a configured VPN secret env var is missing", () => {
+    const previousSecret = process.env.TEST_MISSING_VPN_SECRET;
+    delete process.env.TEST_MISSING_VPN_SECRET;
+
+    return Effect.gen(function* () {
+      try {
+        const error = yield* Effect.flip(
+          runWithProfilePrerequisites(
+            {
+              vpns: {
+                workVpn: {
+                  name: vpnName,
+                  auto: false,
+                  driver: { type: "macos-scutil", secretEnvVar: "TEST_MISSING_VPN_SECRET" },
+                },
+              },
+            },
+            { vpn: "workVpn" },
+            (_command, label) => {
+              if (label === `scutil --nc status ${vpnName}`) {
+                return Effect.succeed({ stdout: "Disconnected\n", stderr: "", exitCode: 0 });
+              }
+
+              return Effect.fail(new Error(`unexpected command: ${label}`));
+            },
+            Effect.succeed("ok"),
+          ),
+        );
+
+        expect(String(error)).toContain("TEST_MISSING_VPN_SECRET");
+      } finally {
+        if (previousSecret !== undefined) {
+          process.env.TEST_MISSING_VPN_SECRET = previousSecret;
+        }
+      }
     });
   });
 

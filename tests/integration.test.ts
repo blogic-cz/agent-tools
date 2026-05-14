@@ -636,6 +636,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
               vpns: {
                 appVpn: {
                   name: "ExampleVPN",
+                  secretEnvVar: "TEST_VPN_SECRET",
                   connectTimeoutMs: 1000,
                 },
               },
@@ -780,6 +781,7 @@ printf '[{"ok":1}]\n'
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
         TEST_DB_USER: "readonly-user",
         TEST_DB_PASSWORD: "secret",
+        TEST_VPN_SECRET: "vpn-secret",
       },
     );
 

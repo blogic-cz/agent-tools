@@ -16,6 +16,8 @@ export type VpnPrerequisite = {
 export type MacosScutilVpnDriverConfig = {
   type: "macos-scutil";
   serviceName?: string;
+  /** Name of environment variable holding the IPSec shared secret for scutil --nc start. */
+  secretEnvVar?: string;
 };
 
 export type LinuxNmcliVpnDriverConfig = {
@@ -42,6 +44,8 @@ export type VpnConfig = {
   disconnectTimeoutMs?: number;
   cooldownMs?: number;
   leaseTtlMs?: number;
+  /** Name of environment variable holding the VPN shared secret for supported drivers. */
+  secretEnvVar?: string;
   drivers?: {
     darwin?: MacosScutilVpnDriverConfig;
     linux?: LinuxNmcliVpnDriverConfig;
