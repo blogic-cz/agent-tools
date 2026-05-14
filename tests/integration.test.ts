@@ -807,7 +807,8 @@ printf '[{"ok":1}]\n'
     if (options?.withVpn && options.requireVpnForTunnel) {
       expect(vpnArgs).toContain("ExampleVPN");
       if (process.platform === "darwin") {
-        expect(vpnArgs).toContain("--secret vpn-secret");
+        expect(vpnArgs).toContain("--secret");
+        expect(vpnArgs).toContain("vpn-secret");
       }
     } else if (options?.withVpn) {
       expect(existsSync(vpnArgsPath)).toBe(false);

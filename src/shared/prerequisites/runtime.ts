@@ -10,7 +10,7 @@ import { missingVpnToolHint, resolveVpnDriverConfig } from "#shared/prerequisite
 
 const makeVpnCommand = (driver: ResolvedVpnDriver, action: "status" | "start" | "stop") => {
   if (driver.type === "macos-scutil") {
-    const secret = driver.secretEnvVar ? process.env[driver.secretEnvVar] : undefined;
+    const secret = driver.secretEnvVar ? Bun.env[driver.secretEnvVar] : undefined;
     const secretArgs = action === "start" && secret ? ["--secret", secret] : [];
     const redactedSecretArgs = secretArgs.length > 0 ? ["--secret", "<redacted>"] : [];
     const args =
