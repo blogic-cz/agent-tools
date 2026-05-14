@@ -5,6 +5,10 @@ import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 
 const vpnName = "ExampleVPN";
 
+type BunEnvTestGlobal = typeof globalThis & { Bun?: { env: NodeJS.ProcessEnv } };
+
+(globalThis as BunEnvTestGlobal).Bun ??= { env: process.env } as unknown as typeof Bun;
+
 const expectedVpnCommands = () => {
   if (process.platform === "darwin") {
     return {

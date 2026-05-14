@@ -8,10 +8,7 @@ import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
 import { PrerequisiteRunError } from "#shared/prerequisites/errors";
 import { missingVpnToolHint, resolveVpnDriverConfig } from "#shared/prerequisites/vpn";
 
-type BunEnvGlobal = { Bun?: { env?: Record<string, string | undefined> } };
-
-const readEnv = (name: string) =>
-  (globalThis as BunEnvGlobal).Bun?.env?.[name] ?? process.env[name];
+const readEnv = (name: string) => Bun.env[name];
 
 const makeVpnCommand = (driver: ResolvedVpnDriver, action: "status" | "start" | "stop") => {
   if (driver.type === "macos-scutil") {
