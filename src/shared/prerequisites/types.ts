@@ -15,9 +15,9 @@ export type PrerequisiteResolution =
 export type SupportedPlatform = "darwin" | "linux" | "win32";
 
 export type ResolvedVpnDriver =
-  | (Required<MacosScutilVpnDriverConfig> & { platform: "darwin" })
-  | (Required<LinuxNmcliVpnDriverConfig> & { platform: "linux" })
-  | (Required<WindowsRasdialVpnDriverConfig> & { platform: "win32" });
+  | (MacosScutilVpnDriverConfig & { platform: "darwin"; serviceName: string })
+  | (LinuxNmcliVpnDriverConfig & { platform: "linux"; connectionName: string })
+  | (WindowsRasdialVpnDriverConfig & { platform: "win32"; entryName: string });
 
 export type VpnDriverResolution =
   | { success: true; driver: ResolvedVpnDriver }

@@ -10,16 +10,21 @@ import { missingVpnToolHint, resolveVpnDriverConfig } from "#shared/prerequisite
 
 const makeVpnCommand = (driver: ResolvedVpnDriver, action: "status" | "start" | "stop") => {
   if (driver.type === "macos-scutil") {
+    const secret = driver.secretEnvVar ? process.env[driver.secretEnvVar] : undefined;
+    const secretArgs = action === "start" && secret ? ["--secret", secret] : [];
+    const redactedSecretArgs = secretArgs.length > 0 ? ["--secret", "<redacted>"] : [];
     const args =
       action === "status"
         ? ["--nc", "status", driver.serviceName]
         : action === "start"
-          ? ["--nc", "start", driver.serviceName]
+          ? ["--nc", "start", driver.serviceName, ...secretArgs]
           : ["--nc", "stop", driver.serviceName];
+    const labelArgs =
+      action === "start" ? ["--nc", "start", driver.serviceName, ...redactedSecretArgs] : args;
 
     return {
       command: ChildProcess.make("scutil", args, { stdout: "pipe", stderr: "pipe" }),
-      label: ["scutil", ...args].join(" "),
+      label: ["scutil", ...labelArgs].join(" "),
     };
   }
 

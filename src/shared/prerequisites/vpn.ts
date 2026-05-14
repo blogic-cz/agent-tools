@@ -24,7 +24,12 @@ const resolveExplicitDriver = (
 
     return {
       success: true,
-      driver: { platform, type: driver.type, serviceName: driver.serviceName ?? config.name },
+      driver: {
+        platform,
+        type: driver.type,
+        serviceName: driver.serviceName ?? config.name,
+        secretEnvVar: driver.secretEnvVar ?? config.secretEnvVar,
+      },
     };
   }
 
@@ -93,7 +98,15 @@ export function resolveVpnDriverConfig(
   }
 
   if (platform === "darwin") {
-    return { success: true, driver: { platform, type: "macos-scutil", serviceName: config.name } };
+    return {
+      success: true,
+      driver: {
+        platform,
+        type: "macos-scutil",
+        serviceName: config.name,
+        secretEnvVar: config.secretEnvVar,
+      },
+    };
   }
 
   if (platform === "linux") {
