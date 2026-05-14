@@ -8,9 +8,14 @@ import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
 import { PrerequisiteRunError } from "#shared/prerequisites/errors";
 import { missingVpnToolHint, resolveVpnDriverConfig } from "#shared/prerequisites/vpn";
 
+type BunEnvGlobal = { Bun?: { env?: Record<string, string | undefined> } };
+
+const readEnv = (name: string) =>
+  (globalThis as BunEnvGlobal).Bun?.env?.[name] ?? process.env[name];
+
 const makeVpnCommand = (driver: ResolvedVpnDriver, action: "status" | "start" | "stop") => {
   if (driver.type === "macos-scutil") {
-    const secret = driver.secretEnvVar ? Bun.env[driver.secretEnvVar] : undefined;
+    const secret = driver.secretEnvVar ? readEnv(driver.secretEnvVar) : undefined;
     const secretArgs = action === "start" && secret ? ["--secret", secret] : [];
     const redactedSecretArgs = secretArgs.length > 0 ? ["--secret", "<redacted>"] : [];
     const args =
@@ -166,6 +171,17 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
         const wasConnected = yield* isVpnConnected(driver, runCommand);
         if (wasConnected) {
           continue;
+        }
+
+        if (
+          driver.type === "macos-scutil" &&
+          driver.secretEnvVar &&
+          !readEnv(driver.secretEnvVar)
+        ) {
+          return yield* new PrerequisiteRunError({
+            message: `VPN secret environment variable "${driver.secretEnvVar}" is not set.`,
+            hint: `Set ${driver.secretEnvVar} before running this tool or remove secretEnvVar from the VPN config.`,
+          });
         }
 
         const startCommand = makeVpnCommand(driver, "start");
