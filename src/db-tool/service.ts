@@ -15,7 +15,13 @@ import {
   DbTunnelError,
   type DbError,
 } from "./errors";
-import { getColumns, getRelationships, getTableNames } from "./schema";
+import {
+  getColumns,
+  getRelationships,
+  getTableNames,
+  parseTableReference,
+  SYSTEM_SCHEMAS_SQL,
+} from "./schema";
 import { detectSchemaError, isValidTableName, isMutationQuery } from "./security";
 import { transformQueryResult } from "./transformers";
 
@@ -324,7 +330,7 @@ export class DbService extends Context.Service<
         ) {
           const command = buildPsqlCommand(
             config,
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;",
+            `SELECT schemaname || '.' || tablename FROM pg_tables WHERE schemaname NOT IN (${SYSTEM_SCHEMAS_SQL}) ORDER BY schemaname, tablename;`,
             password,
             true,
           );
@@ -356,11 +362,16 @@ export class DbService extends Context.Service<
             return [] as string[];
           }
 
-          const escapedTableName = tableName.replaceAll("'", "''");
+          const tableReference = parseTableReference(tableName);
+          const escapedSchemaName = tableReference.schemaName?.replaceAll("'", "''");
+          const escapedTableName = tableReference.tableName.replaceAll("'", "''");
+          const schemaFilter = escapedSchemaName
+            ? `AND table_schema = '${escapedSchemaName}'`
+            : `AND table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})`;
 
           const command = buildPsqlCommand(
             config,
-            `SELECT column_name FROM information_schema.columns WHERE table_name = '${escapedTableName}' AND table_schema = 'public' ORDER BY ordinal_position;`,
+            `SELECT column_name FROM information_schema.columns WHERE table_name = '${escapedTableName}' ${schemaFilter} ORDER BY table_schema, ordinal_position;`,
             password,
             true,
           );
@@ -516,21 +527,25 @@ export class DbService extends Context.Service<
           }
 
           const tables = tablesResult.data as {
+            schema?: string;
             name: string;
+            qualified_name?: string;
           }[];
           const fullSchema: Record<string, unknown>[] = [];
 
           for (const table of tables) {
             const columnsResult = yield* executeSelectQuery(
               config,
-              getColumns(table.name),
+              getColumns(table.qualified_name ?? table.name),
               password,
               startTimeMs,
             ).pipe(Effect.catch(() => Effect.succeed(null)));
 
             if (columnsResult && columnsResult.success && columnsResult.data) {
               fullSchema.push({
+                schema: table.schema,
                 table: table.name,
+                qualified_name: table.qualified_name ?? table.name,
                 columns: columnsResult.data,
               });
             }
@@ -668,7 +683,7 @@ export class DbService extends Context.Service<
               return {
                 success: false,
                 error:
-                  "Invalid table name. Use only letters, numbers, and underscores, and start with a letter or underscore.",
+                  "Invalid table name. Use only letters, numbers, underscores, and an optional schema prefix, and start each identifier with a letter or underscore.",
                 executionTimeMs: Number(endTime) - Number(startTimeMs),
               };
             }

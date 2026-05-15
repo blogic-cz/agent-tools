@@ -5,6 +5,8 @@ import type { DbError } from "#db/errors";
 import type { QueryResult } from "#db/types";
 
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
+import { getColumns, getRelationships, getTableNames } from "#db/schema";
+import { isValidTableName } from "#db/security";
 import { DbService, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -47,6 +49,43 @@ function createMockDbServiceLayer(responses: Record<string, QueryResult | DbErro
     },
   });
 }
+
+describe("db schema introspection SQL", () => {
+  it("lists user tables across all non-system schemas", () => {
+    const sql = getTableNames();
+
+    expect(sql).toContain("schemaname as schema");
+    expect(sql).toContain("schemaname || '.' || tablename as qualified_name");
+    expect(sql).toContain("schemaname NOT IN ('pg_catalog', 'information_schema')");
+    expect(sql).not.toContain("schemaname = 'public'");
+  });
+
+  it("shows columns for schema-qualified tables", () => {
+    const sql = getColumns("core_business_partners.business_partners");
+
+    expect(sql).toContain("c.table_schema as schema");
+    expect(sql).toContain("c.table_name as table");
+    expect(sql).toContain("c.table_name = 'business_partners'");
+    expect(sql).toContain("c.table_schema = 'core_business_partners'");
+  });
+
+  it("shows relationships across all non-system schemas", () => {
+    const sql = getRelationships();
+
+    expect(sql).toContain("tc.table_schema as from_schema");
+    expect(sql).toContain("ccu.table_schema as to_schema");
+    expect(sql).toContain("ccu.constraint_schema = tc.constraint_schema");
+    expect(sql).toContain("tc.table_schema NOT IN ('pg_catalog', 'information_schema')");
+    expect(sql).not.toContain("tc.table_schema = 'public'");
+  });
+
+  it("accepts optional schema-qualified table names only", () => {
+    expect(isValidTableName("business_partners")).toBe(true);
+    expect(isValidTableName("core_business_partners.business_partners")).toBe(true);
+    expect(isValidTableName("core-business-partners.business_partners")).toBe(false);
+    expect(isValidTableName("core.business.partners")).toBe(false);
+  });
+});
 
 describe("DbService", () => {
   describe("resolveDbAccessMode", () => {
