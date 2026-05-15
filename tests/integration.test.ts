@@ -375,7 +375,7 @@ const server = createServer((req, res) => {
                 data: {
                   values: [
                     [1710000000001],
-                    ['{"level":"error","message":"Nsure import failed"}'],
+                    ['{"body":"Nsure import failed","severity":"Error","attributes":{"JobId":"job-1","exception.message":"permission denied"}}'],
                     ['{"job":"mock-app"}']
                   ]
                 }
@@ -494,7 +494,16 @@ setInterval(() => {}, 1000);`,
     expect(logQueryResult.status).toBe(0);
     expect(JSON.parse(logQueryResult.stdout.trim())).toMatchObject({
       success: true,
-      data: { logCount: 1 },
+      data: {
+        logCount: 1,
+        logs: [
+          {
+            body: "Nsure import failed",
+            severity: "Error",
+            attributes: { JobId: "job-1", "exception.message": "permission denied" },
+          },
+        ],
+      },
     });
 
     expect(existsSync(auditDbPath)).toBe(true);
