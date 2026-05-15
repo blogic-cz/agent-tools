@@ -10,7 +10,7 @@ const MUTATION_PATTERNS = [
   /^\s*CREATE\s+/i,
 ];
 
-const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
 
 /**
  * Strip SQL comments (block and line) while preserving string literals.

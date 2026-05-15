@@ -5,18 +5,39 @@
  * This is a known limitation — callers must validate the table name
  * via `isValidTableName()` before calling `getColumns()`.
  */
+const SYSTEM_SCHEMAS_SQL = "'pg_catalog', 'information_schema'";
+
+function parseTableReference(tableName: string): { schemaName?: string; tableName: string } {
+  const [schemaName, name, ...extra] = tableName.split(".");
+
+  if (name && extra.length === 0) {
+    return { schemaName, tableName: name };
+  }
+
+  return { tableName };
+}
+
 export const SCHEMA_QUERIES = {
   tables: `
-    SELECT tablename as name
+    SELECT
+      schemaname as schema,
+      tablename as name,
+      schemaname || '.' || tablename as qualified_name
     FROM pg_tables
-    WHERE schemaname = 'public'
-    ORDER BY tablename
+    WHERE schemaname NOT IN (${SYSTEM_SCHEMAS_SQL})
+    ORDER BY schemaname, tablename
   `,
   columns: (tableName: string) => {
-    const escapedTableName = tableName.replaceAll("'", "''");
+    const tableReference = parseTableReference(tableName);
+    const escapedTableName = tableReference.tableName.replaceAll("'", "''");
+    const schemaFilter = tableReference.schemaName
+      ? `AND c.table_schema = '${tableReference.schemaName.replaceAll("'", "''")}'`
+      : `AND c.table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})`;
 
     return `
     SELECT
+      c.table_schema as schema,
+      c.table_name as table,
       c.column_name as name,
       c.data_type as type,
       c.is_nullable = 'YES' as nullable,
@@ -32,14 +53,16 @@ export const SCHEMA_QUERIES = {
       ) as is_primary_key
     FROM information_schema.columns c
     WHERE c.table_name = '${escapedTableName}'
-    AND c.table_schema = 'public'
-    ORDER BY c.ordinal_position
+    ${schemaFilter}
+    ORDER BY c.table_schema, c.ordinal_position
   `;
   },
   relationships: `
     SELECT
+      tc.table_schema as from_schema,
       tc.table_name as from_table,
       kcu.column_name as from_column,
+      ccu.table_schema as to_schema,
       ccu.table_name as to_table,
       ccu.column_name as to_column,
       tc.constraint_name
@@ -49,10 +72,10 @@ export const SCHEMA_QUERIES = {
       AND tc.table_schema = kcu.table_schema
     JOIN information_schema.constraint_column_usage ccu
       ON ccu.constraint_name = tc.constraint_name
-      AND ccu.table_schema = tc.table_schema
+      AND ccu.constraint_schema = tc.constraint_schema
     WHERE tc.constraint_type = 'FOREIGN KEY'
-    AND tc.table_schema = 'public'
-    ORDER BY tc.table_name, kcu.column_name
+    AND tc.table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})
+    ORDER BY tc.table_schema, tc.table_name, kcu.column_name
   `,
 };
 
