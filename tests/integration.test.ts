@@ -299,7 +299,7 @@ const server = createServer((req, res) => {
     res.end(body);
     return;
   }
-  if (req.url === "/api/ds/query" && req.method === "POST") {
+      if (req.url === "/api/ds/query" && req.method === "POST") {
     let raw = "";
     req.on("data", chunk => { raw += chunk.toString(); });
     req.on("end", () => {
@@ -349,6 +349,34 @@ const server = createServer((req, res) => {
                   values: [
                     [1710000000000, 1710000060000],
                     [1, 1]
+                  ]
+                }
+              }]
+            }
+          }
+        });
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+
+      if (expr === '{job="mock-app"} |= "Nsure"') {
+        const body = JSON.stringify({
+          results: {
+            A: {
+              frames: [{
+                schema: {
+                  fields: [
+                    { name: "timestamp", type: "time" },
+                    { name: "line", type: "string" },
+                    { name: "labels", type: "string" }
+                  ]
+                },
+                data: {
+                  values: [
+                    [1710000000001],
+                    ['{"level":"error","message":"Nsure import failed"}'],
+                    ['{"job":"mock-app"}']
                   ]
                 }
               }]
@@ -456,11 +484,25 @@ setInterval(() => {}, 1000);`,
       data: { seriesCount: 1 },
     });
 
+    const logQueryResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["logs", "query", '{job="mock-app"} |= "Nsure"', "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(logQueryResult.status).toBe(0);
+    expect(JSON.parse(logQueryResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: { logCount: 1 },
+    });
+
     expect(existsSync(auditDbPath)).toBe(true);
-    const rows = readAuditRows(auditDbPath, 3);
+    const rows = readAuditRows(auditDbPath, 4);
     expect(rows[0]?.tool).toBe("observability");
     expect(rows[1]?.tool).toBe("observability");
     expect(rows[2]?.tool).toBe("observability");
+    expect(rows[3]?.tool).toBe("observability");
     expect(rows[0]?.project).toBe(realpathSync(workDir));
 
     stopServer?.();
