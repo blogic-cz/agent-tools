@@ -15,7 +15,16 @@ import {
 type LogLine = {
   readonly timestamp: string;
   readonly line: string;
+  readonly body?: string;
+  readonly severity?: string;
+  readonly attributes?: Record<string, unknown>;
   readonly labels: Record<string, string>;
+};
+
+type StructuredLogLine = {
+  readonly body?: string;
+  readonly severity?: string;
+  readonly attributes?: Record<string, unknown>;
 };
 
 function parseLabel(value: string | Record<string, string>): Record<string, string> {
@@ -25,6 +34,27 @@ function parseLabel(value: string | Record<string, string>): Record<string, stri
 
   try {
     return JSON.parse(value) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function parseStructuredLogLine(line: string): StructuredLogLine {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (typeof parsed !== "object" || parsed === null) {
+      return {};
+    }
+
+    const record = parsed as Record<string, unknown>;
+    return {
+      body: typeof record.body === "string" ? record.body : undefined,
+      severity: typeof record.severity === "string" ? record.severity : undefined,
+      attributes:
+        typeof record.attributes === "object" && record.attributes !== null
+          ? (record.attributes as Record<string, unknown>)
+          : undefined,
+    };
   } catch {
     return {};
   }
@@ -62,9 +92,11 @@ export function extractLogsFromDsQuery(response: {
     >;
 
     for (const [index, line] of lines.entries()) {
+      const structured = parseStructuredLogLine(line);
       logs.push({
         timestamp: String(timestamps[index] ?? ""),
         line,
+        ...structured,
         labels: labelValues[index] ? parseLabel(labelValues[index]) : {},
       });
     }
