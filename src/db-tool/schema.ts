@@ -5,9 +5,9 @@
  * This is a known limitation — callers must validate the table name
  * via `isValidTableName()` before calling `getColumns()`.
  */
-const SYSTEM_SCHEMAS_SQL = "'pg_catalog', 'information_schema'";
+export const SYSTEM_SCHEMAS_SQL = "'pg_catalog', 'information_schema'";
 
-function parseTableReference(tableName: string): { schemaName?: string; tableName: string } {
+export function parseTableReference(tableName: string): { schemaName?: string; tableName: string } {
   const [schemaName, name, ...extra] = tableName.split(".");
 
   if (name && extra.length === 0) {

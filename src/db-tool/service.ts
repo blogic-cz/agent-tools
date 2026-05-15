@@ -15,7 +15,13 @@ import {
   DbTunnelError,
   type DbError,
 } from "./errors";
-import { getColumns, getRelationships, getTableNames } from "./schema";
+import {
+  getColumns,
+  getRelationships,
+  getTableNames,
+  parseTableReference,
+  SYSTEM_SCHEMAS_SQL,
+} from "./schema";
 import { detectSchemaError, isValidTableName, isMutationQuery } from "./security";
 import { transformQueryResult } from "./transformers";
 
@@ -324,7 +330,7 @@ export class DbService extends Context.Service<
         ) {
           const command = buildPsqlCommand(
             config,
-            "SELECT schemaname || '.' || tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY schemaname, tablename;",
+            `SELECT schemaname || '.' || tablename FROM pg_tables WHERE schemaname NOT IN (${SYSTEM_SCHEMAS_SQL}) ORDER BY schemaname, tablename;`,
             password,
             true,
           );
@@ -356,16 +362,12 @@ export class DbService extends Context.Service<
             return [] as string[];
           }
 
-          const [schemaName, unqualifiedTableName, ...extra] = tableName.split(".");
-          const hasSchema = Boolean(unqualifiedTableName) && extra.length === 0;
-          const escapedSchemaName = schemaName.replaceAll("'", "''");
-          const escapedTableName = (hasSchema ? unqualifiedTableName : tableName).replaceAll(
-            "'",
-            "''",
-          );
-          const schemaFilter = hasSchema
+          const tableReference = parseTableReference(tableName);
+          const escapedSchemaName = tableReference.schemaName?.replaceAll("'", "''");
+          const escapedTableName = tableReference.tableName.replaceAll("'", "''");
+          const schemaFilter = escapedSchemaName
             ? `AND table_schema = '${escapedSchemaName}'`
-            : "AND table_schema NOT IN ('pg_catalog', 'information_schema')";
+            : `AND table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})`;
 
           const command = buildPsqlCommand(
             config,
