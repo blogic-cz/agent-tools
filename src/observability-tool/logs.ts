@@ -78,9 +78,7 @@ export function extractLogsFromDsQuery(response: {
     const lineIndex = fields.findIndex(
       (field) => field.name === "body" || field.name === "Line" || field.name === "line",
     );
-    const labelsIndex = fields.findIndex(
-      (field) => field.name === "labels" || field.name === "labelTypes",
-    );
+    const labelsIndex = fields.findIndex((field) => field.name === "labels");
 
     const timestamps = (timeIndex >= 0 ? values[timeIndex] : []) as Array<string | number>;
     const lines = (lineIndex >= 0 ? values[lineIndex] : []) as string[];
