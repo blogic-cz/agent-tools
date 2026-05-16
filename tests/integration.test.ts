@@ -299,7 +299,7 @@ const server = createServer((req, res) => {
     res.end(body);
     return;
   }
-      if (req.url === "/api/ds/query" && req.method === "POST") {
+  if (req.url === "/api/ds/query" && req.method === "POST") {
     let raw = "";
     req.on("data", chunk => { raw += chunk.toString(); });
     req.on("end", () => {

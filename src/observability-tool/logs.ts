@@ -14,13 +14,23 @@ import {
 
 import type { LogLine, StructuredLogLine } from "./types";
 
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => typeof item === "string")
+  );
+}
+
 function parseLabel(value: string | Record<string, string>): Record<string, string> {
-  if (typeof value === "object" && value !== null) {
+  if (isStringRecord(value)) {
     return value;
   }
 
   try {
-    return JSON.parse(value) as Record<string, string>;
+    const parsed = JSON.parse(value) as unknown;
+    return isStringRecord(parsed) ? parsed : {};
   } catch {
     return {};
   }
