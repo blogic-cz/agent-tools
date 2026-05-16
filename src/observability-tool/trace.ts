@@ -13,6 +13,7 @@ import {
   profileOption,
   resolveConfig,
 } from "./shared";
+import { extractLogsFromDsQuery } from "./logs";
 import type {
   FlattenedSpan,
   ObservabilityEnvConfig,
@@ -219,18 +220,6 @@ function summarizeTrace(traceId: string, spans: readonly FlattenedSpan[]): Trace
     startedAtUnixNano: startedAt?.toString(),
     endedAtUnixNano: endedAt?.toString(),
   };
-}
-
-function parseLabel(value: string | Record<string, string>): Record<string, string> {
-  if (typeof value === "object" && value !== null) {
-    return value;
-  }
-
-  try {
-    return JSON.parse(value) as Record<string, string>;
-  } catch {
-    return {};
-  }
 }
 
 type ResolvedTrace = {
@@ -482,34 +471,7 @@ const logsCommand = Command.make(
         });
       }
 
-      const logs: Array<{ timestamp: string; line: string; labels: Record<string, string> }> = [];
-      for (const frame of response.results.A.frames ?? []) {
-        const fields = frame.schema.fields;
-        const values = frame.data.values;
-        const timeIndex = fields.findIndex(
-          (field) => field.name === "timestamp" || field.type === "time",
-        );
-        const lineIndex = fields.findIndex(
-          (field) => field.name === "body" || field.name === "Line" || field.name === "line",
-        );
-        const labelsIndex = fields.findIndex(
-          (field) => field.name === "labels" || field.name === "labelTypes",
-        );
-
-        const timestamps = (timeIndex >= 0 ? values[timeIndex] : []) as Array<string | number>;
-        const lines = (lineIndex >= 0 ? values[lineIndex] : []) as string[];
-        const labelValues = (labelsIndex >= 0 ? values[labelsIndex] : []) as Array<
-          string | Record<string, string>
-        >;
-
-        for (const [index, line] of lines.entries()) {
-          logs.push({
-            timestamp: String(timestamps[index] ?? ""),
-            line,
-            labels: labelValues[index] ? parseLabel(labelValues[index]) : {},
-          });
-        }
-      }
+      const logs = extractLogsFromDsQuery(response);
 
       const result = {
         success: true,

@@ -360,6 +360,88 @@ const server = createServer((req, res) => {
         return;
       }
 
+      if (expr === '{job="mock-app"} |= "Nsure"') {
+        const body = JSON.stringify({
+          results: {
+            A: {
+              frames: [{
+                schema: {
+                  fields: [
+                    { name: "timestamp", type: "time" },
+                    { name: "line", type: "string" },
+                    { name: "labels", type: "string" }
+                  ]
+                },
+                data: {
+                  values: [
+                    [1710000000001],
+                    ['{"body":"Nsure import failed","severity":"Error","attributes":{"JobId":"job-1","exception.message":"permission denied"}}'],
+                    ['{"job":"mock-app"}']
+                  ]
+                }
+              }]
+            }
+          }
+        });
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+
+      if (expr === '{job="field-label-app"}') {
+        const body = JSON.stringify({
+          results: {
+            A: {
+              frames: [{
+                schema: {
+                  fields: [
+                    { name: "timestamp", type: "time" },
+                    { name: "line", type: "string", labels: { job: "field-label-app", pod: "pod-1" } }
+                  ]
+                },
+                data: {
+                  values: [
+                    [1710000000002],
+                    ["field labels log"]
+                  ]
+                }
+              }]
+            }
+          }
+        });
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+
+      if (expr === '{job="mixed-label-app"}') {
+        const body = JSON.stringify({
+          results: {
+            A: {
+              frames: [{
+                schema: {
+                  fields: [
+                    { name: "timestamp", type: "time" },
+                    { name: "line", type: "string", labels: { job: "mixed-label-app", pod: "pod-2" } },
+                    { name: "labelTypes", type: "other" }
+                  ]
+                },
+                data: {
+                  values: [
+                    [1710000000003],
+                    ["mixed labels log"],
+                    [{ job: "S", pod: "S" }]
+                  ]
+                }
+              }]
+            }
+          }
+        });
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ message: "unexpected expr: " + expr }));
     });
@@ -456,11 +538,76 @@ setInterval(() => {}, 1000);`,
       data: { seriesCount: 1 },
     });
 
+    const logQueryResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["logs", "query", '{job="mock-app"} |= "Nsure"', "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(logQueryResult.status).toBe(0);
+    expect(JSON.parse(logQueryResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: {
+        logCount: 1,
+        logs: [
+          {
+            body: "Nsure import failed",
+            severity: "Error",
+            attributes: { JobId: "job-1", "exception.message": "permission denied" },
+          },
+        ],
+      },
+    });
+
+    const fieldLabelsLogQueryResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["logs", "query", '{job="field-label-app"}', "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(fieldLabelsLogQueryResult.status).toBe(0);
+    expect(JSON.parse(fieldLabelsLogQueryResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: {
+        logCount: 1,
+        logs: [
+          {
+            line: "field labels log",
+            labels: { job: "field-label-app", pod: "pod-1" },
+          },
+        ],
+      },
+    });
+
+    const mixedLabelsLogQueryResult = runToolWithEnv(
+      "src/observability-tool/index.ts",
+      ["logs", "query", '{job="mixed-label-app"}', "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+      30000,
+    );
+    expect(mixedLabelsLogQueryResult.status).toBe(0);
+    expect(JSON.parse(mixedLabelsLogQueryResult.stdout.trim())).toMatchObject({
+      success: true,
+      data: {
+        logCount: 1,
+        logs: [
+          {
+            line: "mixed labels log",
+            labels: { job: "mixed-label-app", pod: "pod-2" },
+          },
+        ],
+      },
+    });
+
     expect(existsSync(auditDbPath)).toBe(true);
-    const rows = readAuditRows(auditDbPath, 3);
+    const rows = readAuditRows(auditDbPath, 4);
     expect(rows[0]?.tool).toBe("observability");
     expect(rows[1]?.tool).toBe("observability");
     expect(rows[2]?.tool).toBe("observability");
+    expect(rows[3]?.tool).toBe("observability");
     expect(rows[0]?.project).toBe(realpathSync(workDir));
 
     stopServer?.();
