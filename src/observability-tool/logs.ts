@@ -61,7 +61,7 @@ export function extractLogsFromDsQuery(response: {
   results: {
     A: {
       frames?: Array<{
-        schema: { fields: Array<{ name: string; type?: string }> };
+        schema: { fields: Array<{ name: string; type?: string; labels?: Record<string, string> }> };
         data: { values: unknown[][] };
       }>;
     };
@@ -87,6 +87,7 @@ export function extractLogsFromDsQuery(response: {
     const labelValues = (labelsIndex >= 0 ? values[labelsIndex] : []) as Array<
       string | Record<string, string>
     >;
+    const streamLabels = lineIndex >= 0 ? fields[lineIndex]?.labels : undefined;
 
     for (const [index, line] of lines.entries()) {
       const structured = parseStructuredLogLine(line);
@@ -94,7 +95,7 @@ export function extractLogsFromDsQuery(response: {
         timestamp: String(timestamps[index] ?? ""),
         line,
         ...structured,
-        labels: labelValues[index] ? parseLabel(labelValues[index]) : {},
+        labels: labelValues[index] ? parseLabel(labelValues[index]) : (streamLabels ?? {}),
       });
     }
   }
