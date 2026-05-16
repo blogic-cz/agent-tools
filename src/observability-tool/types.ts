@@ -8,6 +8,21 @@ export type ObservabilityEnvConfig = {
   tempoUid: string;
 };
 
+export type LogLine = {
+  readonly timestamp: string;
+  readonly line: string;
+  readonly body?: string;
+  readonly severity?: string;
+  readonly attributes?: Record<string, unknown>;
+  readonly labels: Record<string, string>;
+};
+
+export type StructuredLogLine = {
+  readonly body?: string;
+  readonly severity?: string;
+  readonly attributes?: Record<string, unknown>;
+};
+
 export type GrafanaDatasource = {
   uid: string;
   name: string;

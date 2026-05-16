@@ -12,20 +12,7 @@ import {
   resolveConfig,
 } from "./shared";
 
-type LogLine = {
-  readonly timestamp: string;
-  readonly line: string;
-  readonly body?: string;
-  readonly severity?: string;
-  readonly attributes?: Record<string, unknown>;
-  readonly labels: Record<string, string>;
-};
-
-type StructuredLogLine = {
-  readonly body?: string;
-  readonly severity?: string;
-  readonly attributes?: Record<string, unknown>;
-};
+import type { LogLine, StructuredLogLine } from "./types";
 
 function parseLabel(value: string | Record<string, string>): Record<string, string> {
   if (typeof value === "object" && value !== null) {
