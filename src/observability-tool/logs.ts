@@ -160,7 +160,7 @@ const queryCommand = Command.make(
 
       yield* Console.log(formatOutput(result, format));
     }).pipe(
-      Effect.catch((error) =>
+      Effect.catchTag("ObservabilityToolError", (error) =>
         Effect.gen(function* () {
           const result = {
             success: false,
