@@ -761,7 +761,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
   const runDbTunnelTest = (
     service: string | undefined,
     expectedService: string,
-    options?: { withVpn?: boolean; requireVpnForTunnel?: boolean },
+    options?: { withVpn?: boolean; requireVpnForTunnel?: boolean; withKubeconfig?: boolean },
   ) => {
     const dbDir = join(tmpdir(), `agent-tools-db-tunnel-${Date.now()}`);
     const binDir = join(dbDir, "bin");
@@ -774,6 +774,8 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const testDbUserTemplate = "${TEST_DB_USER}";
 
     mkdirSync(binDir, { recursive: true });
+
+    const kubeconfigTemplate = ["$", "{TEST_KUBECONFIG}"].join("");
 
     writeFileSync(
       join(dbDir, "agent-tools.json5"),
@@ -808,6 +810,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
               },
             },
             kubectl: {
+              ...(options?.withKubeconfig ? { kubeconfig: kubeconfigTemplate } : {}),
               context: "example-cluster",
               namespace: "system",
               ...(service === undefined ? {} : { service }),
@@ -929,6 +932,7 @@ printf '[{"ok":1}]\n'
         TEST_DB_USER: "readonly-user",
         TEST_DB_PASSWORD: "secret",
         TEST_VPN_SECRET: "vpn-secret",
+        TEST_KUBECONFIG: "/tmp/test-kubeconfig",
       },
     );
 
@@ -946,9 +950,10 @@ printf '[{"ok":1}]\n'
     expect(result.status).toBe(0);
     expect(parsed.success).toBe(true);
     expect(parsed.data).toEqual([{ ok: 1 }]);
-    expect(kubectlArgs).toContain(
-      `port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`,
-    );
+    const expectedKubectlArgs = options?.withKubeconfig
+      ? `--kubeconfig /tmp/test-kubeconfig port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`
+      : `port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`;
+    expect(kubectlArgs).toContain(expectedKubectlArgs);
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
 
     if (options?.withVpn && options.requireVpnForTunnel) {
@@ -964,6 +969,10 @@ printf '[{"ok":1}]\n'
 
   it("db-tool opens a tunnel to a configured service", () => {
     runDbTunnelTest("database", "database");
+  });
+
+  it("db-tool passes configured kubeconfig to kubectl tunnel", () => {
+    runDbTunnelTest("database", "database", { withKubeconfig: true });
   });
 
   it("db-tool skips VPN prerequisites when the database tunnel already works", () => {

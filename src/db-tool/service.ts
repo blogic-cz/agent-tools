@@ -5,6 +5,7 @@ import type { DbConfig, QueryResult, SchemaMode } from "./types";
 
 import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
+import { resolveEnvTemplate } from "#shared/env-template";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { DbConfigService, DbConfigServiceLayer, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import {
@@ -75,6 +76,7 @@ export class DbService extends Context.Service<
           };
         }
 
+        const kubectlKubeconfig = dbConfig.kubectl?.kubeconfig;
         const kubectlContext = dbConfig.kubectl?.context;
         const kubectlNamespace = dbConfig.kubectl?.namespace;
         const kubectlService = dbConfig.kubectl?.service ?? "postgresql";
@@ -262,6 +264,24 @@ export class DbService extends Context.Service<
             }
           });
 
+        const resolveKubeconfig = Effect.fn("DbService.resolveKubeconfig")(function* (
+          port: number,
+        ) {
+          if (!kubectlKubeconfig) {
+            return undefined;
+          }
+
+          return yield* resolveEnvTemplate(kubectlKubeconfig).pipe(
+            Effect.mapError(
+              ({ envVar }) =>
+                new DbTunnelError({
+                  message: `Environment variable ${envVar} (required for kubeconfig) is not set.`,
+                  port,
+                }),
+            ),
+          );
+        });
+
         const startTunnelProcess = (config: DbConfig) =>
           Effect.gen(function* () {
             if (!kubectlContext || !kubectlNamespace) {
@@ -274,10 +294,14 @@ export class DbService extends Context.Service<
               );
             }
 
+            const kubeconfig = yield* resolveKubeconfig(config.port);
+            const kubeconfigArgs = kubeconfig ? ["--kubeconfig", kubeconfig] : [];
+
             const proc = yield* executor.spawn(
               ChildProcess.make(
                 "kubectl",
                 [
+                  ...kubeconfigArgs,
                   "port-forward",
                   "--context",
                   kubectlContext,

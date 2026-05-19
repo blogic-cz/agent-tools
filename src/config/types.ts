@@ -63,6 +63,8 @@ export type ProfilePrerequisites = {
 
 /** Kubernetes cluster profile configuration */
 export type K8sConfig = ProfilePrerequisites & {
+  /** Optional kubeconfig path. Supports ${ENV_VAR} templates. */
+  kubeconfig?: string;
   clusterId: string;
   /** Named namespaces, e.g. { test: "my-app-test", prod: "my-app-prod" } */
   namespaces: Record<string, string>;
@@ -86,6 +88,8 @@ export type DatabaseConfig = ProfilePrerequisites & {
   /** Named database environments, e.g. { local: {...}, test: {...}, prod: {...} } */
   environments: Record<string, DbEnvConfig>;
   kubectl?: {
+    /** Optional kubeconfig path. Supports ${ENV_VAR} templates. */
+    kubeconfig?: string;
     context: string;
     namespace: string;
     service?: string;

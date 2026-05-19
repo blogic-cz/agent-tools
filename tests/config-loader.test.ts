@@ -364,6 +364,34 @@ describe("VPN prerequisites config", () => {
     expect(config.database?.default?.kubectl?.service).toBe("database");
   });
 
+  it("accepts kubeconfig paths on kubernetes and database profiles", () => {
+    const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
+    const config = decodeConfig({
+      kubernetes: {
+        default: {
+          kubeconfig: kubeconfigTemplate,
+          clusterId: "cluster",
+          namespaces: { test: "test" },
+        },
+      },
+      database: {
+        default: {
+          environments: {
+            staging: { host: "127.0.0.1", port: 25439, user: "u", database: "app" },
+          },
+          kubectl: {
+            kubeconfig: kubeconfigTemplate,
+            context: "cluster",
+            namespace: "data",
+          },
+        },
+      },
+    });
+
+    expect(config.kubernetes?.default?.kubeconfig).toBe(kubeconfigTemplate);
+    expect(config.database?.default?.kubectl?.kubeconfig).toBe(kubeconfigTemplate);
+  });
+
   it("rejects unsupported VPN prerequisite cleanup policies", () => {
     expect(() =>
       decodeConfig({
