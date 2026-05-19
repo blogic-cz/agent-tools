@@ -83,6 +83,8 @@ const K8sConfigSchema = Schema.Struct({
   vpn: Schema.optionalKey(Schema.String),
 });
 
+const DbMutationOperationSchema = Schema.Literals(["insert", "update", "delete"]);
+
 const DbEnvConfigSchema = Schema.Struct({
   host: Schema.String,
   port: Schema.Number,
@@ -94,6 +96,9 @@ const DbEnvConfigSchema = Schema.Struct({
 
 const DatabaseConfigSchema = Schema.Struct({
   environments: Schema.Record(Schema.String, DbEnvConfigSchema),
+  allowedMutations: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Array(DbMutationOperationSchema)),
+  ),
   kubectl: Schema.optionalKey(
     Schema.Struct({
       kubeconfig: Schema.optionalKey(Schema.String),

@@ -84,9 +84,13 @@ export type DbEnvConfig = {
 };
 
 /** Database profile configuration */
+export type DbMutationOperation = "insert" | "update" | "delete";
+
 export type DatabaseConfig = ProfilePrerequisites & {
   /** Named database environments, e.g. { local: {...}, test: {...}, prod: {...} } */
   environments: Record<string, DbEnvConfig>;
+  /** Explicitly allowed SQL mutation operations per environment. Non-local environments default to read-only. */
+  allowedMutations?: Record<string, readonly DbMutationOperation[]>;
   kubectl?: {
     /** Optional kubeconfig path. Supports ${ENV_VAR} templates. */
     kubeconfig?: string;

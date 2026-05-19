@@ -1,7 +1,7 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Clock, Context, Duration, Effect, Layer, Ref, Stream } from "effect";
 
-import type { DbConfig, QueryResult, SchemaMode } from "./types";
+import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./types";
 
 import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
@@ -23,7 +23,12 @@ import {
   parseTableReference,
   SYSTEM_SCHEMAS_SQL,
 } from "./schema";
-import { detectSchemaError, isValidTableName, isMutationQuery } from "./security";
+import {
+  detectSchemaError,
+  getAllowedMutationOperation,
+  isValidTableName,
+  isMutationQuery,
+} from "./security";
 import { transformQueryResult } from "./transformers";
 
 const LOCALHOST_HOSTS = new Set(["localhost", "127.0.0.1"]);
@@ -32,7 +37,8 @@ export function resolveDbAccessMode(
   env: string,
   host: string,
   hasKubectlConfig: boolean,
-): Pick<DbConfig, "allowMutations" | "host" | "needsTunnel"> {
+  allowedMutations: readonly DbMutationOperation[] = [],
+): Pick<DbConfig, "allowMutations" | "allowedMutations" | "host" | "needsTunnel"> {
   const isLocalHost = LOCALHOST_HOSTS.has(host);
   const isLocalEnvironment = env === "local";
 
@@ -40,6 +46,7 @@ export function resolveDbAccessMode(
     host,
     needsTunnel: hasKubectlConfig && !isLocalEnvironment && isLocalHost,
     allowMutations: isLocalEnvironment,
+    allowedMutations: isLocalEnvironment ? ["insert", "update", "delete"] : allowedMutations,
   };
 }
 
@@ -640,6 +647,7 @@ export class DbService extends Context.Service<
             env,
             envConfig.host,
             dbConfig.kubectl !== undefined,
+            dbConfig.allowedMutations?.[env] ?? [],
           );
 
           return {
@@ -651,6 +659,7 @@ export class DbService extends Context.Service<
             port: envConfig.port,
             needsTunnel: accessMode.needsTunnel,
             allowMutations: accessMode.allowMutations,
+            allowedMutations: accessMode.allowedMutations,
           };
         };
 
@@ -663,12 +672,19 @@ export class DbService extends Context.Service<
           const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);
           const mutation = isMutationQuery(sql);
+          const mutationOperation = mutation ? getAllowedMutationOperation(sql) : undefined;
+          const mutationAllowed =
+            !mutation ||
+            resolvedConfig.allowMutations ||
+            (mutationOperation !== undefined &&
+              resolvedConfig.allowedMutations.includes(mutationOperation));
 
-          if (mutation && !resolvedConfig.allowMutations) {
+          if (!mutationAllowed) {
+            const allowed = resolvedConfig.allowedMutations.join(", ") || "none";
             return yield* new DbMutationBlockedError({
-              message:
-                "Mutation queries (UPDATE, INSERT, DELETE, etc.) are not allowed on this environment. Use a local environment for mutations.",
+              message: `Mutation queries are not allowed on environment ${env}. Allowed mutation operations: ${allowed}.`,
               environment: env,
+              hint: 'Configure database.<profile>.allowedMutations.<env> with explicit operations such as ["insert"] if this environment should allow controlled mutations.',
             });
           }
 

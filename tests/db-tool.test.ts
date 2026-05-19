@@ -6,7 +6,7 @@ import type { QueryResult } from "#db/types";
 
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import { isValidTableName } from "#db/security";
+import { getAllowedMutationOperation, isValidTableName } from "#db/security";
 import { DbService, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -85,6 +85,13 @@ describe("db schema introspection SQL", () => {
     expect(isValidTableName("core-business-partners.business_partners")).toBe(false);
     expect(isValidTableName("core.business.partners")).toBe(false);
   });
+
+  it("detects explicitly allowable mutation operations", () => {
+    expect(getAllowedMutationOperation("insert into users values (1)")).toBe("insert");
+    expect(getAllowedMutationOperation("/* comment */ update users set name = 'x'")).toBe("update");
+    expect(getAllowedMutationOperation("delete from users")).toBe("delete");
+    expect(getAllowedMutationOperation("truncate users")).toBeUndefined();
+  });
 });
 
 describe("DbService", () => {
@@ -96,6 +103,7 @@ describe("DbService", () => {
         host: "127.0.0.1",
         needsTunnel: false,
         allowMutations: true,
+        allowedMutations: ["insert", "update", "delete"],
       });
     });
 
@@ -106,6 +114,7 @@ describe("DbService", () => {
         host: "127.0.0.1",
         needsTunnel: true,
         allowMutations: false,
+        allowedMutations: [],
       });
     });
 
@@ -116,6 +125,7 @@ describe("DbService", () => {
         host: "127.0.0.1",
         needsTunnel: false,
         allowMutations: false,
+        allowedMutations: [],
       });
     });
 
@@ -126,6 +136,18 @@ describe("DbService", () => {
         host: "db.internal",
         needsTunnel: false,
         allowMutations: false,
+        allowedMutations: [],
+      });
+    });
+
+    it("keeps explicit mutation permissions for remote environments", () => {
+      const mode = resolveDbAccessMode("staging", "127.0.0.1", true, ["insert"]);
+
+      expect(mode).toEqual({
+        host: "127.0.0.1",
+        needsTunnel: true,
+        allowMutations: false,
+        allowedMutations: ["insert"],
       });
     });
   });
