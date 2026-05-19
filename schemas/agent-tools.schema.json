@@ -123,6 +123,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "kubeconfig": {
+          "description": "Optional kubeconfig path. Supports ${ENV_VAR} templates.",
+          "type": "string"
+        },
         "clusterId": {
           "description": "Cluster identifier.",
           "type": "string"
@@ -202,6 +206,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "kubeconfig": {
+              "description": "Optional kubeconfig path. Supports ${ENV_VAR} templates.",
+              "type": "string"
+            },
             "context": {
               "description": "Kubectl context name.",
               "type": "string"

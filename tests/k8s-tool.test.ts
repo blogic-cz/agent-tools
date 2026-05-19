@@ -197,6 +197,62 @@ describe("K8sService", () => {
       );
     });
 
+    it.effect("uses configured kubeconfig when resolving and executing kubectl", () => {
+      const observedShellCommands: Array<string> = [];
+      const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
+      const contextQuery = `KUBECONFIG='/tmp/nexus-kubeconfig' kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+
+      return Effect.gen(function* () {
+        const previousKubeconfig = process.env.NEXUS_KUBECONFIG;
+        process.env.NEXUS_KUBECONFIG = "/tmp/nexus-kubeconfig";
+        try {
+          const service = yield* K8sService;
+          const result = yield* service.runKubectl("get pods", false, "selected");
+
+          expect(result.success).toBe(true);
+          expect(result.command).toBe(
+            "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods",
+          );
+          expect(observedShellCommands).toEqual([
+            contextQuery,
+            "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods",
+          ]);
+        } finally {
+          if (previousKubeconfig === undefined) {
+            delete process.env.NEXUS_KUBECONFIG;
+          } else {
+            process.env.NEXUS_KUBECONFIG = previousKubeconfig;
+          }
+        }
+      }).pipe(
+        Effect.provide(K8sService.layer),
+        Effect.provide(
+          createMockChildProcessSpawnerLayer(
+            {
+              [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods": {
+                stdout: "pod-a\n",
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+            observedShellCommands,
+          ),
+        ),
+        Effect.provide(
+          Layer.succeed(ConfigService, {
+            kubernetes: {
+              selected: {
+                kubeconfig: kubeconfigTemplate,
+                clusterId: "selected-cluster",
+                namespaces: { test: "selected" },
+              },
+            },
+          }),
+        ),
+      );
+    });
+
     it.effect("executes kubectl command successfully", () =>
       Effect.gen(function* () {
         const service = yield* K8sService;

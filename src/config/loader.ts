@@ -75,6 +75,7 @@ const AzureConfigSchema = Schema.Struct({
 });
 
 const K8sConfigSchema = Schema.Struct({
+  kubeconfig: Schema.optionalKey(Schema.String),
   clusterId: Schema.String,
   namespaces: Schema.Record(Schema.String, Schema.String),
   timeoutMs: Schema.optionalKey(Schema.Number),
@@ -95,6 +96,7 @@ const DatabaseConfigSchema = Schema.Struct({
   environments: Schema.Record(Schema.String, DbEnvConfigSchema),
   kubectl: Schema.optionalKey(
     Schema.Struct({
+      kubeconfig: Schema.optionalKey(Schema.String),
       context: Schema.String,
       namespace: Schema.String,
       service: Schema.optionalKey(Schema.String),

@@ -16,6 +16,8 @@ import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { isKubectlCommandAllowed } from "./security";
 
+const quoteShellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
 export class K8sService extends Context.Service<
   K8sService,
   {
@@ -62,6 +64,36 @@ export class K8sService extends Context.Service<
 
             return k8sConfig;
           });
+
+        const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
+
+        const resolveKubeconfig = Effect.fn("K8sService.resolveKubeconfig")(function* (
+          k8sConfig: K8sConfig,
+        ) {
+          const kubeconfig = k8sConfig.kubeconfig;
+          if (!kubeconfig) {
+            return undefined;
+          }
+
+          const match = kubeconfig.match(envTemplateRegex);
+          if (!match) {
+            return kubeconfig;
+          }
+
+          const envVar = match[1];
+          const fromEnv = process.env[envVar];
+          if (fromEnv) {
+            return fromEnv;
+          }
+
+          return yield* new K8sContextError({
+            message: `Environment variable ${envVar} (required for kubeconfig) is not set.`,
+            clusterId: k8sConfig.clusterId,
+          });
+        });
+
+        const withKubeconfig = (command: string, kubeconfig: string | undefined) =>
+          kubeconfig ? `KUBECONFIG=${quoteShellArg(kubeconfig)} ${command}` : command;
 
         // Cache context by selected profile/cluster instead of a single default profile.
         const contextRef = yield* Ref.make<Record<string, string>>({});
@@ -128,14 +160,18 @@ export class K8sService extends Context.Service<
           k8sConfig: K8sConfig,
         ) {
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
-          const cacheKey = profile ?? `cluster:${k8sConfig.clusterId}`;
+          const kubeconfig = yield* resolveKubeconfig(k8sConfig);
+          const cacheKey = profile ?? `cluster:${k8sConfig.clusterId}:${kubeconfig ?? "default"}`;
           const cached = yield* Ref.get(contextRef);
           const cachedContext = cached[cacheKey];
           if (cachedContext !== undefined) {
             return cachedContext;
           }
 
-          const jqCommand = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "${k8sConfig.clusterId}") | .name' | head -1`;
+          const jqCommand = withKubeconfig(
+            `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "${k8sConfig.clusterId}") | .name' | head -1`,
+            kubeconfig,
+          );
 
           const contextResultOption = yield* runShellCommand(jqCommand, timeoutMs);
 
@@ -158,7 +194,10 @@ export class K8sService extends Context.Service<
             return resolvedContextValue;
           }
 
-          const fallbackCommand = `kubectl config view -o json | jq -r '.contexts[] as $ctx | .clusters[] | select(.name == $ctx.context.cluster and (.cluster.server | contains("${k8sConfig.clusterId}"))) | $ctx.name' | head -1`;
+          const fallbackCommand = withKubeconfig(
+            `kubectl config view -o json | jq -r '.contexts[] as $ctx | .clusters[] | select(.name == $ctx.context.cluster and (.cluster.server | contains("${k8sConfig.clusterId}"))) | $ctx.name' | head -1`,
+            kubeconfig,
+          );
 
           const fallbackResultOption = yield* runShellCommand(fallbackCommand, timeoutMs);
 
@@ -199,7 +238,8 @@ export class K8sService extends Context.Service<
             runPrerequisiteCommand,
             Effect.gen(function* () {
               const context = yield* resolveContext(profile, k8sConfig);
-              const fullCommand = `kubectl --context ${context} ${cmd}`;
+              const kubeconfig = yield* resolveKubeconfig(k8sConfig);
+              const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
 
               const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
 
@@ -283,7 +323,8 @@ export class K8sService extends Context.Service<
           if (dryRun) {
             const k8sConfig = yield* requireK8sConfig(profile);
             const context = yield* resolveContext(profile, k8sConfig);
-            const fullCommand = `kubectl --context ${context} ${cmd}`;
+            const kubeconfig = yield* resolveKubeconfig(k8sConfig);
+            const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
             return {
               success: true,
               command: fullCommand,
