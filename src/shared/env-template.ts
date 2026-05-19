@@ -1,56 +1,37 @@
 import { Effect, Schema } from "effect";
 
-const envTemplateRegex = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+const envTemplateRegex = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 export class EnvTemplateError extends Schema.TaggedErrorClass<EnvTemplateError>()(
   "@agent-tools/EnvTemplateError",
   { envVar: Schema.String },
 ) {}
 
-const loadEnvFromZshrc = Effect.fn("loadEnvFromZshrc")(function* () {
-  const home = process.env.HOME;
-  if (!home || home.trim() === "") {
-    return {};
-  }
-
-  const zshrcPath = `${home}/.zshrc`;
-  const content = yield* Effect.tryPromise(async () => {
-    const file = Bun.file(zshrcPath);
-    if (!(await file.exists())) {
-      return "";
-    }
-    return await file.text();
-  }).pipe(Effect.orElseSucceed(() => ""));
-
-  const envVars: Record<string, string> = {};
-  const regex = /^export\s+([A-Za-z_][A-Za-z0-9_]*)=["']?([^"'\n]+)["']?/gm;
-  let match = regex.exec(content);
-
-  while (match !== null) {
-    envVars[match[1]] = match[2];
-    match = regex.exec(content);
-  }
-
-  return envVars;
-});
-
 export const resolveEnvTemplate = Effect.fn("resolveEnvTemplate")(function* (value: string) {
-  const match = value.match(envTemplateRegex);
-  if (!match) {
+  let resolved = "";
+  let lastIndex = 0;
+
+  for (const match of value.matchAll(envTemplateRegex)) {
+    const fullMatch = match[0];
+    const envVar = match[1];
+    const index = match.index;
+    if (index === undefined) {
+      continue;
+    }
+
+    resolved += value.slice(lastIndex, index);
+    const fromEnv = process.env[envVar];
+    if (fromEnv === undefined) {
+      return yield* new EnvTemplateError({ envVar });
+    }
+
+    resolved += fromEnv;
+    lastIndex = index + fullMatch.length;
+  }
+
+  if (lastIndex === 0) {
     return value;
   }
 
-  const envVar = match[1];
-  const fromEnv = process.env[envVar];
-  if (fromEnv !== undefined) {
-    return fromEnv;
-  }
-
-  const zshrcEnv = yield* loadEnvFromZshrc();
-  const fromZsh = zshrcEnv[envVar];
-  if (fromZsh) {
-    return fromZsh;
-  }
-
-  return yield* new EnvTemplateError({ envVar });
+  return resolved + value.slice(lastIndex);
 });
