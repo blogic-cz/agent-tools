@@ -680,7 +680,10 @@ export class DbService extends Context.Service<
               resolvedConfig.allowedMutations.includes(mutationOperation));
 
           if (!mutationAllowed) {
-            const allowed = resolvedConfig.allowedMutations.join(", ") || "none";
+            const allowed =
+              resolvedConfig.allowedMutations.length > 0
+                ? resolvedConfig.allowedMutations.join(", ")
+                : "none";
             return yield* new DbMutationBlockedError({
               message: `Mutation queries are not allowed on environment ${env}. Allowed mutation operations: ${allowed}.`,
               environment: env,

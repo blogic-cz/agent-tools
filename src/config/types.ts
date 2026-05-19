@@ -90,7 +90,6 @@ export const DbMutationOperationSchema = Schema.Literals(["insert", "update", "d
 export type DbMutationOperation = Schema.Schema.Type<typeof DbMutationOperationSchema>;
 
 /** Database profile configuration */
-
 export type DatabaseConfig = ProfilePrerequisites & {
   /** Named database environments, e.g. { local: {...}, test: {...}, prod: {...} } */
   environments: Record<string, DbEnvConfig>;
