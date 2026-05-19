@@ -11,13 +11,11 @@ import {
 } from "./errors";
 import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
-import { collectProcessOutput } from "#shared/exec";
+import { collectProcessOutput, quoteShellArg } from "#shared/exec";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { isKubectlCommandAllowed } from "./security";
-
-const quoteShellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export class K8sService extends Context.Service<
   K8sService,

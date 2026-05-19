@@ -67,3 +67,5 @@ export const execEffect = (
       ),
     ),
   );
+
+export const quoteShellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;

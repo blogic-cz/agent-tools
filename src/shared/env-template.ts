@@ -1,6 +1,11 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
-const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
+const envTemplateRegex = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
+export class EnvTemplateError extends Schema.TaggedErrorClass<EnvTemplateError>()(
+  "@agent-tools/EnvTemplateError",
+  { envVar: Schema.String },
+) {}
 
 const loadEnvFromZshrc = Effect.fn("loadEnvFromZshrc")(function* () {
   const home = process.env.HOME;
@@ -18,7 +23,7 @@ const loadEnvFromZshrc = Effect.fn("loadEnvFromZshrc")(function* () {
   }).pipe(Effect.orElseSucceed(() => ""));
 
   const envVars: Record<string, string> = {};
-  const regex = /^export\s+([A-Z_][A-Z0-9_]*)=["']?([^"'\n]+)["']?/gm;
+  const regex = /^export\s+([A-Za-z_][A-Za-z0-9_]*)=["']?([^"'\n]+)["']?/gm;
   let match = regex.exec(content);
 
   while (match !== null) {
@@ -37,7 +42,7 @@ export const resolveEnvTemplate = Effect.fn("resolveEnvTemplate")(function* (val
 
   const envVar = match[1];
   const fromEnv = process.env[envVar];
-  if (fromEnv) {
+  if (fromEnv !== undefined) {
     return fromEnv;
   }
 
@@ -47,5 +52,5 @@ export const resolveEnvTemplate = Effect.fn("resolveEnvTemplate")(function* (val
     return fromZsh;
   }
 
-  return yield* Effect.fail({ envVar });
+  return yield* new EnvTemplateError({ envVar });
 });
