@@ -1,4 +1,4 @@
-import type { SchemaErrorInfo } from "./types";
+import type { DbMutationOperation, SchemaErrorInfo } from "./types";
 
 const MUTATION_PATTERNS = [
   /^\s*UPDATE\s+/i,
@@ -8,6 +8,12 @@ const MUTATION_PATTERNS = [
   /^\s*DROP\s+/i,
   /^\s*ALTER\s+/i,
   /^\s*CREATE\s+/i,
+];
+
+const ALLOWABLE_MUTATION_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
+  ["insert", /^\s*INSERT\s+/i],
+  ["update", /^\s*UPDATE\s+/i],
+  ["delete", /^\s*DELETE\s+/i],
 ];
 
 const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
@@ -76,6 +82,11 @@ export function stripSqlComments(sql: string): string {
 export function isMutationQuery(sql: string): boolean {
   const stripped = stripSqlComments(sql);
   return MUTATION_PATTERNS.some((pattern) => pattern.test(stripped));
+}
+
+export function getAllowedMutationOperation(sql: string): DbMutationOperation | undefined {
+  const stripped = stripSqlComments(sql);
+  return ALLOWABLE_MUTATION_PATTERNS.find(([, pattern]) => pattern.test(stripped))?.[0];
 }
 
 export function isValidTableName(tableName: string): boolean {

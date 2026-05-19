@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { Context, Data, Effect, Layer, Schema } from "effect";
 
 import type { AgentToolsConfig, GitHubRepoConfig } from "./types";
+import { DbMutationOperationSchema } from "./types";
 
 const CliToolOverrideSchema = Schema.Struct({
   tool: Schema.String,
@@ -94,6 +95,9 @@ const DbEnvConfigSchema = Schema.Struct({
 
 const DatabaseConfigSchema = Schema.Struct({
   environments: Schema.Record(Schema.String, DbEnvConfigSchema),
+  allowedMutations: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Array(DbMutationOperationSchema)),
+  ),
   kubectl: Schema.optionalKey(
     Schema.Struct({
       kubeconfig: Schema.optionalKey(Schema.String),

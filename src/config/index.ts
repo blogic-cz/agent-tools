@@ -3,6 +3,7 @@ export type {
   AzureConfig,
   K8sConfig,
   DbEnvConfig,
+  DbMutationOperation,
   DatabaseConfig,
   ObservabilityConfig,
   ObservabilityEnvTarget,
@@ -12,6 +13,8 @@ export type {
   CredentialGuardConfig,
   GitHubRepoConfig,
 } from "./types";
+
+export { DbMutationOperationSchema } from "./types";
 
 export {
   ConfigService,

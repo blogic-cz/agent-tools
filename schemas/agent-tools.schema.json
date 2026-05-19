@@ -243,6 +243,16 @@
         "vpn": {
           "type": "string",
           "description": "Convenience sugar for a VPN prerequisite key. Runtime normalizes this to prerequisites."
+        },
+        "allowedMutations": {
+          "description": "Explicitly allowed SQL mutation operations per environment. Non-local environments default to read-only.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/DbMutationOperation"
+            }
+          }
         }
       },
       "required": ["environments"]
@@ -538,6 +548,11 @@
         }
       },
       "required": ["name"]
+    },
+    "DbMutationOperation": {
+      "description": "SQL mutation operation that can be explicitly allowed for a database environment.",
+      "type": "string",
+      "enum": ["insert", "update", "delete"]
     }
   },
   "examples": [
@@ -584,7 +599,10 @@
             "namespace": "system"
           },
           "tunnelTimeoutMs": 5000,
-          "remotePort": 5432
+          "remotePort": 5432,
+          "allowedMutations": {
+            "test": ["insert"]
+          }
         }
       },
       "logs": {

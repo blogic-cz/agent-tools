@@ -364,6 +364,23 @@ describe("VPN prerequisites config", () => {
     expect(config.database?.default?.kubectl?.service).toBe("database");
   });
 
+  it("accepts per-environment database mutation permissions", () => {
+    const config = decodeConfig({
+      database: {
+        default: {
+          environments: {
+            staging: { host: "127.0.0.1", port: 25439, user: "u", database: "app" },
+          },
+          allowedMutations: {
+            staging: ["insert", "update"],
+          },
+        },
+      },
+    });
+
+    expect(config.database?.default?.allowedMutations?.staging).toEqual(["insert", "update"]);
+  });
+
   it("accepts kubeconfig paths on kubernetes and database profiles", () => {
     const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
     const config = decodeConfig({

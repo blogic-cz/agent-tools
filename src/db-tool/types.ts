@@ -1,4 +1,7 @@
+import type { DbMutationOperation } from "#config";
 import type { Environment, OutputFormat } from "#shared";
+
+export type { DbMutationOperation };
 export type { Environment, OutputFormat };
 
 export type SchemaMode = "tables" | "columns" | "full" | "relationships";
@@ -12,6 +15,7 @@ export type DbConfig = {
   port: number;
   needsTunnel: boolean;
   allowMutations: boolean;
+  allowedMutations: readonly DbMutationOperation[];
 };
 
 export type QueryResult = {

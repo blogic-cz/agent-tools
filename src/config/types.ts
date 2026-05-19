@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 /** Azure DevOps profile configuration */
 export type AzureConfig = {
   organization: string;
@@ -83,10 +85,16 @@ export type DbEnvConfig = {
   passwordEnvVar?: string;
 };
 
+/** SQL mutation operation that can be explicitly allowed for a database environment. */
+export const DbMutationOperationSchema = Schema.Literals(["insert", "update", "delete"]);
+export type DbMutationOperation = Schema.Schema.Type<typeof DbMutationOperationSchema>;
+
 /** Database profile configuration */
 export type DatabaseConfig = ProfilePrerequisites & {
   /** Named database environments, e.g. { local: {...}, test: {...}, prod: {...} } */
   environments: Record<string, DbEnvConfig>;
+  /** Explicitly allowed SQL mutation operations per environment. Non-local environments default to read-only. */
+  allowedMutations?: Record<string, readonly DbMutationOperation[]>;
   kubectl?: {
     /** Optional kubeconfig path. Supports ${ENV_VAR} templates. */
     kubeconfig?: string;
