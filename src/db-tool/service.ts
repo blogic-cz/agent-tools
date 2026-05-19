@@ -5,6 +5,7 @@ import type { DbConfig, QueryResult, SchemaMode } from "./types";
 
 import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
+import { resolveEnvTemplate } from "#shared/env-template";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { DbConfigService, DbConfigServiceLayer, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import {
@@ -270,27 +271,15 @@ export class DbService extends Context.Service<
             return undefined;
           }
 
-          const match = kubectlKubeconfig.match(envTemplateRegex);
-          if (!match) {
-            return kubectlKubeconfig;
-          }
-
-          const envVar = match[1];
-          const fromEnv = process.env[envVar];
-          if (fromEnv) {
-            return fromEnv;
-          }
-
-          const zshrcEnv = yield* loadEnvFromZshrc();
-          const fromZsh = zshrcEnv[envVar];
-          if (fromZsh) {
-            return fromZsh;
-          }
-
-          return yield* new DbTunnelError({
-            message: `Environment variable ${envVar} (required for kubeconfig) is not set.`,
-            port,
-          });
+          return yield* resolveEnvTemplate(kubectlKubeconfig).pipe(
+            Effect.mapError(
+              ({ envVar }) =>
+                new DbTunnelError({
+                  message: `Environment variable ${envVar} (required for kubeconfig) is not set.`,
+                  port,
+                }),
+            ),
+          );
         });
 
         const startTunnelProcess = (config: DbConfig) =>

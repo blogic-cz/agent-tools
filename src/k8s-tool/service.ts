@@ -12,6 +12,7 @@ import {
 import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { collectProcessOutput } from "#shared/exec";
+import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { isKubectlCommandAllowed } from "./security";
@@ -65,8 +66,6 @@ export class K8sService extends Context.Service<
             return k8sConfig;
           });
 
-        const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
-
         const resolveKubeconfig = Effect.fn("K8sService.resolveKubeconfig")(function* (
           k8sConfig: K8sConfig,
         ) {
@@ -75,21 +74,15 @@ export class K8sService extends Context.Service<
             return undefined;
           }
 
-          const match = kubeconfig.match(envTemplateRegex);
-          if (!match) {
-            return kubeconfig;
-          }
-
-          const envVar = match[1];
-          const fromEnv = process.env[envVar];
-          if (fromEnv) {
-            return fromEnv;
-          }
-
-          return yield* new K8sContextError({
-            message: `Environment variable ${envVar} (required for kubeconfig) is not set.`,
-            clusterId: k8sConfig.clusterId,
-          });
+          return yield* resolveEnvTemplate(kubeconfig).pipe(
+            Effect.mapError(
+              ({ envVar }) =>
+                new K8sContextError({
+                  message: `Environment variable ${envVar} (required for kubeconfig) is not set.`,
+                  clusterId: k8sConfig.clusterId,
+                }),
+            ),
+          );
         });
 
         const withKubeconfig = (command: string, kubeconfig: string | undefined) =>
@@ -165,7 +158,7 @@ export class K8sService extends Context.Service<
           const cached = yield* Ref.get(contextRef);
           const cachedContext = cached[cacheKey];
           if (cachedContext !== undefined) {
-            return cachedContext;
+            return { context: cachedContext, kubeconfig };
           }
 
           const jqCommand = withKubeconfig(
@@ -191,7 +184,7 @@ export class K8sService extends Context.Service<
               ...contexts,
               [cacheKey]: resolvedContextValue,
             }));
-            return resolvedContextValue;
+            return { context: resolvedContextValue, kubeconfig };
           }
 
           const fallbackCommand = withKubeconfig(
@@ -217,7 +210,7 @@ export class K8sService extends Context.Service<
               ...contexts,
               [cacheKey]: resolvedContextValue,
             }));
-            return resolvedContextValue;
+            return { context: resolvedContextValue, kubeconfig };
           }
 
           return yield* new K8sContextError({
@@ -237,8 +230,7 @@ export class K8sService extends Context.Service<
             k8sConfig,
             runPrerequisiteCommand,
             Effect.gen(function* () {
-              const context = yield* resolveContext(profile, k8sConfig);
-              const kubeconfig = yield* resolveKubeconfig(k8sConfig);
+              const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
               const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
 
               const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
@@ -322,8 +314,7 @@ export class K8sService extends Context.Service<
           const startTime = Date.now();
           if (dryRun) {
             const k8sConfig = yield* requireK8sConfig(profile);
-            const context = yield* resolveContext(profile, k8sConfig);
-            const kubeconfig = yield* resolveKubeconfig(k8sConfig);
+            const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
             const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
             return {
               success: true,
