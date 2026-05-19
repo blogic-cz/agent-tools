@@ -20,7 +20,8 @@ export const resolveEnvTemplate = Effect.fn("resolveEnvTemplate")(function* (val
     }
 
     resolved += value.slice(lastIndex, index);
-    const fromEnv = process.env[envVar];
+    const env = globalThis.Bun?.env ?? process.env;
+    const fromEnv = env[envVar];
     if (fromEnv === undefined) {
       return yield* new EnvTemplateError({ envVar });
     }
