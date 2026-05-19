@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 /** Azure DevOps profile configuration */
 export type AzureConfig = {
   organization: string;
@@ -83,8 +85,11 @@ export type DbEnvConfig = {
   passwordEnvVar?: string;
 };
 
+/** SQL mutation operation that can be explicitly allowed for a database environment. */
+export const DbMutationOperationSchema = Schema.Literals(["insert", "update", "delete"]);
+export type DbMutationOperation = Schema.Schema.Type<typeof DbMutationOperationSchema>;
+
 /** Database profile configuration */
-export type DbMutationOperation = "insert" | "update" | "delete";
 
 export type DatabaseConfig = ProfilePrerequisites & {
   /** Named database environments, e.g. { local: {...}, test: {...}, prod: {...} } */

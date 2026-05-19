@@ -14,6 +14,8 @@ export type {
   GitHubRepoConfig,
 } from "./types";
 
+export { DbMutationOperationSchema } from "./types";
+
 export {
   ConfigService,
   ConfigServiceLayer,

@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { Context, Data, Effect, Layer, Schema } from "effect";
 
 import type { AgentToolsConfig, GitHubRepoConfig } from "./types";
+import { DbMutationOperationSchema } from "./types";
 
 const CliToolOverrideSchema = Schema.Struct({
   tool: Schema.String,
@@ -82,8 +83,6 @@ const K8sConfigSchema = Schema.Struct({
   prerequisites: Schema.optionalKey(PrerequisitesSchema),
   vpn: Schema.optionalKey(Schema.String),
 });
-
-const DbMutationOperationSchema = Schema.Literals(["insert", "update", "delete"]);
 
 const DbEnvConfigSchema = Schema.Struct({
   host: Schema.String,
