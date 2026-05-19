@@ -10,6 +10,7 @@ export class EnvTemplateError extends Schema.TaggedErrorClass<EnvTemplateError>(
 export const resolveEnvTemplate = Effect.fn("resolveEnvTemplate")(function* (value: string) {
   let resolved = "";
   let lastIndex = 0;
+  const env = globalThis.Bun?.env ?? process.env;
 
   for (const match of value.matchAll(envTemplateRegex)) {
     const fullMatch = match[0];
@@ -20,7 +21,6 @@ export const resolveEnvTemplate = Effect.fn("resolveEnvTemplate")(function* (val
     }
 
     resolved += value.slice(lastIndex, index);
-    const env = globalThis.Bun?.env ?? process.env;
     const fromEnv = env[envVar];
     if (fromEnv === undefined) {
       return yield* new EnvTemplateError({ envVar });
