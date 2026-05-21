@@ -313,7 +313,10 @@ export class SessionService extends Context.Service<
                         ),
                   ),
                   Effect.flatMap(readCodexMessages),
-                  Effect.catchTag("SessionStorageNotFoundError", () => Effect.succeed([])),
+                  Effect.catchTags({
+                    SessionStorageNotFoundError: () => Effect.succeed([]),
+                    SessionReadError: () => Effect.succeed([]),
+                  }),
                 );
 
           const summaries = [...opencodeSummaries, ...claudeSummaries, ...codexSummaries];
