@@ -190,14 +190,14 @@ async function runAll(): Promise<void> {
 }
 
 async function runCi(): Promise<void> {
-  // Run all checks in parallel (no format modification in CI)
-  const [lintResult, typecheckResult, effectResult, formatResult, testResult] = await Promise.all([
+  const [lintResult, typecheckResult, effectResult, formatResult] = await Promise.all([
     runStep("lint", lint),
     runStep("typecheck", typecheck),
     runStep("effect", effectDiagnostics),
     runStep("format", formatCheck),
-    runStep("test", test),
   ]);
+
+  const testResult = await runStep("test", test);
 
   if (testResult.success && testResult.output) {
     testResult.name = `test (${testResult.output})`;
