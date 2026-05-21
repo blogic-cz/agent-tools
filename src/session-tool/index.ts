@@ -22,7 +22,7 @@ import { formatDate, SessionService, SessionServiceLayer, truncate } from "./ser
 const AppLayer = SessionServiceLayer.pipe(Layer.provideMerge(ResolvedPathsLayer));
 
 const sourceOption = Flag.string("source").pipe(
-  Flag.withDescription("Filter by source: all, opencode, claude-code"),
+  Flag.withDescription("Filter by source: all, opencode, claude-code, codex"),
   Flag.withDefault("all"),
 );
 
