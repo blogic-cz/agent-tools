@@ -1018,9 +1018,28 @@ printf '[{"ok":1}]\n'
 });
 
 describe("Integration: VPN prerequisite cross-process cleanup", () => {
-  const waitForFile = async (path: string, timeoutMs = 15000) => {
+  const getChildStderr = (child: ReturnType<typeof Bun.spawn>) =>
+    child.stderr && typeof child.stderr !== "number"
+      ? new Response(child.stderr).text()
+      : Promise.resolve("");
+
+  const waitForFile = async (
+    path: string,
+    child?: ReturnType<typeof Bun.spawn>,
+    timeoutMs = 15000,
+  ) => {
     const start = Date.now();
     while (!existsSync(path)) {
+      if (child) {
+        const exitCode = await Promise.race([child.exited, Promise.resolve(undefined)]);
+        if (exitCode !== undefined) {
+          const stderr = await getChildStderr(child);
+          throw new Error(
+            `Child process exited with ${exitCode} before creating ${path}. stderr: ${stderr}`,
+          );
+        }
+      }
+
       if (Date.now() - start > timeoutMs) {
         throw new Error(`Timed out waiting for ${path}`);
       }
@@ -1029,10 +1048,7 @@ describe("Integration: VPN prerequisite cross-process cleanup", () => {
   };
 
   const waitForExit = async (child: ReturnType<typeof Bun.spawn>, timeoutMs = 15000) => {
-    const stderrPromise =
-      child.stderr && typeof child.stderr !== "number"
-        ? new Response(child.stderr).text()
-        : Promise.resolve("");
+    const stderrPromise = getChildStderr(child);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const timedOut = Symbol("timedOut");
     const result = await Promise.race([
@@ -1127,8 +1143,16 @@ const runCommand = (_command, label) =>
   Effect.sync(() => {
     appendFileSync(commandLogPath, name + ":" + label + "\\n");
 
-    if (label.includes("status") || label.includes("connection show") || label === "rasdial") {
+    if (label.includes("status")) {
       return { stdout: existsSync(readyPath) ? "Connected ExampleVPN\\n" : "Disconnected\\n", stderr: "", exitCode: 0 };
+    }
+
+    if (label.includes("connection show")) {
+      return { stdout: existsSync(readyPath) ? "ExampleVPN\\n" : "", stderr: "", exitCode: 0 };
+    }
+
+    if (label === "rasdial") {
+      return { stdout: existsSync(readyPath) ? "Connected to ExampleVPN\\n" : "No connections\\n", stderr: "", exitCode: 0 };
     }
 
     if (label.includes("start") || label.includes("connection up") || label === "rasdial ExampleVPN") {
@@ -1199,7 +1223,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
     const child = spawnVpnRuntimeProcess("A", paths, "leave-running");
 
     try {
-      await waitForFile(paths.AActive);
+      await waitForFile(paths.AActive, child);
       writeFileSync(paths.ARelease, "release");
       await waitForExit(child);
 
@@ -1223,7 +1247,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
     const child = spawnVpnRuntimeProcess("A", paths);
 
     try {
-      await waitForFile(paths.AActive);
+      await waitForFile(paths.AActive, child);
       writeFileSync(paths.ARelease, "release");
       await waitForExit(child);
 
@@ -1247,12 +1271,12 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
     const childProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
 
     try {
-      await waitForFile(paths.AActive);
-      await waitForFile(paths.vpnReady);
+      await waitForFile(paths.AActive, processA);
+      await waitForFile(paths.vpnReady, processA);
 
       const processB = spawnVpnRuntimeProcess("B", paths, "leave-running");
       childProcesses.push(processB);
-      await waitForFile(paths.BActive);
+      await waitForFile(paths.BActive, processB);
 
       writeFileSync(paths.ARelease, "release");
       await waitForExit(processA);
@@ -1267,7 +1291,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
 
       const processC = spawnVpnRuntimeProcess("C", paths);
       childProcesses.push(processC);
-      await waitForFile(paths.CActive);
+      await waitForFile(paths.CActive, processC);
       writeFileSync(paths.CRelease, "release");
       await waitForExit(processC);
 
@@ -1297,11 +1321,11 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
     const childProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
 
     try {
-      await waitForFile(paths.AStartEntered);
+      await waitForFile(paths.AStartEntered, processA);
 
       const processB = spawnVpnRuntimeProcess("B", paths, undefined, { connectTimeoutMs: 8000 });
       childProcesses.push(processB);
-      await waitForFile(paths.BActive, 30000);
+      await waitForFile(paths.BActive, processB, 30000);
 
       writeFileSync(paths.ARelease, "release");
       writeFileSync(paths.BRelease, "release");
@@ -1330,12 +1354,12 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
     const processBProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
 
     try {
-      await waitForFile(paths.AActive);
-      await waitForFile(paths.vpnReady);
+      await waitForFile(paths.AActive, processA);
+      await waitForFile(paths.vpnReady, processA);
 
       const processB = spawnVpnRuntimeProcess("B", paths);
       processBProcesses.push(processB);
-      await waitForFile(paths.BActive);
+      await waitForFile(paths.BActive, processB);
 
       writeFileSync(paths.ARelease, "release");
       await waitForExit(processA);
