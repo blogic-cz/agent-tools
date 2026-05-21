@@ -250,7 +250,6 @@ export class K8sService extends Context.Service<
                 command: fullCommand,
               };
             }),
-            { tryWithoutPrerequisites: true },
           ).pipe(
             Effect.mapError((error) =>
               isPrerequisiteRunError(error)
