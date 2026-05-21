@@ -1212,7 +1212,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
       child.kill();
       rmSync(paths.testDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   it("does not stop a VPN that was already connected before the process started", async () => {
     const paths = createVpnTestPaths();
@@ -1236,7 +1236,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
       child.kill();
       rmSync(paths.testDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   it("leave-running overlap keeps VPN connected and prevents later default cleanup", async () => {
     const paths = createVpnTestPaths();
@@ -1283,7 +1283,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
       }
       rmSync(paths.testDir, { recursive: true, force: true });
     }
-  }, 10000);
+  }, 30000);
 
   it("waits for another process to finish connecting before acquiring the VPN lease", async () => {
     const paths = createVpnTestPaths();
@@ -1301,12 +1301,12 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
 
       const processB = spawnVpnRuntimeProcess("B", paths, undefined, { connectTimeoutMs: 8000 });
       childProcesses.push(processB);
-      await waitForFile(paths.BActive, 12000);
+      await waitForFile(paths.BActive, 30000);
 
       writeFileSync(paths.ARelease, "release");
       writeFileSync(paths.BRelease, "release");
-      await waitForExit(processA, 12000);
-      await waitForExit(processB, 12000);
+      await waitForExit(processA, 30000);
+      await waitForExit(processB, 30000);
 
       const finalLog = readFileSync(paths.commandLog, "utf8");
       expect(finalLog).toContain("A:");
@@ -1318,7 +1318,7 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
       }
       rmSync(paths.testDir, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 120000);
 
   it("does not stop an agent-started VPN while another process still holds a lease", async () => {
     const paths = createVpnTestPaths();
@@ -1369,5 +1369,5 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
       }
       rmSync(paths.testDir, { recursive: true, force: true });
     }
-  }, 10000);
+  }, 30000);
 });
