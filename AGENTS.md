@@ -15,6 +15,10 @@ bun run check      # format + lint + typecheck + effect diagnostics + test
 bun run check ci   # all parallel, format --check only (no file modification)
 ```
 
+## Runtime Filesystem Exception
+
+Bun async filesystem APIs are preferred throughout the project. Synchronous `node:fs` is permitted only for `src/shared/prerequisites/runtime.ts` cross-process VPN lock/lease coordination and for tests that isolate that runtime state. Keep this exception bounded to atomic directory locking and deterministic cleanup.
+
 ## Version control
 
 `but` (GitButler CLI) for write ops, `git` read-only → load skill `but`.
