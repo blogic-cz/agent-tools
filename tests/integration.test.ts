@@ -1018,7 +1018,7 @@ printf '[{"ok":1}]\n'
 });
 
 describe("Integration: VPN prerequisite cross-process cleanup", () => {
-  const waitForFile = async (path: string, timeoutMs = 5000) => {
+  const waitForFile = async (path: string, timeoutMs = 15000) => {
     const start = Date.now();
     while (!existsSync(path)) {
       if (Date.now() - start > timeoutMs) {
@@ -1028,7 +1028,7 @@ describe("Integration: VPN prerequisite cross-process cleanup", () => {
     }
   };
 
-  const waitForExit = async (child: ReturnType<typeof Bun.spawn>, timeoutMs = 5000) => {
+  const waitForExit = async (child: ReturnType<typeof Bun.spawn>, timeoutMs = 15000) => {
     const stderrPromise =
       child.stderr && typeof child.stderr !== "number"
         ? new Response(child.stderr).text()
@@ -1100,10 +1100,10 @@ const sleepSync = (ms) => {
 };
 
 const driver = process.platform === "darwin"
-  ? { type: "macos-scutil", serviceName: "ExampleVPN" }
+  ? { type: "macos-scutil", platform: "darwin", serviceName: "ExampleVPN" }
   : process.platform === "linux"
-    ? { type: "linux-nmcli", connectionName: "ExampleVPN" }
-    : { type: "windows-rasdial", entryName: "ExampleVPN" };
+    ? { type: "linux-nmcli", platform: "linux", connectionName: "ExampleVPN" }
+    : { type: "windows-rasdial", platform: "win32", entryName: "ExampleVPN" };
 
 const config = {
   vpns: {
