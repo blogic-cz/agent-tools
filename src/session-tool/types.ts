@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 import type { OutputFormat } from "#shared";
 
 export type { OutputFormat };
@@ -8,7 +10,8 @@ export type SessionInfo = {
   projectID: string;
 };
 
-export type SessionSource = "opencode" | "claude-code" | "codex";
+export const SessionSourceLiterals = Schema.Literals(["opencode", "claude-code", "codex"]);
+export type SessionSource = Schema.Schema.Type<typeof SessionSourceLiterals>;
 
 export type MessageSummary = {
   sessionID: string;

@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 import { readdir } from "node:fs/promises";
 
-import type { MessageSummary, SessionInfo } from "./types";
+import type { MessageSummary, SessionInfo, SessionSource } from "./types";
 
 import { getClaudeCodeSessions, readClaudeCodeMessages } from "./claude-code";
 import { getCodexSessions, getCodexSessionId, readCodexMessages } from "./codex";
@@ -39,12 +39,11 @@ export const truncate = (value: string, maxLen: number): string => {
 
 type FileEntry = { filePath: string; content: string };
 
-type Source = "opencode" | "claude-code" | "codex";
-type SourceFilter = ReadonlySet<Source>;
+type SourceFilter = ReadonlySet<SessionSource>;
 
-const ALL_SOURCES: SourceFilter = new Set<Source>(["opencode", "claude-code", "codex"]);
-const UUID_SOURCES: SourceFilter = new Set<Source>(["claude-code", "codex"]);
-const OPENCODE_ONLY: SourceFilter = new Set<Source>(["opencode"]);
+const ALL_SOURCES: SourceFilter = new Set<SessionSource>(["opencode", "claude-code", "codex"]);
+const UUID_SOURCES: SourceFilter = new Set<SessionSource>(["claude-code", "codex"]);
+const OPENCODE_ONLY: SourceFilter = new Set<SessionSource>(["opencode"]);
 
 const UUID_SESSION_ID_REGEX =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/u;

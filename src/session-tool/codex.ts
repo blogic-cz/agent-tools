@@ -91,7 +91,10 @@ export const parseCodexLine = (line: string): CodexRecord | null => {
       payload: {
         type: "message",
         role: payload.role,
-        content: payload.content as ReadonlyArray<CodexContentBlock>,
+        content: (payload.content as unknown[]).filter(
+          (item): item is CodexContentBlock =>
+            isRecord(item) && typeof (item as Record<string, unknown>).type === "string",
+        ),
       },
     };
   }
@@ -224,15 +227,8 @@ export const getCodexSessions = (
         return allFiles;
       }
 
-      const filtered: string[] = [];
-      const checks = allFiles.map(async (file) => {
-        const meta = await readSessionMeta(file);
-        if (meta !== null && meta.cwd === projectDir) {
-          filtered.push(file);
-        }
-      });
-      await Promise.all(checks);
-      return filtered;
+      const metas = await Promise.all(allFiles.map((file) => readSessionMeta(file)));
+      return allFiles.filter((_, i) => metas[i] !== null && metas[i]?.cwd === projectDir);
     },
     catch: (error) =>
       new SessionStorageNotFoundError({
