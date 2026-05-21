@@ -1,5 +1,5 @@
+import { Glob } from "bun";
 import { Effect } from "effect";
-import { readdir } from "node:fs/promises";
 
 import type { MessageSummary } from "./types";
 
@@ -139,74 +139,18 @@ const getSessionIdFromFile = (filePath: string): string => {
 
 export const getCodexSessionId = getSessionIdFromFile;
 
-const walkSessionFiles = async (basePath: string): Promise<string[]> => {
-  const results: string[] = [];
-
-  const years = await readdir(basePath);
-  for (const year of years) {
-    if (!/^\d{4}$/u.test(year)) continue;
-    const yearPath = `${basePath}/${year}`;
-    let months: string[];
-    try {
-      // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk
-      months = await readdir(yearPath);
-    } catch {
-      continue;
-    }
-
-    for (const month of months) {
-      const monthPath = `${yearPath}/${month}`;
-      let days: string[];
-      try {
-        // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk
-        days = await readdir(monthPath);
-      } catch {
-        continue;
-      }
-
-      for (const day of days) {
-        const dayPath = `${monthPath}/${day}`;
-        let files: string[];
-        try {
-          // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk
-          files = await readdir(dayPath);
-        } catch {
-          continue;
-        }
-
-        for (const fileName of files) {
-          if (fileName.endsWith(".jsonl") && fileName.startsWith("rollout-")) {
-            results.push(`${dayPath}/${fileName}`);
-          }
-        }
-      }
-    }
-  }
-
-  return results;
+const walkSessionFiles = (basePath: string): Promise<string[]> => {
+  const glob = new Glob("*/*/*/rollout-*.jsonl");
+  return Array.fromAsync(glob.scan({ cwd: basePath, absolute: true }));
 };
 
 const readSessionMeta = async (
   sessionFile: string,
 ): Promise<{ id: string; cwd?: string } | null> => {
   try {
-    const file = Bun.file(sessionFile);
-    const stream = file.stream();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
-      buffer += decoder.decode(chunk, { stream: true });
-      const newlineIdx = buffer.indexOf("\n");
-      if (newlineIdx !== -1) {
-        const firstLine = buffer.slice(0, newlineIdx);
-        const record = parseCodexLine(firstLine);
-        if (record !== null && record.type === "session_meta") {
-          return { id: record.payload.id, cwd: record.payload.cwd };
-        }
-        return null;
-      }
-    }
-    const record = parseCodexLine(buffer);
+    const text = await Bun.file(sessionFile).text();
+    const firstLine = text.split("\n")[0] ?? "";
+    const record = parseCodexLine(firstLine);
     if (record !== null && record.type === "session_meta") {
       return { id: record.payload.id, cwd: record.payload.cwd };
     }
@@ -283,13 +227,7 @@ export const readCodexMessages = (
         }
       }
 
-      return (
-        summaries as MessageSummary[] & {
-          toSorted(
-            compareFn: (left: MessageSummary, right: MessageSummary) => number,
-          ): MessageSummary[];
-        }
-      ).toSorted((left, right) => right.created - left.created);
+      return summaries.toSorted((left, right) => right.created - left.created);
     },
     catch: (error) =>
       new SessionReadError({
