@@ -1,13 +1,62 @@
+// Synchronous node:fs temp directory setup keeps per-test runtime isolation deterministic;
+// cleanup must complete before the next test restores AGENT_TOOLS_RUNTIME_DIR.
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { afterEach, beforeEach, it as vitestIt } from "vitest";
 
+import { joinPath } from "#shared/path";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 
 const vpnName = "ExampleVPN";
 
-type BunEnvTestGlobal = typeof globalThis & { Bun?: { env: NodeJS.ProcessEnv } };
+const getTempRoot = () => process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? "/tmp";
 
-(globalThis as BunEnvTestGlobal).Bun ??= { env: process.env } as unknown as typeof Bun;
+type BunEnvTestGlobal = typeof globalThis & {
+  Bun?: { env: NodeJS.ProcessEnv; hash: (input: string) => number | bigint };
+};
+
+const testHash = (input: string) => {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(input)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash;
+};
+
+(globalThis as BunEnvTestGlobal).Bun ??= {
+  env: process.env,
+  hash: testHash,
+} as unknown as typeof Bun;
+
+let runtimeDir: string | undefined;
+let previousRuntimeDir: string | undefined;
+
+beforeEach(() => {
+  previousRuntimeDir = process.env.AGENT_TOOLS_RUNTIME_DIR;
+  runtimeDir = mkdtempSync(joinPath(getTempRoot(), "agent-tools-prerequisites-runtime-"));
+  process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeDir;
+  Bun.env.AGENT_TOOLS_RUNTIME_DIR = runtimeDir;
+});
+
+afterEach(() => {
+  if (previousRuntimeDir === undefined) {
+    delete process.env.AGENT_TOOLS_RUNTIME_DIR;
+    delete Bun.env.AGENT_TOOLS_RUNTIME_DIR;
+  } else {
+    process.env.AGENT_TOOLS_RUNTIME_DIR = previousRuntimeDir;
+    Bun.env.AGENT_TOOLS_RUNTIME_DIR = previousRuntimeDir;
+  }
+
+  if (runtimeDir !== undefined) {
+    rmSync(runtimeDir, { recursive: true, force: true });
+  }
+
+  runtimeDir = undefined;
+  previousRuntimeDir = undefined;
+});
 
 const expectedVpnCommands = () => {
   if (process.platform === "darwin") {
@@ -32,6 +81,29 @@ const expectedVpnCommands = () => {
     stop: `rasdial ${vpnName} /disconnect`,
   };
 };
+
+const getVpnLockPath = () => {
+  if (runtimeDir === undefined) {
+    throw new Error("runtimeDir is not set");
+  }
+
+  const driverIdentity =
+    process.platform === "darwin"
+      ? { type: "macos-scutil", platform: "darwin", serviceName: vpnName }
+      : process.platform === "linux"
+        ? { type: "linux-nmcli", platform: "linux", connectionName: vpnName }
+        : { type: "windows-rasdial", platform: "win32", entryName: vpnName };
+  const key = Bun.hash(JSON.stringify(driverIdentity)).toString(16);
+  return joinPath(runtimeDir, "vpn-prerequisites", key, "lock");
+};
+
+describe("joinPath", () => {
+  vitestIt("preserves root path when joining absolute root segments", () => {
+    expect(joinPath("/", "agent-tools")).toBe("/agent-tools");
+    expect(joinPath("/", "agent-tools", "runtime")).toBe("/agent-tools/runtime");
+    expect(joinPath("/")).toBe("/");
+  });
+});
 
 const connectedOutput = () => {
   if (process.platform === "darwin") {
@@ -95,6 +167,135 @@ describe("runWithProfilePrerequisites", () => {
         expected.status,
         expected.stop,
       ]);
+    });
+  });
+
+  vitestIt("does not delete a fresh ownerless VPN lease lock while waiting", async () => {
+    const observedCommands: string[] = [];
+    const expected = expectedVpnCommands();
+    const lockPath = getVpnLockPath();
+    mkdirSync(lockPath, { recursive: true });
+
+    const resultPromise = Effect.runPromise(
+      runWithProfilePrerequisites(
+        {
+          vpns: {
+            workVpn: {
+              name: vpnName,
+              connectTimeoutMs: 1000,
+            },
+          },
+        },
+        { vpn: "workVpn" },
+        (_command, label) => {
+          observedCommands.push(label);
+
+          if (label === expected.status) {
+            return Effect.succeed({ stdout: connectedOutput(), stderr: "", exitCode: 0 });
+          }
+
+          return Effect.fail(new Error(`unexpected command: ${label}`));
+        },
+        Effect.succeed("ok"),
+      ),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(observedCommands).toEqual([]);
+    expect(existsSync(lockPath)).toBe(true);
+
+    rmSync(lockPath, { recursive: true, force: true });
+
+    const result = await resultPromise;
+    expect(result).toBe("ok");
+    expect(observedCommands).toEqual([expected.status]);
+  });
+
+  it.effect("cleans up earlier VPN leases when a later prerequisite fails", () => {
+    const observedCommands: string[] = [];
+    const laterObservedCommands: string[] = [];
+    let connected = false;
+    let operationRan = false;
+    const expected = expectedVpnCommands();
+
+    const runCommand = (commands: string[]) => (_command: unknown, label: string) => {
+      commands.push(label);
+
+      if (label === expected.status) {
+        return Effect.succeed({
+          stdout: connected ? connectedOutput() : "Disconnected\n",
+          stderr: "",
+          exitCode: 0,
+        });
+      }
+
+      if (label === expected.start) {
+        connected = true;
+        return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+      }
+
+      if (label === expected.stop) {
+        connected = false;
+        return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+      }
+
+      return Effect.fail(new Error(`unexpected command: ${label}`));
+    };
+
+    return Effect.gen(function* () {
+      const result = yield* runWithProfilePrerequisites(
+        {
+          vpns: {
+            workVpn: {
+              name: vpnName,
+              connectTimeoutMs: 1000,
+            },
+          },
+        },
+        {
+          prerequisites: [
+            { type: "vpn", key: "workVpn" },
+            { type: "vpn", key: "missingVpn" },
+          ],
+        },
+        runCommand(observedCommands),
+        Effect.sync(() => {
+          operationRan = true;
+          return "should-not-run";
+        }),
+      ).pipe(Effect.result);
+
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(String(result.failure)).toContain('VPN prerequisite "missingVpn" is not defined');
+      }
+      expect(operationRan).toBe(false);
+      expect(connected).toBe(false);
+      expect(observedCommands).toEqual([
+        expected.status,
+        expected.start,
+        expected.status,
+        expected.stop,
+      ]);
+
+      connected = true;
+      const laterResult = yield* runWithProfilePrerequisites(
+        {
+          vpns: {
+            workVpn: {
+              name: vpnName,
+            },
+          },
+        },
+        { vpn: "workVpn" },
+        runCommand(laterObservedCommands),
+        Effect.succeed("ok"),
+      );
+
+      expect(laterResult).toBe("ok");
+      expect(connected).toBe(true);
+      expect(laterObservedCommands).toEqual([expected.status]);
     });
   });
 

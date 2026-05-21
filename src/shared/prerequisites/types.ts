@@ -1,4 +1,4 @@
-import type { Effect } from "effect";
+import { Schema, type Effect } from "effect";
 import type { ChildProcess } from "effect/unstable/process";
 
 import type {
@@ -23,6 +23,9 @@ export type VpnDriverResolution =
   | { success: true; driver: ResolvedVpnDriver }
   | { success: false; error: string; hint: string };
 
+export const VpnCleanupPolicy = Schema.Literals(["leave-running", "stop-if-started"]);
+export type VpnCleanupPolicy = Schema.Schema.Type<typeof VpnCleanupPolicy>;
+
 export type PrerequisiteCommandResult = {
   readonly stdout: string;
   readonly stderr: string;
@@ -33,3 +36,28 @@ export type PrerequisiteCommandRunner<E> = (
   command: ChildProcess.Command,
   label: string,
 ) => Effect.Effect<PrerequisiteCommandResult, E, never>;
+
+export type VpnLease = {
+  readonly pid: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+};
+
+export type VpnStartState = {
+  readonly pid: number;
+  readonly startedAt: number;
+};
+
+export type VpnLockOwner = {
+  readonly pid: number;
+  readonly createdAt: number;
+};
+
+export type VpnLeaseHandle = {
+  readonly directory: string;
+  readonly leasePath: string;
+  readonly statePath: string;
+  readonly lockPath: string;
+  readonly ttlMs: number;
+  readonly lockTimeoutMs: number;
+};

@@ -18,8 +18,43 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { Readable } from "node:stream";
 
 const TOOLS_ROOT = join(__dirname, "..");
+
+if (!("Bun" in globalThis)) {
+  const spawnForNodeVitest = ((
+    cmd: string[],
+    options?: {
+      cwd?: string;
+      env?: Record<string, string | undefined>;
+      stdin?: "ignore";
+      stdout?: "ignore";
+      stderr?: "pipe" | "ignore";
+    },
+  ) => {
+    const child = spawn(cmd[0] ?? "", cmd.slice(1), {
+      cwd: options?.cwd,
+      env: options?.env as NodeJS.ProcessEnv | undefined,
+      stdio: [options?.stdin ?? "ignore", options?.stdout ?? "ignore", options?.stderr ?? "pipe"],
+    });
+
+    return {
+      stderr: child.stderr ? Readable.toWeb(child.stderr) : null,
+      exited: new Promise<number>((resolve) => {
+        child.once("exit", (code) => resolve(code ?? 0));
+      }),
+      kill: () => {
+        child.kill();
+      },
+    } as ReturnType<typeof Bun.spawn>;
+  }) as typeof Bun.spawn;
+
+  Object.defineProperty(globalThis, "Bun", {
+    configurable: true,
+    value: { spawn: spawnForNodeVitest },
+  });
+}
 
 // Temp dir with valid config for tools that need it
 let configDir: string;
@@ -980,4 +1015,359 @@ printf '[{"ok":1}]\n'
   it("db-tool starts VPN prerequisites when direct database access fails", () => {
     runDbTunnelTest("database", "database", { withVpn: true, requireVpnForTunnel: true });
   });
+});
+
+describe("Integration: VPN prerequisite cross-process cleanup", () => {
+  const waitForFile = async (path: string, timeoutMs = 5000) => {
+    const start = Date.now();
+    while (!existsSync(path)) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timed out waiting for ${path}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+
+  const waitForExit = async (child: ReturnType<typeof Bun.spawn>, timeoutMs = 5000) => {
+    const stderrPromise =
+      child.stderr && typeof child.stderr !== "number"
+        ? new Response(child.stderr).text()
+        : Promise.resolve("");
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = Symbol("timedOut");
+    const result = await Promise.race([
+      child.exited,
+      new Promise<typeof timedOut>((resolve) => {
+        timeout = setTimeout(() => resolve(timedOut), timeoutMs);
+      }),
+    ]);
+
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+
+    if (result === timedOut) {
+      child.kill();
+      const stderr = await stderrPromise;
+      throw new Error(`Timed out waiting for child process. stderr: ${stderr}`);
+    }
+
+    const stderr = await stderrPromise;
+    expect(stderr).toBe("");
+    expect(result).toBe(0);
+  };
+
+  const createVpnTestPaths = () => {
+    const testDir = join(tmpdir(), `agent-tools-vpn-race-${Date.now()}`);
+    return {
+      testDir,
+      runtimeDir: join(testDir, "runtime"),
+      vpnReady: join(testDir, "vpn-ready"),
+      commandLog: join(testDir, "commands.log"),
+      AActive: join(testDir, "a-active"),
+      ARelease: join(testDir, "a-release"),
+      BActive: join(testDir, "b-active"),
+      BRelease: join(testDir, "b-release"),
+      CActive: join(testDir, "c-active"),
+      CRelease: join(testDir, "c-release"),
+      AStartEntered: join(testDir, "a-start-entered"),
+    };
+  };
+
+  const spawnVpnRuntimeProcess = (
+    name: string,
+    paths: Record<string, string>,
+    cleanupPolicy?: "leave-running" | "stop-if-started",
+    options?: { connectTimeoutMs?: number; startDelayMs?: number },
+  ) => {
+    const script = `
+import { appendFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { Effect } from "effect";
+import { runWithProfilePrerequisites } from "./src/shared/prerequisites/runtime.ts";
+
+const name = process.env.PROCESS_NAME ?? "process";
+const activePath = process.env.ACTIVE_PATH ?? "";
+const releasePath = process.env.RELEASE_PATH ?? "";
+const readyPath = process.env.VPN_READY_PATH ?? "";
+const commandLogPath = process.env.COMMAND_LOG_PATH ?? "";
+const startEnteredPath = process.env.START_ENTERED_PATH ?? "";
+const connectTimeoutMs = Number(process.env.CONNECT_TIMEOUT_MS ?? "1000");
+const startDelayMs = Number(process.env.START_DELAY_MS ?? "0");
+const sleepSync = (ms) => {
+  if (ms > 0) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  }
+};
+
+const driver = process.platform === "darwin"
+  ? { type: "macos-scutil", serviceName: "ExampleVPN" }
+  : process.platform === "linux"
+    ? { type: "linux-nmcli", connectionName: "ExampleVPN" }
+    : { type: "windows-rasdial", entryName: "ExampleVPN" };
+
+const config = {
+  vpns: {
+    appVpn: {
+      name: "ExampleVPN",
+      auto: false,
+      driver,
+      connectTimeoutMs,
+      leaseTtlMs: 10000,
+    },
+  },
+};
+
+const cleanupPolicy = process.env.CLEANUP_POLICY;
+const prerequisite = cleanupPolicy
+  ? { type: "vpn", key: "appVpn", cleanup: cleanupPolicy }
+  : { type: "vpn", key: "appVpn" };
+const profile = { prerequisites: [prerequisite] };
+
+const runCommand = (_command, label) =>
+  Effect.sync(() => {
+    appendFileSync(commandLogPath, name + ":" + label + "\\n");
+
+    if (label.includes("status") || label.includes("connection show") || label === "rasdial") {
+      return { stdout: existsSync(readyPath) ? "Connected ExampleVPN\\n" : "Disconnected\\n", stderr: "", exitCode: 0 };
+    }
+
+    if (label.includes("start") || label.includes("connection up") || label === "rasdial ExampleVPN") {
+      if (startEnteredPath !== "") {
+        writeFileSync(startEnteredPath, name);
+      }
+      sleepSync(startDelayMs);
+      writeFileSync(readyPath, name);
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (label.includes("stop") || label.includes("connection down") || label.includes("/disconnect")) {
+      rmSync(readyPath, { force: true });
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    return { stdout: "", stderr: "unexpected command", exitCode: 1 };
+  });
+
+const work = Effect.promise(
+  () =>
+    new Promise((resolve) => {
+      writeFileSync(activePath, name);
+      const interval = setInterval(() => {
+        if (existsSync(releasePath)) {
+          clearInterval(interval);
+          resolve(undefined);
+        }
+      }, 20);
+    }),
+);
+
+Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)).then(
+  () => process.exit(0),
+  (error) => {
+    console.error(error);
+    process.exit(1);
+  },
+);
+`.trim();
+
+    return Bun.spawn(["bun", "-e", script], {
+      cwd: TOOLS_ROOT,
+      env: {
+        ...process.env,
+        PROCESS_NAME: name,
+        AGENT_TOOLS_RUNTIME_DIR: paths.runtimeDir,
+        ACTIVE_PATH: paths[`${name}Active`],
+        RELEASE_PATH: paths[`${name}Release`],
+        VPN_READY_PATH: paths.vpnReady,
+        COMMAND_LOG_PATH: paths.commandLog,
+        START_ENTERED_PATH: paths[`${name}StartEntered`] ?? "",
+        CONNECT_TIMEOUT_MS: String(options?.connectTimeoutMs ?? 1000),
+        START_DELAY_MS: String(options?.startDelayMs ?? 0),
+        ...(cleanupPolicy ? { CLEANUP_POLICY: cleanupPolicy } : {}),
+      },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+  };
+
+  it("keeps an explicitly leave-running VPN connected after cleanup", async () => {
+    const paths = createVpnTestPaths();
+    mkdirSync(paths.testDir, { recursive: true });
+    writeFileSync(paths.commandLog, "");
+
+    const child = spawnVpnRuntimeProcess("A", paths, "leave-running");
+
+    try {
+      await waitForFile(paths.AActive);
+      writeFileSync(paths.ARelease, "release");
+      await waitForExit(child);
+
+      const finalLog = readFileSync(paths.commandLog, "utf8");
+      expect(existsSync(paths.vpnReady)).toBe(true);
+      expect(finalLog).not.toContain("stop");
+      expect(finalLog).not.toContain("connection down");
+      expect(finalLog).not.toContain("/disconnect");
+    } finally {
+      child.kill();
+      rmSync(paths.testDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not stop a VPN that was already connected before the process started", async () => {
+    const paths = createVpnTestPaths();
+    mkdirSync(paths.testDir, { recursive: true });
+    writeFileSync(paths.commandLog, "");
+    writeFileSync(paths.vpnReady, "preexisting");
+
+    const child = spawnVpnRuntimeProcess("A", paths);
+
+    try {
+      await waitForFile(paths.AActive);
+      writeFileSync(paths.ARelease, "release");
+      await waitForExit(child);
+
+      const finalLog = readFileSync(paths.commandLog, "utf8");
+      expect(existsSync(paths.vpnReady)).toBe(true);
+      expect(finalLog).not.toContain("stop");
+      expect(finalLog).not.toContain("connection down");
+      expect(finalLog).not.toContain("/disconnect");
+    } finally {
+      child.kill();
+      rmSync(paths.testDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leave-running overlap keeps VPN connected and prevents later default cleanup", async () => {
+    const paths = createVpnTestPaths();
+    mkdirSync(paths.testDir, { recursive: true });
+    writeFileSync(paths.commandLog, "");
+
+    const processA = spawnVpnRuntimeProcess("A", paths);
+    const childProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
+
+    try {
+      await waitForFile(paths.AActive);
+      await waitForFile(paths.vpnReady);
+
+      const processB = spawnVpnRuntimeProcess("B", paths, "leave-running");
+      childProcesses.push(processB);
+      await waitForFile(paths.BActive);
+
+      writeFileSync(paths.ARelease, "release");
+      await waitForExit(processA);
+      writeFileSync(paths.BRelease, "release");
+      await waitForExit(processB);
+
+      expect(existsSync(paths.vpnReady)).toBe(true);
+      const logAfterOverlap = readFileSync(paths.commandLog, "utf8");
+      expect(logAfterOverlap).not.toContain("stop");
+      expect(logAfterOverlap).not.toContain("connection down");
+      expect(logAfterOverlap).not.toContain("/disconnect");
+
+      const processC = spawnVpnRuntimeProcess("C", paths);
+      childProcesses.push(processC);
+      await waitForFile(paths.CActive);
+      writeFileSync(paths.CRelease, "release");
+      await waitForExit(processC);
+
+      const finalLog = readFileSync(paths.commandLog, "utf8");
+      expect(existsSync(paths.vpnReady)).toBe(true);
+      expect(finalLog).not.toContain("stop");
+      expect(finalLog).not.toContain("connection down");
+      expect(finalLog).not.toContain("/disconnect");
+    } finally {
+      processA.kill();
+      for (const child of childProcesses) {
+        child.kill();
+      }
+      rmSync(paths.testDir, { recursive: true, force: true });
+    }
+  }, 10000);
+
+  it("waits for another process to finish connecting before acquiring the VPN lease", async () => {
+    const paths = createVpnTestPaths();
+    mkdirSync(paths.testDir, { recursive: true });
+    writeFileSync(paths.commandLog, "");
+
+    const processA = spawnVpnRuntimeProcess("A", paths, undefined, {
+      connectTimeoutMs: 8000,
+      startDelayMs: 6000,
+    });
+    const childProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
+
+    try {
+      await waitForFile(paths.AStartEntered);
+
+      const processB = spawnVpnRuntimeProcess("B", paths, undefined, { connectTimeoutMs: 8000 });
+      childProcesses.push(processB);
+      await waitForFile(paths.BActive, 12000);
+
+      writeFileSync(paths.ARelease, "release");
+      writeFileSync(paths.BRelease, "release");
+      await waitForExit(processA, 12000);
+      await waitForExit(processB, 12000);
+
+      const finalLog = readFileSync(paths.commandLog, "utf8");
+      expect(finalLog).toContain("A:");
+      expect(finalLog).toContain("B:");
+    } finally {
+      processA.kill();
+      for (const child of childProcesses) {
+        child.kill();
+      }
+      rmSync(paths.testDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("does not stop an agent-started VPN while another process still holds a lease", async () => {
+    const paths = createVpnTestPaths();
+
+    mkdirSync(paths.testDir, { recursive: true });
+    writeFileSync(paths.commandLog, "");
+
+    const processA = spawnVpnRuntimeProcess("A", paths);
+    const processBProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
+
+    try {
+      await waitForFile(paths.AActive);
+      await waitForFile(paths.vpnReady);
+
+      const processB = spawnVpnRuntimeProcess("B", paths);
+      processBProcesses.push(processB);
+      await waitForFile(paths.BActive);
+
+      writeFileSync(paths.ARelease, "release");
+      await waitForExit(processA);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(existsSync(paths.vpnReady)).toBe(true);
+      const logAfterAExit = readFileSync(paths.commandLog, "utf8");
+      expect(logAfterAExit).not.toContain("stop");
+      expect(logAfterAExit).not.toContain("connection down");
+      expect(logAfterAExit).not.toContain("/disconnect");
+
+      writeFileSync(paths.BRelease, "release");
+      await waitForExit(processB);
+
+      const finalLog = readFileSync(paths.commandLog, "utf8");
+      const stopCount = finalLog
+        .split("\n")
+        .filter(
+          (line) =>
+            line.includes("stop") ||
+            line.includes("connection down") ||
+            line.includes("/disconnect"),
+        ).length;
+
+      expect(existsSync(paths.vpnReady)).toBe(false);
+      expect(stopCount).toBe(1);
+    } finally {
+      processA.kill();
+      for (const child of processBProcesses) {
+        child.kill();
+      }
+      rmSync(paths.testDir, { recursive: true, force: true });
+    }
+  }, 10000);
 });
