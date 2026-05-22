@@ -804,6 +804,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const vpnReadyPath = join(dbDir, "vpn-ready");
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
     const psqlArgsPath = join(dbDir, "psql-args.txt");
+    const psqlAttemptsPath = join(dbDir, "psql-attempts");
     const vpnArgsPath = join(dbDir, "vpn-args.txt");
     // eslint-disable-next-line eslint/no-template-curly-in-string -- verifies config env-template expansion
     const testDbUserTemplate = "${TEST_DB_USER}";
@@ -862,9 +863,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
       kubectlPath,
       `#!/bin/sh
 printf '%s' "$*" > "${kubectlArgsPath}"
-if [ "${options?.requireVpnForTunnel ? "yes" : "no"}" = "no" ] || [ -f "${vpnReadyPath}" ]; then
-  touch "${tunnelReadyPath}"
-fi
+touch "${tunnelReadyPath}"
 trap 'exit 0' TERM INT
 while true; do
   sleep 1
@@ -953,6 +952,16 @@ exit 1
       psqlPath,
       `#!/bin/sh
 printf '%s' "$*" > "${psqlArgsPath}"
+attempts=0
+if [ -f "${psqlAttemptsPath}" ]; then
+  attempts=$(cat "${psqlAttemptsPath}")
+fi
+attempts=$((attempts + 1))
+printf '%s' "$attempts" > "${psqlAttemptsPath}"
+if [ "${options?.requireVpnForTunnel ? "yes" : "no"}" = "yes" ] && [ ! -f "${vpnReadyPath}" ]; then
+  printf 'connection requires VPN\n' >&2
+  exit 1
+fi
 printf '[{"ok":1}]\n'
 `,
     );
