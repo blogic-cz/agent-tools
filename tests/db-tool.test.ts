@@ -457,7 +457,6 @@ describe("DbService", () => {
             port: 5432,
             user: "readonly",
             database: "app",
-            password: "secret",
             vpn: "prodVpn",
           },
         },
