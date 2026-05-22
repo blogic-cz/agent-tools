@@ -2527,10 +2527,41 @@ describe("PR composite commands", () => {
         pr: 123,
         title: null,
         body: inventedShellSensitiveText,
+        base: null,
       }).pipe(Effect.provide(layer));
 
       expect(result.number).toBe(123);
       expect(forwardedArgs).toEqual(["pr", "edit", "123", "--body", inventedShellSensitiveText]);
+    }),
+  );
+
+  it.effect("editPR forwards base branch retarget", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "view") {
+            return Effect.succeed(mockPRInfo);
+          }
+
+          return Effect.succeed({});
+        },
+      });
+
+      const result = yield* editPR({
+        pr: 123,
+        title: null,
+        body: null,
+        base: "main",
+      }).pipe(Effect.provide(layer));
+
+      expect(result.number).toBe(123);
+      expect(forwardedArgs).toEqual(["pr", "edit", "123", "--base", "main"]);
     }),
   );
 

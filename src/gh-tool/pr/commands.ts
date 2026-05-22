@@ -119,6 +119,7 @@ export const prCreateCommand = Command.make(
 export const prEditCommand = Command.make(
   "edit",
   {
+    base: Flag.string("base").pipe(Flag.withDescription("New base branch"), Flag.optional),
     body: Flag.string("body").pipe(Flag.withDescription("New PR body/description"), Flag.optional),
     bodyFile: Flag.string("body-file").pipe(
       Flag.withDescription("Read PR body from a file path or '-' for stdin"),
@@ -128,7 +129,7 @@ export const prEditCommand = Command.make(
     pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to edit")),
     title: Flag.string("title").pipe(Flag.withDescription("New PR title"), Flag.optional),
   },
-  ({ body, bodyFile, format, pr, title }) =>
+  ({ base, body, bodyFile, format, pr, title }) =>
     Effect.gen(function* () {
       const resolvedBody = yield* resolveOptionalTextInput(
         "gh-tool pr edit",
@@ -143,6 +144,7 @@ export const prEditCommand = Command.make(
         pr,
         title: Option.getOrNull(title),
         body: resolvedBody,
+        base: Option.getOrNull(base),
       });
       yield* logFormatted(info, format);
     }),
