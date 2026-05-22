@@ -44,12 +44,14 @@ export function resolveEnvironmentScopedPrerequisites(
   profile: ProfilePrerequisites,
   environment: ProfilePrerequisites,
 ): ProfilePrerequisites {
-  if (
+  const source =
     hasOwnPrerequisiteConfig(environment, "vpn") ||
     hasOwnPrerequisiteConfig(environment, "prerequisites")
-  ) {
-    return environment;
-  }
+      ? environment
+      : profile;
 
-  return profile;
+  return {
+    ...(source.vpn !== undefined ? { vpn: source.vpn } : {}),
+    ...(source.prerequisites !== undefined ? { prerequisites: source.prerequisites } : {}),
+  };
 }

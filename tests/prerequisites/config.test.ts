@@ -25,11 +25,9 @@ describe("normalizeProfilePrerequisites", () => {
 
 describe("resolveEnvironmentScopedPrerequisites", () => {
   it("inherits profile prerequisites when the environment does not declare any", () => {
-    expect(
-      resolveEnvironmentScopedPrerequisites({ vpn: "profileVpn" }, {
-        host: "db.internal",
-      } as never),
-    ).toEqual({ vpn: "profileVpn" });
+    expect(resolveEnvironmentScopedPrerequisites({ vpn: "profileVpn" }, {})).toEqual({
+      vpn: "profileVpn",
+    });
   });
 
   it("uses only environment prerequisites when vpn is declared", () => {
