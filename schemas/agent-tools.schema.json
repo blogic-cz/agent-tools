@@ -185,6 +185,17 @@
         "passwordEnvVar": {
           "description": "Name of the environment variable holding the database password.",
           "type": "string"
+        },
+        "prerequisites": {
+          "description": "Ordered prerequisite references for this database environment. Declaring this or vpn overrides profile-level database prerequisites; an empty array explicitly disables inherited prerequisites.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Prerequisite"
+          }
+        },
+        "vpn": {
+          "type": "string",
+          "description": "Convenience sugar for this database environment's VPN prerequisite key. Declaring this or prerequisites overrides profile-level database prerequisites."
         }
       },
       "required": ["host", "port", "user", "database"]

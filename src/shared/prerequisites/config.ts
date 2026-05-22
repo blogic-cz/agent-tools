@@ -36,3 +36,22 @@ export function resolveProfilePrerequisites(
 
   return { success: true, prerequisites };
 }
+
+const hasOwnPrerequisiteConfig = (profile: ProfilePrerequisites, key: keyof ProfilePrerequisites) =>
+  Object.prototype.hasOwnProperty.call(profile, key);
+
+export function resolveEnvironmentScopedPrerequisites(
+  profile: ProfilePrerequisites,
+  environment: ProfilePrerequisites,
+): ProfilePrerequisites {
+  const source =
+    hasOwnPrerequisiteConfig(environment, "vpn") ||
+    hasOwnPrerequisiteConfig(environment, "prerequisites")
+      ? environment
+      : profile;
+
+  return {
+    ...(source.vpn !== undefined ? { vpn: source.vpn } : {}),
+    ...(source.prerequisites !== undefined ? { prerequisites: source.prerequisites } : {}),
+  };
+}

@@ -1,4 +1,5 @@
 import type { DbMutationOperation } from "#config";
+import type { ProfilePrerequisites } from "#config/types";
 import type { Environment, OutputFormat } from "#shared";
 
 export type { DbMutationOperation };
@@ -6,7 +7,7 @@ export type { Environment, OutputFormat };
 
 export type SchemaMode = "tables" | "columns" | "full" | "relationships";
 
-export type DbConfig = {
+export type DbConfig = ProfilePrerequisites & {
   host: string;
   user: string;
   database: string;

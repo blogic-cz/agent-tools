@@ -105,6 +105,8 @@ bun db-tool schema --env local --mode columns --table users # Show table schema
 
 Environment is any string (e.g. `local`, `test`, `prod`). Set `defaultEnvironment` in config to skip `--env` on every call.
 
+Database prerequisites may be profile-level (`database.default.vpn`) or environment-level (`database.default.environments.prod.vpn`). Environment `vpn`/`prerequisites` replace profile prerequisites; `prerequisites: []` disables inheritance. DB commands try direct access before connecting VPN prerequisites.
+
 ### k8s-tool (Kubernetes)
 
 ```bash

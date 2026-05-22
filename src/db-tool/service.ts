@@ -6,6 +6,7 @@ import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./t
 import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { resolveEnvTemplate } from "#shared/env-template";
+import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { DbConfigService, DbConfigServiceLayer, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import {
@@ -228,13 +229,15 @@ export class DbService extends Context.Service<
 
         const runWithVpnPrerequisites = <E>(
           port: number,
+          prerequisiteConfig: DbConfig,
           effect: Effect.Effect<QueryResult, E>,
         ): Effect.Effect<QueryResult, E | DbTunnelError> =>
           runWithProfilePrerequisites(
             agentToolsConfig ?? {},
-            dbConfig,
+            prerequisiteConfig,
             (command, _label) => executeShellCommand(command),
             effect,
+            { tryWithoutPrerequisites: true },
           ).pipe(
             Effect.mapError((error) =>
               isPrerequisiteRunError(error)
@@ -655,6 +658,7 @@ export class DbService extends Context.Service<
             database: envConfig.database,
             password: envConfig.password,
             passwordEnvVar: envConfig.passwordEnvVar,
+            ...resolveEnvironmentScopedPrerequisites(dbConfig, envConfig),
             port: envConfig.port,
             needsTunnel: accessMode.needsTunnel,
             allowMutations: accessMode.allowMutations,
@@ -696,6 +700,7 @@ export class DbService extends Context.Service<
 
           return yield* runWithVpnPrerequisites(
             resolvedConfig.port,
+            resolvedConfig,
             runQueryWithOptionalTunnel(resolvedConfig, queryEffect),
           );
         });
@@ -752,6 +757,7 @@ export class DbService extends Context.Service<
 
           const result = yield* runWithVpnPrerequisites(
             resolvedConfig.port,
+            resolvedConfig,
             runQueryWithOptionalTunnel(resolvedConfig, queryEffect),
           );
 

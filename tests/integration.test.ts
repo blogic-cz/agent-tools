@@ -804,6 +804,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const vpnReadyPath = join(dbDir, "vpn-ready");
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
     const psqlArgsPath = join(dbDir, "psql-args.txt");
+    const psqlAttemptsPath = join(dbDir, "psql-attempts");
     const vpnArgsPath = join(dbDir, "vpn-args.txt");
     // eslint-disable-next-line eslint/no-template-curly-in-string -- verifies config env-template expansion
     const testDbUserTemplate = "${TEST_DB_USER}";
@@ -862,9 +863,7 @@ describe("Integration: env safety + k8s namespace fallback", () => {
       kubectlPath,
       `#!/bin/sh
 printf '%s' "$*" > "${kubectlArgsPath}"
-if [ "${options?.requireVpnForTunnel ? "yes" : "no"}" = "no" ] || [ -f "${vpnReadyPath}" ]; then
-  touch "${tunnelReadyPath}"
-fi
+touch "${tunnelReadyPath}"
 trap 'exit 0' TERM INT
 while true; do
   sleep 1
@@ -953,6 +952,16 @@ exit 1
       psqlPath,
       `#!/bin/sh
 printf '%s' "$*" > "${psqlArgsPath}"
+attempts=0
+if [ -f "${psqlAttemptsPath}" ]; then
+  attempts=$(cat "${psqlAttemptsPath}")
+fi
+attempts=$((attempts + 1))
+printf '%s' "$attempts" > "${psqlAttemptsPath}"
+if [ "${options?.requireVpnForTunnel ? "yes" : "no"}" = "yes" ] && [ ! -f "${vpnReadyPath}" ]; then
+  printf 'connection requires VPN\n' >&2
+  exit 1
+fi
 printf '[{"ok":1}]\n'
 `,
     );
@@ -977,6 +986,9 @@ printf '[{"ok":1}]\n'
     };
     const kubectlArgs = readFileSync(kubectlArgsPath, "utf8");
     const psqlArgs = readFileSync(psqlArgsPath, "utf8");
+    const psqlAttempts = existsSync(psqlAttemptsPath)
+      ? readFileSync(psqlAttemptsPath, "utf8")
+      : "0";
     const vpnArgs =
       options?.withVpn && existsSync(vpnArgsPath) ? readFileSync(vpnArgsPath, "utf8") : "";
 
@@ -991,8 +1003,12 @@ printf '[{"ok":1}]\n'
     expect(kubectlArgs).toContain(expectedKubectlArgs);
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
 
-    if (options?.withVpn) {
+    if (options?.requireVpnForTunnel) {
       expect(vpnArgs).toContain("ExampleVPN");
+      expect(psqlAttempts).toBe("2");
+    } else if (options?.withVpn) {
+      expect(vpnArgs).toBe("");
+      expect(psqlAttempts).toBe("1");
     }
   };
 
@@ -1008,7 +1024,7 @@ printf '[{"ok":1}]\n'
     runDbTunnelTest("database", "database", { withKubeconfig: true });
   });
 
-  it("db-tool starts VPN prerequisites before opening the database tunnel", () => {
+  it("db-tool skips VPN prerequisites when direct database access works", () => {
     runDbTunnelTest("database", "database", { withVpn: true });
   });
 

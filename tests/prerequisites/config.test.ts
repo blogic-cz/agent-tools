@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   normalizeProfilePrerequisites,
+  resolveEnvironmentScopedPrerequisites,
   resolveProfilePrerequisites,
 } from "#shared/prerequisites/config";
 
@@ -19,6 +20,32 @@ describe("normalizeProfilePrerequisites", () => {
         prerequisites: [{ type: "vpn", key: "exampleVpn", cleanup: "stop-if-started" }],
       }),
     ).toEqual([{ type: "vpn", key: "exampleVpn", cleanup: "stop-if-started" }]);
+  });
+});
+
+describe("resolveEnvironmentScopedPrerequisites", () => {
+  it("inherits profile prerequisites when the environment does not declare any", () => {
+    expect(resolveEnvironmentScopedPrerequisites({ vpn: "profileVpn" }, {})).toEqual({
+      vpn: "profileVpn",
+    });
+  });
+
+  it("uses only environment prerequisites when vpn is declared", () => {
+    expect(
+      resolveEnvironmentScopedPrerequisites(
+        { vpn: "profileVpn", prerequisites: [{ type: "vpn", key: "profileVpn" }] },
+        { vpn: "envVpn" },
+      ),
+    ).toEqual({ vpn: "envVpn" });
+  });
+
+  it("treats empty environment prerequisites as an explicit override", () => {
+    expect(
+      resolveEnvironmentScopedPrerequisites(
+        { vpn: "profileVpn", prerequisites: [{ type: "vpn", key: "profileVpn" }] },
+        { prerequisites: [] },
+      ),
+    ).toEqual({ prerequisites: [] });
   });
 });
 
