@@ -364,6 +364,32 @@ describe("VPN prerequisites config", () => {
     expect(config.database?.default?.kubectl?.service).toBe("database");
   });
 
+  it("accepts VPN prerequisites on database environments", () => {
+    const config = decodeConfig({
+      vpns: { stagingVpn: { name: "StagingVPN" }, prodVpn: { name: "ProdVPN" } },
+      database: {
+        default: {
+          vpn: "stagingVpn",
+          environments: {
+            staging: {
+              host: "127.0.0.1",
+              port: 25439,
+              user: "app-readonly",
+              database: "app",
+              vpn: "prodVpn",
+              prerequisites: [{ type: "vpn", key: "prodVpn", cleanup: "leave-running" }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(config.database?.default?.environments.staging?.vpn).toBe("prodVpn");
+    expect(config.database?.default?.environments.staging?.prerequisites).toEqual([
+      { type: "vpn", key: "prodVpn", cleanup: "leave-running" },
+    ]);
+  });
+
   it("accepts per-environment database mutation permissions", () => {
     const config = decodeConfig({
       database: {

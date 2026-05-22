@@ -383,6 +383,39 @@ Secrets are **never** stored in the config file. The `db-tool` config references
 }
 ```
 
+Database VPN prerequisites can be set at the database profile or environment level. If an environment declares `vpn` or `prerequisites`, that environment config replaces the profile prerequisites; `prerequisites: []` explicitly disables inherited VPN setup. DB commands try the query directly first and only connect VPN prerequisites if direct access fails.
+
+```json5
+{
+  vpns: {
+    officeVpn: { name: "OfficeVPN" },
+    prodVpn: { name: "ProdVPN" },
+  },
+  database: {
+    default: {
+      vpn: "officeVpn",
+      environments: {
+        local: {
+          host: "127.0.0.1",
+          port: 5432,
+          user: "app",
+          database: "app",
+          prerequisites: [], // no VPN for local/direct access
+        },
+        prod: {
+          host: "db.prod.internal",
+          port: 5432,
+          user: "readonly",
+          database: "app",
+          passwordEnvVar: "AGENT_TOOLS_DB_PROD_PASSWORD",
+          vpn: "prodVpn", // overrides database.default.vpn
+        },
+      },
+    },
+  },
+}
+```
+
 Set the values in your shell:
 
 ```bash

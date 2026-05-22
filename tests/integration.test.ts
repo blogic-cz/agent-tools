@@ -991,8 +991,10 @@ printf '[{"ok":1}]\n'
     expect(kubectlArgs).toContain(expectedKubectlArgs);
     expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
 
-    if (options?.withVpn) {
+    if (options?.requireVpnForTunnel) {
       expect(vpnArgs).toContain("ExampleVPN");
+    } else if (options?.withVpn) {
+      expect(vpnArgs).toBe("");
     }
   };
 
@@ -1008,7 +1010,7 @@ printf '[{"ok":1}]\n'
     runDbTunnelTest("database", "database", { withKubeconfig: true });
   });
 
-  it("db-tool starts VPN prerequisites before opening the database tunnel", () => {
+  it("db-tool skips VPN prerequisites when direct database access works", () => {
     runDbTunnelTest("database", "database", { withVpn: true });
   });
 

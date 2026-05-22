@@ -74,7 +74,7 @@ export type K8sConfig = ProfilePrerequisites & {
 };
 
 /** Single database environment connection details */
-export type DbEnvConfig = {
+export type DbEnvConfig = ProfilePrerequisites & {
   host: string;
   port: number;
   user: string;

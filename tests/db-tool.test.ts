@@ -1,9 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result, Layer } from "effect";
+import { Effect, Result, Layer, Sink, Stream } from "effect";
+import type { ChildProcess } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { DbError } from "#db/errors";
 import type { QueryResult } from "#db/types";
+import type { AgentToolsConfig, DatabaseConfig } from "#config/types";
 
+import { ConfigService } from "#config/loader";
+import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, isValidTableName } from "#db/security";
@@ -48,6 +53,75 @@ function createMockDbServiceLayer(responses: Record<string, QueryResult | DbErro
       );
     },
   });
+}
+
+type ShellResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
+function commandToShellString(command: ChildProcess.Command): string {
+  if (command._tag === "StandardCommand") {
+    return [command.command, ...command.args].join(" ").trim();
+  }
+
+  return [commandToShellString(command.left), commandToShellString(command.right)].join(" | ");
+}
+
+function createMockProcess(result: ShellResult) {
+  const encoder = new TextEncoder();
+
+  const stdout = Stream.fromIterable([encoder.encode(result.stdout)]);
+  const stderr = Stream.fromIterable([encoder.encode(result.stderr)]);
+
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.exitCode)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.succeed(undefined),
+    stderr,
+    stdin: Sink.drain,
+    stdout,
+    all: Stream.fromIterable([encoder.encode(result.stdout), encoder.encode(result.stderr)]),
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void),
+  });
+}
+
+function createMockChildProcessSpawnerLayer(
+  shellResponses: Record<string, ShellResult>,
+  observedShellCommands: Array<string>,
+) {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const shellCommand = commandToShellString(command);
+      observedShellCommands.push(shellCommand);
+
+      const response = shellResponses[shellCommand] ?? {
+        stdout: "",
+        stderr: `No mock shell response for command: ${shellCommand}`,
+        exitCode: 1,
+      };
+
+      return Effect.succeed(createMockProcess(response));
+    }),
+  );
+}
+
+function createRealDbServiceLayer(
+  config: AgentToolsConfig,
+  databaseConfig: DatabaseConfig,
+  shellResponses: Record<string, ShellResult>,
+  observedShellCommands: Array<string>,
+) {
+  return DbService.layer.pipe(
+    Layer.provide(createMockChildProcessSpawnerLayer(shellResponses, observedShellCommands)),
+    Layer.provide(Layer.succeed(ConfigService, config)),
+    Layer.provide(Layer.succeed(DbConfigService, databaseConfig)),
+  );
 }
 
 describe("db schema introspection SQL", () => {
@@ -372,6 +446,54 @@ describe("DbService", () => {
         ),
       ),
     );
+
+    it.effect("uses direct access before environment-scoped VPN prerequisites", () => {
+      const observedShellCommands: string[] = [];
+      const databaseConfig: DatabaseConfig = {
+        vpn: "profileVpn",
+        environments: {
+          prod: {
+            host: "db.internal",
+            port: 5432,
+            user: "readonly",
+            database: "app",
+            password: "secret",
+            vpn: "prodVpn",
+          },
+        },
+      };
+      const wrappedSql = "SELECT json_agg(t) FROM (SELECT 1) t;";
+      const psqlCommand = `psql -h db.internal -p 5432 -U readonly -d app -t -A -c ${wrappedSql}`;
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service.executeQuery("prod", "SELECT 1");
+
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual([{ "?column?": 1 }]);
+        expect(observedShellCommands).toEqual([psqlCommand]);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {
+              vpns: {
+                profileVpn: { name: "ProfileVPN" },
+                prodVpn: { name: "ProdVPN" },
+              },
+            },
+            databaseConfig,
+            {
+              [psqlCommand]: {
+                stdout: '[{"?column?":1}]\n',
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+            observedShellCommands,
+          ),
+        ),
+      );
+    });
   });
 
   describe("executeSchemaQuery", () => {

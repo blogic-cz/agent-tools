@@ -91,6 +91,8 @@ const DbEnvConfigSchema = Schema.Struct({
   database: Schema.String,
   password: Schema.optionalKey(Schema.String),
   passwordEnvVar: Schema.optionalKey(Schema.String),
+  prerequisites: Schema.optionalKey(PrerequisitesSchema),
+  vpn: Schema.optionalKey(Schema.String),
 });
 
 const DatabaseConfigSchema = Schema.Struct({

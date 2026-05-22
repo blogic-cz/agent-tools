@@ -6,6 +6,12 @@
   // Implicit production access is always blocked for safety.
   defaultEnvironment: "test",
 
+  // VPN definitions referenced by tool prerequisites.
+  vpns: {
+    officeVpn: { name: "OfficeVPN" },
+    testVpn: { name: "TestVPN" },
+  },
+
   // Azure DevOps profiles
   azure: {
     default: {
@@ -35,6 +41,9 @@
   // Database profiles (with kubectl tunneling support)
   database: {
     default: {
+      // Optional profile-level prerequisites apply to every DB environment unless an environment
+      // declares its own vpn/prerequisites. DB commands try direct access first, then connect VPN.
+      vpn: "officeVpn",
       environments: {
         local: {
           host: "127.0.0.1",
@@ -42,6 +51,7 @@
           user: "my-app-user",
           database: "my-app",
           passwordEnvVar: "AGENT_TOOLS_DB_LOCAL_CRED", // Read from env for security
+          prerequisites: [], // Explicitly disables inherited database.default.vpn for local access
         },
         test: {
           host: "127.0.0.1",
@@ -49,6 +59,7 @@
           user: "readonly-user",
           database: "my-app-test",
           passwordEnvVar: "AGENT_TOOLS_DB_TEST_CRED",
+          vpn: "testVpn", // Environment-level VPN overrides database.default.vpn
         },
       },
       kubectl: {

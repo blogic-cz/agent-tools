@@ -24,6 +24,12 @@ bun db-tool schema --env local --mode columns --table users # Show table schema
 
 Environment is any string (e.g. `local`, `test`, `prod`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.
 
+## DB VPN Prerequisites
+
+`database.<profile>.vpn` or `.prerequisites` applies to all environments by default. An environment can declare `database.<profile>.environments.<env>.vpn` or `.prerequisites` to replace the profile prerequisites; `prerequisites: []` disables inherited VPN setup for that environment.
+
+DB commands try direct database access first. If that succeeds, VPN setup is skipped even when a VPN is configured; if direct access fails, the tool connects the configured prerequisites and retries.
+
 ## Tips
 
 - Use `--help` on any subcommand for full options.
