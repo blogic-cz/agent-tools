@@ -986,6 +986,9 @@ printf '[{"ok":1}]\n'
     };
     const kubectlArgs = readFileSync(kubectlArgsPath, "utf8");
     const psqlArgs = readFileSync(psqlArgsPath, "utf8");
+    const psqlAttempts = existsSync(psqlAttemptsPath)
+      ? readFileSync(psqlAttemptsPath, "utf8")
+      : "0";
     const vpnArgs =
       options?.withVpn && existsSync(vpnArgsPath) ? readFileSync(vpnArgsPath, "utf8") : "";
 
@@ -1002,8 +1005,10 @@ printf '[{"ok":1}]\n'
 
     if (options?.requireVpnForTunnel) {
       expect(vpnArgs).toContain("ExampleVPN");
+      expect(psqlAttempts).toBe("2");
     } else if (options?.withVpn) {
       expect(vpnArgs).toBe("");
+      expect(psqlAttempts).toBe("1");
     }
   };
 
