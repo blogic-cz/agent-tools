@@ -61,12 +61,30 @@ type ShellResult = {
   exitCode: number;
 };
 
+type StandardCommand = ChildProcess.Command & {
+  _tag: "StandardCommand";
+  command: string;
+  args: ReadonlyArray<string>;
+};
+
+type PipedCommand = ChildProcess.Command & {
+  left: ChildProcess.Command;
+  right: ChildProcess.Command;
+};
+
+function isStandardCommand(command: ChildProcess.Command): command is StandardCommand {
+  return (command as { _tag?: string })._tag === "StandardCommand";
+}
+
 function commandToShellString(command: ChildProcess.Command): string {
-  if (command._tag === "StandardCommand") {
+  if (isStandardCommand(command)) {
     return [command.command, ...command.args].join(" ").trim();
   }
 
-  return [commandToShellString(command.left), commandToShellString(command.right)].join(" | ");
+  const pipedCommand = command as PipedCommand;
+  return [commandToShellString(pipedCommand.left), commandToShellString(pipedCommand.right)].join(
+    " | ",
+  );
 }
 
 function createMockProcess(result: ShellResult) {
@@ -74,6 +92,7 @@ function createMockProcess(result: ShellResult) {
 
   const stdout = Stream.fromIterable([encoder.encode(result.stdout)]);
   const stderr = Stream.fromIterable([encoder.encode(result.stderr)]);
+  const reref: ChildProcessSpawner.Reref = Effect.void;
 
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
@@ -86,7 +105,7 @@ function createMockProcess(result: ShellResult) {
     all: Stream.fromIterable([encoder.encode(result.stdout), encoder.encode(result.stderr)]),
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
-    unref: Effect.succeed(Effect.void),
+    unref: Effect.succeed(reref),
   });
 }
 
