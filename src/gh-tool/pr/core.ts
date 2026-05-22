@@ -632,14 +632,15 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   pr: number;
   title: string | null;
   body: string | null;
+  base: string | null;
 }) {
-  if (!opts.title && !opts.body) {
+  if (!opts.title && !opts.body && !opts.base) {
     return yield* Effect.fail(
       new GitHubCommandError({
         command: "pr edit",
         exitCode: 1,
-        stderr: "At least one of --title or --body must be provided",
-        message: "At least one of --title or --body must be provided",
+        stderr: "At least one of --title, --body, or --base must be provided",
+        message: "At least one of --title, --body, or --base must be provided",
       }),
     );
   }
@@ -653,6 +654,9 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   }
   if (opts.body) {
     editArgs.push("--body", opts.body);
+  }
+  if (opts.base) {
+    editArgs.push("--base", opts.base);
   }
 
   yield* gh.runGh(editArgs);
