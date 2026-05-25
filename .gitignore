@@ -10,3 +10,5 @@ dist/
 .sisyphus/
 .opencode/plugin/plugin-state.json
 .opencode/package-lock.json
+.omo/
+*.bak.*
