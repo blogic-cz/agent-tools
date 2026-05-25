@@ -13,6 +13,10 @@ export type PRInfo = {
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 };
 
+export type PRViewInfo = PRInfo & {
+  body: string;
+};
+
 export type ReviewThread = {
   threadId: string;
   commentId: number;

@@ -599,6 +599,38 @@ describe("GitHubService.runGraphQL() response handling", () => {
   );
 });
 
+describe("PR view", () => {
+  it.effect("requests and returns the PR body", () =>
+    Effect.gen(function* () {
+      let capturedArgs: string[] = [];
+      const body = "## Why\nPrivate PR description";
+
+      const result = yield* viewPR(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              capturedArgs = args;
+              return Effect.succeed({
+                ...mockPRInfo,
+                body,
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(capturedArgs).toEqual([
+        "pr",
+        "view",
+        "123",
+        "--json",
+        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body",
+      ]);
+      expect(result.body).toBe(body);
+    }),
+  );
+});
+
 describe("PR merge logic", () => {
   const simulateMerge = (opts: {
     pr: number;
