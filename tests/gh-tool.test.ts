@@ -661,7 +661,7 @@ describe("PR edit", () => {
       );
 
       expect(calls).toEqual([
-        ["pr", "edit", "123", "--body", body],
+        ["api", "--method", "PATCH", "repos/test-owner/test-repo/pulls/123", "-f", `body=${body}`],
         [
           "pr",
           "view",
@@ -674,7 +674,6 @@ describe("PR edit", () => {
     }),
   );
 });
-
 describe("PR merge logic", () => {
   const simulateMerge = (opts: {
     pr: number;
@@ -2607,7 +2606,14 @@ describe("PR composite commands", () => {
       }).pipe(Effect.provide(layer));
 
       expect(result.number).toBe(123);
-      expect(forwardedArgs).toEqual(["pr", "edit", "123", "--body", inventedShellSensitiveText]);
+      expect(forwardedArgs).toEqual([
+        "api",
+        "--method",
+        "PATCH",
+        "repos/test-owner/test-repo/pulls/123",
+        "-f",
+        `body=${inventedShellSensitiveText}`,
+      ]);
     }),
   );
 
@@ -2637,7 +2643,14 @@ describe("PR composite commands", () => {
       }).pipe(Effect.provide(layer));
 
       expect(result.number).toBe(123);
-      expect(forwardedArgs).toEqual(["pr", "edit", "123", "--base", "main"]);
+      expect(forwardedArgs).toEqual([
+        "api",
+        "--method",
+        "PATCH",
+        "repos/test-owner/test-repo/pulls/123",
+        "-f",
+        "base=main",
+      ]);
     }),
   );
 

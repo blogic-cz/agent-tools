@@ -6,11 +6,5 @@
     "prometheus": {
       "prompt_append": "## PROJECT-SPECIFIC RULES (OVERRIDE DEFAULTS)\n\n### 1. SELF-RESEARCH FIRST (MANDATORY)\nBefore asking ANY question, launch explore/librarian agents to find the answer yourself.\n- Do NOT ask about file locations - search for them\n- Do NOT ask about existing patterns - discover them\n- Do NOT ask about dependencies - check package.json\n- Do NOT ask about DB schema - read schema.ts\n\nOnly ask user questions about:\n- Business logic decisions (what SHOULD happen, not what EXISTS)\n- Preference choices (styling, naming conventions)\n- Scope boundaries (what to include/exclude)\n\n### 2. VERSION CONTROL (OVERRIDE: USE BUT, NOT GIT)\n**Always use `but` (GitButler CLI) for ALL version control operations.** Never use raw `git commit`, `git push`, `git checkout`, or `git branch`.\n\n**But workflow in plans:**\n- Every task that modifies files should reference `but` commands\n- Use `but status` to check state, `but commit` to commit, `but push` to push\n- Use `but branch new <name>` for new branches, `but reword` to rename\n- Use `but pr new <branch> -t` for creating PRs\n\n**Commit timing (IMPORTANT):**\n- Do NOT commit after every single TODO — group related work\n- Commit when: creating a PR, finishing all tasks, or at a logical checkpoint\n- MAXIMUM 2-3 `but commit` calls per plan\n- Format before commit: always `bun run format` first\n\n| Commit | Contains |\n|--------|----------|\n| 1 | All infrastructure/setup (migrations, deps, config) |\n| 2 | All feature implementation |\n| 3 | Polish/fixes (optional, only if needed) |\n\n**NEVER create atomic commits per TODO.** Group by logical unit:\n- All UI changes = 1 commit\n- All backend changes = 1 commit\n- DB + API + Frontend for one feature = 1 commit\n\nCommit messages should be comprehensive:\n- BAD: `feat(chat): add status bubble`\n- GOOD: `feat(agent-chat): improve UX with status bubble, markdown rendering, layout modes`\n\n### 3. PLAN NAMING (TIMESTAMP REQUIRED)\nPlan files MUST incl..."
     }
-  },
-  "lsp": {
-    "marksman": {
-      "command": ["marksman", "server"],
-      "extensions": [".md"]
-    }
   }
 }
