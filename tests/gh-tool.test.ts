@@ -629,7 +629,9 @@ describe("PR view", () => {
       expect(result.body).toBe(body);
     }),
   );
+});
 
+describe("PR edit", () => {
   it.effect("edit returns the updated PR body", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
