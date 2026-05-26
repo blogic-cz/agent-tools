@@ -629,6 +629,48 @@ describe("PR view", () => {
       expect(result.body).toBe(body);
     }),
   );
+
+  it.effect("edit returns the updated PR body", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const body = "## Updated body\nDetails";
+
+      const result = yield* editPR({
+        pr: 123,
+        title: null,
+        body,
+        base: null,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: (args) => {
+              calls.push(args);
+              return Effect.succeed({
+                ...mockPRInfo,
+                body,
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(calls).toEqual([
+        ["pr", "edit", "123", "--body", body],
+        [
+          "pr",
+          "view",
+          "123",
+          "--json",
+          "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body",
+        ],
+      ]);
+      expect(result.body).toBe(body);
+    }),
+  );
 });
 
 describe("PR merge logic", () => {
