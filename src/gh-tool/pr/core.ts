@@ -445,9 +445,12 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
 
   if (Option.isSome(existing)) {
     const pr = existing.value;
-    yield* gh.runGh(["pr", "edit", String(pr.number), "--title", opts.title, "--body", opts.body]);
-
-    return yield* viewPR(pr.number);
+    return yield* editPR({
+      pr: pr.number,
+      title: opts.title,
+      body: opts.body,
+      base: null,
+    });
   }
 
   const createArgs = [
@@ -647,17 +650,23 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   }
 
   const gh = yield* GitHubService;
+  const repo = yield* gh.getRepoInfo();
 
-  const editArgs = ["pr", "edit", String(opts.pr)];
+  const editArgs = [
+    "api",
+    "--method",
+    "PATCH",
+    `repos/${repo.owner}/${repo.name}/pulls/${opts.pr}`,
+  ];
 
   if (opts.title) {
-    editArgs.push("--title", opts.title);
+    editArgs.push("-f", `title=${opts.title}`);
   }
   if (opts.body) {
-    editArgs.push("--body", opts.body);
+    editArgs.push("-f", `body=${opts.body}`);
   }
   if (opts.base) {
-    editArgs.push("--base", opts.base);
+    editArgs.push("-f", `base=${opts.base}`);
   }
 
   yield* gh.runGh(editArgs);
