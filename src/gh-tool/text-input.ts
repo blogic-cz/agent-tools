@@ -28,10 +28,10 @@ type ResolveTextInputOptions = {
   command: string;
   value: string | null;
   fileValue: string | null;
-  stdin: boolean;
+  stdin?: boolean;
   valueFlag: string;
   fileFlag: string;
-  stdinFlag: string;
+  stdinFlag?: string;
   missingMode: Schema.Schema.Type<typeof MissingMode>;
   missingValue?: string;
   label: string;
@@ -47,11 +47,17 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
     label,
     missingMode,
     missingValue,
-    stdin,
+    stdin = false,
     stdinFlag,
     value,
     valueFlag,
   } = options;
+
+  const sourceFlags = [valueFlag, fileFlag, ...(stdinFlag ? [stdinFlag] : [])];
+  const sourceFlagList =
+    sourceFlags.length === 2
+      ? `${sourceFlags[0]} or ${sourceFlags[1]}`
+      : `${sourceFlags.slice(0, -1).join(", ")}, or ${sourceFlags.at(-1)}`;
 
   const providedCount = [value !== null, fileValue !== null, stdin].filter(Boolean).length;
   if (providedCount > 1) {
@@ -59,8 +65,8 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
       new GitHubCommandError({
         command,
         exitCode: 1,
-        stderr: `Provide exactly one of ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
-        message: `Provide exactly one of ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
+        stderr: `Provide exactly one of ${sourceFlagList}`,
+        message: `Provide exactly one of ${sourceFlagList}`,
       }),
     );
   }
@@ -109,76 +115,35 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
     new GitHubCommandError({
       command,
       exitCode: 1,
-      stderr: `Missing ${label}. Provide ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
-      message: `Missing ${label}. Provide ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
+      stderr: `Missing ${label}. Provide ${sourceFlagList}`,
+      message: `Missing ${label}. Provide ${sourceFlagList}`,
     }),
   );
 });
 
 export const resolveRequiredTextInput = (
-  command: string,
-  value: string | null,
-  fileValue: string | null,
-  stdin: boolean,
-  valueFlag: string,
-  fileFlag: string,
-  stdinFlag: string,
-  label: string,
+  options: Omit<ResolveTextInputOptions, "missingMode" | "missingValue">,
 ): Effect.Effect<string, GitHubCommandError> =>
   resolveTextInputInternal({
-    command,
-    value,
-    fileValue,
-    stdin,
-    valueFlag,
-    fileFlag,
-    stdinFlag,
+    ...options,
     missingMode: "error",
-    label,
   }).pipe(Effect.map((resolvedValue) => ensureResolvedText(resolvedValue, "required text input")));
 
 export const resolveOptionalTextInput = (
-  command: string,
-  value: string | null,
-  fileValue: string | null,
-  stdin: boolean,
-  valueFlag: string,
-  fileFlag: string,
-  stdinFlag: string,
-  label: string,
+  options: Omit<ResolveTextInputOptions, "missingMode" | "missingValue">,
 ): Effect.Effect<string | null, GitHubCommandError> =>
   resolveTextInputInternal({
-    command,
-    value,
-    fileValue,
-    stdin,
-    valueFlag,
-    fileFlag,
-    stdinFlag,
+    ...options,
     missingMode: "null",
-    label,
   });
 
 export const resolveDefaultTextInput = (
-  command: string,
-  value: string | null,
-  fileValue: string | null,
-  stdin: boolean,
-  valueFlag: string,
-  fileFlag: string,
-  stdinFlag: string,
-  label: string,
-  defaultValue: string,
+  options: Omit<ResolveTextInputOptions, "missingMode" | "missingValue"> & {
+    defaultValue: string;
+  },
 ): Effect.Effect<string, GitHubCommandError> =>
   resolveTextInputInternal({
-    command,
-    value,
-    fileValue,
-    stdin,
-    valueFlag,
-    fileFlag,
-    stdinFlag,
+    ...options,
     missingMode: "default",
-    missingValue: defaultValue,
-    label,
+    missingValue: options.defaultValue,
   }).pipe(Effect.map((resolvedValue) => ensureResolvedText(resolvedValue, "default text input")));

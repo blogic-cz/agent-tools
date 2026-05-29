@@ -26,7 +26,10 @@ export class GitHubService extends Context.Service<
       variables: Record<string, string | number | null>,
     ) => Effect.Effect<unknown, GhError>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
-    readonly setRepoTarget: (target: string | null) => Effect.Effect<void, GitHubCommandError>;
+    readonly withRepoTarget: <A, E, R>(
+      target: string | null,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | GitHubCommandError, R>;
   }
 >()("@agent-tools/GitHubService") {
   static readonly layer = Layer.effect(
@@ -39,7 +42,7 @@ export class GitHubService extends Context.Service<
 
         const repoInfoCache = new Map<string | null, RepoInfo>();
 
-        const setRepoTarget = Effect.fn("GitHubService.setRepoTarget")(function* (
+        const resolveRepoTarget = Effect.fn("GitHubService.resolveRepoTarget")(function* (
           target: string | null,
         ) {
           const resolved = yield* Effect.try({
@@ -53,8 +56,18 @@ export class GitHubService extends Context.Service<
               }),
           });
 
-          repoStorage.enterWith(resolved);
+          return resolved;
         });
+
+        const withRepoTarget = <A, E, R>(target: string | null, effect: Effect.Effect<A, E, R>) =>
+          Effect.gen(function* () {
+            const resolved = yield* resolveRepoTarget(target);
+            const previous = repoStorage.getStore();
+            repoStorage.enterWith(resolved);
+            return yield* effect.pipe(
+              Effect.ensuring(Effect.sync(() => repoStorage.enterWith(previous))),
+            );
+          });
 
         const executeGh = (args: string[]) =>
           Effect.scoped(
@@ -221,7 +234,7 @@ export class GitHubService extends Context.Service<
           return repoInfo;
         });
 
-        return { runGh, runGhJson, runGraphQL, getRepoInfo, setRepoTarget };
+        return { runGh, runGhJson, runGraphQL, getRepoInfo, withRepoTarget };
       }),
     ),
   );

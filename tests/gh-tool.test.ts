@@ -163,7 +163,10 @@ type MockGhOverrides = Partial<{
     variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
-  setRepoTarget: (target: string | null) => Effect.Effect<void, GitHubCommandError>;
+  withRepoTarget: <A, E, R>(
+    target: string | null,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | GitHubCommandError, R>;
 }>;
 
 function createMockGhLayer(overrides: MockGhOverrides = {}) {
@@ -183,7 +186,7 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
       ) => Effect.Effect<T, GhError>,
       runGraphQL: overrides.runGraphQL ?? (() => Effect.succeed({})),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
-      setRepoTarget: overrides.setRepoTarget ?? (() => Effect.void),
+      withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
   );
 }
@@ -2391,16 +2394,14 @@ describe("PR composite commands", () => {
         }),
       });
 
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool pr reply",
-        null,
-        "/tmp/reply-body.txt",
-        false,
-        "--body",
-        "--body-file",
-        "--body-stdin",
-        "body",
-      ).pipe(
+      const resolvedBody = yield* resolveRequiredTextInput({
+        command: "gh-tool pr reply",
+        value: null,
+        fileValue: "/tmp/reply-body.txt",
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             if (originalBun === undefined) {
@@ -2454,24 +2455,20 @@ describe("PR composite commands", () => {
 
   it.effect("resolveOptionalTextInput rejects ambiguous body sources", () =>
     Effect.gen(function* () {
-      const result = yield* resolveOptionalTextInput(
-        "gh-tool pr reply-and-resolve",
-        "inline body",
-        "/tmp/reply.txt",
-        false,
-        "--body",
-        "--body-file",
-        "--body-stdin",
-        "body",
-      ).pipe(Effect.result);
+      const result = yield* resolveOptionalTextInput({
+        command: "gh-tool pr reply-and-resolve",
+        value: "inline body",
+        fileValue: "/tmp/reply.txt",
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      }).pipe(Effect.result);
 
       Result.match(result, {
         onFailure: (error) => {
           expect(error._tag).toBe("GitHubCommandError");
           if (error._tag === "GitHubCommandError") {
-            expect(error.message).toBe(
-              "Provide exactly one of --body, --body-file, or --body-stdin",
-            );
+            expect(error.message).toBe("Provide exactly one of --body or --body-file");
           }
         },
         onSuccess: () => {
@@ -2492,16 +2489,16 @@ describe("PR composite commands", () => {
         },
       });
 
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool pr edit",
-        null,
-        null,
-        true,
-        "--body",
-        "--body-file",
-        "--body-stdin",
-        "body",
-      ).pipe(
+      const resolvedBody = yield* resolveRequiredTextInput({
+        command: "gh-tool pr edit",
+        value: null,
+        fileValue: null,
+        stdin: true,
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        stdinFlag: "--body-stdin",
+        label: "body",
+      }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             if (originalBun === undefined) {
@@ -2521,16 +2518,14 @@ describe("PR composite commands", () => {
   it.effect("resolveRequiredTextInput rejects sensitive file paths", () =>
     Effect.gen(function* () {
       for (const filePath of ["/workspace/.env.local", "/workspace/.envrc"]) {
-        const result = yield* resolveRequiredTextInput(
-          "gh-tool pr reply",
-          null,
-          filePath,
-          false,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-        ).pipe(Effect.result);
+        const result = yield* resolveRequiredTextInput({
+          command: "gh-tool pr reply",
+          value: null,
+          fileValue: filePath,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        }).pipe(Effect.result);
 
         Result.match(result, {
           onFailure: (error) => {
@@ -2549,17 +2544,15 @@ describe("PR composite commands", () => {
 
   it.effect("resolveDefaultTextInput keeps the existing empty-string default", () =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveDefaultTextInput(
-        "gh-tool pr create",
-        null,
-        null,
-        false,
-        "--body",
-        "--body-file",
-        "--body-stdin",
-        "body",
-        "",
-      );
+      const resolvedBody = yield* resolveDefaultTextInput({
+        command: "gh-tool pr create",
+        value: null,
+        fileValue: null,
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+        defaultValue: "",
+      });
 
       expect(resolvedBody).toBe("");
     }),

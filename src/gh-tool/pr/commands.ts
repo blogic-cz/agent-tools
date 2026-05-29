@@ -53,8 +53,7 @@ const repoOption = Flag.string("repo").pipe(
 const withRepo = <A, E, R>(repo: Option.Option<string>, effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const gh = yield* GitHubService;
-    yield* gh.setRepoTarget(Option.getOrNull(repo));
-    return yield* effect;
+    return yield* gh.withRepoTarget(Option.getOrNull(repo), effect);
   });
 
 export const prViewCommand = Command.make(
@@ -125,17 +124,17 @@ export const prCreateCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const resolvedBody = yield* resolveDefaultTextInput(
-          "gh-tool pr create",
-          Option.getOrNull(body),
-          Option.getOrNull(bodyFile),
-          bodyStdin,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-          "",
-        );
+        const resolvedBody = yield* resolveDefaultTextInput({
+          command: "gh-tool pr create",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          stdin: bodyStdin,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          stdinFlag: "--body-stdin",
+          label: "body",
+          defaultValue: "",
+        });
 
         const info = yield* createPR({
           base,
@@ -171,16 +170,16 @@ export const prEditCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const resolvedBody = yield* resolveOptionalTextInput(
-          "gh-tool pr edit",
-          Option.getOrNull(body),
-          Option.getOrNull(bodyFile),
-          bodyStdin,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-        );
+        const resolvedBody = yield* resolveOptionalTextInput({
+          command: "gh-tool pr edit",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          stdin: bodyStdin,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          stdinFlag: "--body-stdin",
+          label: "body",
+        });
 
         const info = yield* editPR({
           pr,
@@ -216,16 +215,14 @@ export const prCloseCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const resolvedComment = yield* resolveOptionalTextInput(
-          "gh-tool pr close",
-          Option.getOrNull(comment),
-          Option.getOrNull(commentFile),
-          false,
-          "--comment",
-          "--comment-file",
-          "--comment-stdin",
-          "comment",
-        );
+        const resolvedComment = yield* resolveOptionalTextInput({
+          command: "gh-tool pr close",
+          value: Option.getOrNull(comment),
+          fileValue: Option.getOrNull(commentFile),
+          valueFlag: "--comment",
+          fileFlag: "--comment-file",
+          label: "comment",
+        });
 
         const result = yield* closePR({
           comment: resolvedComment,
@@ -510,16 +507,14 @@ export const prCommentCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const resolvedBody = yield* resolveRequiredTextInput(
-          "gh-tool pr comment",
-          Option.getOrNull(body),
-          Option.getOrNull(bodyFile),
-          false,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-        );
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr comment",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
         const result = yield* postIssueComment(prNumber, resolvedBody);
         yield* logFormatted(result, format);
       }),
@@ -572,16 +567,14 @@ export const prReplyCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const resolvedBody = yield* resolveRequiredTextInput(
-          "gh-tool pr reply",
-          Option.getOrNull(body),
-          Option.getOrNull(bodyFile),
-          false,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-        );
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr reply",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
         const result = yield* replyToComment(prNumber, commentId, resolvedBody);
         yield* logFormatted(result, format);
       }),
@@ -637,16 +630,14 @@ export const prSubmitReviewCommand = Command.make(
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
         const reviewIdValue = Option.getOrNull(reviewId);
-        const bodyValue = yield* resolveOptionalTextInput(
-          "gh-tool pr submit-review",
-          Option.getOrNull(body),
-          Option.getOrNull(bodyFile),
-          false,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-        );
+        const bodyValue = yield* resolveOptionalTextInput({
+          command: "gh-tool pr submit-review",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
         const result = yield* submitPendingReview(prNumber, reviewIdValue, bodyValue);
         yield* logFormatted(result, format);
       }),
@@ -717,16 +708,14 @@ export const prReplyAndResolveCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const resolvedBody = yield* resolveRequiredTextInput(
-          "gh-tool pr reply-and-resolve",
-          Option.getOrNull(body),
-          Option.getOrNull(bodyFile),
-          false,
-          "--body",
-          "--body-file",
-          "--body-stdin",
-          "body",
-        );
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr reply-and-resolve",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
         const replyResult = yield* replyToComment(prNumber, commentId, resolvedBody);
         const resolveResult = yield* resolveThread(threadId);
         yield* logFormatted({ reply: replyResult, resolve: resolveResult }, format);

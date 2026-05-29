@@ -105,16 +105,14 @@ export const issueCloseCommand = Command.make(
   },
   ({ comment, commentFile, format, issue, reason }) =>
     Effect.gen(function* () {
-      const resolvedComment = yield* resolveOptionalTextInput(
-        "gh-tool issue close",
-        Option.getOrNull(comment),
-        Option.getOrNull(commentFile),
-        false,
-        "--comment",
-        "--comment-file",
-        "--comment-stdin",
-        "comment",
-      );
+      const resolvedComment = yield* resolveOptionalTextInput({
+        command: "gh-tool issue close",
+        value: Option.getOrNull(comment),
+        fileValue: Option.getOrNull(commentFile),
+        valueFlag: "--comment",
+        fileFlag: "--comment-file",
+        label: "comment",
+      });
 
       const result = yield* closeIssue({
         comment: resolvedComment,
@@ -141,16 +139,14 @@ export const issueReopenCommand = Command.make(
   },
   ({ comment, commentFile, format, issue }) =>
     Effect.gen(function* () {
-      const resolvedComment = yield* resolveOptionalTextInput(
-        "gh-tool issue reopen",
-        Option.getOrNull(comment),
-        Option.getOrNull(commentFile),
-        false,
-        "--comment",
-        "--comment-file",
-        "--comment-stdin",
-        "comment",
-      );
+      const resolvedComment = yield* resolveOptionalTextInput({
+        command: "gh-tool issue reopen",
+        value: Option.getOrNull(comment),
+        fileValue: Option.getOrNull(commentFile),
+        valueFlag: "--comment",
+        fileFlag: "--comment-file",
+        label: "comment",
+      });
 
       const result = yield* reopenIssue({
         comment: resolvedComment,
@@ -173,16 +169,14 @@ export const issueCommentCommand = Command.make(
   },
   ({ body, bodyFile, format, issue }) =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool issue comment",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        false,
-        "--body",
-        "--body-file",
-        "--body-stdin",
-        "body",
-      );
+      const resolvedBody = yield* resolveRequiredTextInput({
+        command: "gh-tool issue comment",
+        value: Option.getOrNull(body),
+        fileValue: Option.getOrNull(bodyFile),
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      });
 
       const result = yield* commentOnIssue({ body: resolvedBody, issue });
       yield* logFormatted(result, format);
@@ -229,16 +223,14 @@ export const issueEditCommand = Command.make(
     title,
   }) =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveOptionalTextInput(
-        "gh-tool issue edit",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        false,
-        "--body",
-        "--body-file",
-        "--body-stdin",
-        "body",
-      );
+      const resolvedBody = yield* resolveOptionalTextInput({
+        command: "gh-tool issue edit",
+        value: Option.getOrNull(body),
+        fileValue: Option.getOrNull(bodyFile),
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      });
 
       const result = yield* editIssue({
         addAssignee: Option.getOrNull(addAssignee),
