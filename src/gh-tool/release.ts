@@ -416,14 +416,14 @@ export const releaseCreateCommand = Command.make(
     verifyTag,
   }) =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveOptionalTextInput(
-        "gh-tool release create",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
+      const resolvedBody = yield* resolveOptionalTextInput({
+        command: "gh-tool release create",
+        value: Option.getOrNull(body),
+        fileValue: Option.getOrNull(bodyFile),
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      });
 
       const result = yield* createRelease({
         tag,
@@ -526,14 +526,14 @@ export const releaseEditCommand = Command.make(
   },
   ({ body, bodyFile, draft, format, latest, prerelease, repo, tag, title }) =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveOptionalTextInput(
-        "gh-tool release edit",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
+      const resolvedBody = yield* resolveOptionalTextInput({
+        command: "gh-tool release edit",
+        value: Option.getOrNull(body),
+        fileValue: Option.getOrNull(bodyFile),
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      });
 
       const edited = yield* editRelease({
         tag,

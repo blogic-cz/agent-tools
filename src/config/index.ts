@@ -22,5 +22,6 @@ export {
   getToolConfig,
   getDefaultEnvironment,
   getGitHubConfig,
+  resolveGitHubRepoTarget,
   loadConfig,
 } from "./loader";

@@ -4,6 +4,7 @@ import { Effect, Option } from "effect";
 import type { PRStatusResult } from "#gh/types";
 
 import { formatOption, logFormatted } from "#shared";
+import { GitHubService } from "#gh/service";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -44,6 +45,17 @@ import {
 // CLI Commands
 // ---------------------------------------------------------------------------
 
+const repoOption = Flag.string("repo").pipe(
+  Flag.withDescription("Target repository profile name or owner/name"),
+  Flag.optional,
+);
+
+const withRepo = <A, E, R>(repo: Option.Option<string>, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubService;
+    return yield* gh.withRepoTarget(Option.getOrNull(repo), effect);
+  });
+
 export const prViewCommand = Command.make(
   "view",
   {
@@ -52,20 +64,30 @@ export const prViewCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const info = yield* viewPR(prNumber);
-      yield* logFormatted(info, format);
-    }),
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const info = yield* viewPR(prNumber);
+        yield* logFormatted(info, format);
+      }),
+    ),
 ).pipe(Command.withDescription("View PR information"));
 
-export const prStatusCommand = Command.make("status", { format: formatOption }, ({ format }) =>
-  Effect.gen(function* () {
-    const result: PRStatusResult = yield* detectPRStatus();
-    yield* logFormatted(result, format);
-  }),
+export const prStatusCommand = Command.make(
+  "status",
+  { format: formatOption, repo: repoOption },
+  ({ format, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result: PRStatusResult = yield* detectPRStatus();
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription("Auto-detect PR for current branch or GitButler workspace branches"),
 );
@@ -82,6 +104,10 @@ export const prCreateCommand = Command.make(
       Flag.withDescription("Read PR body from a file path or '-' for stdin"),
       Flag.optional,
     ),
+    bodyStdin: Flag.boolean("body-stdin").pipe(
+      Flag.withDescription("Read PR body from stdin"),
+      Flag.withDefault(false),
+    ),
     draft: Flag.boolean("draft").pipe(
       Flag.withDescription("Create as draft PR"),
       Flag.withDefault(false),
@@ -91,29 +117,35 @@ export const prCreateCommand = Command.make(
       Flag.withDescription("Source branch name (required in GitButler workspace mode)"),
       Flag.optional,
     ),
+    repo: repoOption,
     title: Flag.string("title").pipe(Flag.withDescription("PR title")),
   },
-  ({ base, body, bodyFile, draft, format, head, title }) =>
-    Effect.gen(function* () {
-      const resolvedBody = yield* resolveDefaultTextInput(
-        "gh-tool pr create",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-        "",
-      );
+  ({ base, body, bodyFile, bodyStdin, draft, format, head, repo, title }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const resolvedBody = yield* resolveDefaultTextInput({
+          command: "gh-tool pr create",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          stdin: bodyStdin,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          stdinFlag: "--body-stdin",
+          label: "body",
+          defaultValue: "",
+        });
 
-      const info = yield* createPR({
-        base,
-        body: resolvedBody,
-        draft,
-        head: Option.getOrNull(head),
-        title,
-      });
-      yield* logFormatted(info, format);
-    }),
+        const info = yield* createPR({
+          base,
+          body: resolvedBody,
+          draft,
+          head: Option.getOrNull(head),
+          title,
+        });
+        yield* logFormatted(info, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Create or update a PR for current branch"));
 
 export const prEditCommand = Command.make(
@@ -125,29 +157,39 @@ export const prEditCommand = Command.make(
       Flag.withDescription("Read PR body from a file path or '-' for stdin"),
       Flag.optional,
     ),
+    bodyStdin: Flag.boolean("body-stdin").pipe(
+      Flag.withDescription("Read PR body from stdin"),
+      Flag.withDefault(false),
+    ),
     format: formatOption,
     pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to edit")),
+    repo: repoOption,
     title: Flag.string("title").pipe(Flag.withDescription("New PR title"), Flag.optional),
   },
-  ({ base, body, bodyFile, format, pr, title }) =>
-    Effect.gen(function* () {
-      const resolvedBody = yield* resolveOptionalTextInput(
-        "gh-tool pr edit",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
+  ({ base, body, bodyFile, bodyStdin, format, pr, repo, title }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const resolvedBody = yield* resolveOptionalTextInput({
+          command: "gh-tool pr edit",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          stdin: bodyStdin,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          stdinFlag: "--body-stdin",
+          label: "body",
+        });
 
-      const info = yield* editPR({
-        pr,
-        title: Option.getOrNull(title),
-        body: resolvedBody,
-        base: Option.getOrNull(base),
-      });
-      yield* logFormatted(info, format);
-    }),
+        const info = yield* editPR({
+          pr,
+          title: Option.getOrNull(title),
+          body: resolvedBody,
+          base: Option.getOrNull(base),
+        });
+        yield* logFormatted(info, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Edit an existing PR's title, body, or other metadata"));
 
 export const prCloseCommand = Command.make(
@@ -167,25 +209,29 @@ export const prCloseCommand = Command.make(
     ),
     format: formatOption,
     pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to close")),
+    repo: repoOption,
   },
-  ({ comment, commentFile, deleteBranch, format, pr }) =>
-    Effect.gen(function* () {
-      const resolvedComment = yield* resolveOptionalTextInput(
-        "gh-tool pr close",
-        Option.getOrNull(comment),
-        Option.getOrNull(commentFile),
-        "--comment",
-        "--comment-file",
-        "comment",
-      );
+  ({ comment, commentFile, deleteBranch, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const resolvedComment = yield* resolveOptionalTextInput({
+          command: "gh-tool pr close",
+          value: Option.getOrNull(comment),
+          fileValue: Option.getOrNull(commentFile),
+          valueFlag: "--comment",
+          fileFlag: "--comment-file",
+          label: "comment",
+        });
 
-      const result = yield* closePR({
-        comment: resolvedComment,
-        deleteBranch,
-        pr,
-      });
-      yield* logFormatted(result, format);
-    }),
+        const result = yield* closePR({
+          comment: resolvedComment,
+          deleteBranch,
+          pr,
+        });
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Close a PR with optional comment and branch deletion"));
 
 export const prMergeCommand = Command.make(
@@ -201,21 +247,25 @@ export const prMergeCommand = Command.make(
     ),
     format: formatOption,
     pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to merge")),
+    repo: repoOption,
     strategy: Flag.choice("strategy", MERGE_STRATEGIES).pipe(
       Flag.withDescription("Merge strategy: squash, merge, or rebase"),
       Flag.withDefault(DEFAULT_MERGE_STRATEGY),
     ),
   },
-  ({ confirm, deleteBranch, format, pr, strategy }) =>
-    Effect.gen(function* () {
-      const result = yield* mergePR({
-        confirm,
-        deleteBranch,
-        pr,
-        strategy,
-      });
-      yield* logFormatted(result, format);
-    }),
+  ({ confirm, deleteBranch, format, pr, repo, strategy }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* mergePR({
+          confirm,
+          deleteBranch,
+          pr,
+          strategy,
+        });
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Merge a PR (dry-run by default, use --confirm to execute)"));
 
 export const prChecksCommand = Command.make(
@@ -230,6 +280,7 @@ export const prChecksCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     timeout: Flag.integer("timeout").pipe(
       Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
       Flag.withDescription("Timeout in seconds for watch mode (default: 600)"),
@@ -239,12 +290,15 @@ export const prChecksCommand = Command.make(
       Flag.withDescription("Watch until checks complete or timeout"),
     ),
   },
-  ({ failFast, format, pr, timeout, watch }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const checks = yield* fetchChecksForCommand(prNumber, watch, failFast, timeout);
-      yield* logFormatted(checks, format);
-    }),
+  ({ failFast, format, pr, repo, timeout, watch }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const checks = yield* fetchChecksForCommand(prNumber, watch, failFast, timeout);
+        yield* logFormatted(checks, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Fetch CI check status for a PR (optionally watch with timeout)"));
 
 export const prChecksFailedCommand = Command.make(
@@ -255,13 +309,17 @@ export const prChecksFailedCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const checks = yield* fetchFailedChecks(prNumber);
-      yield* logFormatted(checks, format);
-    }),
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const checks = yield* fetchFailedChecks(prNumber);
+        yield* logFormatted(checks, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Fetch only failed CI checks for a PR"));
 
 export const prRerunChecksCommand = Command.make(
@@ -272,17 +330,21 @@ export const prRerunChecksCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     failedOnly: Flag.boolean("failed-only").pipe(
       Flag.withDefault(true),
       Flag.withDescription("Only rerun failed checks (default: true)"),
     ),
   },
-  ({ failedOnly, format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const result = yield* rerunChecks(prNumber, failedOnly);
-      yield* logFormatted(result, format);
-    }),
+  ({ failedOnly, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const result = yield* rerunChecks(prNumber, failedOnly);
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription("Rerun CI checks for a PR (GitHub Actions only, failed by default)"),
 );
@@ -295,6 +357,7 @@ export const prThreadsCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     unresolvedOnly: Flag.boolean("unresolved-only").pipe(
       Flag.withDescription("Only show unresolved threads"),
       Flag.withDefault(true),
@@ -306,12 +369,15 @@ export const prThreadsCommand = Command.make(
       Flag.withDefault(false),
     ),
   },
-  ({ format, pr, unresolvedOnly, visibleOpenOnly }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const threads = yield* fetchThreads(prNumber, unresolvedOnly, visibleOpenOnly);
-      yield* logFormatted(threads, format);
-    }),
+  ({ format, pr, repo, unresolvedOnly, visibleOpenOnly }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const threads = yield* fetchThreads(prNumber, unresolvedOnly, visibleOpenOnly);
+        yield* logFormatted(threads, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription(
     "Fetch review threads for a PR (unresolved by default, or use --visible-open-only for reply-aware human-visible open items)",
@@ -326,18 +392,22 @@ export const prCommentsCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     since: Flag.string("since").pipe(
       Flag.withDescription("ISO timestamp to filter comments created after"),
       Flag.optional,
     ),
   },
-  ({ format, pr, since }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const sinceValue = Option.getOrNull(since);
-      const comments = yield* fetchComments(prNumber, sinceValue);
-      yield* logFormatted(comments, format);
-    }),
+  ({ format, pr, repo, since }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const sinceValue = Option.getOrNull(since);
+        const comments = yield* fetchComments(prNumber, sinceValue);
+        yield* logFormatted(comments, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Fetch review comments for a PR (optionally filter by --since)"));
 
 export const prIssueCommentsCommand = Command.make(
@@ -356,26 +426,30 @@ export const prIssueCommentsCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     since: Flag.string("since").pipe(
       Flag.withDescription("ISO timestamp to filter comments created after"),
       Flag.optional,
     ),
   },
-  ({ author, bodyContains, format, pr, since }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const sinceValue = Option.getOrNull(since);
-      const authorValue = Option.getOrNull(author);
-      const bodyContainsValue = Option.getOrNull(bodyContains);
+  ({ author, bodyContains, format, pr, repo, since }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const sinceValue = Option.getOrNull(since);
+        const authorValue = Option.getOrNull(author);
+        const bodyContainsValue = Option.getOrNull(bodyContains);
 
-      const comments = yield* fetchIssueComments(
-        prNumber,
-        sinceValue,
-        authorValue,
-        bodyContainsValue,
-      );
-      yield* logFormatted(comments, format);
-    }),
+        const comments = yield* fetchIssueComments(
+          prNumber,
+          sinceValue,
+          authorValue,
+          bodyContainsValue,
+        );
+        yield* logFormatted(comments, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Fetch general PR discussion comments (issue comments)"));
 
 export const prIssueCommentsLatestCommand = Command.make(
@@ -394,16 +468,20 @@ export const prIssueCommentsLatestCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ author, bodyContains, format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const authorValue = Option.getOrNull(author);
-      const bodyContainsValue = Option.getOrNull(bodyContains);
+  ({ author, bodyContains, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const authorValue = Option.getOrNull(author);
+        const bodyContainsValue = Option.getOrNull(bodyContains);
 
-      const comment = yield* fetchLatestIssueComment(prNumber, authorValue, bodyContainsValue);
-      yield* logFormatted(comment, format);
-    }),
+        const comment = yield* fetchLatestIssueComment(prNumber, authorValue, bodyContainsValue);
+        yield* logFormatted(comment, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Fetch latest general PR discussion comment"));
 
 export const prCommentCommand = Command.make(
@@ -422,21 +500,25 @@ export const prCommentCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ body, bodyFile, format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool pr comment",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
-      const result = yield* postIssueComment(prNumber, resolvedBody);
-      yield* logFormatted(result, format);
-    }),
+  ({ body, bodyFile, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr comment",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
+        const result = yield* postIssueComment(prNumber, resolvedBody);
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Post a general PR discussion comment"));
 
 export const prDiscussionSummaryCommand = Command.make(
@@ -447,13 +529,17 @@ export const prDiscussionSummaryCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const summary = yield* fetchDiscussionSummary(prNumber);
-      yield* logFormatted(summary, format);
-    }),
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const summary = yield* fetchDiscussionSummary(prNumber);
+        yield* logFormatted(summary, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription("Fetch counts and latest comment across PR discussions and reviews"),
 );
@@ -474,21 +560,25 @@ export const prReplyCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ body, bodyFile, commentId, format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool pr reply",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
-      const result = yield* replyToComment(prNumber, commentId, resolvedBody);
-      yield* logFormatted(result, format);
-    }),
+  ({ body, bodyFile, commentId, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr reply",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
+        const result = yield* replyToComment(prNumber, commentId, resolvedBody);
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Reply to an inline review comment"));
 
 export const prResolveCommand = Command.make(
@@ -498,12 +588,16 @@ export const prResolveCommand = Command.make(
     threadId: Flag.string("thread-id").pipe(
       Flag.withDescription("GraphQL node ID of the thread to resolve"),
     ),
+    repo: repoOption,
   },
-  ({ format, threadId }) =>
-    Effect.gen(function* () {
-      const result = yield* resolveThread(threadId);
-      yield* logFormatted(result, format);
-    }),
+  ({ format, repo, threadId }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* resolveThread(threadId);
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Resolve a review thread via GraphQL"));
 
 export const prSubmitReviewCommand = Command.make(
@@ -522,6 +616,7 @@ export const prSubmitReviewCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     reviewId: Flag.string("review-id").pipe(
       Flag.withDescription(
         "Pending review GraphQL ID (defaults to current user's pending review on PR)",
@@ -529,21 +624,24 @@ export const prSubmitReviewCommand = Command.make(
       Flag.optional,
     ),
   },
-  ({ body, bodyFile, format, pr, reviewId }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const reviewIdValue = Option.getOrNull(reviewId);
-      const bodyValue = yield* resolveOptionalTextInput(
-        "gh-tool pr submit-review",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
-      const result = yield* submitPendingReview(prNumber, reviewIdValue, bodyValue);
-      yield* logFormatted(result, format);
-    }),
+  ({ body, bodyFile, format, pr, repo, reviewId }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const reviewIdValue = Option.getOrNull(reviewId);
+        const bodyValue = yield* resolveOptionalTextInput({
+          command: "gh-tool pr submit-review",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
+        const result = yield* submitPendingReview(prNumber, reviewIdValue, bodyValue);
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription(
     "Submit a pending review as COMMENT (auto-detects your pending review if --review-id is omitted)",
@@ -558,19 +656,26 @@ export const prReviewTriageCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
   },
-  ({ format, pr }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
-        viewPR(prNumber),
-        fetchThreads(prNumber, true),
-        fetchThreads(prNumber, false, true),
-        fetchDiscussionSummary(prNumber),
-        fetchChecks(prNumber, false, false, 0),
-      ]);
-      yield* logFormatted({ info, unresolvedThreads, visibleOpenThreads, summary, checks }, format);
-    }),
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
+          viewPR(prNumber),
+          fetchThreads(prNumber, true),
+          fetchThreads(prNumber, false, true),
+          fetchDiscussionSummary(prNumber),
+          fetchChecks(prNumber, false, false, 0),
+        ]);
+        yield* logFormatted(
+          { info, unresolvedThreads, visibleOpenThreads, summary, checks },
+          format,
+        );
+      }),
+    ),
 ).pipe(
   Command.withDescription(
     "Composite: PR info + unresolved threads + visible-open threads + discussion summary + checks status in one call",
@@ -593,25 +698,29 @@ export const prReplyAndResolveCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    repo: repoOption,
     threadId: Flag.string("thread-id").pipe(
       Flag.withDescription("GraphQL node ID of the thread to resolve"),
     ),
   },
-  ({ body, bodyFile, commentId, format, pr, threadId }) =>
-    Effect.gen(function* () {
-      const prNumber = Option.getOrNull(pr);
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool pr reply-and-resolve",
-        Option.getOrNull(body),
-        Option.getOrNull(bodyFile),
-        "--body",
-        "--body-file",
-        "body",
-      );
-      const replyResult = yield* replyToComment(prNumber, commentId, resolvedBody);
-      const resolveResult = yield* resolveThread(threadId);
-      yield* logFormatted({ reply: replyResult, resolve: resolveResult }, format);
-    }),
+  ({ body, bodyFile, commentId, format, pr, repo, threadId }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prNumber = Option.getOrNull(pr);
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr reply-and-resolve",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
+        const replyResult = yield* replyToComment(prNumber, commentId, resolvedBody);
+        const resolveResult = yield* resolveThread(threadId);
+        yield* logFormatted({ reply: replyResult, resolve: resolveResult }, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription(
     "Composite: reply to a review comment and resolve its thread in one call",

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result, Layer } from "effect";
+import { Effect, Result, Layer, Sink, Stream } from "effect";
+import type { ChildProcess } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
 
@@ -41,6 +43,7 @@ import {
   resolveOptionalTextInput,
   resolveRequiredTextInput,
 } from "#gh/text-input";
+import { ConfigService } from "#config";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -153,6 +156,48 @@ const mockRESTComments = [
 
 type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
+type ObservedGhCommand = {
+  args: ReadonlyArray<string>;
+  ghRepo: string | undefined;
+};
+
+function createMockProcess(result: { stdout: string; stderr: string; exitCode: number }) {
+  const encoder = new TextEncoder();
+
+  const stdout = Stream.fromIterable([encoder.encode(result.stdout)]);
+  const stderr = Stream.fromIterable([encoder.encode(result.stderr)]);
+
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.exitCode)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.succeed(undefined),
+    stderr,
+    stdin: Sink.drain,
+    stdout,
+    all: Stream.fromIterable([encoder.encode(result.stdout), encoder.encode(result.stderr)]),
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void),
+  });
+}
+
+function createMockGhSpawnerLayer(observed: ObservedGhCommand[]) {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command: ChildProcess.Command) => {
+      if (command._tag === "StandardCommand") {
+        observed.push({
+          args: command.args,
+          ghRepo: command.options.env?.GH_REPO,
+        });
+      }
+
+      return Effect.succeed(createMockProcess({ stdout: "{}", stderr: "", exitCode: 0 }));
+    }),
+  );
+}
+
 type MockGhOverrides = Partial<{
   runGh: (
     args: string[],
@@ -163,6 +208,10 @@ type MockGhOverrides = Partial<{
     variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
+  withRepoTarget: <A, E, R>(
+    target: string | null,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | GitHubCommandError, R>;
 }>;
 
 function createMockGhLayer(overrides: MockGhOverrides = {}) {
@@ -182,11 +231,77 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
       ) => Effect.Effect<T, GhError>,
       runGraphQL: overrides.runGraphQL ?? (() => Effect.succeed({})),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
+      withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
   );
 }
 
 describe("GitHubService.runGh() error mapping", () => {
+  it.effect("uses the configured default repository for plain gh calls", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+      yield* service.runGh(["issue", "view", "123"]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          github: {
+            default: { owner: "test-owner", repo: "test-repo" },
+          },
+        }),
+      ),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(observedGhCommands).toEqual([
+            {
+              args: ["issue", "view", "123"],
+              ghRepo: "test-owner/test-repo",
+            },
+          ]);
+        }),
+      ),
+    );
+  });
+
+  it.effect("scopes explicit repository targets to the wrapped effect", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+
+      yield* service.withRepoTarget("be", service.runGh(["pr", "view", "1"]));
+      yield* service.runGh(["issue", "view", "2"]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          github: {
+            default: { owner: "test-owner", repo: "test-repo" },
+            be: { owner: "test-owner", repo: "test-be" },
+          },
+        }),
+      ),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(observedGhCommands).toEqual([
+            {
+              args: ["pr", "view", "1"],
+              ghRepo: "test-owner/test-be",
+            },
+            {
+              args: ["issue", "view", "2"],
+              ghRepo: "test-owner/test-repo",
+            },
+          ]);
+        }),
+      ),
+    );
+  });
+
   it.effect("returns success for zero exit code", () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;
@@ -2389,14 +2504,14 @@ describe("PR composite commands", () => {
         }),
       });
 
-      const resolvedBody = yield* resolveRequiredTextInput(
-        "gh-tool pr reply",
-        null,
-        "/tmp/reply-body.txt",
-        "--body",
-        "--body-file",
-        "body",
-      ).pipe(
+      const resolvedBody = yield* resolveRequiredTextInput({
+        command: "gh-tool pr reply",
+        value: null,
+        fileValue: "/tmp/reply-body.txt",
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             if (originalBun === undefined) {
@@ -2450,14 +2565,14 @@ describe("PR composite commands", () => {
 
   it.effect("resolveOptionalTextInput rejects ambiguous body sources", () =>
     Effect.gen(function* () {
-      const result = yield* resolveOptionalTextInput(
-        "gh-tool pr reply-and-resolve",
-        "inline body",
-        "/tmp/reply.txt",
-        "--body",
-        "--body-file",
-        "body",
-      ).pipe(Effect.result);
+      const result = yield* resolveOptionalTextInput({
+        command: "gh-tool pr reply-and-resolve",
+        value: "inline body",
+        fileValue: "/tmp/reply.txt",
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      }).pipe(Effect.result);
 
       Result.match(result, {
         onFailure: (error) => {
@@ -2473,17 +2588,54 @@ describe("PR composite commands", () => {
     }),
   );
 
+  it.effect("resolveRequiredTextInput reads shell-sensitive body text from stdin", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        stdin: {
+          text: () => Promise.resolve(inventedShellSensitiveText),
+        },
+      });
+
+      const resolvedBody = yield* resolveRequiredTextInput({
+        command: "gh-tool pr edit",
+        value: null,
+        fileValue: null,
+        stdin: true,
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        stdinFlag: "--body-stdin",
+        label: "body",
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) {
+              Reflect.deleteProperty(globalThis, "Bun");
+              return;
+            }
+
+            Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+      );
+
+      expect(resolvedBody).toBe(inventedShellSensitiveText);
+    }),
+  );
+
   it.effect("resolveRequiredTextInput rejects sensitive file paths", () =>
     Effect.gen(function* () {
       for (const filePath of ["/workspace/.env.local", "/workspace/.envrc"]) {
-        const result = yield* resolveRequiredTextInput(
-          "gh-tool pr reply",
-          null,
-          filePath,
-          "--body",
-          "--body-file",
-          "body",
-        ).pipe(Effect.result);
+        const result = yield* resolveRequiredTextInput({
+          command: "gh-tool pr reply",
+          value: null,
+          fileValue: filePath,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        }).pipe(Effect.result);
 
         Result.match(result, {
           onFailure: (error) => {
@@ -2502,15 +2654,15 @@ describe("PR composite commands", () => {
 
   it.effect("resolveDefaultTextInput keeps the existing empty-string default", () =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveDefaultTextInput(
-        "gh-tool pr create",
-        null,
-        null,
-        "--body",
-        "--body-file",
-        "body",
-        "",
-      );
+      const resolvedBody = yield* resolveDefaultTextInput({
+        command: "gh-tool pr create",
+        value: null,
+        fileValue: null,
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+        defaultValue: "",
+      });
 
       expect(resolvedBody).toBe("");
     }),

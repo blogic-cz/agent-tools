@@ -5,7 +5,7 @@ import type { RepoInfo } from "./types";
 
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
-import { ConfigService, getGitHubConfig } from "#config";
+import { ConfigService, resolveGitHubRepoTarget } from "#config";
 
 type GhResult = {
   stdout: string;
@@ -25,6 +25,10 @@ export class GitHubService extends Context.Service<
       variables: Record<string, string | number | null>,
     ) => Effect.Effect<unknown, GhError>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
+    readonly withRepoTarget: <A, E, R>(
+      target: string | null,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | GitHubCommandError, R>;
   }
 >()("@agent-tools/GitHubService") {
   static readonly layer = Layer.effect(
@@ -33,14 +37,49 @@ export class GitHubService extends Context.Service<
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
         const config = yield* ConfigService;
-        const ghRepoConfig = getGitHubConfig(config);
-        const ghRepo = ghRepoConfig ? `${ghRepoConfig.owner}/${ghRepoConfig.repo}` : undefined;
+        const initialRepoTarget = (() => {
+          try {
+            return resolveGitHubRepoTarget(config);
+          } catch {
+            return undefined;
+          }
+        })();
+        const RepoTarget = Context.Reference<string | undefined>(
+          "@agent-tools/GitHubService/RepoTarget",
+          {
+            defaultValue: () => initialRepoTarget,
+          },
+        );
 
-        let cachedRepoInfo: RepoInfo | null = null;
+        const repoInfoCache = new Map<string | null, RepoInfo>();
+
+        const resolveRepoTarget = Effect.fn("GitHubService.resolveRepoTarget")(function* (
+          target: string | null,
+        ) {
+          const resolved = yield* Effect.try({
+            try: () => resolveGitHubRepoTarget(config, target),
+            catch: (error) =>
+              new GitHubCommandError({
+                message: error instanceof Error ? error.message : String(error),
+                command: "gh-tool --repo",
+                exitCode: 1,
+                stderr: error instanceof Error ? error.message : String(error),
+              }),
+          });
+
+          return resolved;
+        });
+
+        const withRepoTarget = <A, E, R>(target: string | null, effect: Effect.Effect<A, E, R>) =>
+          Effect.gen(function* () {
+            const resolved = yield* resolveRepoTarget(target);
+            return yield* effect.pipe(Effect.provideService(RepoTarget, resolved));
+          });
 
         const executeGh = (args: string[]) =>
           Effect.scoped(
             Effect.gen(function* () {
+              const ghRepo = yield* RepoTarget;
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
@@ -177,7 +216,10 @@ export class GitHubService extends Context.Service<
         });
 
         const getRepoInfo = Effect.fn("GitHubService.getRepoInfo")(function* () {
-          if (cachedRepoInfo !== null) {
+          const ghRepo = yield* RepoTarget;
+          const cacheKey = ghRepo ?? null;
+          const cachedRepoInfo = repoInfoCache.get(cacheKey);
+          if (cachedRepoInfo) {
             return cachedRepoInfo;
           }
 
@@ -195,11 +237,11 @@ export class GitHubService extends Context.Service<
             url: result.url,
           };
 
-          cachedRepoInfo = repoInfo;
+          repoInfoCache.set(cacheKey, repoInfo);
           return repoInfo;
         });
 
-        return { runGh, runGhJson, runGraphQL, getRepoInfo };
+        return { runGh, runGhJson, runGraphQL, getRepoInfo, withRepoTarget };
       }),
     ),
   );
