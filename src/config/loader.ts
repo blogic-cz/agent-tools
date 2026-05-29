@@ -317,11 +317,37 @@ export function getGitHubConfig(
   const keys = Object.keys(repos);
   if (keys.length === 0) return undefined;
 
+  if ("default" in repos) return repos.default;
   if (profile) return repos[profile];
   if (keys.length === 1) return repos[keys[0] ?? ""];
-  if ("default" in repos) return repos.default;
 
   throw new Error(
     `Multiple github profiles found: [${keys.join(", ")}]. Use --repo <name> to select one.`,
   );
+}
+
+export function resolveGitHubRepoTarget(
+  config: AgentToolsConfig | undefined,
+  target?: string | null,
+): string | undefined {
+  if (target && target.includes("/")) {
+    return target;
+  }
+
+  const repos = config?.github;
+  if (!repos) return target ?? undefined;
+
+  const keys = Object.keys(repos);
+  if (target) {
+    const repo = repos[target];
+    if (!repo) {
+      throw new Error(
+        `Unknown github profile '${target}'. Available profiles: [${keys.join(", ")}]. Use --repo owner/name for an explicit repository.`,
+      );
+    }
+    return `${repo.owner}/${repo.repo}`;
+  }
+
+  const repo = getGitHubConfig(config);
+  return repo ? `${repo.owner}/${repo.repo}` : undefined;
 }

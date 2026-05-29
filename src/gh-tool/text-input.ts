@@ -28,8 +28,10 @@ type ResolveTextInputOptions = {
   command: string;
   value: string | null;
   fileValue: string | null;
+  stdin: boolean;
   valueFlag: string;
   fileFlag: string;
+  stdinFlag: string;
   missingMode: Schema.Schema.Type<typeof MissingMode>;
   missingValue?: string;
   label: string;
@@ -38,16 +40,27 @@ type ResolveTextInputOptions = {
 const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(function* (
   options: ResolveTextInputOptions,
 ) {
-  const { command, fileFlag, fileValue, label, missingMode, missingValue, value, valueFlag } =
-    options;
+  const {
+    command,
+    fileFlag,
+    fileValue,
+    label,
+    missingMode,
+    missingValue,
+    stdin,
+    stdinFlag,
+    value,
+    valueFlag,
+  } = options;
 
-  if (value !== null && fileValue !== null) {
+  const providedCount = [value !== null, fileValue !== null, stdin].filter(Boolean).length;
+  if (providedCount > 1) {
     return yield* Effect.fail(
       new GitHubCommandError({
         command,
         exitCode: 1,
-        stderr: `Provide exactly one of ${valueFlag} or ${fileFlag}`,
-        message: `Provide exactly one of ${valueFlag} or ${fileFlag}`,
+        stderr: `Provide exactly one of ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
+        message: `Provide exactly one of ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
       }),
     );
   }
@@ -71,6 +84,19 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
     });
   }
 
+  if (stdin) {
+    return yield* Effect.tryPromise({
+      try: () => readTextFromStdin(),
+      catch: (error) =>
+        new GitHubCommandError({
+          command,
+          exitCode: 1,
+          stderr: `Failed to read ${label} from stdin: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Failed to read ${label} from stdin: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+    });
+  }
+
   if (missingMode === "null") {
     return null;
   }
@@ -83,8 +109,8 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
     new GitHubCommandError({
       command,
       exitCode: 1,
-      stderr: `Missing ${label}. Provide ${valueFlag} or ${fileFlag}`,
-      message: `Missing ${label}. Provide ${valueFlag} or ${fileFlag}`,
+      stderr: `Missing ${label}. Provide ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
+      message: `Missing ${label}. Provide ${valueFlag}, ${fileFlag}, or ${stdinFlag}`,
     }),
   );
 });
@@ -93,16 +119,20 @@ export const resolveRequiredTextInput = (
   command: string,
   value: string | null,
   fileValue: string | null,
+  stdin: boolean,
   valueFlag: string,
   fileFlag: string,
+  stdinFlag: string,
   label: string,
 ): Effect.Effect<string, GitHubCommandError> =>
   resolveTextInputInternal({
     command,
     value,
     fileValue,
+    stdin,
     valueFlag,
     fileFlag,
+    stdinFlag,
     missingMode: "error",
     label,
   }).pipe(Effect.map((resolvedValue) => ensureResolvedText(resolvedValue, "required text input")));
@@ -111,16 +141,20 @@ export const resolveOptionalTextInput = (
   command: string,
   value: string | null,
   fileValue: string | null,
+  stdin: boolean,
   valueFlag: string,
   fileFlag: string,
+  stdinFlag: string,
   label: string,
 ): Effect.Effect<string | null, GitHubCommandError> =>
   resolveTextInputInternal({
     command,
     value,
     fileValue,
+    stdin,
     valueFlag,
     fileFlag,
+    stdinFlag,
     missingMode: "null",
     label,
   });
@@ -129,8 +163,10 @@ export const resolveDefaultTextInput = (
   command: string,
   value: string | null,
   fileValue: string | null,
+  stdin: boolean,
   valueFlag: string,
   fileFlag: string,
+  stdinFlag: string,
   label: string,
   defaultValue: string,
 ): Effect.Effect<string, GitHubCommandError> =>
@@ -138,8 +174,10 @@ export const resolveDefaultTextInput = (
     command,
     value,
     fileValue,
+    stdin,
     valueFlag,
     fileFlag,
+    stdinFlag,
     missingMode: "default",
     missingValue: defaultValue,
     label,

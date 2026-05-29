@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeConfig, getDefaultEnvironment, getToolConfig } from "#config/loader";
+import {
+  decodeConfig,
+  getDefaultEnvironment,
+  getGitHubConfig,
+  getToolConfig,
+  resolveGitHubRepoTarget,
+} from "#config/loader";
 import type { AgentToolsConfig } from "#config/types";
 
 describe("getToolConfig", () => {
@@ -159,6 +165,67 @@ describe("getToolConfig", () => {
     expect(getToolConfig(config, "kubernetes")).toBeDefined();
     expect(getToolConfig(config, "database")).toBeDefined();
     expect(getToolConfig(config, "logs")).toBeDefined();
+  });
+});
+
+describe("GitHub repo resolver", () => {
+  it("prefers default when it exists", () => {
+    const config: AgentToolsConfig = {
+      github: {
+        be: { owner: "sabservis", repo: "nexus-be" },
+        default: { owner: "sabservis", repo: "nexus-fe" },
+      },
+    };
+
+    expect(getGitHubConfig(config)).toEqual({ owner: "sabservis", repo: "nexus-fe" });
+    expect(resolveGitHubRepoTarget(config)).toBe("sabservis/nexus-fe");
+  });
+
+  it("auto-selects a single non-default profile", () => {
+    const config: AgentToolsConfig = {
+      github: {
+        be: { owner: "sabservis", repo: "nexus-be" },
+      },
+    };
+
+    expect(resolveGitHubRepoTarget(config)).toBe("sabservis/nexus-be");
+  });
+
+  it("requires --repo when multiple non-default profiles exist", () => {
+    const config: AgentToolsConfig = {
+      github: {
+        be: { owner: "sabservis", repo: "nexus-be" },
+        fe: { owner: "sabservis", repo: "nexus-fe" },
+      },
+    };
+
+    expect(() => resolveGitHubRepoTarget(config)).toThrow(
+      "Multiple github profiles found: [be, fe]. Use --repo <name> to select one.",
+    );
+  });
+
+  it("resolves named profiles and preserves explicit owner/name targets", () => {
+    const config: AgentToolsConfig = {
+      github: {
+        be: { owner: "sabservis", repo: "nexus-be" },
+      },
+    };
+
+    expect(resolveGitHubRepoTarget(config, "be")).toBe("sabservis/nexus-be");
+    expect(resolveGitHubRepoTarget(config, "sabservis/nexus-infra")).toBe("sabservis/nexus-infra");
+  });
+
+  it("lists available names for an unknown profile", () => {
+    const config: AgentToolsConfig = {
+      github: {
+        be: { owner: "sabservis", repo: "nexus-be" },
+        fe: { owner: "sabservis", repo: "nexus-fe" },
+      },
+    };
+
+    expect(() => resolveGitHubRepoTarget(config, "docs")).toThrow(
+      "Unknown github profile 'docs'. Available profiles: [be, fe]. Use --repo owner/name for an explicit repository.",
+    );
   });
 });
 

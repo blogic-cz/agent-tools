@@ -15,6 +15,8 @@ Auth: `gh auth login` or `GITHUB_TOKEN` env var.
 
 ## PR Commands
 
+Use `--repo <profile|owner/name>` when working outside a single-repo checkout. If a repository has a PR template, prefer `--body-stdin` with a literal heredoc for `pr create` and `pr edit`; use `--body-file` only when the filled file already exists.
+
 ```bash
 bun gh-tool pr status                  # View PR status for current branch
 bun gh-tool pr view --pr 123           # View PR details
@@ -26,7 +28,24 @@ bun gh-tool pr merge --pr 123 --strategy squash --delete-branch --confirm
 bun gh-tool pr threads --pr 123 --unresolved-only  # Review comments
 bun gh-tool pr reply --pr 123 --comment-id 456 --body "Fixed"
 bun gh-tool pr resolve --thread-id 789
-bun gh-tool pr create --base test --title "feat: X" --body "Description"
+bun gh-tool pr create --repo be --base test --title "feat: X" --body-stdin <<'EOF'
+## Summary
+
+...
+
+## Testing
+
+- bun run check
+EOF
+bun gh-tool pr edit --repo be --pr 123 --body-stdin <<'EOF'
+## Summary
+
+...
+
+## Testing
+
+- bun run check
+EOF
 bun gh-tool pr review-triage --pr 123  # Combined info, threads, checks
 bun gh-tool pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done"
 ```

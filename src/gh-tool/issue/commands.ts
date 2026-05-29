@@ -109,8 +109,10 @@ export const issueCloseCommand = Command.make(
         "gh-tool issue close",
         Option.getOrNull(comment),
         Option.getOrNull(commentFile),
+        false,
         "--comment",
         "--comment-file",
+        "--comment-stdin",
         "comment",
       );
 
@@ -143,8 +145,10 @@ export const issueReopenCommand = Command.make(
         "gh-tool issue reopen",
         Option.getOrNull(comment),
         Option.getOrNull(commentFile),
+        false,
         "--comment",
         "--comment-file",
+        "--comment-stdin",
         "comment",
       );
 
@@ -173,8 +177,10 @@ export const issueCommentCommand = Command.make(
         "gh-tool issue comment",
         Option.getOrNull(body),
         Option.getOrNull(bodyFile),
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
       );
 
@@ -227,8 +233,10 @@ export const issueEditCommand = Command.make(
         "gh-tool issue edit",
         Option.getOrNull(body),
         Option.getOrNull(bodyFile),
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
       );
 

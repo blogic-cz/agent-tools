@@ -420,8 +420,10 @@ export const releaseCreateCommand = Command.make(
         "gh-tool release create",
         Option.getOrNull(body),
         Option.getOrNull(bodyFile),
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
       );
 
@@ -530,8 +532,10 @@ export const releaseEditCommand = Command.make(
         "gh-tool release edit",
         Option.getOrNull(body),
         Option.getOrNull(bodyFile),
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
       );
 

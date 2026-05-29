@@ -163,6 +163,7 @@ type MockGhOverrides = Partial<{
     variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
+  setRepoTarget: (target: string | null) => Effect.Effect<void, GitHubCommandError>;
 }>;
 
 function createMockGhLayer(overrides: MockGhOverrides = {}) {
@@ -182,6 +183,7 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
       ) => Effect.Effect<T, GhError>,
       runGraphQL: overrides.runGraphQL ?? (() => Effect.succeed({})),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
+      setRepoTarget: overrides.setRepoTarget ?? (() => Effect.void),
     }),
   );
 }
@@ -2393,8 +2395,10 @@ describe("PR composite commands", () => {
         "gh-tool pr reply",
         null,
         "/tmp/reply-body.txt",
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
       ).pipe(
         Effect.ensuring(
@@ -2454,8 +2458,10 @@ describe("PR composite commands", () => {
         "gh-tool pr reply-and-resolve",
         "inline body",
         "/tmp/reply.txt",
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
       ).pipe(Effect.result);
 
@@ -2463,13 +2469,52 @@ describe("PR composite commands", () => {
         onFailure: (error) => {
           expect(error._tag).toBe("GitHubCommandError");
           if (error._tag === "GitHubCommandError") {
-            expect(error.message).toBe("Provide exactly one of --body or --body-file");
+            expect(error.message).toBe(
+              "Provide exactly one of --body, --body-file, or --body-stdin",
+            );
           }
         },
         onSuccess: () => {
           expect.fail("Expected resolveOptionalTextInput to reject multiple body sources");
         },
       });
+    }),
+  );
+
+  it.effect("resolveRequiredTextInput reads shell-sensitive body text from stdin", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        stdin: {
+          text: () => Promise.resolve(inventedShellSensitiveText),
+        },
+      });
+
+      const resolvedBody = yield* resolveRequiredTextInput(
+        "gh-tool pr edit",
+        null,
+        null,
+        true,
+        "--body",
+        "--body-file",
+        "--body-stdin",
+        "body",
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) {
+              Reflect.deleteProperty(globalThis, "Bun");
+              return;
+            }
+
+            Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+      );
+
+      expect(resolvedBody).toBe(inventedShellSensitiveText);
     }),
   );
 
@@ -2480,8 +2525,10 @@ describe("PR composite commands", () => {
           "gh-tool pr reply",
           null,
           filePath,
+          false,
           "--body",
           "--body-file",
+          "--body-stdin",
           "body",
         ).pipe(Effect.result);
 
@@ -2506,8 +2553,10 @@ describe("PR composite commands", () => {
         "gh-tool pr create",
         null,
         null,
+        false,
         "--body",
         "--body-file",
+        "--body-stdin",
         "body",
         "",
       );
