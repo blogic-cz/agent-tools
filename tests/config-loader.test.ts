@@ -178,6 +178,7 @@ describe("GitHub repo resolver", () => {
     };
 
     expect(getGitHubConfig(config)).toEqual({ owner: "sabservis", repo: "nexus-fe" });
+    expect(getGitHubConfig(config, "be")).toEqual({ owner: "sabservis", repo: "nexus-be" });
     expect(resolveGitHubRepoTarget(config)).toBe("sabservis/nexus-fe");
   });
 

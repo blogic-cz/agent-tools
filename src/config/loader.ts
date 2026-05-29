@@ -317,8 +317,8 @@ export function getGitHubConfig(
   const keys = Object.keys(repos);
   if (keys.length === 0) return undefined;
 
-  if ("default" in repos) return repos.default;
   if (profile) return repos[profile];
+  if ("default" in repos) return repos.default;
   if (keys.length === 1) return repos[keys[0] ?? ""];
 
   throw new Error(

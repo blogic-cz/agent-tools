@@ -1,4 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Context, Effect, Layer, Stream } from "effect";
 
 import type { RepoInfo } from "./types";
@@ -34,16 +35,9 @@ export class GitHubService extends Context.Service<
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
         const config = yield* ConfigService;
-        let ghRepo: string | undefined;
-        let repoSelectionError: Error | null = null;
-        try {
-          ghRepo = resolveGitHubRepoTarget(config);
-        } catch (error) {
-          repoSelectionError = error instanceof Error ? error : new Error(String(error));
-          ghRepo = undefined;
-        }
+        const repoStorage = new AsyncLocalStorage<string | undefined>();
 
-        const repoInfoCache = new Map<string, RepoInfo>();
+        const repoInfoCache = new Map<string | null, RepoInfo>();
 
         const setRepoTarget = Effect.fn("GitHubService.setRepoTarget")(function* (
           target: string | null,
@@ -59,13 +53,13 @@ export class GitHubService extends Context.Service<
               }),
           });
 
-          ghRepo = resolved;
-          repoSelectionError = null;
+          repoStorage.enterWith(resolved);
         });
 
         const executeGh = (args: string[]) =>
           Effect.scoped(
             Effect.gen(function* () {
+              const ghRepo = repoStorage.getStore();
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
@@ -103,15 +97,6 @@ export class GitHubService extends Context.Service<
           );
 
         const runGh = Effect.fn("GitHubService.runGh")(function* (args: string[]) {
-          if (repoSelectionError) {
-            return yield* new GitHubCommandError({
-              message: repoSelectionError.message,
-              command: `gh ${args.join(" ")}`,
-              exitCode: 1,
-              stderr: repoSelectionError.message,
-            });
-          }
-
           const result = yield* executeGh(args);
 
           if (result.exitCode !== 0) {
@@ -211,7 +196,8 @@ export class GitHubService extends Context.Service<
         });
 
         const getRepoInfo = Effect.fn("GitHubService.getRepoInfo")(function* () {
-          const cacheKey = ghRepo ?? "__current__";
+          const ghRepo = repoStorage.getStore();
+          const cacheKey = ghRepo ?? null;
           const cachedRepoInfo = repoInfoCache.get(cacheKey);
           if (cachedRepoInfo) {
             return cachedRepoInfo;
