@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result, Layer } from "effect";
+import { Effect, Result, Layer, Sink, Stream } from "effect";
+import type { ChildProcess } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
 
@@ -41,6 +43,7 @@ import {
   resolveOptionalTextInput,
   resolveRequiredTextInput,
 } from "#gh/text-input";
+import { ConfigService } from "#config";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -153,6 +156,48 @@ const mockRESTComments = [
 
 type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
+type ObservedGhCommand = {
+  args: ReadonlyArray<string>;
+  ghRepo: string | undefined;
+};
+
+function createMockProcess(result: { stdout: string; stderr: string; exitCode: number }) {
+  const encoder = new TextEncoder();
+
+  const stdout = Stream.fromIterable([encoder.encode(result.stdout)]);
+  const stderr = Stream.fromIterable([encoder.encode(result.stderr)]);
+
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.exitCode)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.succeed(undefined),
+    stderr,
+    stdin: Sink.drain,
+    stdout,
+    all: Stream.fromIterable([encoder.encode(result.stdout), encoder.encode(result.stderr)]),
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void),
+  });
+}
+
+function createMockGhSpawnerLayer(observed: ObservedGhCommand[]) {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command: ChildProcess.Command) => {
+      if (command._tag === "StandardCommand") {
+        observed.push({
+          args: command.args,
+          ghRepo: command.options.env?.GH_REPO,
+        });
+      }
+
+      return Effect.succeed(createMockProcess({ stdout: "{}", stderr: "", exitCode: 0 }));
+    }),
+  );
+}
+
 type MockGhOverrides = Partial<{
   runGh: (
     args: string[],
@@ -192,6 +237,71 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
 }
 
 describe("GitHubService.runGh() error mapping", () => {
+  it.effect("uses the configured default repository for plain gh calls", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+      yield* service.runGh(["issue", "view", "123"]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          github: {
+            default: { owner: "test-owner", repo: "test-repo" },
+          },
+        }),
+      ),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(observedGhCommands).toEqual([
+            {
+              args: ["issue", "view", "123"],
+              ghRepo: "test-owner/test-repo",
+            },
+          ]);
+        }),
+      ),
+    );
+  });
+
+  it.effect("scopes explicit repository targets to the wrapped effect", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+
+      yield* service.withRepoTarget("be", service.runGh(["pr", "view", "1"]));
+      yield* service.runGh(["issue", "view", "2"]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          github: {
+            default: { owner: "test-owner", repo: "test-repo" },
+            be: { owner: "test-owner", repo: "test-be" },
+          },
+        }),
+      ),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(observedGhCommands).toEqual([
+            {
+              args: ["pr", "view", "1"],
+              ghRepo: "test-owner/test-be",
+            },
+            {
+              args: ["issue", "view", "2"],
+              ghRepo: "test-owner/test-repo",
+            },
+          ]);
+        }),
+      ),
+    );
+  });
+
   it.effect("returns success for zero exit code", () =>
     Effect.gen(function* () {
       const service = yield* GitHubService;

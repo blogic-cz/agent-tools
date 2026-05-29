@@ -1,5 +1,4 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { Context, Effect, Layer, Stream } from "effect";
 
 import type { RepoInfo } from "./types";
@@ -38,7 +37,19 @@ export class GitHubService extends Context.Service<
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
         const config = yield* ConfigService;
-        const repoStorage = new AsyncLocalStorage<string | undefined>();
+        const initialRepoTarget = (() => {
+          try {
+            return resolveGitHubRepoTarget(config);
+          } catch {
+            return undefined;
+          }
+        })();
+        const RepoTarget = Context.Reference<string | undefined>(
+          "@agent-tools/GitHubService/RepoTarget",
+          {
+            defaultValue: () => initialRepoTarget,
+          },
+        );
 
         const repoInfoCache = new Map<string | null, RepoInfo>();
 
@@ -62,17 +73,13 @@ export class GitHubService extends Context.Service<
         const withRepoTarget = <A, E, R>(target: string | null, effect: Effect.Effect<A, E, R>) =>
           Effect.gen(function* () {
             const resolved = yield* resolveRepoTarget(target);
-            const previous = repoStorage.getStore();
-            repoStorage.enterWith(resolved);
-            return yield* effect.pipe(
-              Effect.ensuring(Effect.sync(() => repoStorage.enterWith(previous))),
-            );
+            return yield* effect.pipe(Effect.provideService(RepoTarget, resolved));
           });
 
         const executeGh = (args: string[]) =>
           Effect.scoped(
             Effect.gen(function* () {
-              const ghRepo = repoStorage.getStore();
+              const ghRepo = yield* RepoTarget;
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
@@ -209,7 +216,7 @@ export class GitHubService extends Context.Service<
         });
 
         const getRepoInfo = Effect.fn("GitHubService.getRepoInfo")(function* () {
-          const ghRepo = repoStorage.getStore();
+          const ghRepo = yield* RepoTarget;
           const cacheKey = ghRepo ?? null;
           const cachedRepoInfo = repoInfoCache.get(cacheKey);
           if (cachedRepoInfo) {
