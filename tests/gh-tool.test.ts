@@ -186,14 +186,27 @@ function createMockGhSpawnerLayer(observed: ObservedGhCommand[]) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command: ChildProcess.Command) => {
+      let stdout = "{}";
+
       if (command._tag === "StandardCommand") {
         observed.push({
           args: command.args,
           ghRepo: command.options.env?.GH_REPO,
         });
+
+        if (command.args[0] === "repo" && command.args[1] === "view") {
+          const repo = command.args[2] ?? "test-owner/test-repo";
+          const [owner = "test-owner", name = "test-repo"] = repo.split("/");
+          stdout = JSON.stringify({
+            owner: { login: owner },
+            name,
+            defaultBranchRef: { name: "main" },
+            url: `https://github.com/${owner}/${name}`,
+          });
+        }
       }
 
-      return Effect.succeed(createMockProcess({ stdout: "{}", stderr: "", exitCode: 0 }));
+      return Effect.succeed(createMockProcess({ stdout, stderr: "", exitCode: 0 }));
     }),
   );
 }
@@ -297,6 +310,39 @@ describe("GitHubService.runGh() error mapping", () => {
               ghRepo: "test-owner/test-repo",
             },
           ]);
+        }),
+      ),
+    );
+  });
+
+  it.effect("uses explicit repository target when resolving repo info", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+
+      yield* service.withRepoTarget("be", service.getRepoInfo());
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          github: {
+            default: { owner: "test-owner", repo: "test-repo" },
+            be: { owner: "test-owner", repo: "test-be" },
+          },
+        }),
+      ),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(observedGhCommands[0]?.args).toEqual([
+            "repo",
+            "view",
+            "test-owner/test-be",
+            "--json",
+            "owner,name,defaultBranchRef,url",
+          ]);
+          expect(observedGhCommands[0]?.ghRepo).toBe("test-owner/test-be");
         }),
       ),
     );

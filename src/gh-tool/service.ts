@@ -223,12 +223,13 @@ export class GitHubService extends Context.Service<
             return cachedRepoInfo;
           }
 
+          const repoArgs = ghRepo ? [ghRepo] : [];
           const result = yield* runGhJson<{
             owner: { login: string };
             name: string;
             defaultBranchRef: { name: string };
             url: string;
-          }>(["repo", "view", "--json", "owner,name,defaultBranchRef,url"]);
+          }>(["repo", "view", ...repoArgs, "--json", "owner,name,defaultBranchRef,url"]);
 
           const repoInfo: RepoInfo = {
             owner: result.owner.login,
