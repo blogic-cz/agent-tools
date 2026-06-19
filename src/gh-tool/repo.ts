@@ -89,12 +89,25 @@ const searchOrgCode = Effect.fn("repo.searchOrgCode")(function* (opts: {
 // CLI Commands
 // ---------------------------------------------------------------------------
 
-export const repoInfoCommand = Command.make("info", { format: formatOption }, ({ format }) =>
-  Effect.gen(function* () {
-    const gh = yield* GitHubService;
-    const info = yield* gh.getRepoInfo();
-    yield* logFormatted(info, format);
-  }),
+const repoOption = Flag.string("repo").pipe(
+  Flag.withDescription("Target repository profile name or owner/name"),
+  Flag.optional,
+);
+
+export const repoInfoCommand = Command.make(
+  "info",
+  { format: formatOption, repo: repoOption },
+  ({ format, repo }) =>
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      yield* gh.withRepoTarget(
+        Option.getOrNull(repo),
+        Effect.gen(function* () {
+          const info = yield* gh.getRepoInfo();
+          yield* logFormatted(info, format);
+        }),
+      );
+    }),
 ).pipe(Command.withDescription("Show repository information (owner, name, default branch, URL)"));
 
 export const repoListCommand = Command.make(
