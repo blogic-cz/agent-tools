@@ -1,5 +1,5 @@
 import { Command, Flag } from "effect/unstable/cli";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import type { IssueComment } from "#gh/types";
 
@@ -7,6 +7,17 @@ import { formatOption, logFormatted } from "#shared";
 import { GitHubService } from "#gh/service";
 
 import { fetchIssueComments } from "./core";
+
+const repoOption = Flag.string("repo").pipe(
+  Flag.withDescription("Target repository profile name or owner/name"),
+  Flag.optional,
+);
+
+const withRepo = <A, E, R>(repo: Option.Option<string>, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubService;
+    return yield* gh.withRepoTarget(Option.getOrNull(repo), effect);
+  });
 
 const TriageVerbosity = Schema.Literals(["compact", "full"]);
 type TriageVerbosity = typeof TriageVerbosity.Type;
@@ -123,16 +134,20 @@ export const issueTriageCommand = Command.make(
   {
     format: formatOption,
     issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number")),
+    repo: repoOption,
     verbosity: Flag.choice("verbosity", ["compact", "full"] as const).pipe(
       Flag.withDescription("Output detail level: compact or full"),
       Flag.withDefault("compact"),
     ),
   },
-  ({ format, issue, verbosity }) =>
-    Effect.gen(function* () {
-      const result = yield* fetchIssueTriage({ issue, verbosity });
-      yield* logFormatted(result, format);
-    }),
+  ({ format, issue, repo, verbosity }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* fetchIssueTriage({ issue, verbosity });
+        yield* logFormatted(result, format);
+      }),
+    ),
 ).pipe(
   Command.withDescription("Composite: fetch issue details and discussion comments in one call"),
 );
