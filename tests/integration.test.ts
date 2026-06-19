@@ -267,6 +267,63 @@ describe("Integration: tools --help with config file", () => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
+  it("session-tool list returns one row per session", () => {
+    const homeDir = join(tmpdir(), `agent-tools-session-home-${Date.now()}`);
+    const workDir = join(tmpdir(), `agent-tools-session-work-${Date.now()}`);
+    const sessionDir = join(workDir, "message", "ses_test");
+
+    mkdirSync(homeDir, { recursive: true });
+    mkdirSync(sessionDir, { recursive: true });
+    mkdirSync(join(workDir, "session"), { recursive: true });
+
+    writeFileSync(
+      join(workDir, "agent-tools.json5"),
+      JSON.stringify({
+        session: {
+          storagePath: workDir,
+        },
+      }),
+    );
+    writeFileSync(
+      join(sessionDir, "one.json"),
+      JSON.stringify({
+        id: "one",
+        sessionID: "ses_test",
+        role: "assistant",
+        summary: { title: "Older", body: "" },
+        time: { created: 1 },
+      }),
+    );
+    writeFileSync(
+      join(sessionDir, "two.json"),
+      JSON.stringify({
+        id: "two",
+        sessionID: "ses_test",
+        role: "assistant",
+        summary: { title: "Newest", body: "" },
+        time: { created: 2 },
+      }),
+    );
+
+    const result = runToolWithEnv(
+      "src/session-tool/index.ts",
+      ["list", "--all", "--source", "opencode", "--format", "json"],
+      workDir,
+      { HOME: homeDir },
+    );
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      data?: { results?: Array<{ sessionID: string; title: string }> };
+    };
+
+    expect(result.status).toBe(0);
+    expect(parsed.data?.results).toHaveLength(1);
+    expect(parsed.data?.results?.[0]?.sessionID).toBe("ses_test");
+    expect(parsed.data?.results?.[0]?.title).toBe("Newest");
+
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("observability-tool commands work with config and create audit rows", async () => {
     const homeDir = join(tmpdir(), `agent-tools-observability-home-${Date.now()}`);
     const workDir = join(tmpdir(), `agent-tools-observability-work-${Date.now()}`);
