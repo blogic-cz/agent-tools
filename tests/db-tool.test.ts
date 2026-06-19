@@ -512,6 +512,45 @@ describe("DbService", () => {
         ),
       );
     });
+
+    it.effect("strips a trailing semicolon before wrapping select SQL", () => {
+      const observedShellCommands: string[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: {
+            host: "db.internal",
+            port: 5432,
+            user: "readonly",
+            database: "app",
+          },
+        },
+      };
+      const wrappedSql = "SELECT json_agg(t) FROM (SELECT 1) t;";
+      const psqlCommand = `psql -h db.internal -p 5432 -U readonly -d app -t -A -c ${wrappedSql}`;
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service.executeQuery("prod", "SELECT 1;");
+
+        expect(result.success).toBe(true);
+        expect(observedShellCommands).toEqual([psqlCommand]);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            {
+              [psqlCommand]: {
+                stdout: '[{"?column?":1}]\n',
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+            observedShellCommands,
+          ),
+        ),
+      );
+    });
   });
 
   describe("executeSchemaQuery", () => {

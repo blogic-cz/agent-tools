@@ -434,7 +434,8 @@ export class DbService extends Context.Service<
           startTimeMs: number,
           applyTransform = false,
         ) {
-          const wrappedSql = `SELECT json_agg(t) FROM (${sql}) t;`;
+          const selectSql = sql.trim().replace(/;\s*$/, "");
+          const wrappedSql = `SELECT json_agg(t) FROM (${selectSql}) t;`;
           const command = buildPsqlCommand(config, wrappedSql, password, true);
           const result = yield* executeShellCommand(command);
           const endTime = yield* Clock.currentTimeMillis;

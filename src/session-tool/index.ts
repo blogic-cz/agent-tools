@@ -31,6 +31,20 @@ const filterBySource = (summaries: MessageSummary[], source: string): MessageSum
   return summaries.filter((s) => s.source === (source as SessionSource));
 };
 
+const latestSessionSummaries = (summaries: MessageSummary[]): MessageSummary[] => {
+  const bySession = new Map<string, MessageSummary>();
+
+  for (const summary of summaries) {
+    const key = `${summary.source}:${summary.sessionID}`;
+    const previous = bySession.get(key);
+    if (previous === undefined || summary.created > previous.created) {
+      bySession.set(key, summary);
+    }
+  }
+
+  return [...bySession.values()].toSorted((left, right) => right.created - left.created);
+};
+
 const buildScopeLabel = (searchAll: boolean, currentDir: string) => {
   if (searchAll) {
     return "all projects";
@@ -100,7 +114,7 @@ const listCommand = Command.make(
         }
 
         const allSummaries = yield* sessionService.getMessageSummaries(sessionFilter);
-        const summaries = filterBySource(allSummaries, source);
+        const summaries = latestSessionSummaries(filterBySource(allSummaries, source));
         const results = summaries.slice(0, limit).map((summary) => ({
           created: formatDate(summary.created),
           sessionID: summary.sessionID,
