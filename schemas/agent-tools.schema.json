@@ -240,6 +240,10 @@
           "description": "Optional timeout for establishing a tunnel, in milliseconds.",
           "type": "number"
         },
+        "apiProbeTimeoutMs": {
+          "description": "Timeout in milliseconds for the Kubernetes API-server reachability probe run before a tunnel attempt. Lets the direct (no-VPN) attempt fail fast instead of waiting out tunnelTimeoutMs when the API server is unreachable. Set to 0 to disable. Defaults to 2000.",
+          "type": "number"
+        },
         "remotePort": {
           "description": "Optional remote database port used by the tunnel.",
           "type": "number"

@@ -12,7 +12,7 @@ import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, isValidTableName } from "#db/security";
-import { DbService, resolveDbAccessMode } from "#db/service";
+import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
 
 /**
  * Mock DbService layer factory for testing
@@ -242,6 +242,30 @@ describe("DbService", () => {
         allowMutations: false,
         allowedMutations: ["insert"],
       });
+    });
+  });
+
+  describe("buildApiProbeArgs", () => {
+    it("hits /version with a request-timeout for the given context", () => {
+      expect(buildApiProbeArgs(undefined, "admin@cluster", 2000)).toEqual([
+        "--context",
+        "admin@cluster",
+        "get",
+        "--raw=/version",
+        "--request-timeout=2000ms",
+      ]);
+    });
+
+    it("prepends --kubeconfig when a kubeconfig path is resolved", () => {
+      expect(buildApiProbeArgs("/home/u/kubeconfig", "admin@cluster", 1500)).toEqual([
+        "--kubeconfig",
+        "/home/u/kubeconfig",
+        "--context",
+        "admin@cluster",
+        "get",
+        "--raw=/version",
+        "--request-timeout=1500ms",
+      ]);
     });
   });
 

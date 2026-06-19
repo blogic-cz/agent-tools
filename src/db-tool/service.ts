@@ -51,6 +51,27 @@ export function resolveDbAccessMode(
   };
 }
 
+/**
+ * Build the kubectl args for the lightweight API-server reachability probe.
+ * Hitting `/version` via `--raw` is the cheapest authenticated round-trip; `--request-timeout`
+ * bounds it so an unreachable server (VPN down, off the office network) fails fast instead of
+ * letting a subsequent `kubectl port-forward` hang on a silent TCP connect.
+ */
+export function buildApiProbeArgs(
+  kubeconfig: string | undefined,
+  context: string,
+  timeoutMs: number,
+): string[] {
+  return [
+    ...(kubeconfig ? ["--kubeconfig", kubeconfig] : []),
+    "--context",
+    context,
+    "get",
+    "--raw=/version",
+    `--request-timeout=${timeoutMs}ms`,
+  ];
+}
+
 export class DbService extends Context.Service<
   DbService,
   {
@@ -89,6 +110,7 @@ export class DbService extends Context.Service<
         const kubectlNamespace = dbConfig.kubectl?.namespace;
         const kubectlService = dbConfig.kubectl?.service ?? "postgresql";
         const tunnelTimeoutMs = dbConfig.tunnelTimeoutMs ?? 5000;
+        const apiProbeTimeoutMs = dbConfig.apiProbeTimeoutMs ?? 2000;
         const remotePort = dbConfig.remotePort ?? 5432;
 
         const zshrcEnvCache = yield* Ref.make<Record<string, string> | null>(null);
@@ -325,6 +347,35 @@ export class DbService extends Context.Service<
 
             return proc;
           });
+
+        /**
+         * Cheap pre-flight check: is the Kubernetes API server reachable right now?
+         * Returns true when the probe is disabled (apiProbeTimeoutMs <= 0) or no context is
+         * configured, so behaviour is unchanged unless a probe can meaningfully run. A false
+         * result lets the direct (no-VPN) tunnel attempt bail fast and fall back to the VPN
+         * prerequisite instead of waiting out tunnelTimeoutMs on a silently hanging port-forward.
+         */
+        const probeApiServerReachable = Effect.fn("DbService.probeApiServerReachable")(function* (
+          config: DbConfig,
+        ) {
+          if (!kubectlContext || apiProbeTimeoutMs <= 0) {
+            return true;
+          }
+
+          const kubeconfig = yield* resolveKubeconfig(config.port).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
+
+          const result = yield* executeShellCommand(
+            ChildProcess.make(
+              "kubectl",
+              buildApiProbeArgs(kubeconfig, kubectlContext, apiProbeTimeoutMs),
+              { stdout: "pipe", stderr: "pipe" },
+            ),
+          ).pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 1 })));
+
+          return result.exitCode === 0;
+        });
 
         const buildPsqlCommand = (
           config: DbConfig,
@@ -606,6 +657,14 @@ export class DbService extends Context.Service<
 
           return Effect.scoped(
             Effect.gen(function* () {
+              const reachable = yield* probeApiServerReachable(config);
+              if (!reachable) {
+                return yield* new DbTunnelError({
+                  message: `Kubernetes API server not reachable within ${apiProbeTimeoutMs}ms; skipping tunnel attempt (VPN likely not connected and not on the office network).`,
+                  port: config.port,
+                });
+              }
+
               const tunnelProc = yield* startTunnelProcess(config).pipe(
                 Effect.mapError(
                   (platformError) =>

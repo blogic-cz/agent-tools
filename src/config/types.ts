@@ -103,6 +103,15 @@ export type DatabaseConfig = ProfilePrerequisites & {
     service?: string;
   };
   tunnelTimeoutMs?: number;
+  /**
+   * Timeout in milliseconds for the cheap Kubernetes API-server reachability probe
+   * run before attempting a tunnel. When the API server is unreachable (VPN down and
+   * not on the office network) `kubectl port-forward` hangs silently on TCP connect, so
+   * a short probe lets the direct (no-VPN) attempt fail fast and fall back to connecting
+   * the VPN instead of waiting out `tunnelTimeoutMs`. Set to 0 to disable the probe.
+   * Defaults to 2000.
+   */
+  apiProbeTimeoutMs?: number;
   remotePort?: number;
 };
 
