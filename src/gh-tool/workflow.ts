@@ -50,9 +50,22 @@ type LogEntry = {
 };
 
 const repoOption = Flag.string("repo").pipe(
-  Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
+  Flag.withDescription("Target repository profile name or owner/name. Defaults to current repo"),
   Flag.optional,
 );
+
+const resolveRepoArg = Effect.fn("workflow.resolveRepoArg")(function* (
+  repo: Option.Option<string>,
+) {
+  const target = Option.getOrNull(repo);
+  if (target === null) {
+    return null;
+  }
+
+  const gh = yield* GitHubService;
+  const info = yield* gh.withRepoTarget(target, gh.getRepoInfo());
+  return `${info.owner}/${info.name}`;
+});
 // ---------------------------------------------------------------------------
 // Internal handlers
 // ---------------------------------------------------------------------------
@@ -496,10 +509,7 @@ export const workflowListCommand = Command.make(
       Flag.withDescription("Maximum number of runs to return"),
       Flag.withDefault(10),
     ),
-    repo: Flag.string("repo").pipe(
-      Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
-      Flag.optional,
-    ),
+    repo: repoOption,
     status: Flag.choice("status", [
       "queued",
       "in_progress",
@@ -521,10 +531,11 @@ export const workflowListCommand = Command.make(
   },
   ({ branch, format, limit, repo, status, workflow }) =>
     Effect.gen(function* () {
+      const resolvedRepo = yield* resolveRepoArg(repo);
       const runs = yield* listRuns({
         branch: Option.getOrNull(branch),
         limit,
-        repo: Option.getOrNull(repo),
+        repo: resolvedRepo,
         status: Option.getOrNull(status),
         workflow: Option.getOrNull(workflow),
       });
@@ -543,7 +554,8 @@ export const workflowViewCommand = Command.make(
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const detail = yield* viewRun(run, Option.getOrNull(repo));
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const detail = yield* viewRun(run, resolvedRepo);
       yield* logFormatted(detail, format);
     }),
 ).pipe(Command.withDescription("View workflow run details including jobs and steps"));
@@ -557,7 +569,8 @@ export const workflowJobsCommand = Command.make(
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const jobs = yield* listJobs(run, Option.getOrNull(repo));
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const jobs = yield* listJobs(run, resolvedRepo);
       yield* logFormatted(jobs, format);
     }),
 ).pipe(Command.withDescription("List jobs and their steps for a workflow run"));
@@ -575,7 +588,8 @@ export const workflowLogsCommand = Command.make(
   },
   ({ failedOnly, format, repo, run }) =>
     Effect.gen(function* () {
-      const logs = yield* fetchLogs(run, failedOnly, null, Option.getOrNull(repo));
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const logs = yield* fetchLogs(run, failedOnly, null, resolvedRepo);
 
       if (format === "toon" || format === "json") {
         yield* logFormatted(logs, format);
@@ -593,15 +607,13 @@ export const workflowRerunCommand = Command.make(
       Flag.withDefault(true),
     ),
     format: formatOption,
-    repo: Flag.string("repo").pipe(
-      Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
-      Flag.optional,
-    ),
+    repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to rerun")),
   },
   ({ failedOnly, format, repo, run }) =>
     Effect.gen(function* () {
-      const result = yield* rerunWorkflow(run, failedOnly, Option.getOrNull(repo));
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const result = yield* rerunWorkflow(run, failedOnly, resolvedRepo);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Rerun a workflow run (failed jobs only by default)"));
@@ -615,7 +627,8 @@ export const workflowCancelCommand = Command.make(
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const result = yield* cancelRun(run, Option.getOrNull(repo));
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const result = yield* cancelRun(run, resolvedRepo);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Cancel an in-progress workflow run"));
@@ -629,7 +642,8 @@ export const workflowWatchCommand = Command.make(
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
-      const result = yield* watchRun(run, Option.getOrNull(repo));
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const result = yield* watchRun(run, resolvedRepo);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Watch a workflow run until it completes, then show final status"));
@@ -650,12 +664,13 @@ export const workflowJobLogsCommand = Command.make(
   },
   ({ failedStepsOnly, format, job, repo, run }) =>
     Effect.gen(function* () {
+      const resolvedRepo = yield* resolveRepoArg(repo);
       const result = yield* fetchJobLogs({
         runId: run,
         job,
         failedStepsOnly,
         format,
-        repo: Option.getOrNull(repo),
+        repo: resolvedRepo,
       });
 
       if ("formatted" in result) {
@@ -683,10 +698,11 @@ export const workflowAnnotationsCommand = Command.make(
   },
   ({ format, job, repo, run }) =>
     Effect.gen(function* () {
+      const resolvedRepo = yield* resolveRepoArg(repo);
       const result = yield* fetchAnnotations({
         runId: run,
         job: Option.getOrNull(job),
-        repo: Option.getOrNull(repo),
+        repo: resolvedRepo,
       });
       yield* logFormatted(result, format);
     }),
