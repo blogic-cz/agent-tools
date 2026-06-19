@@ -919,6 +919,12 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     writeFileSync(
       kubectlPath,
       `#!/bin/sh
+case "$*" in
+  *"--raw=/version"*)
+    printf '{"major":"1"}'
+    exit 0
+    ;;
+esac
 printf '%s' "$*" > "${kubectlArgsPath}"
 touch "${tunnelReadyPath}"
 trap 'exit 0' TERM INT
