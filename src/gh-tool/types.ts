@@ -127,6 +127,10 @@ export type MergeResult = {
   strategy: MergeStrategy;
   branchDeleted: boolean;
   sha: string | null;
+  /** PR numbers whose base was retargeted off the deleted branch before deletion. */
+  retargetedChildren?: number[];
+  /** True when branch deletion was requested but skipped to protect dependent PRs. */
+  branchDeleteSkipped?: boolean;
 };
 
 export type RepoInfo = {

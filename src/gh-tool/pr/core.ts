@@ -523,16 +523,46 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
   ]);
 
+  // Stacked-PR safety: find open PRs that depend on this PR's head branch.
+  // Deleting the head branch of an open PR that uses it as its base CLOSES that
+  // PR (GitHub CLI behavior, see cli/cli#1168) instead of retargeting it. We
+  // retarget such dependents onto this PR's base first, and only delete the
+  // branch if EVERY retarget succeeds (fail-closed).
+  const dependentOpenPrs =
+    opts.deleteBranch && info.headRefName
+      ? yield* gh.runGhJson<Array<{ number: number; headRefName: string; baseRefName: string }>>([
+          "pr",
+          "list",
+          "--base",
+          info.headRefName,
+          "--state",
+          "open",
+          "--limit",
+          "100",
+          "--json",
+          "number,headRefName,baseRefName",
+        ])
+      : [];
+
   if (!opts.confirm) {
     const mergeableNote =
       info.mergeable === "MERGEABLE"
         ? "PR is mergeable."
         : `PR mergeable status: ${info.mergeable}`;
 
+    const dependentNote =
+      dependentOpenPrs.length > 0
+        ? `${dependentOpenPrs.length} dependent open PR(s) (${dependentOpenPrs
+            .map((d) => `#${d.number}`)
+            .join(", ")}) will be retargeted to \`${info.baseRefName}\` before deletion; ` +
+          "branch deletion is skipped if any retarget fails. "
+        : "";
+
     yield* Console.log(
       `DRY RUN: Would merge PR #${info.number} "${info.title}" via ${opts.strategy.toUpperCase()}. ` +
         `Branch \`${info.headRefName}\` → \`${info.baseRefName}\`. ` +
         (opts.deleteBranch ? `Branch \`${info.headRefName}\` will be deleted. ` : "") +
+        dependentNote +
         mergeableNote,
     );
 
@@ -545,9 +575,43 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     return result;
   }
 
+  // Retarget dependents BEFORE merging so the head branch can be deleted safely.
+  // If any retarget fails, keep the branch (fail-closed) so no dependent PR is closed.
+  let willDeleteBranch = opts.deleteBranch;
+  let branchDeleteSkipped = false;
+  const retargetedChildren: number[] = [];
+
+  if (opts.deleteBranch && dependentOpenPrs.length > 0) {
+    const repo = yield* gh.getRepoInfo();
+
+    for (const child of dependentOpenPrs) {
+      const retargeted = yield* gh
+        .runGh([
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
+          "-f",
+          `base=${info.baseRefName}`,
+        ])
+        .pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+
+      if (retargeted) {
+        retargetedChildren.push(child.number);
+      } else {
+        willDeleteBranch = false;
+        branchDeleteSkipped = true;
+        break;
+      }
+    }
+  }
+
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
 
-  if (opts.deleteBranch) {
+  if (willDeleteBranch) {
     mergeArgs.push("--delete-branch");
   }
 
@@ -604,8 +668,10 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   const result: MergeResult = {
     merged: true,
     strategy: opts.strategy,
-    branchDeleted: opts.deleteBranch,
+    branchDeleted: willDeleteBranch,
     sha: shaMatch?.[1] ?? null,
+    retargetedChildren: retargetedChildren.length > 0 ? retargetedChildren : undefined,
+    branchDeleteSkipped: branchDeleteSkipped ? true : undefined,
   };
   return result;
 });
