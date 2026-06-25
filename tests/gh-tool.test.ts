@@ -19,7 +19,11 @@ import {
   fetchIssueComments as fetchIssueDiscussionComments,
   reopenIssue,
 } from "#gh/issue/core";
-import { fetchIssueTriage } from "#gh/issue/triage";
+import {
+  collectLinkedPullRequestNumbers,
+  fetchIssueTriage,
+  parseIssueNumbers,
+} from "#gh/issue/triage";
 import {
   createPR,
   editPR,
@@ -3008,6 +3012,18 @@ describe("PR composite commands", () => {
 
   it("review-triage-batch parser: accepts comma-separated PR numbers", () => {
     expect(parsePrNumbers("309, 314, nope, 0, 346")).toEqual([309, 314, 346]);
+  });
+
+  it("issue snapshot-batch parser: accepts comma-separated issue numbers", () => {
+    expect(parseIssueNumbers("262, 186, nope, 0, 348")).toEqual([262, 186, 348]);
+  });
+
+  it("issue snapshot-batch linked PR extractor: uses issue body and comments", () => {
+    expect(
+      collectLinkedPullRequestNumbers("Fix is in https://github.com/acme/repo/pull/346", [
+        { body: "Also see PR #347 and duplicate #346." },
+      ]),
+    ).toEqual([346, 347]);
   });
 });
 

@@ -13,6 +13,7 @@ import {
   issueEditCommand,
   issueListCommand,
   issueReopenCommand,
+  issueSnapshotBatchCommand,
   issueTriageCommand,
   issueViewCommand,
 } from "./issue";
@@ -91,13 +92,14 @@ const prCommand = Command.make("pr", {}).pipe(
 
 const issueCommand = Command.make("issue", {}).pipe(
   Command.withDescription(
-    "Issue operations (list, view, comments, triage, close, reopen, comment, edit)",
+    "Issue operations (list, view, comments, triage, snapshot-batch, close, reopen, comment, edit)",
   ),
   Command.withSubcommands([
     issueListCommand,
     issueViewCommand,
     issueCommentsCommand,
     issueTriageCommand,
+    issueSnapshotBatchCommand,
     issueCloseCommand,
     issueReopenCommand,
     issueCommentCommand,

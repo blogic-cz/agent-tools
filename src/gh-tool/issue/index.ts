@@ -7,4 +7,4 @@ export {
   issueReopenCommand,
   issueViewCommand,
 } from "./commands";
-export { issueTriageCommand } from "./triage";
+export { issueSnapshotBatchCommand, issueTriageCommand } from "./triage";
