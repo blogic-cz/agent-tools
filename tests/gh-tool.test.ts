@@ -44,6 +44,7 @@ import {
   resolveRequiredTextInput,
 } from "#gh/text-input";
 import { ConfigService } from "#config";
+import { classifyReviewTriage } from "#gh/pr/commands";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -2448,7 +2449,25 @@ describe("PR composite commands", () => {
           fetchChecks(123, false, false, 0),
         ]).pipe(Effect.provide(layer));
 
-        const result = { info, unresolvedThreads, visibleOpenThreads, summary, checks };
+        const classification = classifyReviewTriage(summary, checks);
+        const result = {
+          classification,
+          info,
+          unresolvedThreads,
+          visibleOpenThreads,
+          summary,
+          checks,
+        };
+
+        expect(result.classification).toEqual({
+          status: "needs_investigation",
+          reasons: [
+            "failed_checks",
+            "visible_open_review_threads",
+            "unreplied_review_threads",
+            "unresolved_review_threads",
+          ],
+        });
 
         // PR info from viewPR
         expect(result.info.number).toBe(123);
@@ -2991,6 +3010,19 @@ describe("PR composite commands", () => {
       expect(forwardedArgs).toEqual(["issue", "edit", "1", "--body", inventedShellSensitiveText]);
     }),
   );
+
+  it("review-triage classification: clear when checks and review threads are clean", () => {
+    expect(
+      classifyReviewTriage(
+        {
+          visibleOpenReviewThreadsCount: 0,
+          unrepliedReviewThreadsCount: 0,
+          unresolvedReviewThreadsCount: 0,
+        },
+        [{ name: "CI / build", state: "SUCCESS", bucket: "pass", link: "https://example.test" }],
+      ),
+    ).toEqual({ status: "clear", reasons: [] });
+  });
 });
 
 describe("error recovery hints - unit tests", () => {

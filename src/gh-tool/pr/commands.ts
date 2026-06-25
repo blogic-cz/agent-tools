@@ -1,7 +1,7 @@
 import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
-import type { PRStatusResult } from "#gh/types";
+import type { CheckResult, PRStatusResult } from "#gh/types";
 
 import { formatOption, logFormatted } from "#shared";
 import { GitHubService } from "#gh/service";
@@ -55,6 +55,25 @@ const withRepo = <A, E, R>(repo: Option.Option<string>, effect: Effect.Effect<A,
     const gh = yield* GitHubService;
     return yield* gh.withRepoTarget(Option.getOrNull(repo), effect);
   });
+
+type ReviewTriageSummary = {
+  readonly visibleOpenReviewThreadsCount: number;
+  readonly unrepliedReviewThreadsCount: number;
+  readonly unresolvedReviewThreadsCount: number;
+};
+
+export const classifyReviewTriage = (
+  summary: ReviewTriageSummary,
+  checks: readonly CheckResult[],
+) => {
+  const reasons = [
+    ...(checks.some((check) => check.bucket === "fail") ? ["failed_checks"] : []),
+    ...(summary.visibleOpenReviewThreadsCount > 0 ? ["visible_open_review_threads"] : []),
+    ...(summary.unrepliedReviewThreadsCount > 0 ? ["unreplied_review_threads"] : []),
+    ...(summary.unresolvedReviewThreadsCount > 0 ? ["unresolved_review_threads"] : []),
+  ];
+  return { status: reasons.length > 0 ? "needs_investigation" : "clear", reasons };
+};
 
 export const prViewCommand = Command.make(
   "view",
@@ -670,8 +689,9 @@ export const prReviewTriageCommand = Command.make(
           fetchDiscussionSummary(prNumber),
           fetchChecks(prNumber, false, false, 0),
         ]);
+        const classification = classifyReviewTriage(summary, checks);
         yield* logFormatted(
-          { info, unresolvedThreads, visibleOpenThreads, summary, checks },
+          { classification, info, unresolvedThreads, visibleOpenThreads, summary, checks },
           format,
         );
       }),
