@@ -19,6 +19,7 @@ export type ReviewRequest =
 
 export type PRViewInfo = PRInfo & {
   body: string;
+  author: { login: string; is_bot: boolean };
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "";
   reviewRequests: ReviewRequest[];
 };
