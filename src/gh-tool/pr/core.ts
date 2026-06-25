@@ -244,7 +244,10 @@ export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null)
   if (prNumber !== null) {
     args.push(String(prNumber));
   }
-  args.push("--json", "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body");
+  args.push(
+    "--json",
+    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body,reviewDecision,reviewRequests",
+  );
 
   const info = yield* gh.runGhJson<PRViewInfo>(args);
   return info;

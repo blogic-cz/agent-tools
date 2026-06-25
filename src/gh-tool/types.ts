@@ -13,8 +13,14 @@ export type PRInfo = {
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 };
 
+export type ReviewRequest =
+  | { __typename: "User"; login: string }
+  | { __typename: "Team"; name: string; slug: string };
+
 export type PRViewInfo = PRInfo & {
   body: string;
+  reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "";
+  reviewRequests: ReviewRequest[];
 };
 
 export type ReviewThread = {
