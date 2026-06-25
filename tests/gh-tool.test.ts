@@ -788,7 +788,7 @@ describe("PR view", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body",
+        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body,reviewDecision,reviewRequests",
       ]);
       expect(result.body).toBe(body);
     }),
@@ -831,7 +831,7 @@ describe("PR edit", () => {
           "view",
           "123",
           "--json",
-          "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body",
+          "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body,reviewDecision,reviewRequests",
         ],
       ]);
       expect(result.body).toBe(body);
