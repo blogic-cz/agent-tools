@@ -21,7 +21,7 @@ Bun async filesystem APIs are preferred throughout the project. Synchronous `nod
 
 ## Version control
 
-`but` (GitButler CLI) for write ops, `git` read-only → load skill `but`.
+Standard Git. Branch with `git switch -c <prefix>/<name>` (`feat/`, `fix/`, `chore/`, `refactor/`), conventional commits, `gh pr create` for PRs. Run `bun run format` before committing and `bun run check` before pushing.
 
 ## Publishing
 

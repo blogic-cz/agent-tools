@@ -26,10 +26,8 @@ Create a new feature branch from base, preserving current changes.
 **If there are uncommitted changes:**
 
 ```bash
-but oplog snapshot -m "before branch switch" && git checkout <base> && git pull origin <base> && git checkout -b <branch-name> && but oplog restore
+git stash && git checkout <base> && git pull origin <base> && git checkout -b <branch-name> && git stash pop
 ```
-
-`but oplog snapshot/restore` is the GitButler-safe alternative to `git stash` (which is banned in GitButler workspaces).
 
 **If working tree is clean:**
 
@@ -49,14 +47,9 @@ Merge all environment branches so test, prod, and main point to the same commit.
 export GIT_MERGE_AUTOEDIT=no GIT_PAGER=cat
 ```
 
-### Step 1: Safety snapshot and teardown
+### Step 1: Start from a clean base
 
-```bash
-but oplog snapshot -m "pre-sync safety"
-but teardown
-```
-
-If teardown fails with "No active branches found", manually checkout test:
+Ensure the working tree is clean (commit or stash first), then check out the base:
 
 ```bash
 git checkout test
@@ -122,20 +115,12 @@ echo "main:  $(git rev-parse origin/main)"
 
 All three must show the same SHA. If not, investigate and fix.
 
-### Step 8: Return to GitButler workspace
-
-```bash
-git checkout test
-but setup
-```
-
 ### Constraints
 
-- **ALWAYS snapshot before teardown** — protects uncommitted workspace files.
 - **ALWAYS use `--no-edit`** for merge commits — no interactive editors.
 - **ALWAYS set non-interactive env vars** before git commands.
 - **NEVER force push** — all merges should be fast-forward or regular merge.
-- **NEVER skip verification** (Step 7) — confirm all SHAs match before returning to workspace.
+- **NEVER skip verification** (Step 7) — confirm all SHAs match before finishing.
 
 ### Output
 
