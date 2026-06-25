@@ -23,7 +23,6 @@ import { fetchIssueTriage } from "#gh/issue/triage";
 import {
   createPR,
   editPR,
-  fetchChecks,
   fetchChecksForCommand,
   fetchFailedChecks,
   rerunChecks,
@@ -31,7 +30,6 @@ import {
 } from "#gh/pr/core";
 import {
   fetchComments,
-  fetchDiscussionSummary,
   fetchThreads,
   replyToComment,
   resolveThread,
@@ -44,7 +42,7 @@ import {
   resolveRequiredTextInput,
 } from "#gh/text-input";
 import { ConfigService } from "#config";
-import { classifyReviewTriage } from "#gh/pr/commands";
+import { classifyReviewTriage, fetchReviewTriage, parsePrNumbers } from "#gh/pr/commands";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -2441,23 +2439,7 @@ describe("PR composite commands", () => {
           },
         });
 
-        const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
-          viewPR(123),
-          fetchThreads(123, true),
-          fetchThreads(123, false, true),
-          fetchDiscussionSummary(123),
-          fetchChecks(123, false, false, 0),
-        ]).pipe(Effect.provide(layer));
-
-        const classification = classifyReviewTriage(summary, checks);
-        const result = {
-          classification,
-          info,
-          unresolvedThreads,
-          visibleOpenThreads,
-          summary,
-          checks,
-        };
+        const result = yield* fetchReviewTriage(123).pipe(Effect.provide(layer));
 
         expect(result.classification).toEqual({
           status: "needs_investigation",
@@ -3022,6 +3004,10 @@ describe("PR composite commands", () => {
         [{ name: "CI / build", state: "SUCCESS", bucket: "pass", link: "https://example.test" }],
       ),
     ).toEqual({ status: "clear", reasons: [] });
+  });
+
+  it("review-triage-batch parser: accepts comma-separated PR numbers", () => {
+    expect(parsePrNumbers("309, 314, nope, 0, 346")).toEqual([309, 314, 346]);
   });
 });
 

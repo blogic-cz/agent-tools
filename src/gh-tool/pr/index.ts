@@ -18,5 +18,6 @@ export {
   prSubmitReviewCommand,
   prThreadsCommand,
   prReviewTriageCommand,
+  prReviewTriageBatchCommand,
   prViewCommand,
 } from "./commands";

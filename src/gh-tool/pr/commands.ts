@@ -62,10 +62,15 @@ type ReviewTriageSummary = {
   readonly unresolvedReviewThreadsCount: number;
 };
 
+type ReviewTriageClassification = {
+  readonly status: "clear" | "needs_investigation";
+  readonly reasons: readonly string[];
+};
+
 export const classifyReviewTriage = (
   summary: ReviewTriageSummary,
   checks: readonly CheckResult[],
-) => {
+): ReviewTriageClassification => {
   const reasons = [
     ...(checks.some((check) => check.bucket === "fail") ? ["failed_checks"] : []),
     ...(summary.visibleOpenReviewThreadsCount > 0 ? ["visible_open_review_threads"] : []),
@@ -74,6 +79,26 @@ export const classifyReviewTriage = (
   ];
   return { status: reasons.length > 0 ? "needs_investigation" : "clear", reasons };
 };
+
+export const parsePrNumbers = (input: string): readonly number[] =>
+  input
+    .split(",")
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((number) => Number.isInteger(number) && number > 0);
+
+export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
+  prNumber: number | null,
+) {
+  const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
+    viewPR(prNumber),
+    fetchThreads(prNumber, true),
+    fetchThreads(prNumber, false, true),
+    fetchDiscussionSummary(prNumber),
+    fetchChecks(prNumber, false, false, 0),
+  ]);
+  const classification = classifyReviewTriage(summary, checks);
+  return { classification, info, unresolvedThreads, visibleOpenThreads, summary, checks };
+});
 
 export const prViewCommand = Command.make(
   "view",
@@ -682,23 +707,37 @@ export const prReviewTriageCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
-          viewPR(prNumber),
-          fetchThreads(prNumber, true),
-          fetchThreads(prNumber, false, true),
-          fetchDiscussionSummary(prNumber),
-          fetchChecks(prNumber, false, false, 0),
-        ]);
-        const classification = classifyReviewTriage(summary, checks);
-        yield* logFormatted(
-          { classification, info, unresolvedThreads, visibleOpenThreads, summary, checks },
-          format,
-        );
+        const result = yield* fetchReviewTriage(prNumber);
+        yield* logFormatted(result, format);
       }),
     ),
 ).pipe(
   Command.withDescription(
     "Composite: PR info + unresolved threads + visible-open threads + discussion summary + checks status in one call",
+  ),
+);
+
+export const prReviewTriageBatchCommand = Command.make(
+  "review-triage-batch",
+  {
+    format: formatOption,
+    prs: Flag.string("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
+    repo: repoOption,
+  },
+  ({ format, prs, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const results = yield* Effect.all(
+          parsePrNumbers(prs).map((prNumber) => fetchReviewTriage(prNumber)),
+          { concurrency: "unbounded" },
+        );
+        yield* logFormatted(results, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Composite: fetch review-triage output for multiple PRs in one gh-tool invocation",
   ),
 );
 
