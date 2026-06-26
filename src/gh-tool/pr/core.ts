@@ -1,4 +1,4 @@
-import { Console, Effect, Option, Result } from "effect";
+import { Clock, Console, Duration, Effect, Option, Result } from "effect";
 
 import type {
   BranchPRDetail,
@@ -12,6 +12,7 @@ import type {
   WorkflowRunDetail,
 } from "#gh/types";
 
+import type { GitHubServiceError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
@@ -480,6 +481,34 @@ export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
   if (opts.head !== null) args.push("--head", opts.head);
   if (opts.search !== null) args.push("--search", opts.search);
   return yield* gh.runGhJson<PRInfo[]>(args);
+});
+
+// CI-green != mergeable: GitHub recomputes mergeability asynchronously, leaving `mergeable` as
+// "UNKNOWN" for a beat. Agents were hand-polling `pr view` to wait this out (F3).
+const MAX_MERGEABLE_WAIT_SECONDS = 180;
+const MERGEABLE_POLL_INTERVAL_MS = 3000;
+
+export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
+  pr: number | null,
+  timeoutSeconds: number,
+) {
+  const cappedSeconds = Math.min(timeoutSeconds, MAX_MERGEABLE_WAIT_SECONDS);
+  const start = yield* Clock.currentTimeMillis;
+  const deadlineMs = Number(start) + cappedSeconds * 1000;
+
+  const poll = (): Effect.Effect<PRViewInfo, GitHubServiceError, GitHubService> =>
+    Effect.gen(function* () {
+      const info = yield* viewPR(pr);
+      const now = yield* Clock.currentTimeMillis;
+      // Settle once GitHub reports a definitive verdict, or give up at the (capped) deadline.
+      if (info.mergeable !== "UNKNOWN" || Number(now) >= deadlineMs) {
+        return info;
+      }
+      yield* Effect.sleep(Duration.millis(MERGEABLE_POLL_INTERVAL_MS));
+      return yield* poll();
+    });
+
+  return yield* poll();
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {

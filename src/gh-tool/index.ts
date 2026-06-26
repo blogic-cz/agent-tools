@@ -40,6 +40,7 @@ import {
   prReplyAndResolveCommand,
   prReviewTriageBatchCommand,
   prReviewTriageCommand,
+  prWaitMergeableCommand,
 } from "./pr/index";
 import { branchRenameCommand } from "./branch";
 import {
@@ -74,6 +75,7 @@ const prCommand = Command.make("pr", {}).pipe(
     prCloseCommand,
     prEditCommand,
     prMergeCommand,
+    prWaitMergeableCommand,
     prThreadsCommand,
     prCommentsCommand,
     prIssueCommentsCommand,

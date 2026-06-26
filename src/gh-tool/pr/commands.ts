@@ -29,6 +29,7 @@ import {
   mergePR,
   rerunChecks,
   viewPR,
+  waitForMergeable,
 } from "./core";
 import {
   fetchComments,
@@ -127,18 +128,33 @@ export const prViewCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    prs: Flag.string("prs").pipe(
+      Flag.withDescription("Comma-separated PR numbers to view in one call (overrides --pr)"),
+      Flag.optional,
+    ),
     repo: repoOption,
   },
-  ({ format, pr, repo }) =>
+  ({ format, pr, prs, repo }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
-        const prNumber = Option.getOrNull(pr);
-        const info = yield* viewPR(prNumber);
+        const batch = Option.getOrNull(prs);
+        if (batch !== null) {
+          const numbers = parsePrNumbers(batch);
+          const results = yield* Effect.all(
+            numbers.map((n) => viewPR(n).pipe(Effect.map((info) => ({ pr: n, info })))),
+            { concurrency: 5 },
+          );
+          yield* logFormatted({ count: results.length, prs: results }, format);
+          return;
+        }
+        const info = yield* viewPR(Option.getOrNull(pr));
         yield* logFormatted(info, format);
       }),
     ),
-).pipe(Command.withDescription("View PR information"));
+).pipe(
+  Command.withDescription("View PR information (use --prs 1,2,3 to view several in one call)"),
+);
 
 export const prStatusCommand = Command.make(
   "status",
@@ -197,6 +213,36 @@ export const prListCommand = Command.make(
 ).pipe(
   Command.withDescription(
     "List PRs (default: open; filter with --state/--author/--base/--head/--search)",
+  ),
+);
+
+export const prWaitMergeableCommand = Command.make(
+  "wait-mergeable",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    timeout: Flag.integer("timeout").pipe(
+      Flag.withDescription(
+        "Max seconds to wait for a definitive mergeable verdict (capped at 180)",
+      ),
+      Flag.withDefault(60),
+    ),
+    repo: repoOption,
+  },
+  ({ format, pr, timeout, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const info = yield* waitForMergeable(Option.getOrNull(pr), timeout);
+        yield* logFormatted(info, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Poll until GitHub reports a definitive mergeable verdict (MERGEABLE/CONFLICTING) or timeout",
   ),
 );
 
@@ -388,6 +434,10 @@ export const prChecksCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    prs: Flag.string("prs").pipe(
+      Flag.withDescription("Comma-separated PR numbers for a one-shot batch snapshot (no --watch)"),
+      Flag.optional,
+    ),
     repo: repoOption,
     timeout: Flag.integer("timeout").pipe(
       Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
@@ -398,16 +448,33 @@ export const prChecksCommand = Command.make(
       Flag.withDescription("Watch until checks complete or timeout"),
     ),
   },
-  ({ failFast, format, pr, repo, timeout, watch }) =>
+  ({ failFast, format, pr, prs, repo, timeout, watch }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
-        const prNumber = Option.getOrNull(pr);
-        const checks = yield* fetchChecksForCommand(prNumber, watch, failFast, timeout);
+        const batch = Option.getOrNull(prs);
+        if (batch !== null) {
+          const numbers = parsePrNumbers(batch);
+          const results = yield* Effect.all(
+            numbers.map((n) =>
+              fetchChecks(n, false, failFast, timeout).pipe(
+                Effect.map((checks) => ({ pr: n, checks })),
+              ),
+            ),
+            { concurrency: 5 },
+          );
+          yield* logFormatted({ count: results.length, prs: results }, format);
+          return;
+        }
+        const checks = yield* fetchChecksForCommand(Option.getOrNull(pr), watch, failFast, timeout);
         yield* logFormatted(checks, format);
       }),
     ),
-).pipe(Command.withDescription("Fetch CI check status for a PR (optionally watch with timeout)"));
+).pipe(
+  Command.withDescription(
+    "Fetch CI check status for a PR (--watch to block; --prs 1,2,3 for a batch snapshot)",
+  ),
+);
 
 export const prChecksFailedCommand = Command.make(
   "checks-failed",

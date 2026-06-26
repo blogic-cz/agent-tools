@@ -18,6 +18,7 @@ export {
   prStatusCommand,
   prSubmitReviewCommand,
   prThreadsCommand,
+  prWaitMergeableCommand,
   prReviewTriageCommand,
   prReviewTriageBatchCommand,
   prViewCommand,
