@@ -12,7 +12,6 @@ import type {
   WorkflowRunDetail,
 } from "#gh/types";
 
-import type { GitHubServiceError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
@@ -496,19 +495,26 @@ export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
   const start = yield* Clock.currentTimeMillis;
   const deadlineMs = Number(start) + cappedSeconds * 1000;
 
-  const poll = (): Effect.Effect<PRViewInfo, GitHubServiceError, GitHubService> =>
-    Effect.gen(function* () {
-      const info = yield* viewPR(pr);
-      const now = yield* Clock.currentTimeMillis;
-      // Settle once GitHub reports a definitive verdict, or give up at the (capped) deadline.
-      if (info.mergeable !== "UNKNOWN" || Number(now) >= deadlineMs) {
-        return info;
-      }
-      yield* Effect.sleep(Duration.millis(MERGEABLE_POLL_INTERVAL_MS));
-      return yield* poll();
-    });
+  // Effect.whileLoop (not bare recursion) to match the prerequisites/runtime.ts polling convention
+  // and keep TestClock.adjust able to advance the Effect.sleep without real wall-clock waits.
+  let latest: PRViewInfo | undefined;
+  yield* Effect.whileLoop({
+    while: () => latest === undefined,
+    body: () =>
+      Effect.gen(function* () {
+        const info = yield* viewPR(pr);
+        const now = yield* Clock.currentTimeMillis;
+        // Settle once GitHub reports a definitive verdict, or give up at the (capped) deadline.
+        if (info.mergeable !== "UNKNOWN" || Number(now) >= deadlineMs) {
+          latest = info;
+          return;
+        }
+        yield* Effect.sleep(Duration.millis(MERGEABLE_POLL_INTERVAL_MS));
+      }),
+    step: () => undefined,
+  });
 
-  return yield* poll();
+  return latest ?? (yield* viewPR(pr));
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {

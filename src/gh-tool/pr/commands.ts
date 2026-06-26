@@ -1,5 +1,5 @@
 import { Command, Flag } from "effect/unstable/cli";
-import { Effect, Option } from "effect";
+import { Console, Effect, Option } from "effect";
 
 import type { CheckResult, PRStatusResult } from "#gh/types";
 
@@ -454,6 +454,11 @@ export const prChecksCommand = Command.make(
       Effect.gen(function* () {
         const batch = Option.getOrNull(prs);
         if (batch !== null) {
+          if (watch) {
+            yield* Console.warn(
+              "ℹ️  --watch is ignored with --prs; batch mode returns a one-shot snapshot per PR.",
+            );
+          }
           const numbers = parsePrNumbers(batch);
           const results = yield* Effect.all(
             numbers.map((n) =>
