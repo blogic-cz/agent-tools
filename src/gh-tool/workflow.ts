@@ -241,7 +241,8 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
       return Effect.fail(error);
     }),
     Effect.timeoutOrElse({
-      duration: timeoutSeconds * 1000,
+      // max(1) so `--timeout 0` can't fire an instant timeout that skips the watch entirely.
+      duration: Math.max(1, timeoutSeconds) * 1000,
       orElse: () => Effect.succeed(null),
     }),
   );
@@ -655,7 +656,9 @@ export const workflowWatchCommand = Command.make(
     repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
     timeout: Flag.integer("timeout").pipe(
-      Flag.withDescription("Max seconds to block before returning a snapshot (default: 600)"),
+      Flag.withDescription(
+        `Max seconds to block before returning a snapshot (default: ${DEFAULT_WATCH_RUN_TIMEOUT_SECONDS})`,
+      ),
       Flag.withDefault(DEFAULT_WATCH_RUN_TIMEOUT_SECONDS),
     ),
   },

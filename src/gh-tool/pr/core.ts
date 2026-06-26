@@ -875,7 +875,8 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     // The fix for the token-wasting case is the orElse: on timeout return a snapshot, never nothing.
     const watchOutcome = yield* gh.runGh(watchArgs).pipe(
       Effect.timeoutOrElse({
-        duration: timeoutSeconds * 1000,
+        // max(1) so `--timeout 0` can't fire an instant timeout that skips the watch entirely.
+        duration: Math.max(1, timeoutSeconds) * 1000,
         orElse: () => Effect.succeed(null),
       }),
     );
