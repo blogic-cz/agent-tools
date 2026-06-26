@@ -16,13 +16,15 @@ Auth: env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWO
 ## Commands
 
 ```bash
+bun db-tool envs                                       # List configured environments + default (no network)
 bun db-tool sql --env local --sql "SELECT * FROM users LIMIT 5"
 bun db-tool sql --env test --sql "SELECT count(*) FROM organizations"
 bun db-tool schema --env local --mode tables          # List tables
 bun db-tool schema --env local --mode columns --table users # Show table schema
+bun db-tool commands                                   # Full command/flag tree (one call, no repeated --help)
 ```
 
-Environment is any string (e.g. `local`, `test`, `prod`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.
+Run `bun db-tool envs` to see valid environment names instead of guessing. Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.
 
 ## DB VPN Prerequisites
 
@@ -32,6 +34,7 @@ DB commands try direct database access first. If that succeeds, VPN setup is ski
 
 ## Tips
 
-- Use `--help` on any subcommand for full options.
+- Use `bun db-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
+- Output defaults to **TOON** (token-efficient) — leave it as-is to save tokens. Add `--format json` only when you'll machine-parse the result (e.g. pipe to `jq`).
 - Error responses include `hint`, `nextCommand`, and `retryable` fields — always check them on failure.
 - Prefer CLI tool over MCP tools — more efficient, doesn't load extra context.
