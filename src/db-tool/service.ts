@@ -9,7 +9,7 @@ import { resolveEnvTemplate } from "#shared/env-template";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
-import { DbConfigService, DbConfigServiceLayer, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
+import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import {
   DbConnectionError,
   DbMutationBlockedError,
@@ -829,5 +829,3 @@ export class DbService extends Context.Service<
     ),
   );
 }
-
-export const DbServiceLayer = DbService.layer.pipe(Layer.provide(DbConfigServiceLayer));

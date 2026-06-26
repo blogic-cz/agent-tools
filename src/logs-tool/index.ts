@@ -20,7 +20,13 @@ import { Console, Effect, Layer, Option, Result } from "effect";
 
 import type { Environment, LogResult, ReadOptions } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import {
+  makeSchemaCommand,
+  formatOption,
+  formatOutput,
+  renderCauseToStderr,
+  VERSION,
+} from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { LogsConfigError, LogsNotFoundError, LogsReadError, LogsTimeoutError } from "./errors";
@@ -214,9 +220,11 @@ const readCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Read application logs"));
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("logs-tool", {}).pipe(
   Command.withDescription("Application Logs Tool for Coding Agents"),
-  Command.withSubcommands([listCommand, readCommand]),
+  Command.withSubcommands([listCommand, readCommand, commandsCommand]),
 );
 
 const cli = Command.run(mainCommand, {

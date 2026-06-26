@@ -8,6 +8,8 @@ export { commonArgOptions, parseCommonArgs } from "./cli";
 
 export { renderCauseToStderr } from "./error-renderer";
 
+export { dumpCommandSchema, makeSchemaCommand, type CommandSchema } from "./schema-dump";
+
 // eslint-disable-next-line import/no-relative-parent-imports -- package.json lives at project root, outside src/
 import pkg from "../../package.json" with { type: "json" };
 export const VERSION = pkg.version;

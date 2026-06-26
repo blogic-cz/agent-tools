@@ -13,7 +13,7 @@ import { Console, Effect, Layer, Result } from "effect";
 
 import type { MessageSummary, SessionResult, SessionSource } from "./types";
 
-import { formatOption, formatOutput, VERSION } from "#shared";
+import { makeSchemaCommand, formatOption, formatOutput, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
@@ -289,9 +289,11 @@ const readCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Read all messages from a session"));
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("session-tool", {}).pipe(
   Command.withDescription("OpenCode session history tool"),
-  Command.withSubcommands([listCommand, readCommand, searchCommand]),
+  Command.withSubcommands([listCommand, readCommand, searchCommand, commandsCommand]),
 );
 
 const cli = Command.run(mainCommand, {
