@@ -15,6 +15,7 @@ import { collectProcessOutput, quoteShellArg } from "#shared/exec";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
+import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { isKubectlCommandAllowed } from "./security";
 
 export class K8sService extends Context.Service<
@@ -146,6 +147,40 @@ export class K8sService extends Context.Service<
             ),
           );
 
+        /**
+         * Cheap pre-flight: is the cluster API reachable right now? Returns true when the probe
+         * is disabled (apiProbeTimeoutMs <= 0) so behaviour is unchanged unless a probe can run.
+         * A false result lets the command fail fast instead of hanging until the full timeoutMs.
+         */
+        const probeApiReachable = (
+          context: string,
+          kubeconfig: string | undefined,
+          timeoutMs: number,
+        ) =>
+          Effect.gen(function* () {
+            if (timeoutMs <= 0) {
+              return true;
+            }
+
+            const probe = ChildProcess.make(
+              "kubectl",
+              buildApiProbeArgs(kubeconfig, context, timeoutMs),
+              {
+                stdout: "pipe",
+                stderr: "pipe",
+              },
+            );
+
+            const result = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const process = yield* executor.spawn(probe);
+                return yield* collectProcessOutput(process);
+              }),
+            ).pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 1 })));
+
+            return result.exitCode === 0;
+          });
+
         const resolveContext = Effect.fn("K8sService.resolveContext")(function* (
           profile: string | undefined,
           k8sConfig: K8sConfig,
@@ -223,12 +258,23 @@ export class K8sService extends Context.Service<
         ) {
           const k8sConfig = yield* requireK8sConfig(profile);
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
+          const apiProbeTimeoutMs = k8sConfig.apiProbeTimeoutMs ?? 2000;
           return yield* runWithProfilePrerequisites(
             config ?? {},
             k8sConfig,
             runPrerequisiteCommand,
             Effect.gen(function* () {
               const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
+
+              const reachable = yield* probeApiReachable(context, kubeconfig, apiProbeTimeoutMs);
+              if (!reachable) {
+                return yield* new K8sContextError({
+                  message: `Kubernetes API server (${k8sConfig.clusterId}) not reachable within ${apiProbeTimeoutMs}ms. VPN likely not connected, or the cluster API is degraded.`,
+                  clusterId: k8sConfig.clusterId,
+                  hint: "Check the VPN connection and cluster health, then retry. Set kubernetes.apiProbeTimeoutMs to 0 in agent-tools.json5 to disable this pre-flight probe.",
+                });
+              }
+
               const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
 
               const resultOption = yield* runShellCommand(fullCommand, timeoutMs);

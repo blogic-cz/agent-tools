@@ -71,6 +71,13 @@ export type K8sConfig = ProfilePrerequisites & {
   /** Named namespaces, e.g. { test: "my-app-test", prod: "my-app-prod" } */
   namespaces: Record<string, string>;
   timeoutMs?: number;
+  /**
+   * Timeout in milliseconds for the cheap Kubernetes API-server reachability probe run
+   * before each command. When the cluster API is unreachable (VPN down / off the office
+   * network, or the API degraded) a real kubectl command hangs until `timeoutMs`; the
+   * probe lets it fail fast with a clear message instead. Set to 0 to disable. Defaults to 2000.
+   */
+  apiProbeTimeoutMs?: number;
 };
 
 /** Single database environment connection details */

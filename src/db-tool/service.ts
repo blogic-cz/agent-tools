@@ -8,6 +8,7 @@ import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
+import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { DbConfigService, DbConfigServiceLayer, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import {
   DbConnectionError,
@@ -51,26 +52,8 @@ export function resolveDbAccessMode(
   };
 }
 
-/**
- * Build the kubectl args for the lightweight API-server reachability probe.
- * Hitting `/version` via `--raw` is the cheapest authenticated round-trip; `--request-timeout`
- * bounds it so an unreachable server (VPN down, off the office network) fails fast instead of
- * letting a subsequent `kubectl port-forward` hang on a silent TCP connect.
- */
-export function buildApiProbeArgs(
-  kubeconfig: string | undefined,
-  context: string,
-  timeoutMs: number,
-): string[] {
-  return [
-    ...(kubeconfig ? ["--kubeconfig", kubeconfig] : []),
-    "--context",
-    context,
-    "get",
-    "--raw=/version",
-    `--request-timeout=${timeoutMs}ms`,
-  ];
-}
+// Re-exported from the shared probe so existing `#db/service` consumers keep working.
+export { buildApiProbeArgs } from "#shared/k8s-probe";
 
 export class DbService extends Context.Service<
   DbService,

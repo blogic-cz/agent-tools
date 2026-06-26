@@ -165,6 +165,7 @@ describe("K8sService", () => {
         expect(result.command).toBe("kubectl --context selected-context get pods");
         expect(observedShellCommands).toEqual([
           selectedContextQuery,
+          "kubectl --context selected-context get --raw=/version --request-timeout=2000ms",
           "kubectl --context selected-context get pods",
         ]);
       }).pipe(
@@ -173,6 +174,11 @@ describe("K8sService", () => {
           createMockChildProcessSpawnerLayer(
             {
               [selectedContextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              "kubectl --context selected-context get --raw=/version --request-timeout=2000ms": {
+                stdout: '{"major":"1"}',
+                stderr: "",
+                exitCode: 0,
+              },
               "kubectl --context selected-context get pods": {
                 stdout: "pod-a\n",
                 stderr: "",
@@ -215,6 +221,7 @@ describe("K8sService", () => {
           );
           expect(observedShellCommands).toEqual([
             contextQuery,
+            "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms",
             "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods",
           ]);
         } finally {
@@ -230,6 +237,12 @@ describe("K8sService", () => {
           createMockChildProcessSpawnerLayer(
             {
               [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms":
+                {
+                  stdout: '{"major":"1"}',
+                  stderr: "",
+                  exitCode: 0,
+                },
               "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods": {
                 stdout: "pod-a\n",
                 stderr: "",
@@ -247,6 +260,50 @@ describe("K8sService", () => {
                 clusterId: "selected-cluster",
                 namespaces: { test: "selected" },
               },
+            },
+          }),
+        ),
+      );
+    });
+
+    it.effect("fails fast when the API-server reachability probe does not pass", () => {
+      const observedShellCommands: Array<string> = [];
+      const selectedContextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+      const probeCommand =
+        "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
+
+      return Effect.gen(function* () {
+        const service = yield* K8sService;
+        const result = yield* service.runKubectl("get pods", false, "selected").pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (left) => {
+            expect(left._tag).toBe("K8sContextError");
+            expect(left.message).toContain("not reachable within 2000ms");
+          },
+          onSuccess: () => expect.fail("Expected fast-fail but got success"),
+        });
+        // The real `get pods` command must never run once the probe fails.
+        expect(observedShellCommands).toEqual([selectedContextQuery, probeCommand]);
+      }).pipe(
+        Effect.provide(K8sService.layer),
+        Effect.provide(
+          createMockChildProcessSpawnerLayer(
+            {
+              [selectedContextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              [probeCommand]: {
+                stdout: "",
+                stderr: "Unable to connect to the server",
+                exitCode: 1,
+              },
+            },
+            observedShellCommands,
+          ),
+        ),
+        Effect.provide(
+          Layer.succeed(ConfigService, {
+            kubernetes: {
+              selected: { clusterId: "selected-cluster", namespaces: { test: "selected" } },
             },
           }),
         ),

@@ -80,6 +80,7 @@ const K8sConfigSchema = Schema.Struct({
   clusterId: Schema.String,
   namespaces: Schema.Record(Schema.String, Schema.String),
   timeoutMs: Schema.optionalKey(Schema.Number),
+  apiProbeTimeoutMs: Schema.optionalKey(Schema.Number),
   prerequisites: Schema.optionalKey(PrerequisitesSchema),
   vpn: Schema.optionalKey(Schema.String),
 });
