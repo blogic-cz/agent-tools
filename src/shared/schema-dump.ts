@@ -81,7 +81,7 @@ export const dumpCommandSchema = (command: unknown): CommandSchema => {
 };
 
 /**
- * Builds the `schema` subcommand for a tool. Pass a thunk returning the tool's root command so the
+ * Builds the `commands` subcommand for a tool. Pass a thunk returning the tool's root command so the
  * dump reflects the fully-assembled tree (the root is defined after its subcommands, incl. this one).
  */
 export const makeSchemaCommand = (getRoot: () => unknown) =>

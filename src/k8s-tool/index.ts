@@ -6,9 +6,9 @@ import { Console, Effect, Layer, Option } from "effect";
 import type { CommandResult } from "./types";
 
 import {
+  makeSchemaCommand,
   formatOption,
   formatOutput,
-  makeSchemaCommand,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
