@@ -12,6 +12,7 @@ import type {
   WorkflowRunDetail,
 } from "#gh/types";
 
+import { clampWatchSeconds } from "#gh/config";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
@@ -873,10 +874,10 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
 
     // Block for the caller's requested --timeout (no artificial cap — blocking isn't the problem).
     // The fix for the token-wasting case is the orElse: on timeout return a snapshot, never nothing.
+    const effectiveSeconds = clampWatchSeconds(timeoutSeconds);
     const watchOutcome = yield* gh.runGh(watchArgs).pipe(
       Effect.timeoutOrElse({
-        // max(1) so `--timeout 0` can't fire an instant timeout that skips the watch entirely.
-        duration: Math.max(1, timeoutSeconds) * 1000,
+        duration: effectiveSeconds * 1000,
         orElse: () => Effect.succeed(null),
       }),
     );
@@ -885,7 +886,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     if (watchOutcome === null && results.some((c) => c.bucket === "pending")) {
       const pending = results.filter((c) => c.bucket === "pending").length;
       yield* Console.warn(
-        `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
+        `ℹ️  Watch timed out after ${effectiveSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
           `Re-run to keep watching:\n   ${buildChecksCommand(pr, true)}`,
       );
     }

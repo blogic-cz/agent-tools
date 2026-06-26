@@ -2,6 +2,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Console, Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
+import { clampWatchSeconds } from "./config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
 import type { CheckRunAnnotation, JobAnnotations } from "./types";
@@ -222,6 +223,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
   timeoutSeconds: number,
 ) {
   const gh = yield* GitHubService;
+  const effectiveSeconds = clampWatchSeconds(timeoutSeconds);
 
   const watchArgs = ["run", "watch", String(runId), "--exit-status"];
   if (repo !== null) {
@@ -241,8 +243,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
       return Effect.fail(error);
     }),
     Effect.timeoutOrElse({
-      // max(1) so `--timeout 0` can't fire an instant timeout that skips the watch entirely.
-      duration: Math.max(1, timeoutSeconds) * 1000,
+      duration: effectiveSeconds * 1000,
       orElse: () => Effect.succeed(null),
     }),
   );
@@ -260,7 +261,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
     })),
     watchOutput:
       result === null
-        ? `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`
+        ? `(watch timed out after ${effectiveSeconds}s; status taken from snapshot — re-run to keep watching)`
         : result.stdout,
   };
 });

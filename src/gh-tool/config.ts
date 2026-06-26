@@ -5,3 +5,7 @@ export const GRAPHQL_PAGE_SIZE = 100 as const;
 export const GH_BINARY = "gh" as const;
 
 export const MERGE_STRATEGIES = ["squash", "merge", "rebase"] as const;
+
+// Floor a watch --timeout at 1s so `--timeout 0` can't fire an instant timeout that skips the wait.
+// Shared so the enforced duration and the user-facing "timed out after Ns" message never disagree.
+export const clampWatchSeconds = (seconds: number): number => Math.max(1, seconds);
