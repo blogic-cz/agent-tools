@@ -5,7 +5,13 @@ import { Console, Effect, Layer, Option } from "effect";
 
 import type { CommandResult } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import {
+  makeSchemaCommand,
+  formatOption,
+  formatOutput,
+  renderCauseToStderr,
+  VERSION,
+} from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { K8sService, K8sServiceLayer } from "./service";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
@@ -415,6 +421,8 @@ const topCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Show pod CPU/memory usage (kubectl top pod)"));
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("k8s-tool", {}).pipe(
   Command.withDescription("Kubernetes CLI Tool for Coding Agents"),
   Command.withSubcommands([
@@ -424,6 +432,7 @@ const mainCommand = Command.make("k8s-tool", {}).pipe(
     describeCommand,
     execCommand,
     topCommand,
+    commandsCommand,
   ]),
 );
 

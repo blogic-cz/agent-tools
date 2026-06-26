@@ -3,7 +3,7 @@ import { Command } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
-import { renderCauseToStderr, VERSION } from "#shared";
+import { makeSchemaCommand, renderCauseToStderr, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ConfigServiceLayer } from "#config";
 import {
@@ -150,6 +150,8 @@ const releaseCommand = Command.make("release", {}).pipe(
   ]),
 );
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("gh-tool", {}).pipe(
   Command.withDescription(
     `GitHub CLI Tool for Coding Agents
@@ -188,6 +190,7 @@ WORKFLOW FOR AI AGENTS:
     branchCommand,
     workflowCommand,
     releaseCommand,
+    commandsCommand,
   ]),
 );
 

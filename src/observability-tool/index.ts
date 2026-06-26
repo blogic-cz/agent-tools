@@ -7,7 +7,7 @@ import { Command } from "effect/unstable/cli";
 
 import { ConfigServiceLayer } from "#config";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
-import { VERSION } from "#shared";
+import { makeSchemaCommand, VERSION } from "#shared";
 
 import { metricsCommand } from "./metrics";
 import { logsCommand } from "./logs";
@@ -15,11 +15,13 @@ import { traceCommand } from "./trace";
 
 const renderCauseToStderr = (cause: Cause.Cause<unknown>) => Console.error(cause.toString());
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("observability-tool", {}).pipe(
   Command.withDescription(
     "LGTM observability queries — Tempo traces, Loki logs, Prometheus metrics",
   ),
-  Command.withSubcommands([traceCommand, metricsCommand, logsCommand]),
+  Command.withSubcommands([traceCommand, metricsCommand, logsCommand, commandsCommand]),
 );
 
 const cli = Command.run(mainCommand, { version: VERSION });

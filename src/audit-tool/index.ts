@@ -3,7 +3,13 @@ import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import {
+  makeSchemaCommand,
+  formatOption,
+  formatOutput,
+  renderCauseToStderr,
+  VERSION,
+} from "#shared";
 import { AuditService, AuditServiceLayer, withAudit } from "#shared/audit";
 
 type AuditToolResult<T> = {
@@ -81,9 +87,11 @@ const purgeCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Delete old audit log entries"));
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("audit-tool", {}).pipe(
   Command.withDescription("Audit log inspection and maintenance for agent-tools"),
-  Command.withSubcommands([listCommand, purgeCommand]),
+  Command.withSubcommands([listCommand, purgeCommand, commandsCommand]),
 );
 
 const cli = Command.run(mainCommand, {

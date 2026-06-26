@@ -876,8 +876,10 @@ export const prReviewTriageBatchCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
+        const numbers = parsePrNumbers(prs);
+        if (numbers.length === 0) return yield* emptyBatchError(prs);
         const results = yield* Effect.all(
-          parsePrNumbers(prs).map((prNumber) => fetchReviewTriage(prNumber)),
+          numbers.map((prNumber) => fetchReviewTriage(prNumber)),
           { concurrency: "unbounded" },
         );
         yield* logFormatted(results, format);

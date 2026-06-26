@@ -5,7 +5,13 @@ import { Console, Effect, Layer, Option } from "effect";
 
 import type { SchemaMode } from "./types";
 
-import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import {
+  makeSchemaCommand,
+  formatOption,
+  formatOutput,
+  renderCauseToStderr,
+  VERSION,
+} from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { DbConfigService, makeDbConfigLayer } from "./config-service";
@@ -133,9 +139,11 @@ const envsCommand = Command.make(
   Command.withDescription("List configured database environments and the default (no network)"),
 );
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("db-tool", {}).pipe(
   Command.withDescription("Database Query Tool for Coding Agents"),
-  Command.withSubcommands([sqlCommand, schemaCommand, envsCommand]),
+  Command.withSubcommands([sqlCommand, schemaCommand, envsCommand, commandsCommand]),
 );
 
 const cli = Command.run(mainCommand, {
@@ -145,7 +153,9 @@ const cli = Command.run(mainCommand, {
 const dbConfigLayer = makeDbConfigLayer(profileArg);
 
 const MainLayer = DbService.layer.pipe(
-  Layer.provide(dbConfigLayer),
+  // provideMerge (not provide) so DbConfigService stays in the program context for the `envs` command,
+  // which reads it directly rather than going through DbService.
+  Layer.provideMerge(dbConfigLayer),
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),
   Layer.provideMerge(AuditServiceLayer),

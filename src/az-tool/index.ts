@@ -3,7 +3,14 @@ import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 
-import { formatAny, formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
+import {
+  makeSchemaCommand,
+  formatAny,
+  formatOption,
+  formatOutput,
+  renderCauseToStderr,
+  VERSION,
+} from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import {
   findFailedJobs,
@@ -173,6 +180,8 @@ EXAMPLES:
 // Main command with subcommands
 // ---------------------------------------------------------------------------
 
+const commandsCommand = makeSchemaCommand(() => mainCommand);
+
 const mainCommand = Command.make("az-tool", {}).pipe(
   Command.withDescription(
     `Azure CLI Tool for Coding Agents (READ-ONLY)
@@ -187,7 +196,7 @@ Typed build subcommands:
 Raw az wrapper:
   az-tool cmd --cmd "pipelines list"`,
   ),
-  Command.withSubcommands([buildCommand, cmdCommand]),
+  Command.withSubcommands([buildCommand, cmdCommand, commandsCommand]),
 );
 
 const cli = Command.run(mainCommand, {
