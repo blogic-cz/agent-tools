@@ -24,5 +24,6 @@ Environment is any string (e.g. `local`, `test`). Set `defaultEnvironment` in `a
 
 ## Tips
 
-- Use `--help` for full options.
+- Use `bun logs-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
+- Output defaults to **TOON** (token-efficient) — leave it as-is to save tokens. Add `--format json` only when you'll machine-parse the result.
 - Error responses include `hint`, `nextCommand`, and `retryable` fields — always check them on failure.

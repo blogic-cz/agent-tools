@@ -20,9 +20,6 @@ import { runLocalCommand } from "./helpers";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
-// A single blocking `--watch` is capped here so an agent never loses a whole turn to a 30-min
-// foreground wait. On hitting the cap we return the partial snapshot, not a failure (H1).
-const MAX_WATCH_SECONDS = 120;
 
 const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string) {
   const gh = yield* GitHubService;
@@ -874,11 +871,12 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       watchArgs.push("--fail-fast");
     }
 
-    // Cap the blocking wait; on timeout fall through to a snapshot instead of failing with no state.
-    const cappedSeconds = Math.min(timeoutSeconds, MAX_WATCH_SECONDS);
+    // Block for the caller's requested --timeout (no artificial cap — blocking isn't the problem;
+    // --timeout is validated >= 1s at the CLI boundary). On timeout return a snapshot, never
+    // nothing — that was the actual token-wasting bug.
     const watchOutcome = yield* gh.runGh(watchArgs).pipe(
       Effect.timeoutOrElse({
-        duration: cappedSeconds * 1000,
+        duration: timeoutSeconds * 1000,
         orElse: () => Effect.succeed(null),
       }),
     );
@@ -887,7 +885,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     if (watchOutcome === null && results.some((c) => c.bucket === "pending")) {
       const pending = results.filter((c) => c.bucket === "pending").length;
       yield* Console.warn(
-        `ℹ️  Watch capped at ${cappedSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
+        `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
           `Re-run to keep watching:\n   ${buildChecksCommand(pr, true)}`,
       );
     }

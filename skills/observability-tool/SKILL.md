@@ -70,3 +70,5 @@ If a span ID is found in multiple traces, the tool returns an `AMBIGUOUS_SPAN_ID
 - Span search auto-widens from 1h to 24h. Pass explicit `--start`/`--end` to override.
 - Use `metrics query` for quick health and service checks across the LGTM stack.
 - Tempo datasource UID is discovered automatically from Grafana datasources.
+- Use `bun observability-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
+- Output defaults to **TOON** (token-efficient) — leave it as-is to save tokens. Add `--format json` only when you'll machine-parse the result.

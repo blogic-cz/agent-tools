@@ -31,6 +31,6 @@ Use `--profile <name>` to select a named profile when multiple Azure DevOps orga
 
 ## Tips
 
-- Use `--help` on any subcommand for full options.
+- Use `bun az-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
 - Error responses include `hint`, `nextCommand`, and `retryable` fields — always check them on failure.
 - Prefer CLI tool over MCP tools — more efficient, doesn't load extra context.

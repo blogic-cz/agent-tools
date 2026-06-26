@@ -2,6 +2,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Console, Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
+import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
 import type { CheckRunAnnotation, JobAnnotations } from "./types";
@@ -212,11 +213,15 @@ const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo
   };
 });
 
-// `gh run watch` has no native timeout and was observed hanging a turn for 36 min. Cap it and
-// fall back to a one-shot snapshot, mirroring the `pr checks --watch` cap (M1).
-const WATCH_RUN_TIMEOUT_SECONDS = 120;
+// `gh run watch` has no native timeout (observed hanging 36 min). Block for the caller's --timeout,
+// then fall back to a one-shot snapshot so a timeout never returns nothing.
+const DEFAULT_WATCH_RUN_TIMEOUT_SECONDS = CI_CHECK_WATCH_TIMEOUT_MS / 1000;
 
-const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: string | null) {
+const watchRun = Effect.fn("workflow.watchRun")(function* (
+  runId: number,
+  repo: string | null,
+  timeoutSeconds: number,
+) {
   const gh = yield* GitHubService;
 
   const watchArgs = ["run", "watch", String(runId), "--exit-status"];
@@ -237,7 +242,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: 
       return Effect.fail(error);
     }),
     Effect.timeoutOrElse({
-      duration: WATCH_RUN_TIMEOUT_SECONDS * 1000,
+      duration: timeoutSeconds * 1000,
       orElse: () => Effect.succeed(null),
     }),
   );
@@ -255,7 +260,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: 
     })),
     watchOutput:
       result === null
-        ? `(watch capped at ${WATCH_RUN_TIMEOUT_SECONDS}s; status taken from snapshot — re-run to keep watching)`
+        ? `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`
         : result.stdout,
   };
 });
@@ -650,11 +655,21 @@ export const workflowWatchCommand = Command.make(
     format: formatOption,
     repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
+    timeout: Flag.integer("timeout").pipe(
+      Flag.withDescription(
+        `Max seconds to block before returning a snapshot (default: ${DEFAULT_WATCH_RUN_TIMEOUT_SECONDS}, minimum 1)`,
+      ),
+      Flag.withDefault(DEFAULT_WATCH_RUN_TIMEOUT_SECONDS),
+      Flag.filter(
+        (n) => n >= 1,
+        () => "--timeout must be at least 1 second",
+      ),
+    ),
   },
-  ({ format, repo, run }) =>
+  ({ format, repo, run, timeout }) =>
     Effect.gen(function* () {
       const resolvedRepo = yield* resolveRepoArg(repo);
-      const result = yield* watchRun(run, resolvedRepo);
+      const result = yield* watchRun(run, resolvedRepo, timeout);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Watch a workflow run until it completes, then show final status"));
