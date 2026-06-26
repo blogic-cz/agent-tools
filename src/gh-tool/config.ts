@@ -6,6 +6,7 @@ export const GH_BINARY = "gh" as const;
 
 export const MERGE_STRATEGIES = ["squash", "merge", "rebase"] as const;
 
-// Floor a watch --timeout at 1s so `--timeout 0` can't fire an instant timeout that skips the wait.
-// Shared so the enforced duration and the user-facing "timed out after Ns" message never disagree.
+// Floor a watch --timeout at 1s so a 0 or negative value can't fire an instant timeout that skips
+// the wait. Shared so the enforced duration and the "timed out after Ns" message never disagree
+// (both use the clamped value, so a negative input reports "1s", not e.g. "-5s").
 export const clampWatchSeconds = (seconds: number): number => Math.max(1, seconds);

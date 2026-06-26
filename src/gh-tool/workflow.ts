@@ -2,7 +2,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Console, Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
-import { clampWatchSeconds } from "./config";
+import { CI_CHECK_WATCH_TIMEOUT_MS, clampWatchSeconds } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
 import type { CheckRunAnnotation, JobAnnotations } from "./types";
@@ -215,7 +215,7 @@ const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo
 
 // `gh run watch` has no native timeout (observed hanging 36 min). Block for the caller's --timeout,
 // then fall back to a one-shot snapshot so a timeout never returns nothing.
-const DEFAULT_WATCH_RUN_TIMEOUT_SECONDS = 600;
+const DEFAULT_WATCH_RUN_TIMEOUT_SECONDS = CI_CHECK_WATCH_TIMEOUT_MS / 1000;
 
 const watchRun = Effect.fn("workflow.watchRun")(function* (
   runId: number,
