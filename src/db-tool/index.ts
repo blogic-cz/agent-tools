@@ -8,7 +8,7 @@ import type { SchemaMode } from "./types";
 import { formatOption, formatOutput, renderCauseToStderr, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
-import { makeDbConfigLayer } from "./config-service";
+import { DbConfigService, makeDbConfigLayer } from "./config-service";
 import { DbConnectionError } from "./errors";
 import { DbService } from "./service";
 
@@ -107,9 +107,35 @@ const schemaCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Introspect database schema (tables, columns, relationships)"));
 
+const envsCommand = Command.make(
+  "envs",
+  {
+    format: formatOption,
+    profile: Flag.optional(Flag.string("profile")).pipe(
+      Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
+    ),
+  },
+  ({ format }) =>
+    Effect.gen(function* () {
+      const config = yield* ConfigService;
+      const dbConfig = yield* DbConfigService;
+      const environments = dbConfig ? Object.keys(dbConfig.environments) : [];
+      const result = {
+        success: true as const,
+        environments,
+        default: getDefaultEnvironment(config) ?? null,
+        message: `${environments.length} environment(s) configured`,
+        executionTimeMs: 0,
+      };
+      yield* Console.log(formatOutput(result, format));
+    }),
+).pipe(
+  Command.withDescription("List configured database environments and the default (no network)"),
+);
+
 const mainCommand = Command.make("db-tool", {}).pipe(
   Command.withDescription("Database Query Tool for Coding Agents"),
-  Command.withSubcommands([sqlCommand, schemaCommand]),
+  Command.withSubcommands([sqlCommand, schemaCommand, envsCommand]),
 );
 
 const cli = Command.run(mainCommand, {

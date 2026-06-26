@@ -25,6 +25,7 @@ import {
   fetchChecks,
   fetchChecksForCommand,
   fetchFailedChecks,
+  listPRs,
   mergePR,
   rerunChecks,
   viewPR,
@@ -97,7 +98,25 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
     fetchChecks(prNumber, false, false, 0),
   ]);
   const classification = classifyReviewTriage(summary, checks);
-  return { classification, info, unresolvedThreads, visibleOpenThreads, summary, checks };
+
+  // Single merge-readiness verdict so agents stop re-stitching mergeable + checks + threads +
+  // review state across separate calls (F2). `blocking` names exactly what's left to do.
+  const blocking: string[] = [];
+  if (info.mergeable !== "MERGEABLE") blocking.push(`mergeable=${info.mergeable || "UNKNOWN"}`);
+  if (checks.some((check) => check.bucket === "fail")) blocking.push("failing_checks");
+  if (checks.some((check) => check.bucket === "pending")) blocking.push("pending_checks");
+  if (summary.unresolvedReviewThreadsCount > 0) blocking.push("unresolved_threads");
+  if (info.reviewDecision !== "" && info.reviewDecision !== "APPROVED") {
+    blocking.push(`review=${info.reviewDecision}`);
+  }
+  const ready = {
+    ready: blocking.length === 0,
+    mergeable: info.mergeable,
+    reviewDecision: info.reviewDecision || null,
+    blocking,
+  };
+
+  return { ready, classification, info, unresolvedThreads, visibleOpenThreads, summary, checks };
 });
 
 export const prViewCommand = Command.make(
@@ -136,12 +155,57 @@ export const prStatusCommand = Command.make(
   Command.withDescription("Auto-detect PR for current branch or GitButler workspace branches"),
 );
 
+export const prListCommand = Command.make(
+  "list",
+  {
+    format: formatOption,
+    state: Flag.choice("state", ["open", "closed", "merged", "all"]).pipe(
+      Flag.withDescription("Filter by state: open, closed, merged, all"),
+      Flag.withDefault("open"),
+    ),
+    author: Flag.string("author").pipe(
+      Flag.withDescription("Filter by author login (use @me for yourself)"),
+      Flag.optional,
+    ),
+    base: Flag.string("base").pipe(Flag.withDescription("Filter by base branch"), Flag.optional),
+    head: Flag.string("head").pipe(Flag.withDescription("Filter by head branch"), Flag.optional),
+    search: Flag.string("search").pipe(
+      Flag.withDescription("GitHub search query (e.g. 'review:required')"),
+      Flag.optional,
+    ),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Maximum number of PRs to return"),
+      Flag.withDefault(30),
+    ),
+    repo: repoOption,
+  },
+  ({ format, state, author, base, head, search, limit, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const prs = yield* listPRs({
+          state,
+          limit,
+          author: Option.getOrNull(author),
+          base: Option.getOrNull(base),
+          head: Option.getOrNull(head),
+          search: Option.getOrNull(search),
+        });
+        yield* logFormatted(prs, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "List PRs (default: open; filter with --state/--author/--base/--head/--search)",
+  ),
+);
+
 export const prCreateCommand = Command.make(
   "create",
   {
     base: Flag.string("base").pipe(
-      Flag.withDescription("Base branch for the PR"),
-      Flag.withDefault("test"),
+      Flag.withDescription("Base branch for the PR (default: repository default branch)"),
+      Flag.optional,
     ),
     body: Flag.string("body").pipe(Flag.withDescription("PR body/description"), Flag.optional),
     bodyFile: Flag.string("body-file").pipe(
@@ -181,7 +245,7 @@ export const prCreateCommand = Command.make(
         });
 
         const info = yield* createPR({
-          base,
+          base: Option.getOrNull(base),
           body: resolvedBody,
           draft,
           head: Option.getOrNull(head),

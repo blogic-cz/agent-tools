@@ -116,9 +116,34 @@ const formatUnknownError = (error: unknown): string => {
   return String(error);
 };
 
+// effect-cli `ShowHelp` is a control-flow error: empty `errors[]` means a plain `--help` (exit 0),
+// a non-empty `errors[]` means a real parse failure (unrecognized option, missing arg, …) that was
+// downgraded to a help render. Distinguish them so we neither mislabel help as a failure (H4) nor
+// hide the actual syntax error behind the opaque "Help requested" string (M4).
+const getShowHelpErrors = (error: unknown): readonly unknown[] | undefined => {
+  if (typeof error === "object" && error !== null && Reflect.get(error, "_tag") === "ShowHelp") {
+    const errors = Reflect.get(error, "errors");
+    return Array.isArray(errors) ? errors : [];
+  }
+  return undefined;
+};
+
+const isPureHelpCause = (cause: Cause.Cause<unknown>): boolean => {
+  const firstFailure = cause.reasons.find(Cause.isFailReason);
+  const showHelpErrors =
+    firstFailure === undefined ? undefined : getShowHelpErrors(firstFailure.error);
+  return showHelpErrors !== undefined && showHelpErrors.length === 0;
+};
+
 const formatCause = (cause: Cause.Cause<unknown>): string => {
   const firstFailure = cause.reasons.find(Cause.isFailReason);
   if (firstFailure !== undefined) {
+    const showHelpErrors = getShowHelpErrors(firstFailure.error);
+    if (showHelpErrors !== undefined) {
+      return showHelpErrors.length > 0
+        ? showHelpErrors.map((e) => formatUnknownError(e)).join("; ")
+        : "Help requested";
+    }
     return formatUnknownError(firstFailure.error);
   }
 
@@ -296,19 +321,23 @@ export const withAudit = <A, E, R>(
     const tool = safeToolName(toolName || deriveToolNameFromArgv());
 
     return Effect.matchCauseEffect(program, {
-      onFailure: (cause) =>
-        Effect.flatMap(
+      onFailure: (cause) => {
+        // A bare `--help` exits 0 and is not a tool failure — recording it as one inflated the
+        // suite-wide fail rate by ~21% (H4). A ShowHelp carrying parse errors is still a failure.
+        const pureHelp = isPureHelpCause(cause);
+        return Effect.flatMap(
           safelyRecord({
             tool,
             project,
             args,
             duration: Date.now() - startedAt,
-            success: false,
-            error: formatCause(cause),
-            exitCode: extractExitCode(cause),
+            success: pureHelp,
+            error: pureHelp ? undefined : formatCause(cause),
+            exitCode: pureHelp ? 0 : extractExitCode(cause),
           }),
           () => Effect.failCause(cause),
-        ),
+        );
+      },
       onSuccess: (value) =>
         Effect.flatMap(
           safelyRecord({

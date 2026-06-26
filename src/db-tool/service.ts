@@ -681,11 +681,17 @@ export class DbService extends Context.Service<
           );
         };
 
-        const getConfigForEnv = (env: string): DbConfig => {
+        const getConfigForEnv = Effect.fn("DbService.getConfigForEnv")(function* (env: string) {
           const envConfig = dbConfig.environments[env];
           if (!envConfig) {
             const available = Object.keys(dbConfig.environments).join(", ");
-            throw new Error(`Unknown environment "${env}". Available: ${available}`);
+            // Tagged failure (not a bare throw) so the hint + nextCommand reach the agent (M3).
+            return yield* new DbConnectionError({
+              message: `Unknown environment "${env}". Available: ${available}`,
+              environment: env,
+              hint: "List configured environments with: db-tool envs",
+              nextCommand: "db-tool envs",
+            });
           }
 
           const accessMode = resolveDbAccessMode(
@@ -707,13 +713,13 @@ export class DbService extends Context.Service<
             allowMutations: accessMode.allowMutations,
             allowedMutations: accessMode.allowedMutations,
           };
-        };
+        });
 
         const executeQuery = Effect.fn("DbService.executeQuery")(function* (
           env: string,
           sql: string,
         ) {
-          const config = getConfigForEnv(env);
+          const config = yield* getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
           const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);
@@ -753,7 +759,7 @@ export class DbService extends Context.Service<
           mode: SchemaMode,
           table?: string,
         ) {
-          const config = getConfigForEnv(env);
+          const config = yield* getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
           const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);

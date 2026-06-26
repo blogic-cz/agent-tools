@@ -9,6 +9,7 @@ export {
   prEditCommand,
   prIssueCommentsCommand,
   prIssueCommentsLatestCommand,
+  prListCommand,
   prMergeCommand,
   prReplyCommand,
   prRerunChecksCommand,

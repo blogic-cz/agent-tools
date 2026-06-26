@@ -212,6 +212,10 @@ const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo
   };
 });
 
+// `gh run watch` has no native timeout and was observed hanging a turn for 36 min. Cap it and
+// fall back to a one-shot snapshot, mirroring the `pr checks --watch` cap (M1).
+const WATCH_RUN_TIMEOUT_SECONDS = 120;
+
 const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: string | null) {
   const gh = yield* GitHubService;
 
@@ -232,6 +236,10 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: 
       }
       return Effect.fail(error);
     }),
+    Effect.timeoutOrElse({
+      duration: WATCH_RUN_TIMEOUT_SECONDS * 1000,
+      orElse: () => Effect.succeed(null),
+    }),
   );
 
   const finalState = yield* viewRun(runId, repo);
@@ -245,7 +253,10 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (runId: number, repo: 
       status: job.status,
       conclusion: job.conclusion,
     })),
-    watchOutput: result.stdout,
+    watchOutput:
+      result === null
+        ? `(watch capped at ${WATCH_RUN_TIMEOUT_SECONDS}s; status taken from snapshot — re-run to keep watching)`
+        : result.stdout,
   };
 });
 

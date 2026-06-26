@@ -12,7 +12,7 @@ import type {
   WorkflowRunDetail,
 } from "#gh/types";
 
-import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
+import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
@@ -20,6 +20,9 @@ import { runLocalCommand } from "./helpers";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
+// A single blocking `--watch` is capped here so an agent never loses a whole turn to a 30-min
+// foreground wait. On hitting the cap we return the partial snapshot, not a failure (H1).
+const MAX_WATCH_SECONDS = 120;
 
 const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string) {
   const gh = yield* GitHubService;
@@ -254,7 +257,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   const hint =
     failedChecks.length === 0
       ? pendingChecks.length > 0
-        ? "Wait for the remaining checks to finish, or use --watch to block until CI settles."
+        ? "Some checks are still running. Re-run this command to refresh the snapshot."
         : "All current checks are green."
       : pendingChecks.length > 0
         ? "Inspect the failed workflow run first. Other checks are still running and may change overall merge readiness."
@@ -453,8 +456,34 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
   };
 });
 
+export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
+  state: string;
+  limit: number;
+  author: string | null;
+  base: string | null;
+  head: string | null;
+  search: string | null;
+}) {
+  const gh = yield* GitHubService;
+  const args = [
+    "pr",
+    "list",
+    "--state",
+    opts.state,
+    "--limit",
+    String(opts.limit),
+    "--json",
+    "number,url,title,headRefName,baseRefName,state,isDraft,author,createdAt,reviewDecision",
+  ];
+  if (opts.author !== null) args.push("--author", opts.author);
+  if (opts.base !== null) args.push("--base", opts.base);
+  if (opts.head !== null) args.push("--head", opts.head);
+  if (opts.search !== null) args.push("--search", opts.search);
+  return yield* gh.runGhJson<PRInfo[]>(args);
+});
+
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {
-  base: string;
+  base: string | null;
   title: string;
   body: string;
   draft: boolean;
@@ -462,6 +491,10 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
 }) {
   const gh = yield* GitHubService;
   yield* validatePRTitle(opts.title);
+
+  // Default to the repo's real default branch instead of a hardcoded "test" — an omitted --base
+  // must never silently open a PR against the wrong trunk (L1).
+  const baseBranch = opts.base ?? (yield* gh.getRepoInfo()).defaultBranch;
 
   // When --head is provided (e.g. GitButler workspace), use `gh pr list --head`
   // to find existing PR since `gh pr view` relies on the current git branch.
@@ -500,7 +533,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     "pr",
     "create",
     "--base",
-    opts.base,
+    baseBranch,
     "--title",
     opts.title,
     "--body",
@@ -806,31 +839,31 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       watchArgs.push("--fail-fast");
     }
 
-    const timeoutMs = timeoutSeconds * 1000;
-    yield* gh.runGh(watchArgs).pipe(
+    // Cap the blocking wait; on timeout fall through to a snapshot instead of failing with no state.
+    const cappedSeconds = Math.min(timeoutSeconds, MAX_WATCH_SECONDS);
+    const watchOutcome = yield* gh.runGh(watchArgs).pipe(
       Effect.timeoutOrElse({
-        duration: timeoutMs,
-        orElse: () =>
-          Effect.fail(
-            new GitHubTimeoutError({
-              message: `CI check monitoring timed out after ${timeoutSeconds}s`,
-              timeoutMs,
-              hint: "CI checks are still running. Retry with a longer --timeout or check status manually.",
-              nextCommand: `agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""}`,
-              retryable: true,
-            }),
-          ),
+        duration: cappedSeconds * 1000,
+        orElse: () => Effect.succeed(null),
       }),
     );
 
-    return yield* fetchCheckResults(pr);
+    const results = yield* fetchCheckResults(pr);
+    if (watchOutcome === null && results.some((c) => c.bucket === "pending")) {
+      const pending = results.filter((c) => c.bucket === "pending").length;
+      yield* Console.warn(
+        `ℹ️  Watch capped at ${cappedSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
+          `Re-run to keep watching:\n   ${buildChecksCommand(pr, true)}`,
+      );
+    }
+    return results;
   }
 
   const results = yield* fetchCheckResults(pr);
   if (results.some((c) => c.bucket === "pending")) {
     yield* Console.warn(
-      `ℹ️  Some checks are still running. Prefer --watch to block until completion instead of polling:\n` +
-        `   ${buildChecksCommand(pr, true)}`,
+      `ℹ️  Some checks are still running. Re-run to refresh — each call returns the latest snapshot:\n` +
+        `   ${buildChecksCommand(pr, false)}`,
     );
   }
   return results;

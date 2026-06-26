@@ -73,7 +73,11 @@ export const issueViewCommand = Command.make(
         yield* logFormatted(info, format);
       }),
     ),
-).pipe(Command.withDescription("View issue details"));
+).pipe(
+  Command.withDescription(
+    "View one issue's details. For multiple issues use `gh issue snapshot-batch --issues 1,2,3` (one call, not N).",
+  ),
+);
 
 export const issueCommentsCommand = Command.make(
   "comments",

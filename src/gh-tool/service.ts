@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Context, Effect, Layer, Stream } from "effect";
+import { Context, Duration, Effect, Layer, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "./types";
@@ -7,6 +7,23 @@ import type { RepoInfo } from "./types";
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
+
+// Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
+const NETWORK_ERROR_RE =
+  /i\/o timeout|dial tcp|operation timed out|connection reset|\bEOF\b|HTTP 50[0-9]|50[0-9] (?:Bad Gateway|Service Unavailable|Gateway Timeout)|timeout awaiting/i;
+const AUTH_401_RE = /HTTP 401|Bad credentials/i;
+const MAX_GH_RETRIES = 2;
+
+// Only retry verbs that are unambiguously idempotent reads — never replay a mutation on a timeout.
+const READ_VERBS = new Set(["view", "list", "checks", "status", "diff"]);
+const MUTATION_TOKENS =
+  /\b(create|edit|merge|comment|close|reopen|delete|review|ready|sync|rerun|cancel|mutation)\b|(?:-X|--method)\s+(?:POST|PATCH|PUT|DELETE)/i;
+const isSafeRetryRead = (args: readonly string[]): boolean => {
+  const joined = args.join(" ");
+  if (MUTATION_TOKENS.test(joined)) return false;
+  if (args[0] === "api") return true; // GET by default; mutating methods already excluded above
+  return args.some((a) => READ_VERBS.has(a));
+};
 
 type GhResult = {
   stdout: string;
@@ -134,7 +151,7 @@ export class GitHubService extends Context.Service<
             ),
           );
 
-        const runGh = Effect.fn("GitHubService.runGh")(function* (args: string[]) {
+        const runGhAttempt = Effect.fn("GitHubService.runGhAttempt")(function* (args: string[]) {
           const result = yield* executeGh(args);
 
           if (result.exitCode !== 0) {
@@ -149,15 +166,41 @@ export class GitHubService extends Context.Service<
               });
             }
 
+            // Expired/invalid token (401) is distinct from "never logged in" — the fix is refresh.
+            if (AUTH_401_RE.test(result.stderr)) {
+              return yield* new GitHubAuthError({
+                message: "GitHub credentials rejected (HTTP 401). Token is missing or expired.",
+                hint: "Refresh the GitHub CLI token, then retry.",
+                nextCommand: "gh auth refresh -h github.com",
+              });
+            }
+
+            // Transient network/5xx — flag retryable so the wrapper below can replay safe reads.
+            if (NETWORK_ERROR_RE.test(result.stderr)) {
+              return yield* new GitHubCommandError({
+                message: `Transient GitHub network error: ${result.stderr.trim()}`,
+                command: `gh ${args.join(" ")}`,
+                exitCode: result.exitCode,
+                stderr: result.stderr,
+                retryable: true,
+                hint: "Transient GitHub/network failure. Read commands auto-retry; if it persists, check VPN/connectivity.",
+              });
+            }
+
             if (
               result.stderr.includes("not found") ||
               result.stderr.includes("Could not resolve")
             ) {
+              const ghRepo = yield* RepoTarget;
               return yield* new GitHubNotFoundError({
-                message: result.stderr,
-                resource: "unknown",
+                message: ghRepo
+                  ? `${result.stderr.trim()} (queried repo: ${ghRepo})`
+                  : result.stderr,
+                resource: ghRepo ?? "unknown",
                 identifier: "unknown",
-                hint: "Verify the resource exists and you have access. Check repository owner/name spelling.",
+                hint: ghRepo
+                  ? `Queried ${ghRepo}. If the resource lives in another repo, pass --repo (e.g. --repo fe).`
+                  : "Verify the resource exists and you have access. Check repository owner/name spelling.",
               });
             }
 
@@ -171,6 +214,25 @@ export class GitHubService extends Context.Service<
 
           return result;
         });
+
+        // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
+        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
+          const canRetry = isSafeRetryRead(args);
+          const loop = (attempt: number): Effect.Effect<GhResult, GhError> =>
+            runGhAttempt(args).pipe(
+              Effect.catch((err) => {
+                const retryable =
+                  err instanceof GitHubCommandError && err.retryable === true && canRetry;
+                if (retryable && attempt < MAX_GH_RETRIES) {
+                  return Effect.sleep(Duration.millis(500 * 2 ** attempt)).pipe(
+                    Effect.flatMap(() => loop(attempt + 1)),
+                  );
+                }
+                return Effect.fail(err);
+              }),
+            );
+          return loop(0);
+        };
 
         const runGhJson = <T>(args: string[]) =>
           Effect.gen(function* () {

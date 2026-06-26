@@ -20,6 +20,7 @@ import {
 import {
   prViewCommand,
   prStatusCommand,
+  prListCommand,
   prCreateCommand,
   prCloseCommand,
   prEditCommand,
@@ -68,6 +69,7 @@ const prCommand = Command.make("pr", {}).pipe(
   Command.withSubcommands([
     prViewCommand,
     prStatusCommand,
+    prListCommand,
     prCreateCommand,
     prCloseCommand,
     prEditCommand,
