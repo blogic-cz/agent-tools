@@ -145,7 +145,9 @@ const cli = Command.run(mainCommand, {
 const dbConfigLayer = makeDbConfigLayer(profileArg);
 
 const MainLayer = DbService.layer.pipe(
-  Layer.provide(dbConfigLayer),
+  // provideMerge (not provide) so DbConfigService stays in the program context for the `envs` command,
+  // which reads it directly rather than going through DbService.
+  Layer.provideMerge(dbConfigLayer),
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),
   Layer.provideMerge(AuditServiceLayer),
