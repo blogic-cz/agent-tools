@@ -154,9 +154,16 @@ export type AuditConfig = {
 };
 
 /** Single GitHub repository configuration */
+export type GitHubPrTitlePolicy = {
+  pattern: string;
+  expected: string;
+  example?: string;
+};
+
 export type GitHubRepoConfig = {
   owner: string;
   repo: string;
+  prTitle?: GitHubPrTitlePolicy;
 };
 
 /**

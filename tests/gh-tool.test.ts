@@ -45,6 +45,7 @@ import {
   resolveOptionalTextInput,
   resolveRequiredTextInput,
 } from "#gh/text-input";
+import type { GitHubPrTitlePolicy, GitHubRepoConfig } from "#config";
 import { ConfigService } from "#config";
 import { classifyReviewTriage, fetchReviewTriage, parsePrNumbers } from "#gh/pr/commands";
 
@@ -65,6 +66,13 @@ const mockPRInfo: PRInfo & { mergeable: string } = {
   isDraft: false,
   mergeable: "MERGEABLE",
 };
+
+const mockPrTitlePolicy = {
+  pattern:
+    "^(feat|fix|refactor|chore|ci|test|build|revert|docs|perf|style)(\\([^)]+\\))?: CORE-[0-9]+ - .+$",
+  expected: "<type>: CORE-<number> - <description>",
+  example: "feat: CORE-123 - product taxonomy",
+} satisfies GitHubPrTitlePolicy;
 
 const inventedShellSensitiveText = [
   "Applied the follow-up change.",
@@ -223,6 +231,7 @@ type MockGhOverrides = Partial<{
     query: string,
     variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
+  getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
   withRepoTarget: <A, E, R>(
     target: string | null,
@@ -246,6 +255,7 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
         args: string[],
       ) => Effect.Effect<T, GhError>,
       runGraphQL: overrides.runGraphQL ?? (() => Effect.succeed({})),
+      getRepoConfig: overrides.getRepoConfig ?? (() => Effect.succeed(undefined)),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
@@ -796,6 +806,96 @@ describe("PR view", () => {
 });
 
 describe("PR edit", () => {
+  it.effect("rejects title updates that do not match the configured repo policy", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+
+      const result = yield* editPR({
+        pr: 123,
+        title: "fix(transmittals+sabfx): make import work",
+        body: null,
+        base: null,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            getRepoConfig: () =>
+              Effect.succeed({
+                owner: "test-owner",
+                repo: "test-repo",
+                prTitle: mockPrTitlePolicy,
+              }),
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      Result.match(result, {
+        onFailure: (error) => {
+          expect(error._tag).toBe("GitHubCommandError");
+          if (error._tag === "GitHubCommandError") {
+            expect(error.message).toContain("PR title does not match the required format");
+            expect(error.stderr).toContain("Expected: <type>: CORE-<number> - <description>");
+            expect(error.stderr).toContain("Example: feat: CORE-123 - product taxonomy");
+          }
+        },
+        onSuccess: () => {
+          expect.fail("Expected invalid PR title to fail");
+        },
+      });
+      expect(calls).toEqual([]);
+    }),
+  );
+
+  it.effect("allows title updates that match the configured repo policy", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+
+      const result = yield* editPR({
+        pr: 123,
+        title: "fix(core): CORE-123 - product taxonomy",
+        body: null,
+        base: null,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            getRepoConfig: () =>
+              Effect.succeed({
+                owner: "test-owner",
+                repo: "test-repo",
+                prTitle: mockPrTitlePolicy,
+              }),
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: (args) => {
+              calls.push(args);
+              return Effect.succeed({
+                ...mockPRInfo,
+                title: "fix(core): CORE-123 - product taxonomy",
+                body: "",
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(calls[0]).toEqual([
+        "api",
+        "--method",
+        "PATCH",
+        "repos/test-owner/test-repo/pulls/123",
+        "-f",
+        "title=fix(core): CORE-123 - product taxonomy",
+      ]);
+      expect(result.title).toBe("fix(core): CORE-123 - product taxonomy");
+    }),
+  );
+
   it.effect("edit returns the updated PR body", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
@@ -2041,6 +2141,34 @@ describe("GitHubService.getRepoInfo()", () => {
   );
 });
 
+describe("GitHubService.getRepoConfig()", () => {
+  it.effect("returns the selected repository profile config", () =>
+    Effect.gen(function* () {
+      const service = yield* GitHubService;
+      const config = yield* service.withRepoTarget("fe", service.getRepoConfig());
+
+      expect(config?.owner).toBe("sabservis");
+      expect(config?.repo).toBe("nexus-fe");
+      expect(config?.prTitle?.expected).toBe("<type>: CORE-<number> - <description>");
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer([])),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          github: {
+            default: { owner: "sabservis", repo: "nexus-be" },
+            fe: {
+              owner: "sabservis",
+              repo: "nexus-fe",
+              prTitle: mockPrTitlePolicy,
+            },
+          },
+        }),
+      ),
+    ),
+  );
+});
+
 const mockChecksData = [
   {
     name: "CI / build",
@@ -2780,6 +2908,53 @@ describe("PR composite commands", () => {
         "--head",
         "feat/demo-body-file",
       ]);
+    }),
+  );
+
+  it.effect("createPR rejects titles that do not match the configured repo policy", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+
+      const result = yield* createPR({
+        base: "main",
+        title: "fix(transmittals+sabfx): make import work",
+        body: "## Summary\n...",
+        draft: false,
+        head: "fix/import",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            getRepoConfig: () =>
+              Effect.succeed({
+                owner: "test-owner",
+                repo: "test-repo",
+                prTitle: mockPrTitlePolicy,
+              }),
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: (args) => {
+              calls.push(args);
+              return Effect.succeed([]);
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      Result.match(result, {
+        onFailure: (error) => {
+          expect(error._tag).toBe("GitHubCommandError");
+          if (error._tag === "GitHubCommandError") {
+            expect(error.stderr).toContain("PR title does not match the required format");
+          }
+        },
+        onSuccess: () => {
+          expect.fail("Expected invalid PR title to fail");
+        },
+      });
+      expect(calls).toEqual([]);
     }),
   );
 

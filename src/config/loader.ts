@@ -141,6 +141,13 @@ const AuditConfigSchema = Schema.Struct({
 const GitHubRepoConfigSchema = Schema.Struct({
   owner: Schema.String,
   repo: Schema.String,
+  prTitle: Schema.optionalKey(
+    Schema.Struct({
+      pattern: Schema.String,
+      expected: Schema.String,
+      example: Schema.optionalKey(Schema.String),
+    }),
+  ),
 });
 
 const KNOWN_TOP_LEVEL_KEYS = new Set([

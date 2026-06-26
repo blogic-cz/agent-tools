@@ -21,6 +21,45 @@ import { runLocalCommand } from "./helpers";
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
 
+const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string) {
+  const gh = yield* GitHubService;
+  const repoConfig = yield* gh.getRepoConfig();
+  const policy = repoConfig?.prTitle;
+
+  if (!policy) {
+    return;
+  }
+
+  const pattern = yield* Effect.try({
+    try: () => new RegExp(policy.pattern),
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "pr title validation",
+        exitCode: 1,
+        stderr: `Invalid PR title policy regex: ${error instanceof Error ? error.message : String(error)}`,
+        message: "Invalid PR title policy regex",
+      }),
+  });
+
+  if (pattern.test(title)) {
+    return;
+  }
+
+  const lines = [
+    "PR title does not match the required format.",
+    `Got: ${title}`,
+    `Expected: ${policy.expected}`,
+    ...(policy.example ? [`Example: ${policy.example}`] : []),
+  ];
+
+  return yield* new GitHubCommandError({
+    command: "pr title validation",
+    exitCode: 1,
+    stderr: lines.join("\n"),
+    message: lines[0] ?? "PR title does not match the required format.",
+  });
+});
+
 type WorkflowRunJobsForRerun = {
   databaseId: number;
   jobs: Array<{
@@ -422,6 +461,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
   head: string | null;
 }) {
   const gh = yield* GitHubService;
+  yield* validatePRTitle(opts.title);
 
   // When --head is provided (e.g. GitButler workspace), use `gh pr list --head`
   // to find existing PR since `gh pr view` relies on the current git branch.
@@ -719,6 +759,10 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   }
 
   const gh = yield* GitHubService;
+  if (opts.title !== null) {
+    yield* validatePRTitle(opts.title);
+  }
+
   const repo = yield* gh.getRepoInfo();
 
   const editArgs = [

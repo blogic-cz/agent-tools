@@ -95,6 +95,29 @@
         "repo": {
           "type": "string",
           "description": "Repository name."
+        },
+        "prTitle": {
+          "$ref": "#/definitions/GitHubPrTitlePolicy"
+        }
+      }
+    },
+    "GitHubPrTitlePolicy": {
+      "description": "Optional pull request title validation policy for this repository profile.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "expected"],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "JavaScript regular expression source that valid PR titles must match."
+        },
+        "expected": {
+          "type": "string",
+          "description": "Human-readable required title format shown when validation fails."
+        },
+        "example": {
+          "type": "string",
+          "description": "Example valid title shown when validation fails."
         }
       }
     },

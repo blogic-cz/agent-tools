@@ -228,6 +228,28 @@ describe("GitHub repo resolver", () => {
       "Unknown github profile 'docs'. Available profiles: [be, fe]. Use --repo owner/name for an explicit repository.",
     );
   });
+
+  it("decodes optional PR title policy on repository profiles", () => {
+    const config = decodeConfig({
+      github: {
+        be: {
+          owner: "sabservis",
+          repo: "nexus-be",
+          prTitle: {
+            pattern: "^fix: CORE-[0-9]+ - .+$",
+            expected: "<type>: CORE-<number> - <description>",
+            example: "fix: CORE-123 - product taxonomy",
+          },
+        },
+      },
+    });
+
+    expect(config.github?.be?.prTitle).toEqual({
+      pattern: "^fix: CORE-[0-9]+ - .+$",
+      expected: "<type>: CORE-<number> - <description>",
+      example: "fix: CORE-123 - product taxonomy",
+    });
+  });
 });
 
 describe("getDefaultEnvironment", () => {

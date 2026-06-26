@@ -11,6 +11,7 @@ export type {
   AuditConfig,
   CliToolOverride,
   CredentialGuardConfig,
+  GitHubPrTitlePolicy,
   GitHubRepoConfig,
 } from "./types";
 

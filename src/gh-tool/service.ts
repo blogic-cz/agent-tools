@@ -1,11 +1,12 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Context, Effect, Layer, Stream } from "effect";
 
+import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "./types";
 
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
-import { ConfigService, resolveGitHubRepoTarget } from "#config";
+import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 
 type GhResult = {
   stdout: string;
@@ -24,6 +25,7 @@ export class GitHubService extends Context.Service<
       query: string,
       variables: Record<string, string | number | null>,
     ) => Effect.Effect<unknown, GhError>;
+    readonly getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
     readonly withRepoTarget: <A, E, R>(
       target: string | null,
@@ -75,6 +77,22 @@ export class GitHubService extends Context.Service<
             const resolved = yield* resolveRepoTarget(target);
             return yield* effect.pipe(Effect.provideService(RepoTarget, resolved));
           });
+
+        const getRepoConfig = Effect.fn("GitHubService.getRepoConfig")(function* () {
+          const ghRepo = yield* RepoTarget;
+          const repos = config?.github;
+
+          if (repos && ghRepo) {
+            const repoConfig = Object.values(repos).find(
+              (repo) => `${repo.owner}/${repo.repo}` === ghRepo,
+            );
+            if (repoConfig) {
+              return repoConfig;
+            }
+          }
+
+          return getGitHubConfig(config);
+        });
 
         const executeGh = (args: string[]) =>
           Effect.scoped(
@@ -242,7 +260,7 @@ export class GitHubService extends Context.Service<
           return repoInfo;
         });
 
-        return { runGh, runGhJson, runGraphQL, getRepoInfo, withRepoTarget };
+        return { runGh, runGhJson, runGraphQL, getRepoConfig, getRepoInfo, withRepoTarget };
       }),
     ),
   );
