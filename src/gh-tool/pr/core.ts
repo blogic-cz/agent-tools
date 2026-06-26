@@ -482,8 +482,7 @@ export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
   return yield* gh.runGhJson<PRInfo[]>(args);
 });
 
-// CI-green != mergeable: GitHub recomputes mergeability asynchronously, leaving `mergeable` as
-// "UNKNOWN" for a beat. Agents were hand-polling `pr view` to wait this out (F3).
+// GitHub recomputes mergeability asynchronously after CI; poll until it settles out of "UNKNOWN".
 const MAX_MERGEABLE_WAIT_SECONDS = 180;
 const MERGEABLE_POLL_INTERVAL_MS = 3000;
 
@@ -495,26 +494,25 @@ export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
   const start = yield* Clock.currentTimeMillis;
   const deadlineMs = Number(start) + cappedSeconds * 1000;
 
-  // Effect.whileLoop (not bare recursion) to match the prerequisites/runtime.ts polling convention
-  // and keep TestClock.adjust able to advance the Effect.sleep without real wall-clock waits.
-  let latest: PRViewInfo | undefined;
+  // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
+  let latest = yield* viewPR(pr);
+  let timedOut = false;
   yield* Effect.whileLoop({
-    while: () => latest === undefined,
+    while: () => latest.mergeable === "UNKNOWN" && !timedOut,
     body: () =>
       Effect.gen(function* () {
-        const info = yield* viewPR(pr);
         const now = yield* Clock.currentTimeMillis;
-        // Settle once GitHub reports a definitive verdict, or give up at the (capped) deadline.
-        if (info.mergeable !== "UNKNOWN" || Number(now) >= deadlineMs) {
-          latest = info;
+        if (Number(now) >= deadlineMs) {
+          timedOut = true;
           return;
         }
         yield* Effect.sleep(Duration.millis(MERGEABLE_POLL_INTERVAL_MS));
+        latest = yield* viewPR(pr);
       }),
     step: () => undefined,
   });
 
-  return latest ?? (yield* viewPR(pr));
+  return latest;
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {
