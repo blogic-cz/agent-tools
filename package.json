@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "0.14.39",
+  "version": "0.14.40",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
@@ -112,6 +112,10 @@
     "./audit": {
       "types": "./dist/shared/audit.d.ts",
       "default": "./src/shared/audit.ts"
+    },
+    "./k8s-probe": {
+      "types": "./dist/shared/k8s-probe.d.ts",
+      "default": "./src/shared/k8s-probe.ts"
     }
   },
   "publishConfig": {
