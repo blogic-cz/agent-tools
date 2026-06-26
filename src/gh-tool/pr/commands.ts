@@ -5,6 +5,16 @@ import type { CheckResult, PRStatusResult } from "#gh/types";
 
 import { formatOption, logFormatted } from "#shared";
 import { GitHubService } from "#gh/service";
+import { GitHubCommandError } from "#gh/errors";
+
+const emptyBatchError = (batch: string) =>
+  new GitHubCommandError({
+    message: `--prs received no valid PR numbers: ${JSON.stringify(batch)}`,
+    command: "gh pr --prs",
+    exitCode: 1,
+    stderr: "",
+    hint: "Pass comma-separated positive integers, e.g. --prs 1,2,3.",
+  });
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -141,6 +151,7 @@ export const prViewCommand = Command.make(
         const batch = Option.getOrNull(prs);
         if (batch !== null) {
           const numbers = parsePrNumbers(batch);
+          if (numbers.length === 0) return yield* emptyBatchError(batch);
           const results = yield* Effect.all(
             numbers.map((n) => viewPR(n).pipe(Effect.map((info) => ({ pr: n, info })))),
             { concurrency: 5 },
@@ -460,6 +471,7 @@ export const prChecksCommand = Command.make(
             );
           }
           const numbers = parsePrNumbers(batch);
+          if (numbers.length === 0) return yield* emptyBatchError(batch);
           const results = yield* Effect.all(
             numbers.map((n) =>
               fetchChecks(n, false, failFast, timeout).pipe(

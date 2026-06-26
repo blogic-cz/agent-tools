@@ -506,7 +506,9 @@ export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
           timedOut = true;
           return;
         }
-        yield* Effect.sleep(Duration.millis(MERGEABLE_POLL_INTERVAL_MS));
+        // Cap the sleep to the remaining budget so the total wait doesn't overshoot the deadline.
+        const remaining = deadlineMs - Number(now);
+        yield* Effect.sleep(Duration.millis(Math.min(MERGEABLE_POLL_INTERVAL_MS, remaining)));
         latest = yield* viewPR(pr);
       }),
     step: () => undefined,
