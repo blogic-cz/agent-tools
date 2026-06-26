@@ -452,7 +452,11 @@ export const prChecksCommand = Command.make(
     repo: repoOption,
     timeout: Flag.integer("timeout").pipe(
       Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
-      Flag.withDescription("Timeout in seconds for watch mode (default: 600)"),
+      Flag.withDescription("Timeout in seconds for watch mode (default: 600, minimum 1)"),
+      Flag.filter(
+        (n) => n >= 1,
+        () => "--timeout must be at least 1 second",
+      ),
     ),
     watch: Flag.boolean("watch").pipe(
       Flag.withDefault(false),

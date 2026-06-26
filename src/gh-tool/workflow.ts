@@ -2,7 +2,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Console, Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
-import { CI_CHECK_WATCH_TIMEOUT_MS, clampWatchSeconds } from "#gh/config";
+import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
 import type { CheckRunAnnotation, JobAnnotations } from "./types";
@@ -223,7 +223,6 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
   timeoutSeconds: number,
 ) {
   const gh = yield* GitHubService;
-  const effectiveSeconds = clampWatchSeconds(timeoutSeconds);
 
   const watchArgs = ["run", "watch", String(runId), "--exit-status"];
   if (repo !== null) {
@@ -243,7 +242,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
       return Effect.fail(error);
     }),
     Effect.timeoutOrElse({
-      duration: effectiveSeconds * 1000,
+      duration: timeoutSeconds * 1000,
       orElse: () => Effect.succeed(null),
     }),
   );
@@ -261,7 +260,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
     })),
     watchOutput:
       result === null
-        ? `(watch timed out after ${effectiveSeconds}s; status taken from snapshot — re-run to keep watching)`
+        ? `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`
         : result.stdout,
   };
 });
@@ -658,9 +657,13 @@ export const workflowWatchCommand = Command.make(
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
     timeout: Flag.integer("timeout").pipe(
       Flag.withDescription(
-        `Max seconds to block before returning a snapshot (default: ${DEFAULT_WATCH_RUN_TIMEOUT_SECONDS})`,
+        `Max seconds to block before returning a snapshot (default: ${DEFAULT_WATCH_RUN_TIMEOUT_SECONDS}, minimum 1)`,
       ),
       Flag.withDefault(DEFAULT_WATCH_RUN_TIMEOUT_SECONDS),
+      Flag.filter(
+        (n) => n >= 1,
+        () => "--timeout must be at least 1 second",
+      ),
     ),
   },
   ({ format, repo, run, timeout }) =>
