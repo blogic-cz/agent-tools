@@ -1,4 +1,4 @@
-import { Console, Effect, Option, Result } from "effect";
+import { Clock, Console, Duration, Effect, Option, Result } from "effect";
 
 import type {
   BranchPRDetail,
@@ -480,6 +480,41 @@ export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
   if (opts.head !== null) args.push("--head", opts.head);
   if (opts.search !== null) args.push("--search", opts.search);
   return yield* gh.runGhJson<PRInfo[]>(args);
+});
+
+// GitHub recomputes mergeability asynchronously after CI; poll until it settles out of "UNKNOWN".
+const MAX_MERGEABLE_WAIT_SECONDS = 180;
+const MERGEABLE_POLL_INTERVAL_MS = 3000;
+
+export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
+  pr: number | null,
+  timeoutSeconds: number,
+) {
+  const cappedSeconds = Math.min(timeoutSeconds, MAX_MERGEABLE_WAIT_SECONDS);
+  const start = yield* Clock.currentTimeMillis;
+  const deadlineMs = Number(start) + cappedSeconds * 1000;
+
+  // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
+  let latest = yield* viewPR(pr);
+  let timedOut = false;
+  yield* Effect.whileLoop({
+    while: () => latest.mergeable === "UNKNOWN" && !timedOut,
+    body: () =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (Number(now) >= deadlineMs) {
+          timedOut = true;
+          return;
+        }
+        // Cap the sleep to the remaining budget so the total wait doesn't overshoot the deadline.
+        const remaining = deadlineMs - Number(now);
+        yield* Effect.sleep(Duration.millis(Math.min(MERGEABLE_POLL_INTERVAL_MS, remaining)));
+        latest = yield* viewPR(pr);
+      }),
+    step: () => undefined,
+  });
+
+  return latest;
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {
