@@ -64,16 +64,21 @@ const sqlCommand = Command.make(
       ),
     ),
     sql: Flag.string("sql").pipe(Flag.withDescription("SQL query to execute")),
+    limit: Flag.optional(Flag.integer("limit")).pipe(
+      Flag.withDescription(
+        "Max rows to return (default 50). Use 0 for no cap. Prefer a SQL LIMIT for large tables.",
+      ),
+    ),
     format: formatOption,
     profile: Flag.optional(Flag.string("profile")).pipe(
       Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
-  ({ env, sql, format }) =>
+  ({ env, sql, limit, format }) =>
     Effect.gen(function* () {
       const resolvedEnv = yield* resolveEnv(env);
       const db = yield* DbService;
-      const result = yield* db.executeQuery(resolvedEnv, sql);
+      const result = yield* db.executeQuery(resolvedEnv, sql, Option.getOrUndefined(limit));
       yield* Console.log(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("Execute a SQL query"));

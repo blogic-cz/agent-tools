@@ -22,12 +22,17 @@ function truncateValue(value: unknown): unknown {
   return `${value.slice(0, MAX_VALUE_LENGTH)}...`;
 }
 
-export function transformQueryResult(data: Record<string, unknown>[]): TransformResult {
+export function transformQueryResult(
+  data: Record<string, unknown>[],
+  // limit 0 (or negative) means "no row cap".
+  limit: number = DEFAULT_ROW_LIMIT,
+): TransformResult {
   const withoutEmptyColumns = stripEmptyColumns(data);
   const truncatedValues = withoutEmptyColumns.map((record) =>
     Object.fromEntries(Object.entries(record).map(([key, value]) => [key, truncateValue(value)])),
   );
-  const { rows, truncated, total, showing } = truncateRows(truncatedValues, DEFAULT_ROW_LIMIT);
+  const effectiveLimit = limit > 0 ? limit : Number.POSITIVE_INFINITY;
+  const { rows, truncated, total, showing } = truncateRows(truncatedValues, effectiveLimit);
 
   return {
     data: rows,

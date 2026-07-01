@@ -14,6 +14,26 @@ describe("transformQueryResult", () => {
     expect(transformed.showing).toBe(DEFAULT_ROW_LIMIT);
   });
 
+  it("respects an explicit limit override", () => {
+    const bigResult = Array.from({ length: 100 }, (_, i) => ({ id: i }));
+
+    const transformed = transformQueryResult(bigResult, 75);
+
+    expect(transformed.data).toHaveLength(75);
+    expect(transformed.truncated).toBe(true);
+    expect(transformed.total).toBe(100);
+  });
+
+  it("returns all rows when limit is 0 (no cap)", () => {
+    const bigResult = Array.from({ length: 200 }, (_, i) => ({ id: i }));
+
+    const transformed = transformQueryResult(bigResult, 0);
+
+    expect(transformed.data).toHaveLength(200);
+    expect(transformed.truncated).toBe(false);
+    expect(transformed.showing).toBe(200);
+  });
+
   it("does not truncate rows when under the default limit", () => {
     const smallResult = Array.from({ length: 30 }, (_, i) => ({ id: i, name: `row-${i}` }));
 

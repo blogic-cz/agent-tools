@@ -59,7 +59,11 @@ export { buildApiProbeArgs } from "#shared/k8s-probe";
 export class DbService extends Context.Service<
   DbService,
   {
-    readonly executeQuery: (env: string, sql: string) => Effect.Effect<QueryResult, DbError>;
+    readonly executeQuery: (
+      env: string,
+      sql: string,
+      limit?: number,
+    ) => Effect.Effect<QueryResult, DbError>;
     readonly executeSchemaQuery: (
       env: string,
       mode: SchemaMode,
@@ -83,7 +87,8 @@ export class DbService extends Context.Service<
               environment: env,
             });
           return {
-            executeQuery: (env: string, _sql: string) => Effect.fail(noConfigError(env)),
+            executeQuery: (env: string, _sql: string, _limit?: number) =>
+              Effect.fail(noConfigError(env)),
             executeSchemaQuery: (env: string, _mode: SchemaMode, _table?: string) =>
               Effect.fail(noConfigError(env)),
           };
@@ -468,6 +473,7 @@ export class DbService extends Context.Service<
           password: string,
           startTimeMs: number,
           applyTransform = false,
+          limit?: number,
         ) {
           const selectSql = sql.trim().replace(/;\s*$/, "");
           const wrappedSql = `SELECT json_agg(t) FROM (${selectSql}) t;`;
@@ -532,7 +538,7 @@ export class DbService extends Context.Service<
           });
 
           const transformed = applyTransform
-            ? transformQueryResult(rawData)
+            ? transformQueryResult(rawData, limit)
             : {
                 data: rawData,
                 showing: rawData.length,
@@ -720,6 +726,7 @@ export class DbService extends Context.Service<
         const executeQuery = Effect.fn("DbService.executeQuery")(function* (
           env: string,
           sql: string,
+          limit?: number,
         ) {
           const config = yield* getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
@@ -753,7 +760,7 @@ export class DbService extends Context.Service<
 
           const queryEffect = mutation
             ? executeMutationQuery(resolvedConfig, sql, password, Number(startTimeMs))
-            : executeSelectQuery(resolvedConfig, sql, password, Number(startTimeMs), true);
+            : executeSelectQuery(resolvedConfig, sql, password, Number(startTimeMs), true, limit);
 
           return yield* runWithVpnPrerequisites(
             resolvedConfig.port,
