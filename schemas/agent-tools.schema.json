@@ -291,6 +291,13 @@
               "$ref": "#/definitions/DbMutationOperation"
             }
           }
+        },
+        "allowedMutationTargets": {
+          "description": "Explicitly allowed SQL mutation targets per environment and operation. Use normalized schema-qualified names such as ticker.TimeTickers.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/DbAllowedMutationTargets"
+          }
         }
       },
       "required": ["environments"]
@@ -591,6 +598,30 @@
       "description": "SQL mutation operation that can be explicitly allowed for a database environment.",
       "type": "string",
       "enum": ["insert", "update", "delete"]
+    },
+    "DbAllowedMutationTargets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "insert": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "update": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "delete": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "examples": [
@@ -640,6 +671,11 @@
           "remotePort": 5432,
           "allowedMutations": {
             "test": ["insert"]
+          },
+          "allowedMutationTargets": {
+            "prod": {
+              "insert": ["ticker.TimeTickers"]
+            }
           }
         }
       },

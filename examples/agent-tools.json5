@@ -68,6 +68,11 @@
       },
       tunnelTimeoutMs: 5000,
       remotePort: 5432,
+      allowedMutationTargets: {
+        prod: {
+          insert: ["ticker.TimeTickers"],
+        },
+      },
     },
   },
 

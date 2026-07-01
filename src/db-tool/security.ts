@@ -17,6 +17,13 @@ const ALLOWABLE_MUTATION_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
 ];
 
 const TABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
+const IDENTIFIER_PATTERN = String.raw`(?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*)`;
+const QUALIFIED_IDENTIFIER_PATTERN = `${IDENTIFIER_PATTERN}(?:\\s*\\.\\s*${IDENTIFIER_PATTERN})?`;
+const MUTATION_TARGET_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
+  ["insert", new RegExp(String.raw`^\s*INSERT\s+INTO\s+(${QUALIFIED_IDENTIFIER_PATTERN})`, "i")],
+  ["update", new RegExp(String.raw`^\s*UPDATE\s+(${QUALIFIED_IDENTIFIER_PATTERN})`, "i")],
+  ["delete", new RegExp(String.raw`^\s*DELETE\s+FROM\s+(${QUALIFIED_IDENTIFIER_PATTERN})`, "i")],
+];
 
 /**
  * Strip SQL comments (block and line) while preserving string literals.
@@ -87,6 +94,27 @@ export function isMutationQuery(sql: string): boolean {
 export function getAllowedMutationOperation(sql: string): DbMutationOperation | undefined {
   const stripped = stripSqlComments(sql);
   return ALLOWABLE_MUTATION_PATTERNS.find(([, pattern]) => pattern.test(stripped))?.[0];
+}
+
+function normalizeSqlIdentifier(identifier: string): string {
+  return identifier
+    .split(".")
+    .map((part) =>
+      part
+        .trim()
+        .replace(/^"(.+)"$/, "$1")
+        .replace(/""/g, '"'),
+    )
+    .join(".");
+}
+
+export function getMutationTarget(sql: string): string | undefined {
+  const stripped = stripSqlComments(sql);
+  const operation = getAllowedMutationOperation(stripped);
+  const pattern = MUTATION_TARGET_PATTERNS.find(([candidate]) => candidate === operation)?.[1];
+  const target = pattern?.exec(stripped)?.[1];
+
+  return target === undefined ? undefined : normalizeSqlIdentifier(target);
 }
 
 export function isValidTableName(tableName: string): boolean {

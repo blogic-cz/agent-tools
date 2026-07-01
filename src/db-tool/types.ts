@@ -1,5 +1,8 @@
-import type { DbMutationOperation } from "#config";
-import type { ProfilePrerequisites } from "#config/types";
+import type {
+  DbAllowedMutationTargets,
+  DbMutationOperation,
+  ProfilePrerequisites,
+} from "#config/types";
 import type { Environment, OutputFormat } from "#shared";
 
 export type { DbMutationOperation };
@@ -17,6 +20,7 @@ export type DbConfig = ProfilePrerequisites & {
   needsTunnel: boolean;
   allowMutations: boolean;
   allowedMutations: readonly DbMutationOperation[];
+  allowedMutationTargets: DbAllowedMutationTargets;
 };
 
 export type QueryResult = {

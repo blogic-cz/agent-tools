@@ -3,6 +3,7 @@ export type {
   AzureConfig,
   K8sConfig,
   DbEnvConfig,
+  DbAllowedMutationTargets,
   DbMutationOperation,
   DatabaseConfig,
   ObservabilityConfig,

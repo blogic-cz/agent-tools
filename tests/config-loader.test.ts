@@ -497,6 +497,25 @@ describe("VPN prerequisites config", () => {
     expect(config.database?.default?.allowedMutations?.staging).toEqual(["insert", "update"]);
   });
 
+  it("accepts per-environment database mutation target permissions", () => {
+    const config = decodeConfig({
+      database: {
+        default: {
+          environments: {
+            prod: { host: "127.0.0.1", port: 25439, user: "u", database: "app" },
+          },
+          allowedMutationTargets: {
+            prod: { insert: ["ticker.TimeTickers"] },
+          },
+        },
+      },
+    });
+
+    expect(config.database?.default?.allowedMutationTargets?.prod?.insert).toEqual([
+      "ticker.TimeTickers",
+    ]);
+  });
+
   it("accepts kubeconfig paths on kubernetes and database profiles", () => {
     const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
     const config = decodeConfig({

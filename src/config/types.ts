@@ -95,6 +95,7 @@ export type DbEnvConfig = ProfilePrerequisites & {
 /** SQL mutation operation that can be explicitly allowed for a database environment. */
 export const DbMutationOperationSchema = Schema.Literals(["insert", "update", "delete"]);
 export type DbMutationOperation = Schema.Schema.Type<typeof DbMutationOperationSchema>;
+export type DbAllowedMutationTargets = Partial<Record<DbMutationOperation, readonly string[]>>;
 
 /** Database profile configuration */
 export type DatabaseConfig = ProfilePrerequisites & {
@@ -102,6 +103,7 @@ export type DatabaseConfig = ProfilePrerequisites & {
   environments: Record<string, DbEnvConfig>;
   /** Explicitly allowed SQL mutation operations per environment. Non-local environments default to read-only. */
   allowedMutations?: Record<string, readonly DbMutationOperation[]>;
+  allowedMutationTargets?: Record<string, DbAllowedMutationTargets>;
   kubectl?: {
     /** Optional kubeconfig path. Supports ${ENV_VAR} templates. */
     kubeconfig?: string;

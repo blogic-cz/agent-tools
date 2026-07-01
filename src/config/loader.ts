@@ -96,10 +96,19 @@ const DbEnvConfigSchema = Schema.Struct({
   vpn: Schema.optionalKey(Schema.String),
 });
 
+const DbAllowedMutationTargetsSchema = Schema.Struct({
+  insert: Schema.optionalKey(Schema.Array(Schema.String)),
+  update: Schema.optionalKey(Schema.Array(Schema.String)),
+  delete: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const DatabaseConfigSchema = Schema.Struct({
   environments: Schema.Record(Schema.String, DbEnvConfigSchema),
   allowedMutations: Schema.optionalKey(
     Schema.Record(Schema.String, Schema.Array(DbMutationOperationSchema)),
+  ),
+  allowedMutationTargets: Schema.optionalKey(
+    Schema.Record(Schema.String, DbAllowedMutationTargetsSchema),
   ),
   kubectl: Schema.optionalKey(
     Schema.Struct({

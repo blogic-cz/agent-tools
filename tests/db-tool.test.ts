@@ -11,7 +11,7 @@ import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import { getAllowedMutationOperation, isValidTableName } from "#db/security";
+import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -184,6 +184,14 @@ describe("db schema introspection SQL", () => {
     expect(getAllowedMutationOperation("/* comment */ update users set name = 'x'")).toBe("update");
     expect(getAllowedMutationOperation("delete from users")).toBe("delete");
     expect(getAllowedMutationOperation("truncate users")).toBeUndefined();
+  });
+
+  it("detects mutation targets including quoted schema-qualified identifiers", () => {
+    expect(getMutationTarget('INSERT INTO ticker."TimeTickers" ("Id") VALUES (1)')).toBe(
+      "ticker.TimeTickers",
+    );
+    expect(getMutationTarget("UPDATE public.users SET name = 'x'")).toBe("public.users");
+    expect(getMutationTarget("DELETE FROM users WHERE id = 1")).toBe("users");
   });
 });
 
@@ -527,6 +535,57 @@ describe("DbService", () => {
             {
               [psqlCommand]: {
                 stdout: '[{"?column?":1}]\n',
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+            observedShellCommands,
+          ),
+        ),
+      );
+    });
+
+    it.effect("allows only configured mutation targets on remote environments", () => {
+      const observedShellCommands: string[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: {
+            host: "db.internal",
+            port: 5432,
+            user: "writer",
+            database: "app",
+          },
+        },
+        allowedMutationTargets: {
+          prod: { insert: ["ticker.TimeTickers"] },
+        },
+      };
+      const allowedSql = 'INSERT INTO ticker."TimeTickers" ("Id") VALUES (1)';
+      const blockedSql = 'INSERT INTO public."OtherTable" ("Id") VALUES (1)';
+      const psqlCommand = `psql -h db.internal -p 5432 -U writer -d app -c ${allowedSql}`;
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const blocked = yield* service.executeQuery("prod", blockedSql).pipe(Effect.result);
+
+        Result.match(blocked, {
+          onFailure: (error) => expect(error._tag).toBe("DbMutationBlockedError"),
+          onSuccess: () => expect.fail("Expected blocked mutation"),
+        });
+
+        const result = yield* service.executeQuery("prod", allowedSql);
+
+        expect(result.success).toBe(true);
+        expect(result.rowCount).toBe(1);
+        expect(observedShellCommands).toEqual([psqlCommand]);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            {
+              [psqlCommand]: {
+                stdout: "INSERT 0 1\n",
                 stderr: "",
                 exitCode: 0,
               },

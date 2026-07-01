@@ -28,6 +28,7 @@ import {
 import {
   detectSchemaError,
   getAllowedMutationOperation,
+  getMutationTarget,
   isValidTableName,
   isMutationQuery,
 } from "./security";
@@ -712,6 +713,7 @@ export class DbService extends Context.Service<
             needsTunnel: accessMode.needsTunnel,
             allowMutations: accessMode.allowMutations,
             allowedMutations: accessMode.allowedMutations,
+            allowedMutationTargets: dbConfig.allowedMutationTargets?.[env] ?? {},
           };
         });
 
@@ -725,11 +727,17 @@ export class DbService extends Context.Service<
           const password = yield* resolvePassword(resolvedConfig, env);
           const mutation = isMutationQuery(sql);
           const mutationOperation = mutation ? getAllowedMutationOperation(sql) : undefined;
+          const mutationTarget = mutation ? getMutationTarget(sql) : undefined;
           const mutationAllowed =
             !mutation ||
             resolvedConfig.allowMutations ||
             (mutationOperation !== undefined &&
-              resolvedConfig.allowedMutations.includes(mutationOperation));
+              resolvedConfig.allowedMutations.includes(mutationOperation)) ||
+            (mutationOperation !== undefined &&
+              mutationTarget !== undefined &&
+              (resolvedConfig.allowedMutationTargets[mutationOperation] ?? []).includes(
+                mutationTarget,
+              ));
 
           if (!mutationAllowed) {
             const allowed =
@@ -739,7 +747,7 @@ export class DbService extends Context.Service<
             return yield* new DbMutationBlockedError({
               message: `Mutation queries are not allowed on environment ${env}. Allowed mutation operations: ${allowed}.`,
               environment: env,
-              hint: 'Configure database.<profile>.allowedMutations.<env> with explicit operations such as ["insert"] if this environment should allow controlled mutations.',
+              hint: 'Configure database.<profile>.allowedMutationTargets.<env> with explicit targets such as { insert: ["ticker.TimeTickers"] }, or allowedMutations.<env> for broader operation-level access.',
             });
           }
 
