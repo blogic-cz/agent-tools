@@ -1,13 +1,59 @@
 import { describe, expect, it } from "vitest";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   decodeConfig,
   getDefaultEnvironment,
   getGitHubConfig,
   getToolConfig,
+  loadConfig,
   resolveGitHubRepoTarget,
 } from "#config/loader";
 import type { AgentToolsConfig } from "#config/types";
+
+function withTempConfigDir(name: string, run: (directory: string) => Promise<void> | void) {
+  return async () => {
+    const directory = join(tmpdir(), `agent-tools-${name}-${Date.now()}`);
+    mkdirSync(directory, { recursive: true });
+    try {
+      await run(directory);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+}
+
+function writeJson(filePath: string, value: unknown): void {
+  writeFileSync(filePath, JSON.stringify(value));
+}
+
+async function withBunConfigFileShim(run: () => Promise<void>): Promise<void> {
+  const previousBun = globalThis.Bun;
+  Object.defineProperty(globalThis, "Bun", {
+    configurable: true,
+    value: {
+      file: (filePath: string) => ({
+        exists: async () => existsSync(filePath),
+        text: async () => readFileSync(filePath, "utf8"),
+      }),
+      JSON5: {
+        parse: JSON.parse,
+      },
+    },
+  });
+
+  try {
+    await run();
+  } finally {
+    if (previousBun) {
+      Object.defineProperty(globalThis, "Bun", { configurable: true, value: previousBun });
+    } else {
+      Reflect.deleteProperty(globalThis, "Bun");
+    }
+  }
+}
 
 describe("getToolConfig", () => {
   it("returns undefined when config is undefined", () => {
@@ -386,6 +432,166 @@ describe("decodeConfig", () => {
       ),
     ).toThrow(/Invalid agent-tools config/);
   });
+});
+
+describe("loadConfig", () => {
+  it(
+    "merges local config files over the nearest base config",
+    withTempConfigDir("local-merge", async (directory) => {
+      writeJson(join(directory, "agent-tools.json5"), {
+        database: {
+          default: {
+            environments: {
+              local: {
+                host: "nexus.sab.local",
+                port: 40543,
+                user: "postgres",
+                database: "nexus",
+              },
+            },
+            allowedMutations: {
+              dev: ["insert"],
+            },
+          },
+        },
+        observability: {
+          default: {
+            environments: {
+              local: {
+                url: "http://nexus.sab.local:40300",
+                prometheusUid: "prometheus",
+              },
+            },
+          },
+        },
+      });
+      writeJson(join(directory, "agent-tools.local.json5"), {
+        database: {
+          default: {
+            environments: {
+              local: {
+                port: 41819,
+              },
+            },
+            allowedMutations: {
+              dev: ["insert", "update"],
+            },
+          },
+        },
+        observability: {
+          default: {
+            environments: {
+              local: {
+                url: "http://nexus.sab.local:41676",
+              },
+            },
+          },
+        },
+      });
+
+      await withBunConfigFileShim(async () => {
+        const previousCwd = process.cwd();
+        try {
+          process.chdir(directory);
+          const config = await loadConfig();
+
+          expect(config?.database?.default?.environments.local).toEqual({
+            host: "nexus.sab.local",
+            port: 41819,
+            user: "postgres",
+            database: "nexus",
+          });
+          expect(config?.database?.default?.allowedMutations?.dev).toEqual(["insert", "update"]);
+          expect(config?.observability?.default?.environments.local).toEqual({
+            url: "http://nexus.sab.local:41676",
+            prometheusUid: "prometheus",
+          });
+        } finally {
+          process.chdir(previousCwd);
+        }
+      });
+    }),
+  );
+
+  it(
+    "applies local config files from child directories without loading parent bases",
+    withTempConfigDir("child-local", async (directory) => {
+      const child = join(directory, "packages", "app");
+      mkdirSync(child, { recursive: true });
+      writeJson(join(directory, "agent-tools.json5"), {
+        defaultEnvironment: "dev",
+        database: {
+          default: {
+            environments: {
+              local: { host: "root", port: 40543, user: "root", database: "root" },
+            },
+          },
+        },
+      });
+      writeJson(join(child, "agent-tools.local.json"), {
+        defaultEnvironment: "local",
+        database: {
+          default: {
+            environments: {
+              local: { port: 41819 },
+            },
+          },
+        },
+      });
+
+      await withBunConfigFileShim(async () => {
+        const previousCwd = process.cwd();
+        try {
+          process.chdir(child);
+          const config = await loadConfig();
+
+          expect(config?.defaultEnvironment).toBe("local");
+          expect(config?.database?.default?.environments.local).toEqual({
+            host: "root",
+            port: 41819,
+            user: "root",
+            database: "root",
+          });
+        } finally {
+          process.chdir(previousCwd);
+        }
+      });
+    }),
+  );
+
+  it(
+    "keeps the nearest regular config as the base",
+    withTempConfigDir("nearest-base", async (directory) => {
+      const child = join(directory, "nested");
+      mkdirSync(child, { recursive: true });
+      writeJson(join(directory, "agent-tools.json5"), {
+        azure: {
+          default: { organization: "https://dev.azure.com/root", defaultProject: "root" },
+        },
+        github: {
+          default: { owner: "root-owner", repo: "root-repo" },
+        },
+      });
+      writeJson(join(child, "agent-tools.json5"), {
+        github: {
+          default: { owner: "child-owner", repo: "child-repo" },
+        },
+      });
+
+      await withBunConfigFileShim(async () => {
+        const previousCwd = process.cwd();
+        try {
+          process.chdir(child);
+          const config = await loadConfig();
+
+          expect(config?.azure).toBeUndefined();
+          expect(config?.github?.default).toEqual({ owner: "child-owner", repo: "child-repo" });
+        } finally {
+          process.chdir(previousCwd);
+        }
+      });
+    }),
+  );
 });
 
 describe("VPN prerequisites config", () => {

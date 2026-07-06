@@ -194,8 +194,12 @@ const AgentToolsConfigSchema = Schema.Struct({
   github: Schema.optionalKey(Schema.Record(Schema.String, GitHubRepoConfigSchema)),
 });
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function stripUnknownTopLevelKeys(parsed: unknown): unknown {
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+  if (!isRecord(parsed)) {
     return parsed;
   }
 
@@ -223,20 +227,24 @@ export function decodeConfig(
   }
 }
 
-async function findConfigFile(startDirectory: string = process.cwd()): Promise<string | undefined> {
+const BASE_CONFIG_FILES = ["agent-tools.json", "agent-tools.json5"] as const;
+const LOCAL_CONFIG_FILES = ["agent-tools.local.json", "agent-tools.local.json5"] as const;
+
+async function existingFile(filePath: string): Promise<string | undefined> {
+  return (await Bun.file(filePath).exists()) ? filePath : undefined;
+}
+
+async function findBaseConfigDirectory(
+  startDirectory: string = process.cwd(),
+): Promise<string | undefined> {
   let currentDirectory = startDirectory;
 
   while (true) {
-    const json5Path = `${currentDirectory}/agent-tools.json5`;
-    // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
-    if (await Bun.file(json5Path).exists()) {
-      return json5Path;
-    }
-
-    const jsonPath = `${currentDirectory}/agent-tools.json`;
-    // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
-    if (await Bun.file(jsonPath).exists()) {
-      return jsonPath;
+    for (const fileName of BASE_CONFIG_FILES) {
+      // eslint-disable-next-line eslint/no-await-in-loop -- sequential directory walk, each iteration may short-circuit
+      if (await Bun.file(`${currentDirectory}/${fileName}`).exists()) {
+        return currentDirectory;
+      }
     }
 
     const parentDirectory = dirname(currentDirectory);
@@ -247,16 +255,73 @@ async function findConfigFile(startDirectory: string = process.cwd()): Promise<s
   }
 }
 
+async function findConfigFiles(startDirectory: string = process.cwd()): Promise<readonly string[]> {
+  const baseDirectory = await findBaseConfigDirectory(startDirectory);
+  if (!baseDirectory) {
+    return [];
+  }
+
+  const directories: string[] = [];
+  let currentDirectory = startDirectory;
+  while (true) {
+    directories.push(currentDirectory);
+    if (currentDirectory === baseDirectory) {
+      break;
+    }
+
+    const parentDirectory = dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      return [];
+    }
+    currentDirectory = parentDirectory;
+  }
+  directories.reverse();
+
+  const configFiles: string[] = [];
+  for (const directory of directories) {
+    const fileNames =
+      directory === baseDirectory
+        ? [...BASE_CONFIG_FILES, ...LOCAL_CONFIG_FILES]
+        : LOCAL_CONFIG_FILES;
+
+    for (const fileName of fileNames) {
+      // eslint-disable-next-line eslint/no-await-in-loop -- config precedence is directory/file order
+      const filePath = await existingFile(`${directory}/${fileName}`);
+      if (filePath) {
+        configFiles.push(filePath);
+      }
+    }
+  }
+
+  return configFiles;
+}
+
+function mergeConfigValue(left: unknown, right: unknown): unknown {
+  if (!isRecord(left) || !isRecord(right)) {
+    return right;
+  }
+
+  const merged: Record<string, unknown> = { ...left };
+  for (const [key, value] of Object.entries(right)) {
+    merged[key] = key in merged ? mergeConfigValue(merged[key], value) : value;
+  }
+  return merged;
+}
+
 export async function loadConfig(): Promise<AgentToolsConfig | undefined> {
-  const configPath = await findConfigFile();
-  if (!configPath) {
+  const configPaths = await findConfigFiles();
+  if (configPaths.length === 0) {
     return undefined;
   }
 
-  const fileContent = await Bun.file(configPath).text();
-  const parsed = Bun.JSON5.parse(fileContent);
+  let parsed: unknown = {};
+  for (const configPath of configPaths) {
+    // eslint-disable-next-line eslint/no-await-in-loop -- config precedence is file order
+    const fileContent = await Bun.file(configPath).text();
+    parsed = mergeConfigValue(parsed, Bun.JSON5.parse(fileContent));
+  }
 
-  return decodeConfig(parsed, configPath);
+  return decodeConfig(parsed, configPaths.join(", "));
 }
 
 export class ConfigService extends Context.Service<ConfigService, AgentToolsConfig | undefined>()(

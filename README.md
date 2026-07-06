@@ -312,7 +312,19 @@ All settings are optional — audit works out of the box with sensible defaults.
 
 ## Configuration
 
-Config is loaded from `agent-tools.json5` (or `agent-tools.json`) by walking up from the current working directory. Missing config = zero-config mode (works for `gh-tool`; others require config).
+Config is loaded by walking up from the current working directory to the nearest regular config file:
+
+1. `agent-tools.json`
+2. `agent-tools.json5`
+
+That nearest regular config is the base. Local override files are then merged from that directory down to the current working directory:
+
+1. `agent-tools.local.json`
+2. `agent-tools.local.json5`
+
+Later files override earlier files. Objects are merged deeply; arrays and primitive values are replaced. Missing config = zero-config mode (works for `gh-tool`; others require config).
+
+Use `agent-tools.local.json5` for machine-specific ports, paths, and worktree overrides. Keep local files gitignored.
 
 ### Global Settings
 
