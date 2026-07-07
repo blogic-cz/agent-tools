@@ -1,4 +1,4 @@
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag, Param } from "effect/unstable/cli";
 import { Console, Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
@@ -210,6 +210,34 @@ const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo
     cancelled: true as const,
     runId,
     message: `Cancelled run ${runId}`,
+  };
+});
+
+export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function* (opts: {
+  workflow: string;
+  ref: string;
+  fields: ReadonlyArray<string>;
+  repo: string | null;
+}) {
+  const gh = yield* GitHubService;
+  const args = ["workflow", "run", opts.workflow, "--ref", opts.ref];
+
+  if (opts.repo !== null) {
+    args.push("--repo", opts.repo);
+  }
+
+  for (const field of opts.fields) {
+    args.push("-f", field);
+  }
+
+  yield* gh.runGh(args);
+
+  return {
+    dispatched: true as const,
+    workflow: opts.workflow,
+    ref: opts.ref,
+    repo: opts.repo,
+    fields: opts.fields,
   };
 });
 
@@ -648,6 +676,37 @@ export const workflowCancelCommand = Command.make(
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Cancel an in-progress workflow run"));
+
+export const workflowRunCommand = Command.make(
+  "run",
+  {
+    field: Param.variadic(
+      Param.string(Param.flagKind, "field").pipe(
+        Param.withAlias("f"),
+        Param.withDescription("Workflow input as key=value; may be repeated"),
+      ),
+    ),
+    format: formatOption,
+    ref: Flag.string("ref").pipe(
+      Flag.withDescription("Git ref to run the workflow on (branch, tag, or SHA)"),
+    ),
+    repo: repoOption,
+    workflow: Flag.string("workflow").pipe(
+      Flag.withDescription("Workflow file name (e.g., build.yml) or workflow ID"),
+    ),
+  },
+  ({ field, format, ref, repo, workflow }) =>
+    Effect.gen(function* () {
+      const resolvedRepo = yield* resolveRepoArg(repo);
+      const result = yield* dispatchWorkflow({
+        workflow,
+        ref,
+        fields: field,
+        repo: resolvedRepo,
+      });
+      yield* logFormatted(result, format);
+    }),
+).pipe(Command.withDescription("Dispatch a workflow_dispatch workflow run"));
 
 export const workflowWatchCommand = Command.make(
   "watch",

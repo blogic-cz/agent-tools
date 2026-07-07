@@ -61,6 +61,7 @@ import {
   workflowListCommand,
   workflowLogsCommand,
   workflowRerunCommand,
+  workflowRunCommand,
   workflowViewCommand,
   workflowWatchCommand,
 } from "./workflow";
@@ -123,9 +124,10 @@ const repoCommand = Command.make("repo", {}).pipe(
 
 const workflowCommand = Command.make("workflow", {}).pipe(
   Command.withDescription(
-    "GitHub Actions workflow operations (list runs, view, jobs, logs, job-logs, annotations, rerun, cancel, watch)",
+    "GitHub Actions workflow operations (run, list, view, jobs, logs, job-logs, annotations, rerun, cancel, watch)",
   ),
   Command.withSubcommands([
+    workflowRunCommand,
     workflowListCommand,
     workflowViewCommand,
     workflowJobsCommand,
@@ -172,16 +174,17 @@ WORKFLOW FOR AI AGENTS:
   10. Use 'issue close --issue N --comment "reason"' to close issues
   11. Use 'issue comment --issue N --body "text"' to comment on issues
   12. Use 'repo info' to get repository metadata
-  13. Use 'workflow list' to list recent workflow runs
-  14. Use 'workflow view --run N' to inspect a specific run with jobs/steps
-  15. Use 'workflow logs --run N' to get logs (failed jobs by default)
-  16. Use 'workflow job-logs --run N --job "build-web-app"' to get clean parsed logs for a specific job
-  17. Use 'workflow annotations --run N' to list CI annotations (errors, warnings, notices)
-  18. Use 'workflow watch --run N' to watch until completion
-  19. Use 'release status' to inspect latest release + repository context
-  20. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
-  21. Use 'release edit/view/list/delete' to maintain existing releases
-  22. Use 'branch rename --old-name X --new-name Y --confirm' to rename a branch`,
+  13. Use 'workflow run' to dispatch workflow_dispatch workflows
+  14. Use 'workflow list' to list recent workflow runs
+  15. Use 'workflow view --run N' to inspect a specific run with jobs/steps
+  16. Use 'workflow logs --run N' to get logs (failed jobs by default)
+  17. Use 'workflow job-logs --run N --job "build-web-app"' to get clean parsed logs for a specific job
+  18. Use 'workflow annotations --run N' to list CI annotations (errors, warnings, notices)
+  19. Use 'workflow watch --run N' to watch until completion
+  20. Use 'release status' to inspect latest release + repository context
+  21. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
+  22. Use 'release edit/view/list/delete' to maintain existing releases
+  23. Use 'branch rename --old-name X --new-name Y --confirm' to rename a branch`,
   ),
   Command.withSubcommands([
     prCommand,

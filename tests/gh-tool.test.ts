@@ -40,6 +40,7 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
+import { dispatchWorkflow } from "#gh/workflow";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -261,6 +262,53 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
     }),
   );
 }
+
+describe("workflow dispatch", () => {
+  it.effect("runs workflow_dispatch with repo, ref, and fields", () => {
+    const calls: string[][] = [];
+
+    return Effect.gen(function* () {
+      const result = yield* dispatchWorkflow({
+        workflow: "propagate-environment-branch.yml",
+        ref: "main",
+        repo: "sabservis/nexus-be",
+        fields: ["source_branch=staging", "target_branch=main"],
+      });
+
+      expect(result).toEqual({
+        dispatched: true,
+        workflow: "propagate-environment-branch.yml",
+        ref: "main",
+        repo: "sabservis/nexus-be",
+        fields: ["source_branch=staging", "target_branch=main"],
+      });
+      expect(calls).toEqual([
+        [
+          "workflow",
+          "run",
+          "propagate-environment-branch.yml",
+          "--ref",
+          "main",
+          "--repo",
+          "sabservis/nexus-be",
+          "-f",
+          "source_branch=staging",
+          "-f",
+          "target_branch=main",
+        ],
+      ]);
+    }).pipe(
+      Effect.provide(
+        createMockGhLayer({
+          runGh: (args) => {
+            calls.push(args);
+            return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+          },
+        }),
+      ),
+    );
+  });
+});
 
 describe("GitHubService.runGh() error mapping", () => {
   it.effect("uses the configured default repository for plain gh calls", () => {
