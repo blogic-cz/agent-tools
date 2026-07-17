@@ -144,11 +144,94 @@ const envsCommand = Command.make(
   Command.withDescription("List configured database environments and the default (no network)"),
 );
 
+const ACTIVITY_SQL = `SELECT pid, usename AS "user", state,
+  date_trunc('second', now() - xact_start) AS xact_age,
+  date_trunc('second', now() - query_start) AS query_age,
+  wait_event_type, wait_event, left(query, 200) AS query
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid() AND state IS NOT NULL
+ORDER BY xact_start ASC NULLS LAST`;
+
+const LOCKS_SQL = `SELECT blocking.pid AS blocking_pid, blocking.usename AS blocking_user,
+  left(blocking.query, 150) AS blocking_query,
+  blocked.pid AS blocked_pid, blocked.usename AS blocked_user,
+  left(blocked.query, 150) AS blocked_query
+FROM pg_stat_activity blocked
+JOIN pg_stat_activity blocking ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+ORDER BY blocking.pid, blocked.pid`;
+
+const GRANTS_SQL = `SELECT grantee, table_schema AS schema, 'table' AS kind, table_name AS object,
+  string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_table_grants
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+GROUP BY grantee, table_schema, table_name
+UNION ALL
+SELECT grantee, object_schema AS schema, 'sequence' AS kind, object_name AS object,
+  string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_usage_grants
+WHERE object_type = 'SEQUENCE' AND object_schema NOT IN ('pg_catalog', 'information_schema')
+GROUP BY grantee, object_schema, object_name
+ORDER BY grantee, schema, kind, object`;
+
+const makeDiagnosticCommand = (name: string, description: string, sql: string) =>
+  Command.make(
+    name,
+    {
+      env: Flag.optional(Flag.string("env")).pipe(
+        Flag.withDescription(
+          "Target database environment name (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
+        ),
+      ),
+      limit: Flag.optional(Flag.integer("limit")).pipe(
+        Flag.withDescription("Max rows to return (default 50). Use 0 for no cap."),
+      ),
+      format: formatOption,
+      profile: Flag.optional(Flag.string("profile")).pipe(
+        Flag.withDescription(
+          "Database profile name from agent-tools.json5 (if multiple configured)",
+        ),
+      ),
+    },
+    ({ env, limit, format }) =>
+      Effect.gen(function* () {
+        const resolvedEnv = yield* resolveEnv(env);
+        const db = yield* DbService;
+        const result = yield* db.executeQuery(resolvedEnv, sql, Option.getOrUndefined(limit));
+        yield* Console.log(formatOutput(result, format));
+      }),
+  ).pipe(Command.withDescription(description));
+
+const activityCommand = makeDiagnosticCommand(
+  "activity",
+  "Show live sessions from pg_stat_activity (state, transaction/query age, wait event), longest-running first",
+  ACTIVITY_SQL,
+);
+
+const locksCommand = makeDiagnosticCommand(
+  "locks",
+  "Show blocking chains (blocker -> blocked) from pg_blocking_pids + pg_stat_activity",
+  LOCKS_SQL,
+);
+
+const grantsCommand = makeDiagnosticCommand(
+  "grants",
+  "Show per-role table/sequence privileges by schema (excludes system schemas)",
+  GRANTS_SQL,
+);
+
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
 const mainCommand = Command.make("db-tool", {}).pipe(
   Command.withDescription("Database Query Tool for Coding Agents"),
-  Command.withSubcommands([sqlCommand, schemaCommand, envsCommand, commandsCommand]),
+  Command.withSubcommands([
+    sqlCommand,
+    schemaCommand,
+    activityCommand,
+    locksCommand,
+    grantsCommand,
+    envsCommand,
+    commandsCommand,
+  ]),
 );
 
 const cli = Command.run(mainCommand, {
