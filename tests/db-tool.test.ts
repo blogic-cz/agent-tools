@@ -11,7 +11,13 @@ import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
+import {
+  getAllowedMutationOperation,
+  getMutationTarget,
+  isMutationQuery,
+  isValidTableName,
+  splitSqlStatements,
+} from "#db/security";
 import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -192,6 +198,20 @@ describe("db schema introspection SQL", () => {
     );
     expect(getMutationTarget("UPDATE public.users SET name = 'x'")).toBe("public.users");
     expect(getMutationTarget("DELETE FROM users WHERE id = 1")).toBe("users");
+  });
+
+  it("flags a mutation chained after a leading read (no first-statement-only bypass)", () => {
+    expect(isMutationQuery("SELECT 1")).toBe(false);
+    expect(isMutationQuery("SELECT 1; DELETE FROM users")).toBe(true);
+    expect(isMutationQuery("SELECT 1; SELECT 2")).toBe(false);
+    expect(isMutationQuery("select * from t;\n  update t set x = 1")).toBe(true);
+  });
+
+  it("splits statements on top-level semicolons but not those inside string literals", () => {
+    expect(splitSqlStatements("SELECT 1; SELECT 2")).toHaveLength(2);
+    expect(splitSqlStatements("SELECT 'a;b'")).toHaveLength(1);
+    expect(splitSqlStatements("SELECT 'a;b'; DELETE FROM t")).toHaveLength(2);
+    expect(isMutationQuery("SELECT 'DELETE FROM t'")).toBe(false);
   });
 });
 

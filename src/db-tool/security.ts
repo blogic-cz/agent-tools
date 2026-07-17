@@ -86,9 +86,42 @@ export function stripSqlComments(sql: string): string {
   return result;
 }
 
-export function isMutationQuery(sql: string): boolean {
+export function splitSqlStatements(sql: string): string[] {
   const stripped = stripSqlComments(sql);
-  return MUTATION_PATTERNS.some((pattern) => pattern.test(stripped));
+  const statements: string[] = [];
+  let current = "";
+  let inString = false;
+  let i = 0;
+  while (i < stripped.length) {
+    const ch = stripped[i];
+    if (ch === "'") {
+      if (inString && stripped[i + 1] === "'") {
+        current += "''";
+        i += 2;
+        continue;
+      }
+      inString = !inString;
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === ";" && !inString) {
+      if (current.trim() !== "") statements.push(current);
+      current = "";
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  if (current.trim() !== "") statements.push(current);
+  return statements;
+}
+
+export function isMutationQuery(sql: string): boolean {
+  return splitSqlStatements(sql).some((statement) =>
+    MUTATION_PATTERNS.some((pattern) => pattern.test(statement)),
+  );
 }
 
 export function getAllowedMutationOperation(sql: string): DbMutationOperation | undefined {
