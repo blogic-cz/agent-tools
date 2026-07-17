@@ -42,7 +42,7 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
-import { dispatchWorkflow } from "#gh/workflow";
+import { buildWatchResult, dispatchWorkflow } from "#gh/workflow";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -2063,6 +2063,32 @@ describe("pr feedback (aggregated review-response inventory)", () => {
       expect(Array.isArray(feedback.threads)).toBe(true);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
+});
+
+describe("workflow watch result shaping (buildWatchResult)", () => {
+  const fakeRun = {
+    status: "completed",
+    conclusion: "success",
+    jobs: [{ name: "build", status: "completed", conclusion: "success" }],
+  };
+
+  it("omits watchOutput by default (quiet) when the run completed", () => {
+    const result = buildWatchResult(555, fakeRun, "frame1\nframe2\nframe3", false, 120);
+    expect(result.status).toBe("completed");
+    expect(result.conclusion).toBe("success");
+    expect(result.jobs).toHaveLength(1);
+    expect("watchOutput" in result).toBe(false);
+  });
+
+  it("includes the raw frames when --frames is set", () => {
+    const result = buildWatchResult(555, fakeRun, "frame1\nframe2\nframe3", true, 120);
+    expect((result as { watchOutput?: string }).watchOutput).toBe("frame1\nframe2\nframe3");
+  });
+
+  it("always includes a timeout note when the watch timed out", () => {
+    const result = buildWatchResult(555, fakeRun, null, false, 90);
+    expect((result as { watchOutput?: string }).watchOutput).toContain("timed out after 90s");
+  });
 });
 
 describe("Issue discussion comments", () => {

@@ -245,6 +245,34 @@ export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function*
 // then fall back to a one-shot snapshot so a timeout never returns nothing.
 const DEFAULT_WATCH_RUN_TIMEOUT_SECONDS = CI_CHECK_WATCH_TIMEOUT_MS / 1000;
 
+export const buildWatchResult = (
+  runId: number,
+  finalState: {
+    status: string;
+    conclusion: string | null;
+    jobs: ReadonlyArray<{ name: string; status: string; conclusion: string | null }>;
+  },
+  watchStdout: string | null,
+  frames: boolean,
+  timeoutSeconds: number,
+) => ({
+  runId,
+  status: finalState.status,
+  conclusion: finalState.conclusion,
+  jobs: finalState.jobs.map((job) => ({
+    name: job.name,
+    status: job.status,
+    conclusion: job.conclusion,
+  })),
+  ...(watchStdout === null
+    ? {
+        watchOutput: `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`,
+      }
+    : frames
+      ? { watchOutput: watchStdout }
+      : {}),
+});
+
 const watchRun = Effect.fn("workflow.watchRun")(function* (
   runId: number,
   repo: string | null,
@@ -278,23 +306,13 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
 
   const finalState = yield* viewRun(runId, repo);
 
-  const timedOutNote = `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`;
-
-  return {
+  return buildWatchResult(
     runId,
-    status: finalState.status,
-    conclusion: finalState.conclusion,
-    jobs: finalState.jobs.map((job) => ({
-      name: job.name,
-      status: job.status,
-      conclusion: job.conclusion,
-    })),
-    ...(result === null
-      ? { watchOutput: timedOutNote }
-      : frames
-        ? { watchOutput: result.stdout }
-        : {}),
-  };
+    finalState,
+    result === null ? null : result.stdout,
+    frames,
+    timeoutSeconds,
+  );
 });
 
 const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts: {
