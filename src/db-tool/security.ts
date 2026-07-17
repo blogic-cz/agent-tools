@@ -38,6 +38,18 @@ export function stripSqlComments(sql: string): string {
     const ch = sql[i];
     const next = i + 1 < len ? sql[i + 1] : "";
 
+    if (ch === "$") {
+      const open = DOLLAR_TAG_OPEN.exec(sql.slice(i));
+      if (open) {
+        const tag = open[0];
+        const closeAt = sql.indexOf(tag, i + tag.length);
+        const stop = closeAt === -1 ? len : closeAt + tag.length;
+        result += sql.slice(i, stop);
+        i = stop;
+        continue;
+      }
+    }
+
     // Single-quoted string literal — skip through
     if (ch === "'") {
       result += ch;

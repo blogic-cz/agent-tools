@@ -160,12 +160,18 @@ FROM pg_stat_activity blocked
 JOIN pg_stat_activity blocking ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
 ORDER BY blocking.pid, blocked.pid`;
 
-const GRANTS_SQL = `SELECT grantee, table_schema AS schema, table_name AS "table",
+const GRANTS_SQL = `SELECT grantee, table_schema AS schema, 'table' AS kind, table_name AS object,
   string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
 FROM information_schema.role_table_grants
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
 GROUP BY grantee, table_schema, table_name
-ORDER BY grantee, table_schema, table_name`;
+UNION ALL
+SELECT grantee, object_schema AS schema, 'sequence' AS kind, object_name AS object,
+  string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_usage_grants
+WHERE object_type = 'SEQUENCE' AND object_schema NOT IN ('pg_catalog', 'information_schema')
+GROUP BY grantee, object_schema, object_name
+ORDER BY grantee, schema, kind, object`;
 
 const makeDiagnosticCommand = (name: string, description: string, sql: string) =>
   Command.make(

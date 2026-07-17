@@ -223,6 +223,11 @@ describe("db schema introspection SQL", () => {
     expect(splitSqlStatements("SELECT E'a\\'; still one'")).toHaveLength(1);
   });
 
+  it("detects a mutation after a dollar-quoted literal containing an odd quote and a comment", () => {
+    expect(isMutationQuery("SELECT $$it's$$ ; /*x*/DROP TABLE users")).toBe(true);
+    expect(isMutationQuery("SELECT $$it's$$")).toBe(false);
+  });
+
   it("authorizes every statement, not just the first (no append-after-allowed bypass)", () => {
     const policy = {
       allowMutations: false,
