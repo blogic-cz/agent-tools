@@ -34,6 +34,7 @@ import {
 } from "#gh/pr/core";
 import {
   fetchComments,
+  fetchFeedback,
   fetchReviews,
   fetchThreads,
   replyToComment,
@@ -1994,6 +1995,72 @@ describe("Pull request reviews (REST → PullRequestReview[])", () => {
       );
       expect(byBody).toHaveLength(1);
       expect(byBody[0]?.id).toBe(901);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("pr feedback (aggregated review-response inventory)", () => {
+  it.effect("returns reviews, threads, inline comments, and issue comments in one call", () =>
+    Effect.gen(function* () {
+      const reviewsJson = JSON.stringify([
+        {
+          id: 901,
+          user: { login: "claude[bot]" },
+          state: "COMMENTED",
+          body: "summary body",
+          submitted_at: "2026-07-16T05:34:15Z",
+          html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-901",
+        },
+      ]);
+      const inlineJson = JSON.stringify([
+        {
+          id: 201,
+          in_reply_to_id: null,
+          user: { login: "reviewer" },
+          body: "inline",
+          path: "src/file.ts",
+          line: 10,
+          created_at: "2026-07-16T10:00:00Z",
+        },
+      ]);
+      const issueJson = JSON.stringify([
+        {
+          id: 401,
+          user: { login: "github-actions[bot]" },
+          body: "test results",
+          created_at: "2026-07-16T09:00:00Z",
+          html_url: "https://github.com/test-owner/test-repo/issues/123#issuecomment-401",
+        },
+      ]);
+
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(mockGraphQLThreadsResponse),
+        runGh: (args) => {
+          const endpoint = args.join(" ");
+          const body = endpoint.includes("pulls/123/reviews")
+            ? reviewsJson
+            : endpoint.includes("pulls/123/comments")
+              ? inlineJson
+              : endpoint.includes("issues/123/comments")
+                ? issueJson
+                : "[]";
+          return Effect.succeed({ stdout: body, stderr: "", exitCode: 0 });
+        },
+      });
+
+      const feedback = yield* fetchFeedback(123).pipe(Effect.provide(layer));
+
+      expect(Object.keys(feedback).sort()).toEqual([
+        "inlineComments",
+        "issueComments",
+        "reviews",
+        "threads",
+      ]);
+      expect(feedback.reviews).toHaveLength(1);
+      expect(feedback.reviews[0]?.state).toBe("COMMENTED");
+      expect(feedback.inlineComments).toHaveLength(1);
+      expect(feedback.issueComments).toHaveLength(1);
+      expect(Array.isArray(feedback.threads)).toBe(true);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });

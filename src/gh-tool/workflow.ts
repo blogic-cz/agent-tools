@@ -249,6 +249,7 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
   runId: number,
   repo: string | null,
   timeoutSeconds: number,
+  frames: boolean,
 ) {
   const gh = yield* GitHubService;
 
@@ -277,6 +278,8 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
 
   const finalState = yield* viewRun(runId, repo);
 
+  const timedOutNote = `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`;
+
   return {
     runId,
     status: finalState.status,
@@ -286,10 +289,11 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
       status: job.status,
       conclusion: job.conclusion,
     })),
-    watchOutput:
-      result === null
-        ? `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`
-        : result.stdout,
+    ...(result === null
+      ? { watchOutput: timedOutNote }
+      : frames
+        ? { watchOutput: result.stdout }
+        : {}),
   };
 });
 
@@ -712,6 +716,11 @@ export const workflowWatchCommand = Command.make(
   "watch",
   {
     format: formatOption,
+    frames: Flag.boolean("frames").pipe(
+      Flag.withDescription(
+        "Include the raw watch progress frames (large); omitted by default — final status/conclusion/jobs are always returned",
+      ),
+    ),
     repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
     timeout: Flag.integer("timeout").pipe(
@@ -725,10 +734,10 @@ export const workflowWatchCommand = Command.make(
       ),
     ),
   },
-  ({ format, repo, run, timeout }) =>
+  ({ format, frames, repo, run, timeout }) =>
     Effect.gen(function* () {
       const resolvedRepo = yield* resolveRepoArg(repo);
-      const result = yield* watchRun(run, resolvedRepo, timeout);
+      const result = yield* watchRun(run, resolvedRepo, timeout, frames);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Watch a workflow run until it completes, then show final status"));
