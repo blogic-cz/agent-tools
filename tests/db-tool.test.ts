@@ -11,7 +11,12 @@ import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
+import {
+  disablesReadOnly,
+  getAllowedMutationOperation,
+  getMutationTarget,
+  isValidTableName,
+} from "#db/security";
 import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -192,6 +197,17 @@ describe("db schema introspection SQL", () => {
     );
     expect(getMutationTarget("UPDATE public.users SET name = 'x'")).toBe("public.users");
     expect(getMutationTarget("DELETE FROM users WHERE id = 1")).toBe("users");
+  });
+
+  it("flags attempts to disable server-enforced read-only mode", () => {
+    expect(disablesReadOnly("SET default_transaction_read_only = off")).toBe(true);
+    expect(disablesReadOnly("SET SESSION transaction_read_only TO off")).toBe(true);
+    expect(disablesReadOnly("SELECT 1; RESET transaction_read_only; DELETE FROM t")).toBe(true);
+    expect(disablesReadOnly("SET ROLE writer")).toBe(true);
+    expect(disablesReadOnly("SET SESSION AUTHORIZATION postgres")).toBe(true);
+    expect(disablesReadOnly("RESET ALL")).toBe(true);
+    expect(disablesReadOnly("SELECT * FROM users")).toBe(false);
+    expect(disablesReadOnly("SET statement_timeout = '5s'")).toBe(false);
   });
 });
 

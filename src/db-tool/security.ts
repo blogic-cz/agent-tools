@@ -91,6 +91,13 @@ export function isMutationQuery(sql: string): boolean {
   return MUTATION_PATTERNS.some((pattern) => pattern.test(stripped));
 }
 
+const READONLY_ESCAPE_PATTERN =
+  /\b(?:set\s+(?:session\s+)?(?:default_)?transaction_read_only|reset\s+(?:default_)?transaction_read_only|set\s+role\b|set\s+session\s+authorization|reset\s+role\b|reset\s+session\s+authorization|reset\s+all)\b/i;
+
+export function disablesReadOnly(sql: string): boolean {
+  return READONLY_ESCAPE_PATTERN.test(stripSqlComments(sql));
+}
+
 export function getAllowedMutationOperation(sql: string): DbMutationOperation | undefined {
   const stripped = stripSqlComments(sql);
   return ALLOWABLE_MUTATION_PATTERNS.find(([, pattern]) => pattern.test(stripped))?.[0];
