@@ -245,10 +245,39 @@ export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function*
 // then fall back to a one-shot snapshot so a timeout never returns nothing.
 const DEFAULT_WATCH_RUN_TIMEOUT_SECONDS = CI_CHECK_WATCH_TIMEOUT_MS / 1000;
 
+export const buildWatchResult = (
+  runId: number,
+  finalState: {
+    status: string;
+    conclusion: string | null;
+    jobs: ReadonlyArray<{ name: string; status: string; conclusion: string | null }>;
+  },
+  watchStdout: string | null,
+  frames: boolean,
+  timeoutSeconds: number,
+) => ({
+  runId,
+  status: finalState.status,
+  conclusion: finalState.conclusion,
+  jobs: finalState.jobs.map((job) => ({
+    name: job.name,
+    status: job.status,
+    conclusion: job.conclusion,
+  })),
+  ...(watchStdout === null
+    ? {
+        watchOutput: `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`,
+      }
+    : frames
+      ? { watchOutput: watchStdout }
+      : {}),
+});
+
 const watchRun = Effect.fn("workflow.watchRun")(function* (
   runId: number,
   repo: string | null,
   timeoutSeconds: number,
+  frames: boolean,
 ) {
   const gh = yield* GitHubService;
 
@@ -277,20 +306,13 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
 
   const finalState = yield* viewRun(runId, repo);
 
-  return {
+  return buildWatchResult(
     runId,
-    status: finalState.status,
-    conclusion: finalState.conclusion,
-    jobs: finalState.jobs.map((job) => ({
-      name: job.name,
-      status: job.status,
-      conclusion: job.conclusion,
-    })),
-    watchOutput:
-      result === null
-        ? `(watch timed out after ${timeoutSeconds}s; status taken from snapshot — re-run to keep watching)`
-        : result.stdout,
-  };
+    finalState,
+    result === null ? null : result.stdout,
+    frames,
+    timeoutSeconds,
+  );
 });
 
 const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts: {
@@ -712,6 +734,11 @@ export const workflowWatchCommand = Command.make(
   "watch",
   {
     format: formatOption,
+    frames: Flag.boolean("frames").pipe(
+      Flag.withDescription(
+        "Include the raw watch progress frames (large); omitted by default — final status/conclusion/jobs are always returned",
+      ),
+    ),
     repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
     timeout: Flag.integer("timeout").pipe(
@@ -725,10 +752,10 @@ export const workflowWatchCommand = Command.make(
       ),
     ),
   },
-  ({ format, repo, run, timeout }) =>
+  ({ format, frames, repo, run, timeout }) =>
     Effect.gen(function* () {
       const resolvedRepo = yield* resolveRepoArg(repo);
-      const result = yield* watchRun(run, resolvedRepo, timeout);
+      const result = yield* watchRun(run, resolvedRepo, timeout, frames);
       yield* logFormatted(result, format);
     }),
 ).pipe(Command.withDescription("Watch a workflow run until it completes, then show final status"));

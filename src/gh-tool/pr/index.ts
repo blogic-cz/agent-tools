@@ -7,6 +7,7 @@ export {
   prCreateCommand,
   prDiscussionSummaryCommand,
   prEditCommand,
+  prFeedbackCommand,
   prIssueCommentsCommand,
   prIssueCommentsLatestCommand,
   prListCommand,

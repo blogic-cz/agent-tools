@@ -44,6 +44,7 @@ import {
 import {
   fetchComments,
   fetchDiscussionSummary,
+  fetchFeedback,
   fetchIssueComments,
   fetchLatestIssueComment,
   fetchReviews,
@@ -102,13 +103,16 @@ export const parsePrNumbers = (input: string): readonly number[] =>
 export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   prNumber: number | null,
 ) {
-  const [info, unresolvedThreads, visibleOpenThreads, summary, checks] = yield* Effect.all([
-    viewPR(prNumber),
-    fetchThreads(prNumber, true),
-    fetchThreads(prNumber, false, true),
-    fetchDiscussionSummary(prNumber),
-    fetchChecks(prNumber, false, false, 0),
-  ]);
+  const [info, unresolvedThreads, visibleOpenThreads, summary, checks, reviews] = yield* Effect.all(
+    [
+      viewPR(prNumber),
+      fetchThreads(prNumber, true),
+      fetchThreads(prNumber, false, true),
+      fetchDiscussionSummary(prNumber),
+      fetchChecks(prNumber, false, false, 0),
+      fetchReviews(prNumber, null, null, null),
+    ],
+  );
   const classification = classifyReviewTriage(summary, checks);
 
   // Single merge-readiness verdict so agents stop re-stitching mergeable + checks + threads +
@@ -128,7 +132,16 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
     blocking,
   };
 
-  return { ready, classification, info, unresolvedThreads, visibleOpenThreads, summary, checks };
+  return {
+    ready,
+    classification,
+    info,
+    unresolvedThreads,
+    visibleOpenThreads,
+    summary,
+    checks,
+    reviews,
+  };
 });
 
 export const prViewCommand = Command.make(
@@ -647,6 +660,30 @@ export const prReviewsCommand = Command.make(
 ).pipe(
   Command.withDescription(
     "Fetch submitted review summaries (state + body) for a PR — the review bodies that comments/issue-comments do not expose",
+  ),
+);
+
+export const prFeedbackCommand = Command.make(
+  "feedback",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+  },
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const feedback = yield* fetchFeedback(Option.getOrNull(pr));
+        yield* logFormatted(feedback, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Full review-response inventory in one call: submitted reviews + threads (with state) + inline comments + issue comments",
   ),
 );
 

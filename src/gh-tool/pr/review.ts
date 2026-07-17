@@ -464,6 +464,24 @@ export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
   return reviews;
 });
 
+/**
+ * Full review-response inventory for a PR in one call: submitted review summaries,
+ * all review threads with resolution state, inline review comments, and issue
+ * (discussion) comments. Collapses the four separate fetches agents otherwise stitch.
+ */
+export const fetchFeedback = Effect.fn("pr.fetchFeedback")(function* (pr: number | null) {
+  const resolvedPr = pr ?? (yield* viewPR(null)).number;
+
+  const [reviews, threads, inlineComments, issueComments] = yield* Effect.all([
+    fetchReviews(resolvedPr, null, null, null),
+    fetchThreads(resolvedPr, false),
+    fetchComments(resolvedPr, null),
+    fetchIssueComments(resolvedPr, null, null, null),
+  ]);
+
+  return { reviews, threads, inlineComments, issueComments };
+});
+
 export const fetchLatestIssueComment = Effect.fn("pr.fetchLatestIssueComment")(function* (
   pr: number | null,
   author: string | null,

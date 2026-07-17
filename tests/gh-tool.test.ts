@@ -34,6 +34,7 @@ import {
 } from "#gh/pr/core";
 import {
   fetchComments,
+  fetchFeedback,
   fetchReviews,
   fetchThreads,
   replyToComment,
@@ -41,7 +42,7 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
-import { dispatchWorkflow } from "#gh/workflow";
+import { buildWatchResult, dispatchWorkflow } from "#gh/workflow";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -1996,6 +1997,98 @@ describe("Pull request reviews (REST → PullRequestReview[])", () => {
       expect(byBody[0]?.id).toBe(901);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
+});
+
+describe("pr feedback (aggregated review-response inventory)", () => {
+  it.effect("returns reviews, threads, inline comments, and issue comments in one call", () =>
+    Effect.gen(function* () {
+      const reviewsJson = JSON.stringify([
+        {
+          id: 901,
+          user: { login: "claude[bot]" },
+          state: "COMMENTED",
+          body: "summary body",
+          submitted_at: "2026-07-16T05:34:15Z",
+          html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-901",
+        },
+      ]);
+      const inlineJson = JSON.stringify([
+        {
+          id: 201,
+          in_reply_to_id: null,
+          user: { login: "reviewer" },
+          body: "inline",
+          path: "src/file.ts",
+          line: 10,
+          created_at: "2026-07-16T10:00:00Z",
+        },
+      ]);
+      const issueJson = JSON.stringify([
+        {
+          id: 401,
+          user: { login: "github-actions[bot]" },
+          body: "test results",
+          created_at: "2026-07-16T09:00:00Z",
+          html_url: "https://github.com/test-owner/test-repo/issues/123#issuecomment-401",
+        },
+      ]);
+
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(mockGraphQLThreadsResponse),
+        runGh: (args) => {
+          const endpoint = args.join(" ");
+          const body = endpoint.includes("pulls/123/reviews")
+            ? reviewsJson
+            : endpoint.includes("pulls/123/comments")
+              ? inlineJson
+              : endpoint.includes("issues/123/comments")
+                ? issueJson
+                : "[]";
+          return Effect.succeed({ stdout: body, stderr: "", exitCode: 0 });
+        },
+      });
+
+      const feedback = yield* fetchFeedback(123).pipe(Effect.provide(layer));
+
+      expect(Object.keys(feedback).sort()).toEqual([
+        "inlineComments",
+        "issueComments",
+        "reviews",
+        "threads",
+      ]);
+      expect(feedback.reviews).toHaveLength(1);
+      expect(feedback.reviews[0]?.state).toBe("COMMENTED");
+      expect(feedback.inlineComments).toHaveLength(1);
+      expect(feedback.issueComments).toHaveLength(1);
+      expect(Array.isArray(feedback.threads)).toBe(true);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("workflow watch result shaping (buildWatchResult)", () => {
+  const fakeRun = {
+    status: "completed",
+    conclusion: "success",
+    jobs: [{ name: "build", status: "completed", conclusion: "success" }],
+  };
+
+  it("omits watchOutput by default (quiet) when the run completed", () => {
+    const result = buildWatchResult(555, fakeRun, "frame1\nframe2\nframe3", false, 120);
+    expect(result.status).toBe("completed");
+    expect(result.conclusion).toBe("success");
+    expect(result.jobs).toHaveLength(1);
+    expect("watchOutput" in result).toBe(false);
+  });
+
+  it("includes the raw frames when --frames is set", () => {
+    const result = buildWatchResult(555, fakeRun, "frame1\nframe2\nframe3", true, 120);
+    expect((result as { watchOutput?: string }).watchOutput).toBe("frame1\nframe2\nframe3");
+  });
+
+  it("always includes a timeout note when the watch timed out", () => {
+    const result = buildWatchResult(555, fakeRun, null, false, 90);
+    expect((result as { watchOutput?: string }).watchOutput).toContain("timed out after 90s");
+  });
 });
 
 describe("Issue discussion comments", () => {
