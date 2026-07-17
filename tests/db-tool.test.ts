@@ -225,6 +225,14 @@ describe("db schema introspection SQL", () => {
     expect(splitSqlStatements("SELECT '\\' ; DROP TABLE users")).toHaveLength(2);
   });
 
+  it("shares one lexer across strip + split (E-string, nested comment, quoted ident)", () => {
+    expect(isMutationQuery("SELECT E'a\\'--x' ; DROP TABLE users")).toBe(true);
+    expect(splitSqlStatements("SELECT /* ; */ 1; SELECT 2")).toHaveLength(2);
+    expect(splitSqlStatements("SELECT /* /* ; */ */ 1; SELECT 2")).toHaveLength(2);
+    expect(splitSqlStatements('SELECT * FROM "we;ird"')).toHaveLength(1);
+    expect(isMutationQuery('SELECT 1; UPDATE "t;bl" SET x = 1')).toBe(true);
+  });
+
   it("detects a mutation after a dollar-quoted literal containing an odd quote and a comment", () => {
     expect(isMutationQuery("SELECT $$it's$$ ; /*x*/DROP TABLE users")).toBe(true);
     expect(isMutationQuery("SELECT $$it's$$")).toBe(false);
