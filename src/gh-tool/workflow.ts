@@ -497,6 +497,8 @@ const filterFailedStepEntries = Effect.fn("workflow.filterFailedStepEntries")(fu
 export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
   runId: number;
   job: string;
+  jobId?: number | null;
+  failedStepNames?: readonly string[] | null;
   failedStepsOnly: boolean;
   format: string;
   repo: string | null;
@@ -523,7 +525,7 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
     repoName = info.name;
   }
 
-  const jobId = yield* resolveJobId(opts.runId, opts.job, opts.repo);
+  const jobId = opts.jobId ?? (yield* resolveJobId(opts.runId, opts.job, opts.repo));
 
   // Fetch raw logs via API (follows 302 redirect automatically)
   const raw = yield* gh
@@ -539,7 +541,14 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
   let entries = parseRawJobLogs(raw);
 
   if (opts.failedStepsOnly) {
-    entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
+    if (Array.isArray(opts.failedStepNames)) {
+      const wanted = new Set(opts.failedStepNames);
+      if (wanted.size > 0) {
+        entries = entries.filter((e) => wanted.has(e.step));
+      }
+    } else {
+      entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
+    }
   }
 
   if (opts.format === "json") {

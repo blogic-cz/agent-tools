@@ -2823,7 +2823,9 @@ describe("PR checks", () => {
 
           if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
             if (args[4] === "jobs") {
-              return Effect.succeed({ jobs });
+              return Effect.die(
+                new Error("redundant listJobs call: logs should reuse the fetched run context"),
+              );
             }
 
             return Effect.succeed({
@@ -2832,7 +2834,7 @@ describe("PR checks", () => {
               workflowName: "CI",
               status: "completed",
               conclusion: "failure",
-              jobs: jobs.map(({ databaseId: _databaseId, ...job }) => job),
+              jobs,
             });
           }
 

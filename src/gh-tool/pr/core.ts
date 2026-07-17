@@ -140,12 +140,7 @@ const matchFailedJobForCheck = <Job extends { name: string }>(
   failedJobs: readonly Job[],
 ): Job | null => {
   const matches = failedJobsMatchingCheck(checkName, failedJobs);
-
-  if (matches.length === 1) {
-    return matches[0];
-  }
-
-  return failedJobs.length === 1 ? failedJobs[0] : null;
+  return matches.length === 1 ? matches[0] : null;
 };
 
 const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureContext")(function* (
@@ -170,6 +165,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
   const failedJobs = run.jobs
     .filter((job) => job.conclusion === "failure" || job.status === "failure")
     .map((job) => ({
+      databaseId: job.databaseId,
       name: job.name,
       status: job.status,
       conclusion: job.conclusion,
@@ -253,6 +249,8 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         const failedStepLogs = yield* fetchJobLogs({
           runId,
           job: matchedJob.name,
+          jobId: matchedJob.databaseId,
+          failedStepNames: matchedJob.failedSteps,
           failedStepsOnly: true,
           format: "text",
           repo: null,

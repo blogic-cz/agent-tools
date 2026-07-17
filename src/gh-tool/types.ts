@@ -83,6 +83,7 @@ export type CheckResult = {
 };
 
 export type FailedCheckJob = {
+  databaseId: number;
   name: string;
   status: string;
   conclusion: string | null;
@@ -127,6 +128,7 @@ export type WorkflowRunDetail = {
   status: string;
   conclusion: string | null;
   jobs: Array<{
+    databaseId: number;
     name: string;
     status: string;
     conclusion: string | null;
