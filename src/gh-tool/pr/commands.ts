@@ -46,6 +46,7 @@ import {
   fetchDiscussionSummary,
   fetchIssueComments,
   fetchLatestIssueComment,
+  fetchReviews,
   fetchThreads,
   postIssueComment,
   replyToComment,
@@ -605,6 +606,49 @@ export const prCommentsCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Fetch review comments for a PR (optionally filter by --since)"));
+
+export const prReviewsCommand = Command.make(
+  "reviews",
+  {
+    author: Flag.string("author").pipe(
+      Flag.withDescription("Filter by author login substring"),
+      Flag.optional,
+    ),
+    bodyContains: Flag.string("body-contains").pipe(
+      Flag.withDescription("Filter reviews by body substring"),
+      Flag.optional,
+    ),
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+    state: Flag.string("state").pipe(
+      Flag.withDescription(
+        "Filter by review state (APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED)",
+      ),
+      Flag.optional,
+    ),
+  },
+  ({ author, bodyContains, format, pr, repo, state }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const reviews = yield* fetchReviews(
+          Option.getOrNull(pr),
+          Option.getOrNull(author),
+          Option.getOrNull(bodyContains),
+          Option.getOrNull(state),
+        );
+        yield* logFormatted(reviews, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Fetch submitted review summaries (state + body) for a PR — the review bodies that comments/issue-comments do not expose",
+  ),
+);
 
 export const prIssueCommentsCommand = Command.make(
   "issue-comments",

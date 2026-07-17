@@ -34,6 +34,7 @@ import {
 } from "#gh/pr/core";
 import {
   fetchComments,
+  fetchReviews,
   fetchThreads,
   replyToComment,
   resolveThread,
@@ -1931,6 +1932,68 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
       expect(comments).toHaveLength(101);
       expect(comments[100]?.id).toBe(101);
       expect(comments[100]?.inReplyToId).toBe(1);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("Pull request reviews (REST → PullRequestReview[])", () => {
+  const mockRESTReviews = [
+    {
+      id: 901,
+      user: { login: "claude[bot]" },
+      state: "CHANGES_REQUESTED",
+      body: "This diff removes the git-workflow lock entry.",
+      submitted_at: "2026-07-16T05:34:15Z",
+      html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-901",
+    },
+    {
+      id: 902,
+      user: { login: "human-reviewer" },
+      state: "APPROVED",
+      body: "",
+      submitted_at: "2026-07-16T11:04:25Z",
+      html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-902",
+    },
+  ];
+
+  const reviewsLayer = createMockGhLayer({
+    runGh: () =>
+      Effect.succeed({ stdout: JSON.stringify(mockRESTReviews), stderr: "", exitCode: 0 }),
+  });
+
+  it.effect("maps REST response to PullRequestReview[] including empty-body reviews", () =>
+    Effect.gen(function* () {
+      const reviews = yield* fetchReviews(123, null, null, null).pipe(Effect.provide(reviewsLayer));
+
+      expect(reviews).toHaveLength(2);
+      expect(reviews[0]?.author).toBe("claude[bot]");
+      expect(reviews[0]?.state).toBe("CHANGES_REQUESTED");
+      expect(reviews[0]?.body).toBe("This diff removes the git-workflow lock entry.");
+      expect(reviews[0]?.submittedAt).toBe("2026-07-16T05:34:15Z");
+      expect(reviews[1]?.state).toBe("APPROVED");
+      expect(reviews[1]?.body).toBe("");
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("filters reviews by state, author, and body substring", () =>
+    Effect.gen(function* () {
+      const byState = yield* fetchReviews(123, null, null, "approved").pipe(
+        Effect.provide(reviewsLayer),
+      );
+      expect(byState).toHaveLength(1);
+      expect(byState[0]?.author).toBe("human-reviewer");
+
+      const byAuthor = yield* fetchReviews(123, "claude", null, null).pipe(
+        Effect.provide(reviewsLayer),
+      );
+      expect(byAuthor).toHaveLength(1);
+      expect(byAuthor[0]?.state).toBe("CHANGES_REQUESTED");
+
+      const byBody = yield* fetchReviews(123, null, "git-workflow", null).pipe(
+        Effect.provide(reviewsLayer),
+      );
+      expect(byBody).toHaveLength(1);
+      expect(byBody[0]?.id).toBe(901);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
