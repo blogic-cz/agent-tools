@@ -17,7 +17,7 @@ import {
   getMutationTarget,
   isValidTableName,
 } from "#db/security";
-import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
+import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
 
 /**
  * Mock DbService layer factory for testing
@@ -206,8 +206,38 @@ describe("db schema introspection SQL", () => {
     expect(disablesReadOnly("SET ROLE writer")).toBe(true);
     expect(disablesReadOnly("SET SESSION AUTHORIZATION postgres")).toBe(true);
     expect(disablesReadOnly("RESET ALL")).toBe(true);
+    expect(disablesReadOnly("SET LOCAL transaction_read_only = off")).toBe(true);
+    expect(disablesReadOnly("SET LOCAL ROLE writer")).toBe(true);
+    expect(disablesReadOnly("SET SESSION ROLE writer")).toBe(true);
+    expect(disablesReadOnly("SET LOCAL SESSION AUTHORIZATION postgres")).toBe(true);
+    expect(disablesReadOnly("SELECT 1; SET LOCAL transaction_read_only = off; DELETE FROM t")).toBe(
+      true,
+    );
     expect(disablesReadOnly("SELECT * FROM users")).toBe(false);
     expect(disablesReadOnly("SET statement_timeout = '5s'")).toBe(false);
+  });
+
+  it("treats an env as fully read-only only with no allowed mutations or targets", () => {
+    expect(
+      isFullyReadOnly({ allowMutations: false, allowedMutations: [], allowedMutationTargets: {} }),
+    ).toBe(true);
+    expect(
+      isFullyReadOnly({ allowMutations: true, allowedMutations: [], allowedMutationTargets: {} }),
+    ).toBe(false);
+    expect(
+      isFullyReadOnly({
+        allowMutations: false,
+        allowedMutations: ["insert"],
+        allowedMutationTargets: {},
+      }),
+    ).toBe(false);
+    expect(
+      isFullyReadOnly({
+        allowMutations: false,
+        allowedMutations: [],
+        allowedMutationTargets: { insert: ["ticker.TimeTickers"] },
+      }),
+    ).toBe(false);
   });
 });
 
