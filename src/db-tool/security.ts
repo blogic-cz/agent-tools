@@ -124,6 +124,35 @@ export function isMutationQuery(sql: string): boolean {
   );
 }
 
+export type MutationPolicy = {
+  readonly allowMutations: boolean;
+  readonly allowedMutations: readonly DbMutationOperation[];
+  readonly allowedMutationTargets: Partial<Record<DbMutationOperation, readonly string[]>>;
+};
+
+export function findDisallowedMutation(
+  sql: string,
+  policy: MutationPolicy,
+): { statement: string; operation?: DbMutationOperation; target?: string } | null {
+  if (policy.allowMutations) return null;
+  for (const statement of splitSqlStatements(sql)) {
+    const mutates = MUTATION_PATTERNS.some((pattern) => pattern.test(statement));
+    if (!mutates) continue;
+    const operation = getAllowedMutationOperation(statement);
+    if (operation !== undefined && policy.allowedMutations.includes(operation)) continue;
+    const target = operation !== undefined ? getMutationTarget(statement) : undefined;
+    if (
+      operation !== undefined &&
+      target !== undefined &&
+      (policy.allowedMutationTargets[operation] ?? []).includes(target)
+    ) {
+      continue;
+    }
+    return { statement, operation, target };
+  }
+  return null;
+}
+
 export function getAllowedMutationOperation(sql: string): DbMutationOperation | undefined {
   const stripped = stripSqlComments(sql);
   return ALLOWABLE_MUTATION_PATTERNS.find(([, pattern]) => pattern.test(stripped))?.[0];

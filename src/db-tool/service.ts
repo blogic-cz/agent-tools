@@ -27,8 +27,7 @@ import {
 } from "./schema";
 import {
   detectSchemaError,
-  getAllowedMutationOperation,
-  getMutationTarget,
+  findDisallowedMutation,
   isValidTableName,
   isMutationQuery,
 } from "./security";
@@ -733,28 +732,24 @@ export class DbService extends Context.Service<
           const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);
           const mutation = isMutationQuery(sql);
-          const mutationOperation = mutation ? getAllowedMutationOperation(sql) : undefined;
-          const mutationTarget = mutation ? getMutationTarget(sql) : undefined;
-          const mutationAllowed =
-            !mutation ||
-            resolvedConfig.allowMutations ||
-            (mutationOperation !== undefined &&
-              resolvedConfig.allowedMutations.includes(mutationOperation)) ||
-            (mutationOperation !== undefined &&
-              mutationTarget !== undefined &&
-              (resolvedConfig.allowedMutationTargets[mutationOperation] ?? []).includes(
-                mutationTarget,
-              ));
+          const disallowedMutation = findDisallowedMutation(sql, {
+            allowMutations: resolvedConfig.allowMutations,
+            allowedMutations: resolvedConfig.allowedMutations,
+            allowedMutationTargets: resolvedConfig.allowedMutationTargets,
+          });
 
-          if (!mutationAllowed) {
+          if (disallowedMutation !== null) {
             const allowed =
               resolvedConfig.allowedMutations.length > 0
                 ? resolvedConfig.allowedMutations.join(", ")
                 : "none";
+            const offending = disallowedMutation.target
+              ? `${disallowedMutation.operation ?? "mutation"} on ${disallowedMutation.target}`
+              : (disallowedMutation.operation ?? "mutation");
             return yield* new DbMutationBlockedError({
-              message: `Mutation queries are not allowed on environment ${env}. Allowed mutation operations: ${allowed}.`,
+              message: `Mutation queries are not allowed on environment ${env}. Blocked statement: ${offending}. Allowed mutation operations: ${allowed}.`,
               environment: env,
-              hint: 'Configure database.<profile>.allowedMutationTargets.<env> with explicit targets such as { insert: ["ticker.TimeTickers"] }, or allowedMutations.<env> for broader operation-level access.',
+              hint: 'Configure database.<profile>.allowedMutationTargets.<env> with explicit targets such as { insert: ["ticker.TimeTickers"] }, or allowedMutations.<env> for broader operation-level access. Every statement in a multi-statement query must be individually allowed.',
             });
           }
 

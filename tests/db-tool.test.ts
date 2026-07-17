@@ -12,6 +12,7 @@ import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import {
+  findDisallowedMutation,
   getAllowedMutationOperation,
   getMutationTarget,
   isMutationQuery,
@@ -212,6 +213,28 @@ describe("db schema introspection SQL", () => {
     expect(splitSqlStatements("SELECT 'a;b'")).toHaveLength(1);
     expect(splitSqlStatements("SELECT 'a;b'; DELETE FROM t")).toHaveLength(2);
     expect(isMutationQuery("SELECT 'DELETE FROM t'")).toBe(false);
+  });
+
+  it("authorizes every statement, not just the first (no append-after-allowed bypass)", () => {
+    const policy = {
+      allowMutations: false,
+      allowedMutations: [],
+      allowedMutationTargets: { insert: ["ticker.TimeTickers"] },
+    } as const;
+    expect(
+      findDisallowedMutation('INSERT INTO ticker."TimeTickers" ("Id") VALUES (1)', policy),
+    ).toBeNull();
+    const blocked = findDisallowedMutation(
+      'INSERT INTO ticker."TimeTickers" ("Id") VALUES (1); DROP TABLE users',
+      policy,
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.statement.toLowerCase()).toContain("drop table users");
+    expect(findDisallowedMutation("SELECT 1; SELECT 2", policy)).toBeNull();
+    expect(findDisallowedMutation("SELECT 1; DELETE FROM users", policy)).not.toBeNull();
+    expect(
+      findDisallowedMutation("DROP TABLE users", { ...policy, allowMutations: true }),
+    ).toBeNull();
   });
 });
 
