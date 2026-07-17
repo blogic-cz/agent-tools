@@ -221,6 +221,8 @@ describe("db schema introspection SQL", () => {
     expect(splitSqlStatements(fn)).toHaveLength(1);
     expect(splitSqlStatements("SELECT $tag$ a; b $tag$; SELECT 2")).toHaveLength(2);
     expect(splitSqlStatements("SELECT E'a\\'; still one'")).toHaveLength(1);
+    expect(isMutationQuery("SELECT '\\' ; DROP TABLE users")).toBe(true);
+    expect(splitSqlStatements("SELECT '\\' ; DROP TABLE users")).toHaveLength(2);
   });
 
   it("detects a mutation after a dollar-quoted literal containing an odd quote and a comment", () => {

@@ -122,11 +122,14 @@ export function splitSqlStatements(sql: string): string[] {
     }
 
     if (ch === "'") {
+      const prev = i > 0 ? stripped[i - 1] : "";
+      const beforePrev = i > 1 ? stripped[i - 2] : "";
+      const isEscapeString = (prev === "E" || prev === "e") && !/[a-zA-Z0-9_]/.test(beforePrev);
       current += ch;
       i++;
       while (i < len) {
         const c = stripped[i];
-        if (c === "\\" && i + 1 < len) {
+        if (isEscapeString && c === "\\" && i + 1 < len) {
           current += c + stripped[i + 1];
           i += 2;
           continue;
