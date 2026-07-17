@@ -86,31 +86,58 @@ export function stripSqlComments(sql: string): string {
   return result;
 }
 
+const DOLLAR_TAG_OPEN = /^\$([a-zA-Z_][a-zA-Z0-9_]*)?\$/;
+
 export function splitSqlStatements(sql: string): string[] {
   const stripped = stripSqlComments(sql);
   const statements: string[] = [];
+  const len = stripped.length;
   let current = "";
-  let inString = false;
   let i = 0;
-  while (i < stripped.length) {
+  while (i < len) {
     const ch = stripped[i];
-    if (ch === "'") {
-      if (inString && stripped[i + 1] === "'") {
-        current += "''";
-        i += 2;
+
+    if (ch === "$") {
+      const open = DOLLAR_TAG_OPEN.exec(stripped.slice(i));
+      if (open) {
+        const tag = open[0];
+        const closeAt = stripped.indexOf(tag, i + tag.length);
+        const stop = closeAt === -1 ? len : closeAt + tag.length;
+        current += stripped.slice(i, stop);
+        i = stop;
         continue;
       }
-      inString = !inString;
+    }
+
+    if (ch === "'") {
       current += ch;
       i++;
+      while (i < len) {
+        const c = stripped[i];
+        if (c === "\\" && i + 1 < len) {
+          current += c + stripped[i + 1];
+          i += 2;
+          continue;
+        }
+        if (c === "'" && stripped[i + 1] === "'") {
+          current += "''";
+          i += 2;
+          continue;
+        }
+        current += c;
+        i++;
+        if (c === "'") break;
+      }
       continue;
     }
-    if (ch === ";" && !inString) {
+
+    if (ch === ";") {
       if (current.trim() !== "") statements.push(current);
       current = "";
       i++;
       continue;
     }
+
     current += ch;
     i++;
   }

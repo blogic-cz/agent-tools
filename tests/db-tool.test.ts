@@ -215,6 +215,14 @@ describe("db schema introspection SQL", () => {
     expect(isMutationQuery("SELECT 'DELETE FROM t'")).toBe(false);
   });
 
+  it("does not split on semicolons inside dollar-quoted bodies or escaped quotes", () => {
+    const fn =
+      "CREATE FUNCTION f() RETURNS void AS $$ BEGIN UPDATE t SET x = 1; DELETE FROM u; END $$ LANGUAGE plpgsql";
+    expect(splitSqlStatements(fn)).toHaveLength(1);
+    expect(splitSqlStatements("SELECT $tag$ a; b $tag$; SELECT 2")).toHaveLength(2);
+    expect(splitSqlStatements("SELECT E'a\\'; still one'")).toHaveLength(1);
+  });
+
   it("authorizes every statement, not just the first (no append-after-allowed bypass)", () => {
     const policy = {
       allowMutations: false,
