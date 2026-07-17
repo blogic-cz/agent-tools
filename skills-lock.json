@@ -16,11 +16,6 @@
       "sourceType": "github",
       "computedHash": "0ff98daca566e4c570315bcefc9a8a20801261c7d2e34115f11d9a1b7673ec73"
     },
-    "git-workflow": {
-      "source": "blogic-cz/blogic-marketplace",
-      "sourceType": "github",
-      "computedHash": "b201e8d8e731ec6ba14a696d57c4a864996b090878b7fe5880ab03f827c03773"
-    },
     "tdd": {
       "source": "blogic-cz/blogic-marketplace",
       "sourceType": "github",

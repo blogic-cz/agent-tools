@@ -42,6 +42,20 @@ bun gh-tool pr edit --pr <pr_number> --title "<title>" --body "<body>"
 - Base branch: argument provided by user (default: `test`).
 - Branch naming: `feat/`, `fix/`, `chore/` based on changes.
 
+#### Local review gate
+
+Before the first commit/push for any non-trivial change, run the `code-review`
+skill over the diff and resolve every Critical and Major finding. This is a hard
+pre-PR gate, not optional cleanup — `bun run check` proves the paths you wrote
+pass, not that the logic is right (a coverage gap ships real bugs green: a
+per-item loop that mislabels output still passes a single-item test). Skip only
+for trivial/mechanical diffs, and say so.
+
+Do not rely on the Phase 2 GitHub review/watch loop as the first review pass. A
+bug caught here is a local edit; the same bug caught by CI costs a full round
+(push, wait, review-bot, fix, rerun). The gate is done when the diff has been
+read as a reviewer and no Critical/Major finding is open.
+
 #### PR Body Format
 
 ```
