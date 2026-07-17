@@ -494,7 +494,7 @@ const filterFailedStepEntries = Effect.fn("workflow.filterFailedStepEntries")(fu
   return entries.filter((e) => failedStepNames.has(e.step));
 });
 
-const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
+export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
   runId: number;
   job: string;
   failedStepsOnly: boolean;

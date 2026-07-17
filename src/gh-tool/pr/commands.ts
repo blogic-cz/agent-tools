@@ -46,6 +46,7 @@ import {
   fetchDiscussionSummary,
   fetchFeedback,
   fetchIssueComments,
+  fetchLastHumanReviewer,
   fetchLatestIssueComment,
   fetchReviews,
   fetchThreads,
@@ -520,13 +521,19 @@ export const prChecksFailedCommand = Command.make(
       Flag.optional,
     ),
     repo: repoOption,
+    withLogs: Flag.boolean("with-logs").pipe(
+      Flag.withDescription(
+        "Inline the failed-step logs for each failed check so no follow-up job-logs call is needed",
+      ),
+      Flag.withDefault(false),
+    ),
   },
-  ({ format, pr, repo }) =>
+  ({ format, pr, repo, withLogs }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const checks = yield* fetchFailedChecks(prNumber);
+        const checks = yield* fetchFailedChecks(prNumber, withLogs);
         yield* logFormatted(checks, format);
       }),
     ),
@@ -619,6 +626,30 @@ export const prCommentsCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Fetch review comments for a PR (optionally filter by --since)"));
+
+export const prLastHumanReviewerCommand = Command.make(
+  "last-human-reviewer",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+  },
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* fetchLastHumanReviewer(Option.getOrNull(pr));
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Report the most recent human (non-bot) reviewer, when they reviewed, and the current requested reviewers",
+  ),
+);
 
 export const prReviewsCommand = Command.make(
   "reviews",

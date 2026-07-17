@@ -17,6 +17,7 @@ import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
+import { fetchJobLogs } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
@@ -184,6 +185,7 @@ const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: numbe
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
   pr: number | null,
   checks: CheckResult[],
+  options: { withLogs: boolean } = { withLogs: false },
 ) {
   const failedChecks = checks.filter((check) => check.bucket === "fail");
   const pendingChecks = checks.filter((check) => check.bucket === "pending");
@@ -211,14 +213,38 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
     runContexts.set(runId, context);
   }
 
-  const enrichedFailedChecks: FailedCheckDetail[] = failedChecks.map((check) => {
-    const runId = extractRunIdFromCheckLink(check.link);
-    return {
-      ...check,
-      runId,
-      run: runId === null ? null : (runContexts.get(runId) ?? null),
-    };
-  });
+  const enrichedFailedChecks: FailedCheckDetail[] = yield* Effect.forEach(
+    failedChecks,
+    (check) =>
+      Effect.gen(function* () {
+        const runId = extractRunIdFromCheckLink(check.link);
+        const run = runId === null ? null : (runContexts.get(runId) ?? null);
+        const detail: FailedCheckDetail = { ...check, runId, run };
+
+        if (!options.withLogs || runId === null) {
+          return detail;
+        }
+
+        const firstFailedJob = run?.failedJobs[0];
+        if (!firstFailedJob) {
+          return detail;
+        }
+
+        const failedStepLogs = yield* fetchJobLogs({
+          runId,
+          job: firstFailedJob.name,
+          failedStepsOnly: true,
+          format: "text",
+          repo: null,
+        }).pipe(
+          Effect.map((result) => ("formatted" in result ? result.formatted : "")),
+          Effect.catch(() => Effect.succeed("")),
+        );
+
+        return failedStepLogs && failedStepLogs.length > 0 ? { ...detail, failedStepLogs } : detail;
+      }),
+    { concurrency: "unbounded" },
+  );
 
   const nextCommands = [
     buildChecksFailedCommand(pr),
@@ -902,9 +928,12 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   return results;
 });
 
-export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (pr: number | null) {
+export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
+  pr: number | null,
+  withLogs = false,
+) {
   const checks = yield* fetchCheckResults(pr);
-  return yield* buildFailedChecksReport(pr, checks);
+  return yield* buildFailedChecksReport(pr, checks, { withLogs });
 });
 
 export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(function* (

@@ -10,6 +10,7 @@ export {
   prFeedbackCommand,
   prIssueCommentsCommand,
   prIssueCommentsLatestCommand,
+  prLastHumanReviewerCommand,
   prListCommand,
   prMergeCommand,
   prReplyCommand,

@@ -102,6 +102,7 @@ export type FailedCheckRunContext = {
 export type FailedCheckDetail = CheckResult & {
   runId: number | null;
   run: FailedCheckRunContext | null;
+  failedStepLogs?: string;
 };
 
 export type FailedChecksReport = {
