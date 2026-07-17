@@ -35,6 +35,7 @@ import {
 import {
   fetchComments,
   fetchFeedback,
+  fetchLastHumanReviewer,
   fetchReviews,
   fetchThreads,
   replyToComment,
@@ -2074,6 +2075,187 @@ describe("pr feedback (aggregated review-response inventory)", () => {
   );
 });
 
+describe("Review thread dedupe", () => {
+  const dupThreadsResponse = {
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          nodes: [
+            {
+              id: "thread-resolved-dup",
+              isResolved: true,
+              comments: {
+                nodes: [
+                  {
+                    id: "c1",
+                    databaseId: 1,
+                    path: "src/x.ts",
+                    line: 5,
+                    body: "Please fix this",
+                    author: { login: "reviewer" },
+                  },
+                ],
+              },
+            },
+            {
+              id: "thread-unresolved-dup",
+              isResolved: false,
+              comments: {
+                nodes: [
+                  {
+                    id: "c2",
+                    databaseId: 2,
+                    path: "src/x.ts",
+                    line: 5,
+                    body: "Please fix this   ",
+                    author: { login: "reviewer" },
+                  },
+                ],
+              },
+            },
+            {
+              id: "thread-distinct",
+              isResolved: false,
+              comments: {
+                nodes: [
+                  {
+                    id: "c3",
+                    databaseId: 3,
+                    path: "src/y.ts",
+                    line: 9,
+                    body: "Different finding",
+                    author: { login: "reviewer" },
+                  },
+                ],
+              },
+            },
+          ],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      },
+    },
+  };
+
+  it.effect("collapses exact duplicates, keeps distinct, and prefers an unresolved dupe", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(dupThreadsResponse),
+        runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+      });
+
+      const threads = yield* fetchThreads(123, false).pipe(Effect.provide(layer));
+
+      expect(threads).toHaveLength(2);
+      expect(threads[0]?.path).toBe("src/x.ts");
+      expect(threads[0]?.line).toBe(5);
+      expect(threads[0]?.threadId).toBe("thread-unresolved-dup");
+      expect(threads[0]?.isResolved).toBe(false);
+      expect(threads[1]?.threadId).toBe("thread-distinct");
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("PR last human reviewer", () => {
+  it.effect("returns the most recent human reviewer and current requested reviewers", () =>
+    Effect.gen(function* () {
+      const response = {
+        repository: {
+          pullRequest: {
+            reviewRequests: { nodes: [] },
+            reviews: {
+              nodes: [
+                {
+                  author: { login: "claude[bot]" },
+                  state: "COMMENTED",
+                  submittedAt: "2026-07-16T05:00:00Z",
+                },
+                {
+                  author: { login: "github-actions" },
+                  state: "COMMENTED",
+                  submittedAt: "2026-07-16T06:00:00Z",
+                },
+                {
+                  author: { login: "roman" },
+                  state: "CHANGES_REQUESTED",
+                  submittedAt: "2026-07-16T07:00:00Z",
+                },
+                {
+                  author: { login: "roman" },
+                  state: "APPROVED",
+                  submittedAt: "2026-07-16T09:00:00Z",
+                },
+                {
+                  author: { login: "michal" },
+                  state: "COMMENTED",
+                  submittedAt: "2026-07-16T08:00:00Z",
+                },
+              ],
+            },
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ReviewRequestedEvent",
+                  requestedReviewer: { __typename: "User", login: "roman" },
+                },
+                {
+                  __typename: "ReviewRequestedEvent",
+                  requestedReviewer: { __typename: "User", login: "michal" },
+                },
+                {
+                  __typename: "ReviewRequestRemovedEvent",
+                  requestedReviewer: { __typename: "User", login: "roman" },
+                },
+              ],
+            },
+          },
+        },
+      };
+
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(response),
+      });
+
+      const result = yield* fetchLastHumanReviewer(123).pipe(Effect.provide(layer));
+
+      expect(result.lastHumanReviewer).toBe("roman");
+      expect(result.lastHumanReviewAt).toBe("2026-07-16T09:00:00Z");
+      expect(result.currentRequestedReviewers).toEqual(["michal"]);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("handles the empty case with nulls and an empty requested list", () =>
+    Effect.gen(function* () {
+      const response = {
+        repository: {
+          pullRequest: {
+            reviewRequests: { nodes: [] },
+            reviews: {
+              nodes: [
+                {
+                  author: { login: "dependabot[bot]" },
+                  state: "COMMENTED",
+                  submittedAt: "2026-07-16T05:00:00Z",
+                },
+              ],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      };
+
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(response),
+      });
+
+      const result = yield* fetchLastHumanReviewer(123).pipe(Effect.provide(layer));
+
+      expect(result.lastHumanReviewer).toBeNull();
+      expect(result.lastHumanReviewAt).toBeNull();
+      expect(result.currentRequestedReviewers).toEqual([]);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
 describe("workflow watch result shaping (buildWatchResult)", () => {
   const fakeRun = {
     status: "completed",
@@ -2487,6 +2669,207 @@ describe("PR checks", () => {
       expect(result.nextCommands).toContain(
         'bun agent-tools-gh workflow job-logs --run 2 --job "lint" --failed-steps-only',
       );
+    }),
+  );
+
+  it.effect("checks-failed does not fetch failed-step logs by default", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed(mockChecksData);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
+            return Effect.succeed({
+              databaseId: 2,
+              url: "https://github.com/test-owner/test-repo/actions/runs/2",
+              workflowName: "CI",
+              status: "completed",
+              conclusion: "failure",
+              jobs: [
+                {
+                  name: "lint",
+                  status: "completed",
+                  conclusion: "failure",
+                  url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+                  steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }],
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+      });
+
+      const result = yield* fetchFailedChecks(123).pipe(Effect.provide(layer));
+
+      expect(result.failedChecks).toHaveLength(1);
+      expect(result.failedChecks[0]?.failedStepLogs).toBeUndefined();
+    }),
+  );
+
+  it.effect("checks-failed --with-logs inlines cleaned failed-step logs", () =>
+    Effect.gen(function* () {
+      const rawJobLogs = [
+        "2025-01-01T00:00:00Z ##[group]Run lint",
+        "2025-01-01T00:00:01Z npm run lint",
+        "2025-01-01T00:00:02Z Error: lint failed hard",
+        "2025-01-01T00:00:03Z ##[endgroup]",
+      ].join("\n");
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed(mockChecksData);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
+            if (args[4] === "jobs") {
+              return Effect.succeed({
+                jobs: [
+                  {
+                    databaseId: 20,
+                    name: "lint",
+                    status: "completed",
+                    conclusion: "failure",
+                    startedAt: "2025-01-01T00:00:00Z",
+                    completedAt: "2025-01-01T00:00:05Z",
+                    url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+                    steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }],
+                  },
+                ],
+              });
+            }
+
+            return Effect.succeed({
+              databaseId: 2,
+              url: "https://github.com/test-owner/test-repo/actions/runs/2",
+              workflowName: "CI",
+              status: "completed",
+              conclusion: "failure",
+              jobs: [
+                {
+                  name: "lint",
+                  status: "completed",
+                  conclusion: "failure",
+                  url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+                  steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }],
+                },
+              ],
+            });
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          if (args[0] === "api" && args[1]?.includes("actions/jobs/20/logs")) {
+            return Effect.succeed({ stdout: rawJobLogs, stderr: "", exitCode: 0 });
+          }
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* fetchFailedChecks(123, true).pipe(Effect.provide(layer));
+
+      expect(result.failedChecks).toHaveLength(1);
+      expect(result.failedChecks[0]?.failedStepLogs).toContain("Run lint");
+      expect(result.failedChecks[0]?.failedStepLogs).toContain("Error: lint failed hard");
+    }),
+  );
+
+  it.effect("checks-failed --with-logs matches each sibling check to its own job", () =>
+    Effect.gen(function* () {
+      const checks = [
+        {
+          name: "CI / lint",
+          state: "completed",
+          bucket: "fail",
+          link: "https://github.com/test-owner/test-repo/actions/runs/2",
+        },
+        {
+          name: "CI / test",
+          state: "completed",
+          bucket: "fail",
+          link: "https://github.com/test-owner/test-repo/actions/runs/2",
+        },
+      ];
+
+      const jobs = [
+        {
+          databaseId: 20,
+          name: "lint",
+          status: "completed",
+          conclusion: "failure",
+          url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+          steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }],
+        },
+        {
+          databaseId: 21,
+          name: "test",
+          status: "completed",
+          conclusion: "failure",
+          url: "https://github.com/test-owner/test-repo/actions/runs/2/job/21",
+          steps: [{ name: "Run test", status: "completed", conclusion: "failure" }],
+        },
+      ];
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed(checks);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
+            if (args[4] === "jobs") {
+              return Effect.die(
+                new Error("redundant listJobs call: logs should reuse the fetched run context"),
+              );
+            }
+
+            return Effect.succeed({
+              databaseId: 2,
+              url: "https://github.com/test-owner/test-repo/actions/runs/2",
+              workflowName: "CI",
+              status: "completed",
+              conclusion: "failure",
+              jobs,
+            });
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          if (args[0] === "api" && args[1]?.includes("actions/jobs/20/logs")) {
+            return Effect.succeed({
+              stdout:
+                "2025-01-01T00:00:00Z ##[group]Run lint\n2025-01-01T00:00:02Z Error: lint boom\n2025-01-01T00:00:03Z ##[endgroup]",
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+          if (args[0] === "api" && args[1]?.includes("actions/jobs/21/logs")) {
+            return Effect.succeed({
+              stdout:
+                "2025-01-01T00:00:00Z ##[group]Run test\n2025-01-01T00:00:02Z Error: test boom\n2025-01-01T00:00:03Z ##[endgroup]",
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* fetchFailedChecks(123, true).pipe(Effect.provide(layer));
+
+      const lint = result.failedChecks.find((check) => check.name === "CI / lint");
+      const test = result.failedChecks.find((check) => check.name === "CI / test");
+
+      expect(lint?.failedStepLogs).toContain("lint boom");
+      expect(lint?.failedStepLogs).not.toContain("test boom");
+      expect(test?.failedStepLogs).toContain("test boom");
+      expect(test?.failedStepLogs).not.toContain("lint boom");
     }),
   );
 

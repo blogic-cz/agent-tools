@@ -17,6 +17,7 @@ import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
+import { fetchJobLogs } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
@@ -104,6 +105,16 @@ const getCheckJobNameCandidates = (checkName: string): string[] => {
   return [...new Set([exact, suffix].filter((value): value is string => value !== undefined))];
 };
 
+const failedJobsMatchingCheck = <Job extends { name: string }>(
+  checkName: string,
+  failedJobs: readonly Job[],
+): Job[] => {
+  const candidates = getCheckJobNameCandidates(checkName);
+  return failedJobs.filter((job) =>
+    candidates.some((candidate) => job.name.toLowerCase() === candidate.toLowerCase()),
+  );
+};
+
 const resolveJobIdsForFailedChecks = (
   checks: CheckResult[],
   jobs: WorkflowRunJobsForRerun["jobs"],
@@ -112,10 +123,7 @@ const resolveJobIdsForFailedChecks = (
   const jobIds = new Set<number>();
 
   for (const check of checks) {
-    const candidates = getCheckJobNameCandidates(check.name);
-    const matches = failedJobs.filter((job) =>
-      candidates.some((candidate) => job.name.toLowerCase() === candidate.toLowerCase()),
-    );
+    const matches = failedJobsMatchingCheck(check.name, failedJobs);
 
     if (matches.length !== 1) {
       return null;
@@ -125,6 +133,14 @@ const resolveJobIdsForFailedChecks = (
   }
 
   return [...jobIds];
+};
+
+const matchFailedJobForCheck = <Job extends { name: string }>(
+  checkName: string,
+  failedJobs: readonly Job[],
+): Job | null => {
+  const matches = failedJobsMatchingCheck(checkName, failedJobs);
+  return matches.length === 1 ? matches[0] : null;
 };
 
 const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureContext")(function* (
@@ -149,6 +165,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
   const failedJobs = run.jobs
     .filter((job) => job.conclusion === "failure" || job.status === "failure")
     .map((job) => ({
+      databaseId: job.databaseId,
       name: job.name,
       status: job.status,
       conclusion: job.conclusion,
@@ -184,6 +201,7 @@ const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: numbe
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
   pr: number | null,
   checks: CheckResult[],
+  options: { withLogs: boolean } = { withLogs: false },
 ) {
   const failedChecks = checks.filter((check) => check.bucket === "fail");
   const pendingChecks = checks.filter((check) => check.bucket === "pending");
@@ -211,14 +229,40 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
     runContexts.set(runId, context);
   }
 
-  const enrichedFailedChecks: FailedCheckDetail[] = failedChecks.map((check) => {
-    const runId = extractRunIdFromCheckLink(check.link);
-    return {
-      ...check,
-      runId,
-      run: runId === null ? null : (runContexts.get(runId) ?? null),
-    };
-  });
+  const enrichedFailedChecks: FailedCheckDetail[] = yield* Effect.forEach(
+    failedChecks,
+    (check) =>
+      Effect.gen(function* () {
+        const runId = extractRunIdFromCheckLink(check.link);
+        const run = runId === null ? null : (runContexts.get(runId) ?? null);
+        const detail: FailedCheckDetail = { ...check, runId, run };
+
+        if (!options.withLogs || runId === null) {
+          return detail;
+        }
+
+        const matchedJob = run ? matchFailedJobForCheck(check.name, run.failedJobs) : null;
+        if (!matchedJob) {
+          return detail;
+        }
+
+        const failedStepLogs = yield* fetchJobLogs({
+          runId,
+          job: matchedJob.name,
+          jobId: matchedJob.databaseId,
+          failedStepNames: matchedJob.failedSteps,
+          failedStepsOnly: true,
+          format: "text",
+          repo: null,
+        }).pipe(
+          Effect.map((result) => ("formatted" in result ? result.formatted : "")),
+          Effect.catch(() => Effect.succeed("")),
+        );
+
+        return failedStepLogs && failedStepLogs.length > 0 ? { ...detail, failedStepLogs } : detail;
+      }),
+    { concurrency: 5 },
+  );
 
   const nextCommands = [
     buildChecksFailedCommand(pr),
@@ -902,9 +946,12 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   return results;
 });
 
-export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (pr: number | null) {
+export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
+  pr: number | null,
+  withLogs = false,
+) {
   const checks = yield* fetchCheckResults(pr);
-  return yield* buildFailedChecksReport(pr, checks);
+  return yield* buildFailedChecksReport(pr, checks, { withLogs });
 });
 
 export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(function* (

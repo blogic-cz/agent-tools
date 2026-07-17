@@ -81,6 +81,53 @@ const SUBMIT_REVIEW_MUTATION = `
   }
 `;
 
+const LAST_HUMAN_REVIEWER_QUERY = `
+  query($owner: String!, $name: String!, $pr: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        reviewRequests(first: 100) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Team { name }
+              ... on Bot { login }
+            }
+          }
+        }
+        reviews(last: 100) {
+          nodes {
+            author { login }
+            state
+            submittedAt
+          }
+        }
+        timelineItems(first: 250, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT]) {
+          nodes {
+            __typename
+            ... on ReviewRequestedEvent {
+              requestedReviewer {
+                __typename
+                ... on User { login }
+                ... on Team { name }
+                ... on Bot { login }
+              }
+            }
+            ... on ReviewRequestRemovedEvent {
+              requestedReviewer {
+                __typename
+                ... on User { login }
+                ... on Team { name }
+                ... on Bot { login }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -138,6 +185,35 @@ type PendingReviewsQueryResult = {
 type SubmitReviewResult = {
   submitPullRequestReview: {
     pullRequestReview: { id: string; state: string };
+  };
+};
+
+type RequestedReviewerNode = {
+  __typename: string;
+  login?: string;
+  name?: string;
+} | null;
+
+type LastHumanReviewerQueryResult = {
+  repository: {
+    pullRequest: {
+      reviewRequests: {
+        nodes: Array<{ requestedReviewer: RequestedReviewerNode }>;
+      };
+      reviews: {
+        nodes: Array<{
+          author: { login: string } | null;
+          state: string;
+          submittedAt: string | null;
+        }>;
+      };
+      timelineItems: {
+        nodes: Array<{
+          __typename: string;
+          requestedReviewer: RequestedReviewerNode;
+        }>;
+      };
+    };
   };
 };
 
@@ -259,7 +335,7 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
     repliesByRootCommentId.set(comment.inReplyToId, replies);
   }
 
-  return threads
+  const mapped = threads
     .map((node) => {
       const comment = node.comments.nodes[0];
       if (!comment) {
@@ -295,6 +371,24 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
       };
     })
     .filter((thread): thread is ReviewThread => thread !== null);
+
+  const dedupedByKey = new Map<string, number>();
+  const deduped: ReviewThread[] = [];
+  for (const thread of mapped) {
+    const key = `${thread.path} ${thread.line} ${thread.body.trim()}`;
+    const existingIndex = dedupedByKey.get(key);
+    if (existingIndex === undefined) {
+      dedupedByKey.set(key, deduped.length);
+      deduped.push(thread);
+      continue;
+    }
+    const existing = deduped[existingIndex];
+    if (existing !== undefined && existing.isResolved && !thread.isResolved) {
+      deduped[existingIndex] = thread;
+    }
+  }
+
+  return deduped;
 };
 
 const fetchThreadState = Effect.fn("pr.fetchThreadState")(function* (pr: number) {
@@ -766,5 +860,85 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
     submitted: true as const,
     reviewId: result.submitPullRequestReview.pullRequestReview.id,
     state: result.submitPullRequestReview.pullRequestReview.state,
+  };
+});
+
+const AUTOMATION_LOGINS = new Set(["claude", "github-actions", "dependabot"]);
+
+const isHumanLogin = (login: string): boolean => {
+  const lower = login.toLowerCase();
+  if (lower.endsWith("[bot]")) {
+    return false;
+  }
+  return !AUTOMATION_LOGINS.has(lower);
+};
+
+const requestedReviewerLogin = (reviewer: RequestedReviewerNode): string | null =>
+  reviewer === null ? null : (reviewer.login ?? reviewer.name ?? null);
+
+export const fetchLastHumanReviewer = Effect.fn("pr.fetchLastHumanReviewer")(function* (
+  pr: number | null,
+) {
+  const service = yield* GitHubService;
+  const repoInfo = yield* service.getRepoInfo();
+
+  const resolvedPr = pr ?? (yield* viewPR(null)).number;
+
+  const response = (yield* service.runGraphQL(LAST_HUMAN_REVIEWER_QUERY, {
+    owner: repoInfo.owner,
+    name: repoInfo.name,
+    pr: resolvedPr,
+  })) as LastHumanReviewerQueryResult;
+
+  const prNode = response.repository.pullRequest;
+
+  const requestedFromTimeline: string[] = [];
+  for (const item of prNode.timelineItems.nodes) {
+    const login = requestedReviewerLogin(item.requestedReviewer);
+    if (login === null) {
+      continue;
+    }
+    if (item.__typename === "ReviewRequestedEvent") {
+      if (!requestedFromTimeline.includes(login)) {
+        requestedFromTimeline.push(login);
+      }
+    } else {
+      const index = requestedFromTimeline.indexOf(login);
+      if (index !== -1) {
+        requestedFromTimeline.splice(index, 1);
+      }
+    }
+  }
+
+  const currentRequestedReviewers =
+    requestedFromTimeline.length > 0
+      ? requestedFromTimeline
+      : prNode.reviewRequests.nodes
+          .map((node) => requestedReviewerLogin(node.requestedReviewer))
+          .filter((login): login is string => login !== null);
+
+  const latestHumanReview = prNode.reviews.nodes.reduce<{ login: string; at: string } | null>(
+    (latest, review) => {
+      if (review.author === null || review.submittedAt === null) {
+        return latest;
+      }
+      if (!isHumanLogin(review.author.login)) {
+        return latest;
+      }
+      if (
+        latest === null ||
+        new Date(review.submittedAt).getTime() > new Date(latest.at).getTime()
+      ) {
+        return { login: review.author.login, at: review.submittedAt };
+      }
+      return latest;
+    },
+    null,
+  );
+
+  return {
+    currentRequestedReviewers,
+    lastHumanReviewer: latestHumanReview?.login ?? null,
+    lastHumanReviewAt: latestHumanReview?.at ?? null,
   };
 });
