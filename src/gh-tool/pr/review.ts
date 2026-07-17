@@ -437,14 +437,16 @@ export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
     "Failed to parse response",
   );
 
-  let reviews: PullRequestReview[] = raw.map((review) => ({
-    id: review.id,
-    author: review.user?.login ?? "unknown",
-    state: review.state,
-    body: review.body ?? "",
-    submittedAt: (review.submitted_at ?? null) as IsoTimestamp | null,
-    url: review.html_url,
-  }));
+  let reviews: PullRequestReview[] = raw
+    .map((review) => ({
+      id: review.id,
+      author: review.user?.login ?? "unknown",
+      state: review.state,
+      body: review.body ?? "",
+      submittedAt: (review.submitted_at ?? null) as IsoTimestamp | null,
+      url: review.html_url,
+    }))
+    .filter((review) => !(review.state === "COMMENTED" && review.body.trim() === ""));
 
   if (author !== null) {
     const authorFilter = author.toLowerCase();
