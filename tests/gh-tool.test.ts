@@ -2779,6 +2779,96 @@ describe("PR checks", () => {
     }),
   );
 
+  it.effect("checks-failed --with-logs matches each sibling check to its own job", () =>
+    Effect.gen(function* () {
+      const checks = [
+        {
+          name: "CI / lint",
+          state: "completed",
+          bucket: "fail",
+          link: "https://github.com/test-owner/test-repo/actions/runs/2",
+        },
+        {
+          name: "CI / test",
+          state: "completed",
+          bucket: "fail",
+          link: "https://github.com/test-owner/test-repo/actions/runs/2",
+        },
+      ];
+
+      const jobs = [
+        {
+          databaseId: 20,
+          name: "lint",
+          status: "completed",
+          conclusion: "failure",
+          url: "https://github.com/test-owner/test-repo/actions/runs/2/job/20",
+          steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }],
+        },
+        {
+          databaseId: 21,
+          name: "test",
+          status: "completed",
+          conclusion: "failure",
+          url: "https://github.com/test-owner/test-repo/actions/runs/2/job/21",
+          steps: [{ name: "Run test", status: "completed", conclusion: "failure" }],
+        },
+      ];
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr" && args[1] === "checks") {
+            return Effect.succeed(checks);
+          }
+
+          if (args[0] === "run" && args[1] === "view" && args[2] === "2") {
+            if (args[4] === "jobs") {
+              return Effect.succeed({ jobs });
+            }
+
+            return Effect.succeed({
+              databaseId: 2,
+              url: "https://github.com/test-owner/test-repo/actions/runs/2",
+              workflowName: "CI",
+              status: "completed",
+              conclusion: "failure",
+              jobs: jobs.map(({ databaseId: _databaseId, ...job }) => job),
+            });
+          }
+
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          if (args[0] === "api" && args[1]?.includes("actions/jobs/20/logs")) {
+            return Effect.succeed({
+              stdout: "2025-01-01T00:00:00Z ##[group]Run lint\n2025-01-01T00:00:02Z Error: lint boom\n2025-01-01T00:00:03Z ##[endgroup]",
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+          if (args[0] === "api" && args[1]?.includes("actions/jobs/21/logs")) {
+            return Effect.succeed({
+              stdout: "2025-01-01T00:00:00Z ##[group]Run test\n2025-01-01T00:00:02Z Error: test boom\n2025-01-01T00:00:03Z ##[endgroup]",
+              stderr: "",
+              exitCode: 0,
+            });
+          }
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* fetchFailedChecks(123, true).pipe(Effect.provide(layer));
+
+      const lint = result.failedChecks.find((check) => check.name === "CI / lint");
+      const test = result.failedChecks.find((check) => check.name === "CI / test");
+
+      expect(lint?.failedStepLogs).toContain("lint boom");
+      expect(lint?.failedStepLogs).not.toContain("test boom");
+      expect(test?.failedStepLogs).toContain("test boom");
+      expect(test?.failedStepLogs).not.toContain("lint boom");
+    }),
+  );
+
   it.effect("checks watch failure returns structured report instead of raw command error", () =>
     Effect.gen(function* () {
       const layer = createMockGhLayer({
