@@ -5,6 +5,7 @@ import type { MessageSummary, SessionInfo, SessionSource } from "./types";
 
 import { getClaudeCodeSessions, readClaudeCodeMessages } from "./claude-code";
 import { getCodexSessions, getCodexSessionId, readCodexMessages } from "./codex";
+import { getPiSessions, getPiSessionId, readPiMessages } from "./pi";
 import { ResolvedPaths } from "./config";
 import { SessionReadError, SessionStorageNotFoundError, type SessionError } from "./errors";
 
@@ -41,8 +42,13 @@ type FileEntry = { filePath: string; content: string };
 
 type SourceFilter = ReadonlySet<SessionSource>;
 
-const ALL_SOURCES: SourceFilter = new Set<SessionSource>(["opencode", "claude-code", "codex"]);
-const UUID_SOURCES: SourceFilter = new Set<SessionSource>(["claude-code", "codex"]);
+const ALL_SOURCES: SourceFilter = new Set<SessionSource>([
+  "opencode",
+  "claude-code",
+  "codex",
+  "pi",
+]);
+const UUID_SOURCES: SourceFilter = new Set<SessionSource>(["claude-code", "codex", "pi"]);
 const OPENCODE_ONLY: SourceFilter = new Set<SessionSource>(["opencode"]);
 
 const UUID_SESSION_ID_REGEX =
@@ -214,11 +220,26 @@ export class SessionService extends Context.Service<
                   ),
                 );
 
+          const piSessions =
+            paths.piPath === null
+              ? new Set<string>()
+              : yield* getPiSessions(paths.piPath, projectDir).pipe(
+                  Effect.map(
+                    (files) => new Set<string>(files.map((filePath) => getPiSessionId(filePath))),
+                  ),
+                  Effect.catchTag("SessionStorageNotFoundError", () =>
+                    Effect.succeed(new Set<string>()),
+                  ),
+                );
+
           const matchingSessions = new Set<string>(opencodeSessions);
           for (const sessionId of claudeSessions) {
             matchingSessions.add(sessionId);
           }
           for (const sessionId of codexSessions) {
+            matchingSessions.add(sessionId);
+          }
+          for (const sessionId of piSessions) {
             matchingSessions.add(sessionId);
           }
 
@@ -319,7 +340,30 @@ export class SessionService extends Context.Service<
                   }),
                 );
 
-          const summaries = [...opencodeSummaries, ...claudeSummaries, ...codexSummaries];
+          const piSummaries =
+            !sourceFilter.has("pi") || paths.piPath === null
+              ? []
+              : yield* getPiSessions(paths.piPath, null).pipe(
+                  Effect.map((sessionFiles) =>
+                    filterSessions === null
+                      ? sessionFiles
+                      : sessionFiles.filter((sessionFile) =>
+                          filterSessions.has(getPiSessionId(sessionFile)),
+                        ),
+                  ),
+                  Effect.flatMap(readPiMessages),
+                  Effect.catchTags({
+                    SessionStorageNotFoundError: () => Effect.succeed([]),
+                    SessionReadError: () => Effect.succeed([]),
+                  }),
+                );
+
+          const summaries = [
+            ...opencodeSummaries,
+            ...claudeSummaries,
+            ...codexSummaries,
+            ...piSummaries,
+          ];
 
           return (
             summaries as MessageSummary[] & {

@@ -6,6 +6,7 @@ import {
   extractTextFromContent,
   parseJsonlLine,
 } from "#session/claude-code";
+import { extractPiText, extractPiTitle, getPiSessionId, parsePiLine } from "#session/pi";
 
 describe("session-tool Claude Code helpers", () => {
   it("encodeProjectPath replaces slashes with dashes", () => {
@@ -127,3 +128,85 @@ describe("session-tool Claude Code helpers", () => {
     expect(extractSessionTitle(records)).toBe("a".repeat(100));
   });
 });
+
+describe("session-tool pi helpers", () => {
+  it("parsePiLine parses session record", () => {
+    const line = JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "019f6625-1f54-7588-83dc-6eed11fc7ec0",
+      timestamp: "2026-07-15T14:18:56.724Z",
+      cwd: "/Users/foo/project",
+    });
+
+    expect(parsePiLine(line)).toEqual({
+      type: "session",
+      id: "019f6625-1f54-7588-83dc-6eed11fc7ec0",
+      timestamp: "2026-07-15T14:18:56.724Z",
+      cwd: "/Users/foo/project",
+    });
+  });
+
+  it("parsePiLine parses message record", () => {
+    const line = JSON.stringify({
+      type: "message",
+      id: "5f3f9406",
+      parentId: "b1eda0a8",
+      timestamp: "2026-07-15T14:18:57.552Z",
+      message: { role: "user", content: [{ type: "text", text: "hello" }] },
+    });
+
+    expect(parsePiLine(line)).toEqual({
+      type: "message",
+      id: "5f3f9406",
+      parentId: "b1eda0a8",
+      timestamp: "2026-07-15T14:18:57.552Z",
+      message: { role: "user", content: [{ type: "text", text: "hello" }] },
+    });
+  });
+
+  it("parsePiLine returns null for non-session/message records", () => {
+    expect(parsePiLine(JSON.stringify({ type: "model_change", provider: "x" }))).toBeNull();
+    expect(parsePiLine("not json")).toBeNull();
+  });
+
+  it("extractPiText keeps only text blocks", () => {
+    const content = [
+      { type: "text", text: "first" },
+      { type: "reasoning", summary: "hidden" },
+      { type: "tool_use", id: "t1", name: "bash" },
+      { type: "text", text: "second" },
+    ];
+
+    expect(extractPiText(content)).toBe("first\nsecond");
+    expect(extractPiText("plain string")).toBe("plain string");
+  });
+
+  it("extractPiTitle falls back to first user message", () => {
+    const longMessage = "b".repeat(150);
+    const records = parsePiRecords([
+      {
+        type: "message",
+        timestamp: "t2",
+        message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+      },
+      { type: "message", timestamp: "t1", message: { role: "user", content: longMessage } },
+    ]);
+
+    expect(extractPiTitle(records)).toBe("b".repeat(100));
+  });
+
+  it("getPiSessionId extracts the uuid from the filename", () => {
+    expect(
+      getPiSessionId(
+        "/x/--dir--/2026-07-15T14-18-56-724Z_019f6625-1f54-7588-83dc-6eed11fc7ec0.jsonl",
+      ),
+    ).toBe("019f6625-1f54-7588-83dc-6eed11fc7ec0");
+  });
+});
+
+function parsePiRecords(records: unknown[]) {
+  return records
+    .map((record) => parsePiLine(JSON.stringify(record)))
+    .filter((record): record is NonNullable<typeof record> => record !== null);
+}

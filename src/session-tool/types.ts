@@ -10,7 +10,7 @@ export type SessionInfo = {
   projectID: string;
 };
 
-export const SessionSourceLiterals = Schema.Literals(["opencode", "claude-code", "codex"]);
+export const SessionSourceLiterals = Schema.Literals(["opencode", "claude-code", "codex", "pi"]);
 export type SessionSource = Schema.Schema.Type<typeof SessionSourceLiterals>;
 
 export type MessageSummary = {

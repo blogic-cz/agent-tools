@@ -45,6 +45,7 @@ export class ResolvedPaths extends Context.Service<
     readonly sessionsPath: string;
     readonly claudeCodePath: string | null;
     readonly codexPath: string | null;
+    readonly piPath: string | null;
   }
 >()("@agent-tools/ResolvedPaths") {}
 
@@ -57,6 +58,8 @@ export const ResolvedPathsLayer = Layer.effect(
     const claudeCodePath = existsSync(claudeCodeBasePath) ? claudeCodeBasePath : null;
     const codexBasePath = join(homedir(), ".codex/sessions");
     const codexPath = existsSync(codexBasePath) ? codexBasePath : null;
-    return { messagesPath, sessionsPath, claudeCodePath, codexPath };
+    const piBasePath = join(homedir(), ".pi/agent/sessions");
+    const piPath = existsSync(piBasePath) ? piBasePath : null;
+    return { messagesPath, sessionsPath, claudeCodePath, codexPath, piPath };
   }),
 );
