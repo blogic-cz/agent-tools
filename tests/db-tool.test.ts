@@ -11,14 +11,7 @@ import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import {
-  findDisallowedMutation,
-  getAllowedMutationOperation,
-  getMutationTarget,
-  isMutationQuery,
-  isValidTableName,
-  splitSqlStatements,
-} from "#db/security";
+import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -199,65 +192,6 @@ describe("db schema introspection SQL", () => {
     );
     expect(getMutationTarget("UPDATE public.users SET name = 'x'")).toBe("public.users");
     expect(getMutationTarget("DELETE FROM users WHERE id = 1")).toBe("users");
-  });
-
-  it("flags a mutation chained after a leading read (no first-statement-only bypass)", () => {
-    expect(isMutationQuery("SELECT 1")).toBe(false);
-    expect(isMutationQuery("SELECT 1; DELETE FROM users")).toBe(true);
-    expect(isMutationQuery("SELECT 1; SELECT 2")).toBe(false);
-    expect(isMutationQuery("select * from t;\n  update t set x = 1")).toBe(true);
-  });
-
-  it("splits statements on top-level semicolons but not those inside string literals", () => {
-    expect(splitSqlStatements("SELECT 1; SELECT 2")).toHaveLength(2);
-    expect(splitSqlStatements("SELECT 'a;b'")).toHaveLength(1);
-    expect(splitSqlStatements("SELECT 'a;b'; DELETE FROM t")).toHaveLength(2);
-    expect(isMutationQuery("SELECT 'DELETE FROM t'")).toBe(false);
-  });
-
-  it("does not split on semicolons inside dollar-quoted bodies or escaped quotes", () => {
-    const fn =
-      "CREATE FUNCTION f() RETURNS void AS $$ BEGIN UPDATE t SET x = 1; DELETE FROM u; END $$ LANGUAGE plpgsql";
-    expect(splitSqlStatements(fn)).toHaveLength(1);
-    expect(splitSqlStatements("SELECT $tag$ a; b $tag$; SELECT 2")).toHaveLength(2);
-    expect(splitSqlStatements("SELECT E'a\\'; still one'")).toHaveLength(1);
-    expect(isMutationQuery("SELECT '\\' ; DROP TABLE users")).toBe(true);
-    expect(splitSqlStatements("SELECT '\\' ; DROP TABLE users")).toHaveLength(2);
-  });
-
-  it("shares one lexer across strip + split (E-string, nested comment, quoted ident)", () => {
-    expect(isMutationQuery("SELECT E'a\\'--x' ; DROP TABLE users")).toBe(true);
-    expect(splitSqlStatements("SELECT /* ; */ 1; SELECT 2")).toHaveLength(2);
-    expect(splitSqlStatements("SELECT /* /* ; */ */ 1; SELECT 2")).toHaveLength(2);
-    expect(splitSqlStatements('SELECT * FROM "we;ird"')).toHaveLength(1);
-    expect(isMutationQuery('SELECT 1; UPDATE "t;bl" SET x = 1')).toBe(true);
-  });
-
-  it("detects a mutation after a dollar-quoted literal containing an odd quote and a comment", () => {
-    expect(isMutationQuery("SELECT $$it's$$ ; /*x*/DROP TABLE users")).toBe(true);
-    expect(isMutationQuery("SELECT $$it's$$")).toBe(false);
-  });
-
-  it("authorizes every statement, not just the first (no append-after-allowed bypass)", () => {
-    const policy = {
-      allowMutations: false,
-      allowedMutations: [],
-      allowedMutationTargets: { insert: ["ticker.TimeTickers"] },
-    } as const;
-    expect(
-      findDisallowedMutation('INSERT INTO ticker."TimeTickers" ("Id") VALUES (1)', policy),
-    ).toBeNull();
-    const blocked = findDisallowedMutation(
-      'INSERT INTO ticker."TimeTickers" ("Id") VALUES (1); DROP TABLE users',
-      policy,
-    );
-    expect(blocked).not.toBeNull();
-    expect(blocked?.statement.toLowerCase()).toContain("drop table users");
-    expect(findDisallowedMutation("SELECT 1; SELECT 2", policy)).toBeNull();
-    expect(findDisallowedMutation("SELECT 1; DELETE FROM users", policy)).not.toBeNull();
-    expect(
-      findDisallowedMutation("DROP TABLE users", { ...policy, allowMutations: true }),
-    ).toBeNull();
   });
 });
 

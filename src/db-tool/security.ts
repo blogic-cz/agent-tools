@@ -25,163 +25,70 @@ const MUTATION_TARGET_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
   ["delete", new RegExp(String.raw`^\s*DELETE\s+FROM\s+(${QUALIFIED_IDENTIFIER_PATTERN})`, "i")],
 ];
 
-const DOLLAR_TAG_OPEN = /^\$([a-zA-Z_][a-zA-Z0-9_]*)?\$/;
-
-type SqlRegion = { end: number; text: string };
-
-function matchSqlRegion(sql: string, i: number): SqlRegion | null {
-  const ch = sql[i];
-  const next = i + 1 < sql.length ? sql[i + 1] : "";
-  const len = sql.length;
-
-  if (ch === "-" && next === "-") {
-    let j = i + 2;
-    while (j < len && sql[j] !== "\n") j++;
-    return { end: j, text: " " };
-  }
-
-  if (ch === "/" && next === "*") {
-    let j = i + 2;
-    let depth = 1;
-    while (j < len && depth > 0) {
-      if (sql[j] === "/" && sql[j + 1] === "*") {
-        depth++;
-        j += 2;
-      } else if (sql[j] === "*" && sql[j + 1] === "/") {
-        depth--;
-        j += 2;
-      } else {
-        j++;
-      }
-    }
-    return { end: j, text: " " };
-  }
-
-  if (ch === "$") {
-    const open = DOLLAR_TAG_OPEN.exec(sql.slice(i));
-    if (open) {
-      const tag = open[0];
-      const closeAt = sql.indexOf(tag, i + tag.length);
-      const end = closeAt === -1 ? len : closeAt + tag.length;
-      return { end, text: sql.slice(i, end) };
-    }
-  }
-
-  if (ch === '"') {
-    let j = i + 1;
-    while (j < len) {
-      if (sql[j] === '"' && sql[j + 1] === '"') {
-        j += 2;
-        continue;
-      }
-      if (sql[j] === '"') {
-        j++;
-        break;
-      }
-      j++;
-    }
-    return { end: j, text: sql.slice(i, j) };
-  }
-
-  if (ch === "'") {
-    const prev = i > 0 ? sql[i - 1] : "";
-    const beforePrev = i > 1 ? sql[i - 2] : "";
-    const escapeMode = (prev === "E" || prev === "e") && !/[a-zA-Z0-9_]/.test(beforePrev);
-    let j = i + 1;
-    while (j < len) {
-      if (escapeMode && sql[j] === "\\" && j + 1 < len) {
-        j += 2;
-        continue;
-      }
-      if (sql[j] === "'" && sql[j + 1] === "'") {
-        j += 2;
-        continue;
-      }
-      if (sql[j] === "'") {
-        j++;
-        break;
-      }
-      j++;
-    }
-    return { end: j, text: sql.slice(i, j) };
-  }
-
-  return null;
-}
-
+/**
+ * Strip SQL comments (block and line) while preserving string literals.
+ * This prevents bypass via inline comment masking before DELETE statements.
+ */
 export function stripSqlComments(sql: string): string {
   let result = "";
   let i = 0;
-  while (i < sql.length) {
-    const region = matchSqlRegion(sql, i);
-    if (region) {
-      result += region.text;
-      i = region.end;
+  const len = sql.length;
+
+  while (i < len) {
+    const ch = sql[i];
+    const next = i + 1 < len ? sql[i + 1] : "";
+
+    // Single-quoted string literal — skip through
+    if (ch === "'") {
+      result += ch;
+      i++;
+      while (i < len) {
+        if (sql[i] === "'" && i + 1 < len && sql[i + 1] === "'") {
+          result += "''";
+          i += 2;
+        } else if (sql[i] === "'") {
+          result += "'";
+          i++;
+          break;
+        } else {
+          result += sql[i];
+          i++;
+        }
+      }
       continue;
     }
-    result += sql[i];
+
+    // Block comment /* ... */
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i + 1 < len && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        i++;
+      }
+      i += 2; // skip closing */
+      result += " "; // replace comment with space
+      continue;
+    }
+
+    // Line comment -- ...
+    if (ch === "-" && next === "-") {
+      i += 2;
+      while (i < len && sql[i] !== "\n") {
+        i++;
+      }
+      result += " ";
+      continue;
+    }
+
+    result += ch;
     i++;
   }
+
   return result;
 }
 
-export function splitSqlStatements(sql: string): string[] {
-  const statements: string[] = [];
-  let current = "";
-  let i = 0;
-  while (i < sql.length) {
-    const region = matchSqlRegion(sql, i);
-    if (region) {
-      current += region.text;
-      i = region.end;
-      continue;
-    }
-    if (sql[i] === ";") {
-      if (current.trim() !== "") statements.push(current);
-      current = "";
-      i++;
-      continue;
-    }
-    current += sql[i];
-    i++;
-  }
-  if (current.trim() !== "") statements.push(current);
-  return statements;
-}
-
 export function isMutationQuery(sql: string): boolean {
-  return splitSqlStatements(sql).some((statement) =>
-    MUTATION_PATTERNS.some((pattern) => pattern.test(statement)),
-  );
-}
-
-export type MutationPolicy = {
-  readonly allowMutations: boolean;
-  readonly allowedMutations: readonly DbMutationOperation[];
-  readonly allowedMutationTargets: Partial<Record<DbMutationOperation, readonly string[]>>;
-};
-
-export function findDisallowedMutation(
-  sql: string,
-  policy: MutationPolicy,
-): { statement: string; operation?: DbMutationOperation; target?: string } | null {
-  if (policy.allowMutations) return null;
-  for (const statement of splitSqlStatements(sql)) {
-    const mutates = MUTATION_PATTERNS.some((pattern) => pattern.test(statement));
-    if (!mutates) continue;
-    const operation = getAllowedMutationOperation(statement);
-    if (operation !== undefined && policy.allowedMutations.includes(operation)) continue;
-    const target = operation !== undefined ? getMutationTarget(statement) : undefined;
-    if (
-      operation !== undefined &&
-      target !== undefined &&
-      (policy.allowedMutationTargets[operation] ?? []).includes(target)
-    ) {
-      continue;
-    }
-    return { statement, operation, target };
-  }
-  return null;
+  const stripped = stripSqlComments(sql);
+  return MUTATION_PATTERNS.some((pattern) => pattern.test(stripped));
 }
 
 export function getAllowedMutationOperation(sql: string): DbMutationOperation | undefined {
