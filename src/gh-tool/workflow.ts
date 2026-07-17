@@ -541,11 +541,9 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
   let entries = parseRawJobLogs(raw);
 
   if (opts.failedStepsOnly) {
-    if (Array.isArray(opts.failedStepNames)) {
+    if (Array.isArray(opts.failedStepNames) && opts.failedStepNames.length > 0) {
       const wanted = new Set(opts.failedStepNames);
-      if (wanted.size > 0) {
-        entries = entries.filter((e) => wanted.has(e.step));
-      }
+      entries = entries.filter((e) => wanted.has(e.step));
     } else {
       entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
     }

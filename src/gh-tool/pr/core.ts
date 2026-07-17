@@ -261,7 +261,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
 
         return failedStepLogs && failedStepLogs.length > 0 ? { ...detail, failedStepLogs } : detail;
       }),
-    { concurrency: "unbounded" },
+    { concurrency: 5 },
   );
 
   const nextCommands = [
