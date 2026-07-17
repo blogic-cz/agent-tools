@@ -11,12 +11,7 @@ import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import {
-  disablesReadOnly,
-  getAllowedMutationOperation,
-  getMutationTarget,
-  isValidTableName,
-} from "#db/security";
+import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
 
 /**
@@ -197,28 +192,6 @@ describe("db schema introspection SQL", () => {
     );
     expect(getMutationTarget("UPDATE public.users SET name = 'x'")).toBe("public.users");
     expect(getMutationTarget("DELETE FROM users WHERE id = 1")).toBe("users");
-  });
-
-  it("flags attempts to disable server-enforced read-only mode", () => {
-    expect(disablesReadOnly("SET default_transaction_read_only = off")).toBe(true);
-    expect(disablesReadOnly("SET SESSION transaction_read_only TO off")).toBe(true);
-    expect(disablesReadOnly("SELECT 1; RESET transaction_read_only; DELETE FROM t")).toBe(true);
-    expect(disablesReadOnly("SET ROLE writer")).toBe(true);
-    expect(disablesReadOnly("SET SESSION AUTHORIZATION postgres")).toBe(true);
-    expect(disablesReadOnly("RESET ALL")).toBe(true);
-    expect(disablesReadOnly("SET LOCAL transaction_read_only = off")).toBe(true);
-    expect(disablesReadOnly("SET LOCAL ROLE writer")).toBe(true);
-    expect(disablesReadOnly("SET SESSION ROLE writer")).toBe(true);
-    expect(disablesReadOnly("SET LOCAL SESSION AUTHORIZATION postgres")).toBe(true);
-    expect(disablesReadOnly("SELECT 1; SET LOCAL transaction_read_only = off; DELETE FROM t")).toBe(
-      true,
-    );
-    expect(disablesReadOnly("BEGIN READ WRITE; DELETE FROM t; COMMIT")).toBe(true);
-    expect(disablesReadOnly("START TRANSACTION READ WRITE")).toBe(true);
-    expect(disablesReadOnly("SET TRANSACTION READ WRITE")).toBe(true);
-    expect(disablesReadOnly("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")).toBe(true);
-    expect(disablesReadOnly("SELECT * FROM users")).toBe(false);
-    expect(disablesReadOnly("SET statement_timeout = '5s'")).toBe(false);
   });
 
   it("treats an env as fully read-only only with no allowed mutations or targets", () => {

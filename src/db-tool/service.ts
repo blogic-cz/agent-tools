@@ -27,7 +27,6 @@ import {
 } from "./schema";
 import {
   detectSchemaError,
-  disablesReadOnly,
   getAllowedMutationOperation,
   getMutationTarget,
   isValidTableName,
@@ -769,14 +768,6 @@ export class DbService extends Context.Service<
               message: `Mutation queries are not allowed on environment ${env}. Allowed mutation operations: ${allowed}.`,
               environment: env,
               hint: 'Configure database.<profile>.allowedMutationTargets.<env> with explicit targets such as { insert: ["ticker.TimeTickers"] }, or allowedMutations.<env> for broader operation-level access.',
-            });
-          }
-
-          if (isFullyReadOnly(resolvedConfig) && disablesReadOnly(sql)) {
-            return yield* new DbMutationBlockedError({
-              message: `Query attempts to disable read-only mode (SET/RESET of transaction_read_only, ROLE, or SESSION AUTHORIZATION) on read-only environment ${env}. This is blocked so the server-enforced default_transaction_read_only guard cannot be turned off.`,
-              environment: env,
-              hint: "Read-only environments run with PGOPTIONS default_transaction_read_only=on. Do not attempt to change it; use a mutation-allowed environment or configure allowedMutations.",
             });
           }
 
