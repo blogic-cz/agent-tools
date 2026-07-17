@@ -2841,14 +2841,16 @@ describe("PR checks", () => {
         runGh: (args) => {
           if (args[0] === "api" && args[1]?.includes("actions/jobs/20/logs")) {
             return Effect.succeed({
-              stdout: "2025-01-01T00:00:00Z ##[group]Run lint\n2025-01-01T00:00:02Z Error: lint boom\n2025-01-01T00:00:03Z ##[endgroup]",
+              stdout:
+                "2025-01-01T00:00:00Z ##[group]Run lint\n2025-01-01T00:00:02Z Error: lint boom\n2025-01-01T00:00:03Z ##[endgroup]",
               stderr: "",
               exitCode: 0,
             });
           }
           if (args[0] === "api" && args[1]?.includes("actions/jobs/21/logs")) {
             return Effect.succeed({
-              stdout: "2025-01-01T00:00:00Z ##[group]Run test\n2025-01-01T00:00:02Z Error: test boom\n2025-01-01T00:00:03Z ##[endgroup]",
+              stdout:
+                "2025-01-01T00:00:00Z ##[group]Run test\n2025-01-01T00:00:02Z Error: test boom\n2025-01-01T00:00:03Z ##[endgroup]",
               stderr: "",
               exitCode: 0,
             });

@@ -863,14 +863,14 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
   };
 });
 
-const AUTOMATION_LOGIN_MARKERS = ["claude", "github-actions", "dependabot", "[bot]"];
+const AUTOMATION_LOGINS = new Set(["claude", "github-actions", "dependabot"]);
 
 const isHumanLogin = (login: string): boolean => {
   const lower = login.toLowerCase();
   if (lower.endsWith("[bot]")) {
     return false;
   }
-  return !AUTOMATION_LOGIN_MARKERS.some((marker) => lower.includes(marker));
+  return !AUTOMATION_LOGINS.has(lower);
 };
 
 const requestedReviewerLogin = (reviewer: RequestedReviewerNode): string | null =>

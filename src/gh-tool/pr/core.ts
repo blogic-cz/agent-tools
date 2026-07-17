@@ -105,6 +105,16 @@ const getCheckJobNameCandidates = (checkName: string): string[] => {
   return [...new Set([exact, suffix].filter((value): value is string => value !== undefined))];
 };
 
+const failedJobsMatchingCheck = <Job extends { name: string }>(
+  checkName: string,
+  failedJobs: readonly Job[],
+): Job[] => {
+  const candidates = getCheckJobNameCandidates(checkName);
+  return failedJobs.filter((job) =>
+    candidates.some((candidate) => job.name.toLowerCase() === candidate.toLowerCase()),
+  );
+};
+
 const resolveJobIdsForFailedChecks = (
   checks: CheckResult[],
   jobs: WorkflowRunJobsForRerun["jobs"],
@@ -113,10 +123,7 @@ const resolveJobIdsForFailedChecks = (
   const jobIds = new Set<number>();
 
   for (const check of checks) {
-    const candidates = getCheckJobNameCandidates(check.name);
-    const matches = failedJobs.filter((job) =>
-      candidates.some((candidate) => job.name.toLowerCase() === candidate.toLowerCase()),
-    );
+    const matches = failedJobsMatchingCheck(check.name, failedJobs);
 
     if (matches.length !== 1) {
       return null;
@@ -132,10 +139,7 @@ const matchFailedJobForCheck = <Job extends { name: string }>(
   checkName: string,
   failedJobs: readonly Job[],
 ): Job | null => {
-  const candidates = getCheckJobNameCandidates(checkName);
-  const matches = failedJobs.filter((job) =>
-    candidates.some((candidate) => job.name.toLowerCase() === candidate.toLowerCase()),
-  );
+  const matches = failedJobsMatchingCheck(checkName, failedJobs);
 
   if (matches.length === 1) {
     return matches[0];
