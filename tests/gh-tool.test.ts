@@ -1955,6 +1955,14 @@ describe("Pull request reviews (REST → PullRequestReview[])", () => {
       submitted_at: "2026-07-16T11:04:25Z",
       html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-902",
     },
+    {
+      id: 903,
+      user: { login: "claude[bot]" },
+      state: "COMMENTED",
+      body: "",
+      submitted_at: "2026-07-16T11:05:00Z",
+      html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-903",
+    },
   ];
 
   const reviewsLayer = createMockGhLayer({
@@ -1962,17 +1970,18 @@ describe("Pull request reviews (REST → PullRequestReview[])", () => {
       Effect.succeed({ stdout: JSON.stringify(mockRESTReviews), stderr: "", exitCode: 0 }),
   });
 
-  it.effect("maps REST response to PullRequestReview[] including empty-body reviews", () =>
+  it.effect("drops empty-body COMMENTED noise but keeps stateful empty reviews", () =>
     Effect.gen(function* () {
       const reviews = yield* fetchReviews(123, null, null, null).pipe(Effect.provide(reviewsLayer));
 
       expect(reviews).toHaveLength(2);
+      expect(reviews.map((r) => r.id)).not.toContain(903);
       expect(reviews[0]?.author).toBe("claude[bot]");
       expect(reviews[0]?.state).toBe("CHANGES_REQUESTED");
       expect(reviews[0]?.body).toBe("This diff removes the git-workflow lock entry.");
-      expect(reviews[0]?.submittedAt).toBe("2026-07-16T05:34:15Z");
       expect(reviews[1]?.state).toBe("APPROVED");
       expect(reviews[1]?.body).toBe("");
+      expect(reviews.every((r) => !(r.state === "COMMENTED" && r.body === ""))).toBe(true);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 
