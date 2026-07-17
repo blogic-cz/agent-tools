@@ -92,7 +92,7 @@ export function isMutationQuery(sql: string): boolean {
 }
 
 const READONLY_ESCAPE_PATTERN =
-  /\b(?:set|reset)\s+(?:session\s+|local\s+)?(?:default_)?transaction_read_only\b|\b(?:set|reset)\s+(?:session\s+|local\s+)?role\b|\bset\s+(?:local\s+)?session\s+authorization\b|\breset\s+(?:session\s+authorization|all)\b/i;
+  /\b(?:set|reset)\s+(?:session\s+|local\s+)?(?:default_)?transaction_read_only\b|\b(?:set|reset)\s+(?:session\s+|local\s+)?role\b|\bset\s+(?:local\s+)?session\s+authorization\b|\breset\s+(?:session\s+authorization|all)\b|\b(?:begin|start|set)\b[^;]*\bread\s+write\b/i;
 
 export function disablesReadOnly(sql: string): boolean {
   return READONLY_ESCAPE_PATTERN.test(stripSqlComments(sql));

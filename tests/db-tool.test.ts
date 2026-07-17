@@ -213,6 +213,10 @@ describe("db schema introspection SQL", () => {
     expect(disablesReadOnly("SELECT 1; SET LOCAL transaction_read_only = off; DELETE FROM t")).toBe(
       true,
     );
+    expect(disablesReadOnly("BEGIN READ WRITE; DELETE FROM t; COMMIT")).toBe(true);
+    expect(disablesReadOnly("START TRANSACTION READ WRITE")).toBe(true);
+    expect(disablesReadOnly("SET TRANSACTION READ WRITE")).toBe(true);
+    expect(disablesReadOnly("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")).toBe(true);
     expect(disablesReadOnly("SELECT * FROM users")).toBe(false);
     expect(disablesReadOnly("SET statement_timeout = '5s'")).toBe(false);
   });
