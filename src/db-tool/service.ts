@@ -53,6 +53,16 @@ export function resolveDbAccessMode(
   };
 }
 
+export function isFullyReadOnly(
+  config: Pick<DbConfig, "allowMutations" | "allowedMutations" | "allowedMutationTargets">,
+): boolean {
+  return (
+    !config.allowMutations &&
+    config.allowedMutations.length === 0 &&
+    Object.keys(config.allowedMutationTargets).length === 0
+  );
+}
+
 // Re-exported from the shared probe so existing `#db/service` consumers keep working.
 export { buildApiProbeArgs } from "#shared/k8s-probe";
 
@@ -393,6 +403,9 @@ export class DbService extends Context.Service<
             env: {
               ...process.env,
               ...(password ? { PGPASSWORD: password } : {}),
+              ...(isFullyReadOnly(config)
+                ? { PGOPTIONS: "-c default_transaction_read_only=on" }
+                : {}),
             } as Record<string, string>,
           });
         };

@@ -12,7 +12,7 @@ import { DbConfigService } from "#db/config-service";
 import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
-import { buildApiProbeArgs, DbService, resolveDbAccessMode } from "#db/service";
+import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
 
 /**
  * Mock DbService layer factory for testing
@@ -192,6 +192,29 @@ describe("db schema introspection SQL", () => {
     );
     expect(getMutationTarget("UPDATE public.users SET name = 'x'")).toBe("public.users");
     expect(getMutationTarget("DELETE FROM users WHERE id = 1")).toBe("users");
+  });
+
+  it("treats an env as fully read-only only with no allowed mutations or targets", () => {
+    expect(
+      isFullyReadOnly({ allowMutations: false, allowedMutations: [], allowedMutationTargets: {} }),
+    ).toBe(true);
+    expect(
+      isFullyReadOnly({ allowMutations: true, allowedMutations: [], allowedMutationTargets: {} }),
+    ).toBe(false);
+    expect(
+      isFullyReadOnly({
+        allowMutations: false,
+        allowedMutations: ["insert"],
+        allowedMutationTargets: {},
+      }),
+    ).toBe(false);
+    expect(
+      isFullyReadOnly({
+        allowMutations: false,
+        allowedMutations: [],
+        allowedMutationTargets: { insert: ["ticker.TimeTickers"] },
+      }),
+    ).toBe(false);
   });
 });
 
