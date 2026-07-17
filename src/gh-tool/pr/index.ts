@@ -15,6 +15,7 @@ export {
   prRerunChecksCommand,
   prReplyAndResolveCommand,
   prResolveCommand,
+  prReviewsCommand,
   prStatusCommand,
   prSubmitReviewCommand,
   prThreadsCommand,

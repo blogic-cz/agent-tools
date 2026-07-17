@@ -5,6 +5,7 @@ import type {
   IssueComment,
   IssueCommentId,
   IsoTimestamp,
+  PullRequestReview,
   ReviewComment,
   ReviewThread,
 } from "#gh/types";
@@ -155,6 +156,15 @@ type RawIssueComment = {
   user: { login: string };
   body: string;
   created_at: string;
+  html_url: string;
+};
+
+type RawPullRequestReview = {
+  id: number;
+  user: { login: string } | null;
+  state: string;
+  body: string | null;
+  submitted_at: string | null;
   html_url: string;
 };
 
@@ -403,6 +413,55 @@ export const fetchIssueComments = Effect.fn("pr.fetchIssueComments")(function* (
   }
 
   return comments;
+});
+
+/**
+ * Fetch submitted review summaries (state + top-level body) for a PR via REST API.
+ * Complements `comments` (inline review comments) and `issue-comments` (discussion),
+ * which never expose the submitted review body. Optional author/state/body filters.
+ */
+export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
+  pr: number | null,
+  author: string | null,
+  bodyContains: string | null,
+  state: string | null,
+) {
+  const service = yield* GitHubService;
+  const repoInfo = yield* service.getRepoInfo();
+
+  const resolvedPr = pr ?? (yield* viewPR(null)).number;
+
+  const raw = yield* fetchAllRestPages<RawPullRequestReview>(
+    `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/reviews`,
+    "gh-tool pr reviews",
+    "Failed to parse response",
+  );
+
+  let reviews: PullRequestReview[] = raw.map((review) => ({
+    id: review.id,
+    author: review.user?.login ?? "unknown",
+    state: review.state,
+    body: review.body ?? "",
+    submittedAt: (review.submitted_at ?? null) as IsoTimestamp | null,
+    url: review.html_url,
+  }));
+
+  if (author !== null) {
+    const authorFilter = author.toLowerCase();
+    reviews = reviews.filter((review) => review.author.toLowerCase().includes(authorFilter));
+  }
+
+  if (state !== null) {
+    const stateFilter = state.toLowerCase();
+    reviews = reviews.filter((review) => review.state.toLowerCase() === stateFilter);
+  }
+
+  if (bodyContains !== null) {
+    const bodyFilter = bodyContains.toLowerCase();
+    reviews = reviews.filter((review) => review.body.toLowerCase().includes(bodyFilter));
+  }
+
+  return reviews;
 });
 
 export const fetchLatestIssueComment = Effect.fn("pr.fetchLatestIssueComment")(function* (

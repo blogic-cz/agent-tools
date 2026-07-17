@@ -66,6 +66,15 @@ export type IssueComment = {
   url: GitHubIssueCommentUrl;
 };
 
+export type PullRequestReview = {
+  id: number;
+  author: string;
+  state: string;
+  body: string;
+  submittedAt: IsoTimestamp | null;
+  url: string;
+};
+
 export type CheckResult = {
   name: string;
   state: string;
