@@ -20,6 +20,7 @@ import { runLocalCommand } from "./helpers";
 import { diagnoseLogEntries, fetchJobLogs, formatLogEntries, parseRawJobLogs } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
+const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
 
 const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string) {
@@ -973,21 +974,39 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   return results;
 });
 
+export const collectWithStableState = <S, A, E1, R1, E2, R2>(
+  initial: S,
+  collect: (state: S) => Effect.Effect<A, E1, R1>,
+  refresh: (state: S) => Effect.Effect<S, E2, R2>,
+  unchanged: (before: S, after: S) => boolean,
+): Effect.Effect<{ state: S; value: A } | null, E1 | E2, R1 | R2> =>
+  Effect.gen(function* () {
+    let before = initial;
+    for (let attempt = 0; attempt < STABLE_SNAPSHOT_ATTEMPTS; attempt += 1) {
+      const value = yield* collect(before);
+      const after = yield* refresh(before);
+      if (unchanged(before, after)) return { state: after, value };
+      before = after;
+    }
+    return null;
+  });
+
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   pr: number | null,
   withLogs = false,
 ) {
-  let before = yield* viewPR(pr);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const checks = yield* fetchCheckResults(before.number);
-    const after = yield* viewPR(before.number);
-    if (after.headSha === before.headSha) {
-      return yield* buildFailedChecksReport(before.number, checks, {
-        withLogs,
-        evidence: { headSha: after.headSha, baseSha: after.baseSha },
-      });
-    }
-    before = after;
+  const initial = yield* viewPR(pr);
+  const snapshot = yield* collectWithStableState(
+    initial,
+    (info) => fetchCheckResults(info.number),
+    (info) => viewPR(info.number),
+    (before, after) => after.headSha === before.headSha,
+  );
+  if (snapshot !== null) {
+    return yield* buildFailedChecksReport(snapshot.state.number, snapshot.value, {
+      withLogs,
+      evidence: { headSha: snapshot.state.headSha, baseSha: snapshot.state.baseSha },
+    });
   }
   return yield* Effect.fail(
     new GitHubCommandError({
@@ -1084,14 +1103,24 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
 
   const snapshot = (pr: number) =>
     Effect.gen(function* () {
-      if (!(yield* beforeDeadline)) return "timeout" as const;
-      const before = yield* watchPRState(pr);
-      if (!(yield* beforeDeadline)) return "timeout" as const;
-      const checks = yield* fetchCheckResults(pr);
-      if (!(yield* beforeDeadline)) return "timeout" as const;
-      const after = yield* watchPRState(pr);
-      const head = before.headRefOid ?? null;
-      if (head !== (after.headRefOid ?? null) || before.state !== after.state) return null;
+      const requireDeadline = Effect.gen(function* () {
+        if (!(yield* beforeDeadline)) return yield* Effect.fail("timeout" as const);
+      });
+      yield* requireDeadline;
+      const initial = yield* watchPRState(pr);
+      const stableResult = yield* collectWithStableState(
+        initial,
+        () => requireDeadline.pipe(Effect.andThen(fetchCheckResults(pr))),
+        () => requireDeadline.pipe(Effect.andThen(watchPRState(pr))),
+        (before, after) => before.headRefOid === after.headRefOid && before.state === after.state,
+      ).pipe(Effect.result);
+      if (Result.isFailure(stableResult)) {
+        if (stableResult.failure === "timeout") return "timeout" as const;
+        return yield* Effect.fail(stableResult.failure);
+      }
+      if (stableResult.success === null) return null;
+      const { state: after, value: checks } = stableResult.success;
+      const head = after.headRefOid ?? null;
       const runs = new Map<number, WatchRun | null>();
       yield* Effect.forEach(
         [...new Set(checks.map((check) => extractRunIdFromCheckLink(check.link)))].filter(
@@ -1203,9 +1232,12 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
             currentIdentity.set(logical, identity);
           }
           if (timedOut) break;
+          // Empty snapshots need three consecutive observations, including after checks were seen.
           const hasTerminalCoverage =
-            checksObserved.has(headKey) || (emptySnapshots.get(headKey) ?? 0) >= 3;
-          const checksTerminal = state.checks.every(({ check }) => check.bucket !== "pending");
+            state.checks.length > 0 || (emptySnapshots.get(headKey) ?? 0) >= 3;
+          const checksTerminal =
+            state.checks.length === 0 ||
+            state.checks.every(({ check }) => check.bucket !== "pending");
           if (state.pr.state !== "OPEN" || (hasTerminalCoverage && checksTerminal)) {
             if (!(yield* beforeDeadline)) {
               timedOut = true;

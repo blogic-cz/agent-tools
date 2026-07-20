@@ -3406,18 +3406,27 @@ describe("PR checks", () => {
         const checkEvents = events.filter((event) => event.type === "check");
         expect(checkEvents).toHaveLength(4);
         expect(checkEvents.some((event) => event.name === "stale")).toBe(false);
-        expect(checkEvents[0]?.identity).toBe(
-          "test-owner/test-repo/2/head-2/external//external|https://checks.example/result/7",
+        expect(checkEvents).toContainEqual(
+          expect.objectContaining({
+            identity:
+              "test-owner/test-repo/2/head-2/external//external|https://checks.example/result/7",
+          }),
         );
-        expect(checkEvents[1]?.identity).toBe("test-owner/test-repo/1/head-b/10/1/101");
-        expect(checkEvents[2]).toMatchObject({
-          identity: "test-owner/test-repo/1/head-b/10/2/102",
-          supersedes: "test-owner/test-repo/1/head-b/10/1/101",
-        });
-        expect(checkEvents[3]).toMatchObject({
-          identity: "test-owner/test-repo/1/head-b/11/1/111",
-          supersedes: "test-owner/test-repo/1/head-b/10/2/102",
-        });
+        expect(checkEvents).toContainEqual(
+          expect.objectContaining({ identity: "test-owner/test-repo/1/head-b/10/1/101" }),
+        );
+        expect(checkEvents).toContainEqual(
+          expect.objectContaining({
+            identity: "test-owner/test-repo/1/head-b/10/2/102",
+            supersedes: "test-owner/test-repo/1/head-b/10/1/101",
+          }),
+        );
+        expect(checkEvents).toContainEqual(
+          expect.objectContaining({
+            identity: "test-owner/test-repo/1/head-b/11/1/111",
+            supersedes: "test-owner/test-repo/1/head-b/10/2/102",
+          }),
+        );
         expect(
           events.filter((event) => event.type === "pr_terminal").map((event) => event.pr),
         ).toEqual([2, 1]);
@@ -3502,6 +3511,63 @@ describe("PR checks", () => {
       expect(checks).toBe(4);
       expect(events.filter((event) => event.type === "pr_terminal")).toHaveLength(1);
       expect(events.at(-1)).toMatchObject({ status: "terminal" });
+    }),
+  );
+
+  it.effect("watch ignores a mid-stream empty check blip on the same head", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      let checks = 0;
+      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push({ ...event, checksAtEmit: checks })),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({ number: 7, state: "OPEN", headRefOid: "head" });
+              }
+              checks += 1;
+              if (checks === 2) return Effect.succeed([]);
+              return Effect.succeed([
+                {
+                  name: "CI",
+                  state: checks < 4 ? "pending" : "completed",
+                  bucket: checks < 4 ? "pending" : "pass",
+                  link: "external",
+                },
+              ]);
+            },
+          }),
+        ),
+      );
+      expect(events.find((event) => event.type === "pr_terminal")?.checksAtEmit).toBe(4);
+    }),
+  );
+
+  it.effect("watch bounds a stable empty head at three snapshots", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      let checks = 0;
+      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({ number: 7, state: "OPEN", headRefOid: "head" });
+              }
+              checks += 1;
+              return Effect.succeed([]);
+            },
+          }),
+        ),
+      );
+      expect(checks).toBe(3);
+      expect(events.find((event) => event.type === "pr_terminal")).toMatchObject({
+        checksObserved: false,
+      });
     }),
   );
 

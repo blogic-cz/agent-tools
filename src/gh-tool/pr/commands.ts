@@ -29,6 +29,7 @@ import {
 
 import {
   closePR,
+  collectWithStableState,
   createPR,
   detectPRStatus,
   editPR,
@@ -125,13 +126,14 @@ const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
   pr: number | null,
   collect: (pr: number, headSha: string | null) => Effect.Effect<A, E, R>,
 ) {
-  let info = yield* viewPR(pr);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const value = yield* collect(info.number, info.headSha);
-    const after = yield* viewPR(info.number);
-    if (after.headSha === info.headSha) return { info: after, value };
-    info = after;
-  }
+  const initial = yield* viewPR(pr);
+  const snapshot = yield* collectWithStableState(
+    initial,
+    (info) => collect(info.number, info.headSha),
+    (info) => viewPR(info.number),
+    (before, after) => after.headSha === before.headSha,
+  );
+  if (snapshot !== null) return { info: snapshot.state, value: snapshot.value };
   return yield* Effect.fail(
     new GitHubCommandError({
       message: "PR head changed repeatedly while collecting feedback",
