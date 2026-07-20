@@ -29,6 +29,7 @@ import {
 
 import {
   closePR,
+  collectWithStableState,
   createPR,
   detectPRStatus,
   editPR,
@@ -38,6 +39,7 @@ import {
   listPRs,
   mergePR,
   rerunChecks,
+  watchPRs,
   viewPR,
   waitForMergeable,
 } from "./core";
@@ -52,6 +54,7 @@ import {
   fetchThreads,
   postIssueComment,
   replyToComment,
+  replyAndResolveComment,
   resolveThread,
   submitPendingReview,
 } from "./review";
@@ -95,25 +98,115 @@ export const classifyReviewTriage = (
   return { status: reasons.length > 0 ? "needs_investigation" : "clear", reasons };
 };
 
-export const parsePrNumbers = (input: string): readonly number[] =>
-  input
-    .split(",")
-    .map((part) => Number.parseInt(part.trim(), 10))
-    .filter((number) => Number.isInteger(number) && number > 0);
+const MAX_BATCH_PRS = 50;
+
+export const parsePrNumbers = (
+  input: string,
+): Effect.Effect<readonly number[], GitHubCommandError> => {
+  const tokens = input.split(",").map((part) => part.trim());
+  if (tokens.some((token) => !/^\d+$/.test(token) || Number(token) < 1)) {
+    return Effect.fail(emptyBatchError(input));
+  }
+  const numbers = [...new Set(tokens.map(Number))];
+  if (numbers.length > MAX_BATCH_PRS) {
+    return Effect.fail(
+      new GitHubCommandError({
+        message: `--prs supports at most ${MAX_BATCH_PRS} unique PRs`,
+        command: "gh pr --prs",
+        exitCode: 1,
+        stderr: "",
+        hint: `Split the request into batches of at most ${MAX_BATCH_PRS} PRs.`,
+      }),
+    );
+  }
+  return Effect.succeed(numbers);
+};
+
+const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
+  pr: number | null,
+  collect: (pr: number, headSha: string | null) => Effect.Effect<A, E, R>,
+  context: { operation: string; command: string },
+) {
+  const initial = yield* viewPR(pr);
+  const snapshot = yield* collectWithStableState(
+    initial,
+    (info) => collect(info.number, info.headSha),
+    (info) => viewPR(info.number),
+    (before, after) => after.headSha === before.headSha,
+  );
+  if (snapshot !== null) return { info: snapshot.state, value: snapshot.value };
+  return yield* Effect.fail(
+    new GitHubCommandError({
+      message: `PR head changed repeatedly while collecting ${context.operation}`,
+      command: context.command,
+      exitCode: 1,
+      stderr: "",
+      nextCommand: context.command,
+      retryable: true,
+    }),
+  );
+});
+
+export const fetchCurrentThreads = (
+  pr: number | null,
+  unresolvedOnly: boolean,
+  visibleOpenOnly: boolean,
+) =>
+  withStableHead(
+    pr,
+    (number, headSha) => fetchThreads(number, unresolvedOnly, visibleOpenOnly, headSha),
+    { operation: "review threads", command: "gh-tool pr threads" },
+  ).pipe(Effect.map(({ value }) => value));
+
+export const fetchCurrentComments = (pr: number | null, since: string | null) =>
+  withStableHead(pr, (number, headSha) => fetchComments(number, since, headSha), {
+    operation: "review comments",
+    command: "gh-tool pr comments",
+  }).pipe(Effect.map(({ value }) => value));
+
+export const fetchCurrentReviews = (
+  pr: number | null,
+  author: string | null,
+  bodyContains: string | null,
+  state: string | null,
+) =>
+  withStableHead(
+    pr,
+    (number, headSha) => fetchReviews(number, author, bodyContains, state, headSha),
+    { operation: "reviews", command: "gh-tool pr reviews" },
+  ).pipe(Effect.map(({ value }) => value));
+
+export const fetchCurrentFeedback = (pr: number | null) =>
+  withStableHead(pr, (number, headSha) => fetchFeedback(number, headSha), {
+    operation: "feedback",
+    command: "gh-tool pr feedback",
+  }).pipe(Effect.map(({ value }) => value));
+
+const countFeedbackOrigins = (items: ReadonlyArray<{ feedbackOrigin: string }>) => ({
+  current_head: items.filter((item) => item.feedbackOrigin === "current_head").length,
+  pre_existing: items.filter((item) => item.feedbackOrigin === "pre_existing").length,
+  unknown: items.filter((item) => item.feedbackOrigin === "unknown").length,
+});
 
 export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   prNumber: number | null,
+  format: "toon" | "json" = "toon",
 ) {
-  const [info, unresolvedThreads, visibleOpenThreads, summary, checks, reviews] = yield* Effect.all(
-    [
-      viewPR(prNumber),
-      fetchThreads(prNumber, true),
-      fetchThreads(prNumber, false, true),
-      fetchDiscussionSummary(prNumber),
-      fetchChecks(prNumber, false, false, 0),
-      fetchReviews(prNumber, null, null, null),
-    ],
+  const { info, value } = yield* withStableHead(
+    prNumber,
+    (number, headSha) =>
+      Effect.all([
+        fetchThreads(number, false, false, headSha),
+        fetchDiscussionSummary(number),
+        fetchChecks(number, false, false, 0, format === "json"),
+        fetchReviews(number, null, null, null, headSha),
+        fetchComments(number, null, headSha),
+      ]),
+    { operation: "review triage", command: "gh-tool pr review-triage" },
   );
+  const [allThreads, summary, checks, reviews, inlineComments] = value;
+  const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);
+  const visibleOpenThreads = allThreads.filter((thread) => thread.isVisibleOpen);
   const classification = classifyReviewTriage(summary, checks);
 
   // Single merge-readiness verdict so agents stop re-stitching mergeable + checks + threads +
@@ -142,6 +235,12 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
     summary,
     checks,
     reviews,
+    inlineComments,
+    feedbackOriginCounts: {
+      reviews: countFeedbackOrigins(reviews),
+      inlineComments: countFeedbackOrigins(inlineComments),
+      threads: countFeedbackOrigins(allThreads),
+    },
   };
 });
 
@@ -165,8 +264,7 @@ export const prViewCommand = Command.make(
       Effect.gen(function* () {
         const batch = Option.getOrNull(prs);
         if (batch !== null) {
-          const numbers = parsePrNumbers(batch);
-          if (numbers.length === 0) return yield* emptyBatchError(batch);
+          const numbers = yield* parsePrNumbers(batch);
           const results = yield* Effect.all(
             numbers.map((n) => viewPR(n).pipe(Effect.map((info) => ({ pr: n, info })))),
             { concurrency: 5 },
@@ -485,15 +583,16 @@ export const prChecksCommand = Command.make(
         const batch = Option.getOrNull(prs);
         if (batch !== null) {
           if (watch) {
-            yield* Console.warn(
-              "ℹ️  --watch is ignored with --prs; batch mode returns a one-shot snapshot per PR.",
-            );
+            if (format !== "json") {
+              yield* Console.warn(
+                "ℹ️  --watch is ignored with --prs; batch mode returns a one-shot snapshot per PR.",
+              );
+            }
           }
-          const numbers = parsePrNumbers(batch);
-          if (numbers.length === 0) return yield* emptyBatchError(batch);
+          const numbers = yield* parsePrNumbers(batch);
           const results = yield* Effect.all(
             numbers.map((n) =>
-              fetchChecks(n, false, failFast, timeout).pipe(
+              fetchChecks(n, false, failFast, timeout, format === "json").pipe(
                 Effect.map((checks) => ({ pr: n, checks })),
               ),
             ),
@@ -502,7 +601,13 @@ export const prChecksCommand = Command.make(
           yield* logFormatted({ count: results.length, prs: results }, format);
           return;
         }
-        const checks = yield* fetchChecksForCommand(Option.getOrNull(pr), watch, failFast, timeout);
+        const checks = yield* fetchChecksForCommand(
+          Option.getOrNull(pr),
+          watch,
+          failFast,
+          timeout,
+          format === "json",
+        );
         yield* logFormatted(checks, format);
       }),
     ),
@@ -539,6 +644,42 @@ export const prChecksFailedCommand = Command.make(
     ),
 ).pipe(Command.withDescription("Fetch only failed CI checks for a PR"));
 
+export const prWatchCommand = Command.make(
+  "watch",
+  {
+    prs: Flag.string("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
+    until: Flag.choice("until", ["terminal"]).pipe(Flag.withDefault("terminal")),
+    format: Flag.choice("format", ["jsonl"]).pipe(Flag.withDefault("jsonl")),
+    interval: Flag.integer("interval").pipe(
+      Flag.withDefault(5),
+      Flag.filter(
+        (n) => n >= 1 && n <= 60,
+        () => "--interval must be 1..60 seconds",
+      ),
+    ),
+    timeout: Flag.integer("timeout").pipe(
+      Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
+      Flag.filter(
+        (n) => n >= 1,
+        () => "--timeout must be at least 1 second",
+      ),
+    ),
+    repo: repoOption,
+  },
+  ({ prs, until, interval, timeout, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const numbers = yield* parsePrNumbers(prs);
+        yield* watchPRs(
+          numbers,
+          { intervalSeconds: interval, timeoutSeconds: timeout, until },
+          (event) => Console.log(JSON.stringify(event)),
+        );
+      }),
+    ),
+).pipe(Command.withDescription("Watch several PRs; emits JSONL state transitions only"));
+
 export const prRerunChecksCommand = Command.make(
   "rerun-checks",
   {
@@ -552,13 +693,24 @@ export const prRerunChecksCommand = Command.make(
       Flag.withDefault(true),
       Flag.withDescription("Only rerun failed checks (default: true)"),
     ),
+    watch: Flag.boolean("watch").pipe(Flag.withDefault(false)),
+    timeout: Flag.integer("timeout").pipe(
+      Flag.withDefault(60),
+      Flag.filter(
+        (n) => n >= 1,
+        () => "--timeout must be at least 1 second",
+      ),
+    ),
   },
-  ({ failedOnly, format, pr, repo }) =>
+  ({ failedOnly, format, pr, repo, watch, timeout }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const result = yield* rerunChecks(prNumber, failedOnly);
+        const result = yield* rerunChecks(prNumber, failedOnly, {
+          watch,
+          timeoutSeconds: timeout,
+        });
         yield* logFormatted(result, format);
       }),
     ),
@@ -591,7 +743,7 @@ export const prThreadsCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const threads = yield* fetchThreads(prNumber, unresolvedOnly, visibleOpenOnly);
+        const threads = yield* fetchCurrentThreads(prNumber, unresolvedOnly, visibleOpenOnly);
         yield* logFormatted(threads, format);
       }),
     ),
@@ -621,7 +773,7 @@ export const prCommentsCommand = Command.make(
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
         const sinceValue = Option.getOrNull(since);
-        const comments = yield* fetchComments(prNumber, sinceValue);
+        const comments = yield* fetchCurrentComments(prNumber, sinceValue);
         yield* logFormatted(comments, format);
       }),
     ),
@@ -679,7 +831,7 @@ export const prReviewsCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const reviews = yield* fetchReviews(
+        const reviews = yield* fetchCurrentReviews(
           Option.getOrNull(pr),
           Option.getOrNull(author),
           Option.getOrNull(bodyContains),
@@ -708,7 +860,7 @@ export const prFeedbackCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const feedback = yield* fetchFeedback(Option.getOrNull(pr));
+        const feedback = yield* fetchCurrentFeedback(Option.getOrNull(pr));
         yield* logFormatted(feedback, format);
       }),
     ),
@@ -971,7 +1123,7 @@ export const prReviewTriageCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const result = yield* fetchReviewTriage(prNumber);
+        const result = yield* fetchReviewTriage(prNumber, format);
         yield* logFormatted(result, format);
       }),
     ),
@@ -992,10 +1144,9 @@ export const prReviewTriageBatchCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const numbers = parsePrNumbers(prs);
-        if (numbers.length === 0) return yield* emptyBatchError(prs);
+        const numbers = yield* parsePrNumbers(prs);
         const results = yield* Effect.all(
-          numbers.map((prNumber) => fetchReviewTriage(prNumber)),
+          numbers.map((prNumber) => fetchReviewTriage(prNumber, format)),
           { concurrency: "unbounded" },
         );
         yield* logFormatted(results, format);
@@ -1025,7 +1176,10 @@ export const prReplyAndResolveCommand = Command.make(
     ),
     repo: repoOption,
     threadId: Flag.string("thread-id").pipe(
-      Flag.withDescription("GraphQL node ID of the thread to resolve"),
+      Flag.withDescription(
+        "GraphQL node ID of the thread to resolve (inferred from comment when omitted)",
+      ),
+      Flag.optional,
     ),
   },
   ({ body, bodyFile, commentId, format, pr, repo, threadId }) =>
@@ -1041,13 +1195,17 @@ export const prReplyAndResolveCommand = Command.make(
           fileFlag: "--body-file",
           label: "body",
         });
-        const replyResult = yield* replyToComment(prNumber, commentId, resolvedBody);
-        const resolveResult = yield* resolveThread(threadId);
-        yield* logFormatted({ reply: replyResult, resolve: resolveResult }, format);
+        const result = yield* replyAndResolveComment(
+          prNumber,
+          commentId,
+          Option.getOrNull(threadId),
+          resolvedBody,
+        );
+        yield* logFormatted(result, format);
       }),
     ),
 ).pipe(
   Command.withDescription(
-    "Composite: reply to a review comment and resolve its thread in one call",
+    "Composite: reply to a review comment and resolve its thread (PR/thread inferred from comment)",
   ),
 );

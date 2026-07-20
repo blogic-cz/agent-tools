@@ -21,6 +21,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { Readable } from "node:stream";
 
 const TOOLS_ROOT = join(__dirname, "..");
+const SUBPROCESS_TEST_TIMEOUT_MS = 15_000;
 
 if (!("Bun" in globalThis)) {
   const spawnForNodeVitest = ((
@@ -106,7 +107,7 @@ afterAll(() => {
   }
 });
 
-function runTool(toolPath: string, args: string[], cwd?: string, timeout = 15000) {
+function runTool(toolPath: string, args: string[], cwd?: string, timeout = 5000) {
   return spawnSync("bun", ["run", join(TOOLS_ROOT, toolPath), ...args], {
     cwd: cwd ?? TOOLS_ROOT,
     encoding: "utf8",
@@ -119,7 +120,7 @@ function runToolWithEnv(
   args: string[],
   cwd: string,
   envOverrides: Record<string, string>,
-  timeout = 15000,
+  timeout = 5000,
 ) {
   return spawnSync("bun", ["run", join(TOOLS_ROOT, toolPath), ...args], {
     cwd,
@@ -168,18 +169,41 @@ console.log(JSON.stringify(rows));
 
 describe("Integration: tool --help in zero-config mode", () => {
   it("gh-tool --help works without config file", () => {
-    const result = runTool("src/gh-tool/index.ts", ["--help"]);
+    const result = runTool(
+      "src/gh-tool/index.ts",
+      ["--help"],
+      undefined,
+      SUBPROCESS_TEST_TIMEOUT_MS,
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("GitHub");
+  }, 15000);
+
+  it("gh-tool renders typed batch PR parse errors", () => {
+    for (const [prs, hint] of [
+      ["1,nope", "Pass comma-separated positive integers"],
+      [Array.from({ length: 51 }, (_, index) => String(index + 1)).join(","), "Split the request"],
+    ]) {
+      const result = runTool("src/gh-tool/index.ts", ["pr", "view", "--prs", prs]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("GitHubCommandError:");
+      expect(result.stderr).toContain(hint);
+      expect(result.stderr).not.toContain("Unexpected error");
+    }
   });
 });
 
 describe("Integration: tools --help with config file", () => {
   it("k8s-tool --help exits 0 with config", () => {
-    const result = runTool("src/k8s-tool/index.ts", ["--help"], configDir);
+    const result = runTool(
+      "src/k8s-tool/index.ts",
+      ["--help"],
+      configDir,
+      SUBPROCESS_TEST_TIMEOUT_MS,
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Kubernetes");
-  });
+  }, 15000);
 
   it("az-tool --help exits 0 with config", () => {
     const result = runTool("src/az-tool/index.ts", ["--help"], configDir);

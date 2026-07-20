@@ -82,6 +82,8 @@ const fetchAllRestPages = Effect.fn("issue.fetchAllRestPages")(function* <T>(
 
 const mapRawIssueComment = (comment: RawIssueComment): IssueComment => ({
   id: comment.id as IssueCommentId,
+  commitSha: null,
+  feedbackOrigin: "unknown",
   author: comment.user.login,
   body: comment.body,
   createdAt: comment.created_at as IsoTimestamp,

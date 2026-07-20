@@ -8,6 +8,7 @@ import type {
   PullRequestReview,
   ReviewComment,
   ReviewThread,
+  FeedbackOrigin,
 } from "#gh/types";
 
 import { GitHubCommandError } from "#gh/errors";
@@ -27,7 +28,7 @@ const REVIEW_THREADS_QUERY = `
           nodes {
             id
             isResolved
-            comments(first: 1) {
+            comments(first: 100) {
               nodes {
                 id
                 databaseId
@@ -35,13 +36,36 @@ const REVIEW_THREADS_QUERY = `
                 line
                 body
                 author { login }
+                commit { oid }
               }
+              pageInfo { hasNextPage endCursor }
             }
           }
           pageInfo {
             hasNextPage
             endCursor
           }
+        }
+      }
+    }
+  }
+`;
+
+const REVIEW_THREAD_COMMENTS_QUERY = `
+  query($threadId: ID!, $after: String) {
+    node(id: $threadId) {
+      ... on PullRequestReviewThread {
+        comments(first: 100, after: $after) {
+          nodes {
+            id
+            databaseId
+            path
+            line
+            body
+            author { login }
+            commit { oid }
+          }
+          pageInfo { hasNextPage endCursor }
         }
       }
     }
@@ -143,8 +167,14 @@ type ThreadNode = {
       line: number;
       body: string;
       author: { login: string };
+      commit: { oid: string } | null;
     }>;
+    pageInfo?: { hasNextPage: boolean; endCursor: string | null };
   };
+};
+
+type ThreadCommentsQueryResult = {
+  node: { comments: ThreadNode["comments"] } | null;
 };
 
 type ThreadsQueryResult = {
@@ -225,6 +255,7 @@ type RawReviewComment = {
   path: string;
   line: number;
   created_at: string;
+  commit_id?: string | null;
 };
 
 type RawIssueComment = {
@@ -242,6 +273,7 @@ type RawPullRequestReview = {
   body: string | null;
   submitted_at: string | null;
   html_url: string;
+  commit_id?: string | null;
 };
 
 type ReviewCommentById = {
@@ -251,6 +283,13 @@ type ReviewCommentById = {
 };
 
 const REST_PAGE_SIZE = 100;
+
+const feedbackOrigin = (commitSha: string | null, currentHeadSha: string | null): FeedbackOrigin =>
+  commitSha === null || currentHeadSha === null
+    ? "unknown"
+    : commitSha === currentHeadSha
+      ? "current_head"
+      : "pre_existing";
 
 const parseJson = <T>(
   stdout: string,
@@ -312,7 +351,20 @@ const fetchAllThreadNodes = Effect.fn("pr.fetchAllThreadNodes")(function* (pr: n
     })) as ThreadsQueryResult;
 
     const page = response.repository.pullRequest.reviewThreads;
-    nodes.push(...page.nodes);
+    for (const node of page.nodes) {
+      let commentsAfter = node.comments.pageInfo?.endCursor ?? null;
+      while (node.comments.pageInfo?.hasNextPage && commentsAfter !== null) {
+        const commentsResponse = (yield* service.runGraphQL(REVIEW_THREAD_COMMENTS_QUERY, {
+          threadId: node.id,
+          after: commentsAfter,
+        })) as ThreadCommentsQueryResult;
+        if (commentsResponse.node === null) break;
+        node.comments.nodes.push(...commentsResponse.node.comments.nodes);
+        node.comments.pageInfo = commentsResponse.node.comments.pageInfo;
+        commentsAfter = commentsResponse.node.comments.pageInfo?.endCursor ?? null;
+      }
+      nodes.push(node);
+    }
 
     if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) {
       return nodes;
@@ -322,7 +374,11 @@ const fetchAllThreadNodes = Effect.fn("pr.fetchAllThreadNodes")(function* (pr: n
   }
 });
 
-const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): ReviewThread[] => {
+const enrichThreads = (
+  threads: ThreadNode[],
+  reviewComments: ReviewComment[],
+  currentHeadSha: string | null,
+): ReviewThread[] => {
   const repliesByRootCommentId = new Map<number, ReviewComment[]>();
 
   for (const comment of reviewComments) {
@@ -358,6 +414,8 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
       return {
         threadId: node.id,
         commentId: comment.databaseId,
+        commitSha: comment.commit?.oid ?? null,
+        feedbackOrigin: feedbackOrigin(comment.commit?.oid ?? null, currentHeadSha),
         path: comment.path,
         line: comment.line,
         body: comment.body,
@@ -398,13 +456,16 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
   return deduped;
 };
 
-const fetchThreadState = Effect.fn("pr.fetchThreadState")(function* (pr: number) {
+const fetchThreadState = Effect.fn("pr.fetchThreadState")(function* (
+  pr: number,
+  currentHeadSha: string | null = null,
+) {
   const [threads, reviewComments] = yield* Effect.all([
     fetchAllThreadNodes(pr),
     fetchComments(pr, null),
   ]);
 
-  return enrichThreads(threads, reviewComments);
+  return enrichThreads(threads, reviewComments, currentHeadSha);
 });
 
 // ---------------------------------------------------------------------------
@@ -413,6 +474,8 @@ const fetchThreadState = Effect.fn("pr.fetchThreadState")(function* (pr: number)
 
 const mapRawIssueComment = (comment: RawIssueComment): IssueComment => ({
   id: comment.id as IssueCommentId,
+  commitSha: null,
+  feedbackOrigin: "unknown",
   author: comment.user.login,
   body: comment.body,
   createdAt: comment.created_at as IsoTimestamp,
@@ -427,9 +490,10 @@ export const fetchThreads = Effect.fn("pr.fetchThreads")(function* (
   pr: number | null,
   unresolvedOnly: boolean,
   visibleOpenOnly = false,
+  currentHeadSha: string | null = null,
 ) {
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
-  const threads = yield* fetchThreadState(resolvedPr);
+  const threads = yield* fetchThreadState(resolvedPr, currentHeadSha);
 
   if (visibleOpenOnly) {
     return threads.filter((thread) => thread.isVisibleOpen);
@@ -445,6 +509,7 @@ export const fetchThreads = Effect.fn("pr.fetchThreads")(function* (
 export const fetchComments = Effect.fn("pr.fetchComments")(function* (
   pr: number | null,
   since: string | null,
+  currentHeadSha: string | null = null,
 ) {
   const service = yield* GitHubService;
   const repoInfo = yield* service.getRepoInfo();
@@ -459,6 +524,8 @@ export const fetchComments = Effect.fn("pr.fetchComments")(function* (
 
   const comments: ReviewComment[] = raw.map((c) => ({
     id: c.id,
+    commitSha: c.commit_id ?? null,
+    feedbackOrigin: feedbackOrigin(c.commit_id ?? null, currentHeadSha),
     inReplyToId: c.in_reply_to_id,
     author: c.user.login,
     body: c.body,
@@ -526,6 +593,7 @@ export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
   author: string | null,
   bodyContains: string | null,
   state: string | null,
+  currentHeadSha: string | null = null,
 ) {
   const service = yield* GitHubService;
   const repoInfo = yield* service.getRepoInfo();
@@ -541,6 +609,8 @@ export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
   let reviews: PullRequestReview[] = raw
     .map((review) => ({
       id: review.id,
+      commitSha: review.commit_id ?? null,
+      feedbackOrigin: feedbackOrigin(review.commit_id ?? null, currentHeadSha),
       author: review.user?.login ?? "unknown",
       state: review.state,
       body: review.body ?? "",
@@ -572,13 +642,15 @@ export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
  * all review threads with resolution state, inline review comments, and issue
  * (discussion) comments. Collapses the four separate fetches agents otherwise stitch.
  */
-export const fetchFeedback = Effect.fn("pr.fetchFeedback")(function* (pr: number | null) {
+export const fetchFeedback = Effect.fn("pr.fetchFeedback")(function* (
+  pr: number | null,
+  currentHeadSha: string | null = null,
+) {
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
-
   const [reviews, threads, inlineComments, issueComments] = yield* Effect.all([
-    fetchReviews(resolvedPr, null, null, null),
-    fetchThreads(resolvedPr, false),
-    fetchComments(resolvedPr, null),
+    fetchReviews(resolvedPr, null, null, null, currentHeadSha),
+    fetchThreads(resolvedPr, false, false, currentHeadSha),
+    fetchComments(resolvedPr, null, currentHeadSha),
     fetchIssueComments(resolvedPr, null, null, null),
   ]);
 
@@ -801,6 +873,101 @@ export const replyToComment = Effect.fn("pr.replyToComment")(function* (
   });
 
   return { success: true as const, commentId: parsed.id };
+});
+
+/**
+ * Reply to a review comment, infer and validate its PR and thread, then resolve that thread.
+ */
+export const replyAndResolveComment = Effect.fn("pr.replyAndResolveComment")(function* (
+  pr: number | null,
+  commentId: number,
+  threadId: string | null,
+  body: string,
+) {
+  const target = yield* fetchReviewCommentById(commentId).pipe(
+    Effect.catchTags({
+      GitHubNotFoundError: () =>
+        Effect.fail(
+          new GitHubCommandError({
+            command: "gh-tool pr reply-and-resolve",
+            exitCode: 1,
+            stderr: `Review comment ${commentId} was not found; it may be deleted`,
+            message: `Review comment ${commentId} was not found; it may be deleted`,
+          }),
+        ),
+      GitHubCommandError: () =>
+        Effect.fail(
+          new GitHubCommandError({
+            command: "gh-tool pr reply-and-resolve",
+            exitCode: 1,
+            stderr: `Could not load review comment ${commentId}`,
+            message: `Could not load review comment ${commentId}`,
+          }),
+        ),
+    }),
+  );
+  const inferredPr = Number(target.pull_request_url.match(/\/pulls\/(\d+)\/?$/)?.[1]);
+  if (!Number.isInteger(inferredPr) || inferredPr < 1) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr reply-and-resolve",
+        exitCode: 1,
+        stderr: `Comment ${commentId} has no usable pull request URL`,
+        message: `Comment ${commentId} has no usable pull request URL`,
+      }),
+    );
+  }
+  if (pr !== null && pr !== inferredPr) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr reply-and-resolve",
+        exitCode: 1,
+        stderr: `Comment ${commentId} belongs to PR #${inferredPr}, not explicit PR #${pr}`,
+        message: `Comment ${commentId} belongs to PR #${inferredPr}, not explicit PR #${pr}`,
+      }),
+    );
+  }
+  const rootCommentId = target.in_reply_to_id ?? target.id;
+  const matches = (yield* fetchAllThreadNodes(inferredPr)).filter((thread) =>
+    thread.comments.nodes.some(
+      (comment) => comment.databaseId === target.id || comment.databaseId === rootCommentId,
+    ),
+  );
+  if (matches.length === 0) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr reply-and-resolve",
+        exitCode: 1,
+        stderr: `Comment ${commentId} has no review thread; it may be deleted`,
+        message: `Comment ${commentId} has no review thread; it may be deleted`,
+      }),
+    );
+  }
+  if (matches.length > 1) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr reply-and-resolve",
+        exitCode: 1,
+        stderr: `Comment ${commentId} matches multiple review threads`,
+        message: `Comment ${commentId} matches multiple review threads`,
+      }),
+    );
+  }
+  const inferredThreadId = matches[0]?.id;
+  if (inferredThreadId === undefined) return yield* Effect.die("matched thread missing");
+  if (threadId !== null && threadId !== inferredThreadId) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr reply-and-resolve",
+        exitCode: 1,
+        stderr: `Comment ${commentId} belongs to thread ${inferredThreadId}, not explicit thread ${threadId}`,
+        message: `Comment ${commentId} belongs to thread ${inferredThreadId}, not explicit thread ${threadId}`,
+      }),
+    );
+  }
+  const reply = yield* replyToComment(inferredPr, commentId, body);
+  const resolve = yield* resolveThread(inferredThreadId);
+  return { reply, resolve, pr: inferredPr, threadId: inferredThreadId };
 });
 
 /**
