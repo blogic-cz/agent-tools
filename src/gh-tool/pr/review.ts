@@ -388,7 +388,7 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
       continue;
     }
     if (existing.isResolved && !thread.isResolved) {
-      thread.duplicateThreadIds = [...existing.duplicateThreadIds, existing.threadId];
+      thread.duplicateThreadIds = [existing.threadId, ...existing.duplicateThreadIds];
       deduped[existingIndex] = thread;
     } else {
       existing.duplicateThreadIds.push(thread.threadId);

@@ -2099,6 +2099,22 @@ describe("Review thread dedupe", () => {
               },
             },
             {
+              id: "thread-resolved-dup-2",
+              isResolved: true,
+              comments: {
+                nodes: [
+                  {
+                    id: "c2b",
+                    databaseId: 4,
+                    path: "src/x.ts",
+                    line: 5,
+                    body: "Please fix this",
+                    author: { login: "reviewer" },
+                  },
+                ],
+              },
+            },
+            {
               id: "thread-unresolved-dup",
               isResolved: false,
               comments: {
@@ -2151,7 +2167,10 @@ describe("Review thread dedupe", () => {
       expect(threads[0]?.line).toBe(5);
       expect(threads[0]?.threadId).toBe("thread-unresolved-dup");
       expect(threads[0]?.isResolved).toBe(false);
-      expect(threads[0]?.duplicateThreadIds).toEqual(["thread-resolved-dup"]);
+      expect(threads[0]?.duplicateThreadIds).toEqual([
+        "thread-resolved-dup",
+        "thread-resolved-dup-2",
+      ]);
       expect(threads[1]?.threadId).toBe("thread-distinct");
       expect(threads[1]?.duplicateThreadIds).toEqual([]);
     }).pipe(Effect.provide(createMockGhLayer())),
