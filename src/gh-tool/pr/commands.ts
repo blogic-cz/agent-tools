@@ -125,6 +125,7 @@ export const parsePrNumbers = (
 const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
   pr: number | null,
   collect: (pr: number, headSha: string | null) => Effect.Effect<A, E, R>,
+  context: { operation: string; command: string },
 ) {
   const initial = yield* viewPR(pr);
   const snapshot = yield* collectWithStableState(
@@ -136,10 +137,11 @@ const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
   if (snapshot !== null) return { info: snapshot.state, value: snapshot.value };
   return yield* Effect.fail(
     new GitHubCommandError({
-      message: "PR head changed repeatedly while collecting feedback",
-      command: "gh-tool pr feedback",
+      message: `PR head changed repeatedly while collecting ${context.operation}`,
+      command: context.command,
       exitCode: 1,
       stderr: "",
+      nextCommand: context.command,
       retryable: true,
     }),
   );
@@ -150,14 +152,17 @@ export const fetchCurrentThreads = (
   unresolvedOnly: boolean,
   visibleOpenOnly: boolean,
 ) =>
-  withStableHead(pr, (number, headSha) =>
-    fetchThreads(number, unresolvedOnly, visibleOpenOnly, headSha),
+  withStableHead(
+    pr,
+    (number, headSha) => fetchThreads(number, unresolvedOnly, visibleOpenOnly, headSha),
+    { operation: "review threads", command: "gh-tool pr threads" },
   ).pipe(Effect.map(({ value }) => value));
 
 export const fetchCurrentComments = (pr: number | null, since: string | null) =>
-  withStableHead(pr, (number, headSha) => fetchComments(number, since, headSha)).pipe(
-    Effect.map(({ value }) => value),
-  );
+  withStableHead(pr, (number, headSha) => fetchComments(number, since, headSha), {
+    operation: "review comments",
+    command: "gh-tool pr comments",
+  }).pipe(Effect.map(({ value }) => value));
 
 export const fetchCurrentReviews = (
   pr: number | null,
@@ -165,14 +170,17 @@ export const fetchCurrentReviews = (
   bodyContains: string | null,
   state: string | null,
 ) =>
-  withStableHead(pr, (number, headSha) =>
-    fetchReviews(number, author, bodyContains, state, headSha),
+  withStableHead(
+    pr,
+    (number, headSha) => fetchReviews(number, author, bodyContains, state, headSha),
+    { operation: "reviews", command: "gh-tool pr reviews" },
   ).pipe(Effect.map(({ value }) => value));
 
 export const fetchCurrentFeedback = (pr: number | null) =>
-  withStableHead(pr, (number, headSha) => fetchFeedback(number, headSha)).pipe(
-    Effect.map(({ value }) => value),
-  );
+  withStableHead(pr, (number, headSha) => fetchFeedback(number, headSha), {
+    operation: "feedback",
+    command: "gh-tool pr feedback",
+  }).pipe(Effect.map(({ value }) => value));
 
 const countFeedbackOrigins = (items: ReadonlyArray<{ feedbackOrigin: string }>) => ({
   current_head: items.filter((item) => item.feedbackOrigin === "current_head").length,
@@ -184,14 +192,17 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   prNumber: number | null,
   format: "toon" | "json" = "toon",
 ) {
-  const { info, value } = yield* withStableHead(prNumber, (number, headSha) =>
-    Effect.all([
-      fetchThreads(number, false, false, headSha),
-      fetchDiscussionSummary(number),
-      fetchChecks(number, false, false, 0, format === "json"),
-      fetchReviews(number, null, null, null, headSha),
-      fetchComments(number, null, headSha),
-    ]),
+  const { info, value } = yield* withStableHead(
+    prNumber,
+    (number, headSha) =>
+      Effect.all([
+        fetchThreads(number, false, false, headSha),
+        fetchDiscussionSummary(number),
+        fetchChecks(number, false, false, 0, format === "json"),
+        fetchReviews(number, null, null, null, headSha),
+        fetchComments(number, null, headSha),
+      ]),
+    { operation: "review triage", command: "gh-tool pr review-triage" },
   );
   const [allThreads, summary, checks, reviews, inlineComments] = value;
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);

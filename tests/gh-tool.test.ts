@@ -2273,6 +2273,73 @@ describe("pr feedback (aggregated review-response inventory)", () => {
     }),
   );
 
+  it.effect("reports each invoking command when head never stabilizes", () =>
+    Effect.gen(function* () {
+      const collectors: ReadonlyArray<{
+        operation: string;
+        command: string;
+        collect: () => Effect.Effect<unknown, GhError, GitHubService>;
+      }> = [
+        {
+          operation: "review threads",
+          command: "gh-tool pr threads",
+          collect: () => fetchCurrentThreads(123, false, false),
+        },
+        {
+          operation: "review comments",
+          command: "gh-tool pr comments",
+          collect: () => fetchCurrentComments(123, null),
+        },
+        {
+          operation: "reviews",
+          command: "gh-tool pr reviews",
+          collect: () => fetchCurrentReviews(123, null, null, null),
+        },
+        {
+          operation: "feedback",
+          command: "gh-tool pr feedback",
+          collect: () => fetchCurrentFeedback(123),
+        },
+        {
+          operation: "review triage",
+          command: "gh-tool pr review-triage",
+          collect: () => fetchReviewTriage(123),
+        },
+      ];
+      for (const { operation, command, collect } of collectors) {
+        let views = 0;
+        const layer = createMockGhLayer({
+          runGhJson: (args) => {
+            if (args[0] !== "pr" || args[1] !== "view") return Effect.succeed([]);
+            views += 1;
+            return Effect.succeed({ ...mockPRInfo, headRefOid: views % 2 ? "head-a" : "head-b" });
+          },
+          runGraphQL: () => Effect.succeed(mockGraphQLThreadsResponse),
+          runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+        });
+        const error = yield* collect().pipe(
+          Effect.provide(layer),
+          Effect.match({
+            onFailure: (failure) => failure,
+            onSuccess: () => null,
+          }),
+        );
+        if (error === null) {
+          return yield* Effect.die("Expected stable-head retry exhaustion");
+        }
+        if (error._tag !== "GitHubCommandError") {
+          return yield* Effect.die(`Expected GitHubCommandError, got ${error._tag}`);
+        }
+        expect(error).toBeInstanceOf(GitHubCommandError);
+        expect(error.command).toBe(command);
+        expect(error.nextCommand).toBe(command);
+        expect(error.message).toBe(`PR head changed repeatedly while collecting ${operation}`);
+        expect(error.retryable).toBe(true);
+        expect(views).toBe(4);
+      }
+    }),
+  );
+
   it.effect("returns reviews, threads, inline comments, and issue comments in one call", () =>
     Effect.gen(function* () {
       const reviewsJson = JSON.stringify([
