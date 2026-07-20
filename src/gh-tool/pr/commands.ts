@@ -99,22 +99,26 @@ export const classifyReviewTriage = (
 
 const MAX_BATCH_PRS = 50;
 
-export const parsePrNumbers = (input: string): readonly number[] => {
+export const parsePrNumbers = (
+  input: string,
+): Effect.Effect<readonly number[], GitHubCommandError> => {
   const tokens = input.split(",").map((part) => part.trim());
   if (tokens.some((token) => !/^\d+$/.test(token) || Number(token) < 1)) {
-    throw emptyBatchError(input);
+    return Effect.fail(emptyBatchError(input));
   }
   const numbers = [...new Set(tokens.map(Number))];
   if (numbers.length > MAX_BATCH_PRS) {
-    throw new GitHubCommandError({
-      message: `--prs supports at most ${MAX_BATCH_PRS} unique PRs`,
-      command: "gh pr --prs",
-      exitCode: 1,
-      stderr: "",
-      hint: `Split the request into batches of at most ${MAX_BATCH_PRS} PRs.`,
-    });
+    return Effect.fail(
+      new GitHubCommandError({
+        message: `--prs supports at most ${MAX_BATCH_PRS} unique PRs`,
+        command: "gh pr --prs",
+        exitCode: 1,
+        stderr: "",
+        hint: `Split the request into batches of at most ${MAX_BATCH_PRS} PRs.`,
+      }),
+    );
   }
-  return numbers;
+  return Effect.succeed(numbers);
 };
 
 const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
@@ -247,7 +251,7 @@ export const prViewCommand = Command.make(
       Effect.gen(function* () {
         const batch = Option.getOrNull(prs);
         if (batch !== null) {
-          const numbers = parsePrNumbers(batch);
+          const numbers = yield* parsePrNumbers(batch);
           if (numbers.length === 0) return yield* emptyBatchError(batch);
           const results = yield* Effect.all(
             numbers.map((n) => viewPR(n).pipe(Effect.map((info) => ({ pr: n, info })))),
@@ -573,7 +577,7 @@ export const prChecksCommand = Command.make(
               );
             }
           }
-          const numbers = parsePrNumbers(batch);
+          const numbers = yield* parsePrNumbers(batch);
           if (numbers.length === 0) return yield* emptyBatchError(batch);
           const results = yield* Effect.all(
             numbers.map((n) =>
@@ -655,7 +659,7 @@ export const prWatchCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const numbers = parsePrNumbers(prs);
+        const numbers = yield* parsePrNumbers(prs);
         if (numbers.length === 0) return yield* emptyBatchError(prs);
         yield* watchPRs(
           numbers,
@@ -1130,7 +1134,7 @@ export const prReviewTriageBatchCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const numbers = parsePrNumbers(prs);
+        const numbers = yield* parsePrNumbers(prs);
         if (numbers.length === 0) return yield* emptyBatchError(prs);
         const results = yield* Effect.all(
           numbers.map((prNumber) => fetchReviewTriage(prNumber, format)),

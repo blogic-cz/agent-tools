@@ -5218,10 +5218,10 @@ describe("PR composite commands", () => {
     ).toEqual({ status: "clear", reasons: [] });
   });
 
-  it("review-triage-batch parser: accepts comma-separated PR numbers", () => {
-    expect(parsePrNumbers("309, 314,309, 346")).toEqual([309, 314, 346]);
-    expect(() => parsePrNumbers("309x,314")).toThrow();
-    expect(() => parsePrNumbers("309,,314")).toThrow();
+  it("review-triage-batch parser: returns typed errors for malformed PR numbers", () => {
+    expect(Effect.runSync(parsePrNumbers("309, 314,309, 346"))).toEqual([309, 314, 346]);
+    expect(() => Effect.runSync(parsePrNumbers("309x,314"))).toThrow();
+    expect(() => Effect.runSync(parsePrNumbers("309,,314"))).toThrow();
   });
 
   it("issue snapshot-batch parser: accepts comma-separated issue numbers", () => {

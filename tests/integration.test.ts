@@ -178,6 +178,19 @@ describe("Integration: tool --help in zero-config mode", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("GitHub");
   }, 15000);
+
+  it("gh-tool renders typed batch PR parse errors", () => {
+    for (const [prs, hint] of [
+      ["1,nope", "Pass comma-separated positive integers"],
+      [Array.from({ length: 51 }, (_, index) => String(index + 1)).join(","), "Split the request"],
+    ]) {
+      const result = runTool("src/gh-tool/index.ts", ["pr", "view", "--prs", prs]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("GitHubCommandError:");
+      expect(result.stderr).toContain(hint);
+      expect(result.stderr).not.toContain("Unexpected error");
+    }
+  });
 });
 
 describe("Integration: tools --help with config file", () => {
