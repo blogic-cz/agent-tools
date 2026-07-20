@@ -1504,6 +1504,7 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             isVisibleOpen: true,
             lastReplyAuthor: null,
             lastReplyAt: null,
+            duplicateThreadIds: [],
           };
         })
         .filter((thread): thread is ReviewThread => thread !== null);
@@ -2150,7 +2151,50 @@ describe("Review thread dedupe", () => {
       expect(threads[0]?.line).toBe(5);
       expect(threads[0]?.threadId).toBe("thread-unresolved-dup");
       expect(threads[0]?.isResolved).toBe(false);
+      expect(threads[0]?.duplicateThreadIds).toEqual(["thread-resolved-dup"]);
       expect(threads[1]?.threadId).toBe("thread-distinct");
+      expect(threads[1]?.duplicateThreadIds).toEqual([]);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("keeps collapsed unresolved duplicates addressable via duplicateThreadIds", () =>
+    Effect.gen(function* () {
+      const makeNode = (id: string, databaseId: number) => ({
+        id,
+        isResolved: false,
+        comments: {
+          nodes: [
+            {
+              id: `c-${databaseId}`,
+              databaseId,
+              path: "src/x.ts",
+              line: 5,
+              body: "Same bot finding",
+              author: { login: "github-actions[bot]" },
+            },
+          ],
+        },
+      });
+      const response = {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [makeNode("thread-first", 1), makeNode("thread-second", 2)],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      };
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(response),
+        runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+      });
+
+      const threads = yield* fetchThreads(123, false).pipe(Effect.provide(layer));
+
+      expect(threads).toHaveLength(1);
+      expect(threads[0]?.threadId).toBe("thread-first");
+      expect(threads[0]?.duplicateThreadIds).toEqual(["thread-second"]);
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
