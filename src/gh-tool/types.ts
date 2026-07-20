@@ -26,7 +26,8 @@ export type PRViewInfo = PRInfo & {
   reviewRequests: ReviewRequest[];
 };
 
-export type FeedbackOrigin = "current_head" | "pre_existing" | "unknown";
+export const FeedbackOrigin = Schema.Literals(["current_head", "pre_existing", "unknown"]);
+export type FeedbackOrigin = typeof FeedbackOrigin.Type;
 
 export type ReviewThread = {
   threadId: string;
@@ -124,18 +125,76 @@ export type FailedCheckDetail = CheckResult & {
   diagnosis?: LogDiagnosis;
 };
 
+export const LogDiagnosisCategory = Schema.Literals([
+  "infrastructure",
+  "network",
+  "timeout",
+  "test_failure",
+  "build_failure",
+  "lint_failure",
+  "unknown",
+]);
+export type LogDiagnosisCategory = typeof LogDiagnosisCategory.Type;
+
 export type LogDiagnosis = {
-  category:
-    | "infrastructure"
-    | "network"
-    | "timeout"
-    | "test_failure"
-    | "build_failure"
-    | "lint_failure"
-    | "unknown";
+  category: LogDiagnosisCategory;
   fingerprint: string;
   testsStarted: boolean | null;
   firstRelevantError: string | null;
+};
+
+export const RerunRetryEvidenceState = Schema.Literals(["eligible", "ineligible", "unavailable"]);
+export type RerunRetryEvidenceState = typeof RerunRetryEvidenceState.Type;
+
+export type RerunRetryEvidence =
+  | { state: "eligible"; diagnosis: LogDiagnosis }
+  | { state: "ineligible"; diagnosis: LogDiagnosis; reason: string }
+  | { state: "unavailable"; reason: string };
+
+export const RerunCheckStatus = Schema.Literals([
+  "blocked",
+  "evidence_unavailable",
+  "escalation_required",
+  "rerun_started",
+  "failed",
+  "discovery_timeout",
+  "completed",
+  "watch_timeout",
+]);
+export type RerunCheckStatus = typeof RerunCheckStatus.Type;
+
+export type RerunCheckJob = {
+  databaseId: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+};
+
+export type RerunCheckAttempt = {
+  databaseId: number;
+  attempt?: number | null;
+  jobs: RerunCheckJob[];
+  status?: string;
+};
+
+export type RerunChecksRun = {
+  runId: string;
+  success: boolean;
+  currentAttempt: number | null;
+  currentJobIds: number[] | null;
+  evidence: RerunRetryEvidence;
+  status: RerunCheckStatus;
+  newAttempt?: number | null;
+  newJobIds?: number[] | null;
+  latestAttempt?: RerunCheckAttempt | null;
+};
+
+export type RerunChecksReport = {
+  rerun: number;
+  failed?: number;
+  message: string;
+  status?: "evidence_unavailable" | "escalation_required" | "failed" | "rerun_started";
+  runs?: RerunChecksRun[];
 };
 
 export type FailedChecksReport = {

@@ -876,7 +876,7 @@ export const replyToComment = Effect.fn("pr.replyToComment")(function* (
 });
 
 /**
- * Resolve a review thread via GraphQL mutation.
+ * Reply to a review comment, infer and validate its PR and thread, then resolve that thread.
  */
 export const replyAndResolveComment = Effect.fn("pr.replyAndResolveComment")(function* (
   pr: number | null,
@@ -970,6 +970,9 @@ export const replyAndResolveComment = Effect.fn("pr.replyAndResolveComment")(fun
   return { reply, resolve, pr: inferredPr, threadId: inferredThreadId };
 });
 
+/**
+ * Resolve a review thread via GraphQL mutation.
+ */
 export const resolveThread = Effect.fn("pr.resolveThread")(function* (threadId: string) {
   const service = yield* GitHubService;
 

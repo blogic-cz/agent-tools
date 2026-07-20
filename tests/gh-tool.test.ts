@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, Console, Effect, Fiber, Result, Layer, Sink, Stream } from "effect";
+import { Clock, Console, Effect, Fiber, Result, Layer, Schema, Sink, Stream } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
+import { FeedbackOrigin, LogDiagnosisCategory } from "#gh/types";
 
 import {
   GitHubAuthError,
@@ -869,6 +870,19 @@ describe("PR view", () => {
       expect(result.baseSha).toBe("base-sha");
     }),
   );
+});
+
+describe("gh CLI value schemas", () => {
+  it("accepts defined feedback origins and diagnosis categories only", () => {
+    const decodeFeedbackOrigin = Schema.decodeUnknownSync(FeedbackOrigin);
+    const decodeDiagnosisCategory = Schema.decodeUnknownSync(LogDiagnosisCategory);
+
+    expect(decodeFeedbackOrigin("current_head")).toBe("current_head");
+    expect(decodeFeedbackOrigin("pre_existing")).toBe("pre_existing");
+    expect(decodeDiagnosisCategory("test_failure")).toBe("test_failure");
+    expect(() => decodeFeedbackOrigin("stale")).toThrow();
+    expect(() => decodeDiagnosisCategory("flaky")).toThrow();
+  });
 });
 
 describe("Workflow log diagnosis", () => {

@@ -9,6 +9,10 @@ import type {
   MergeStrategy,
   PRInfo,
   PRViewInfo,
+  RerunCheckAttempt,
+  RerunChecksReport,
+  RerunChecksRun,
+  RerunRetryEvidence,
   WorkflowRunDetail,
 } from "#gh/types";
 
@@ -62,17 +66,6 @@ const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string
   });
 });
 
-type WorkflowRunJobsForRerun = {
-  databaseId: number;
-  attempt?: number | null;
-  jobs: Array<{
-    databaseId: number;
-    name: string;
-    status: string;
-    conclusion: string | null;
-  }>;
-};
-
 const buildChecksCommand = (pr: number | null, includeWatch: boolean): string =>
   `bun agent-tools-gh pr checks${pr !== null ? ` --pr ${pr}` : ""}${includeWatch ? " --watch" : ""}`;
 
@@ -119,7 +112,7 @@ const failedJobsMatchingCheck = <Job extends { name: string }>(
 
 const resolveJobIdsForFailedChecks = (
   checks: CheckResult[],
-  jobs: WorkflowRunJobsForRerun["jobs"],
+  jobs: RerunCheckAttempt["jobs"],
 ): number[] | null => {
   const failedJobs = jobs.filter(isFailedWorkflowJob);
   const jobIds = new Set<number>();
@@ -1274,11 +1267,7 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
   });
 });
 
-type RerunDiscovery = WorkflowRunJobsForRerun & { status?: string };
-type RetryEvidence =
-  | { state: "eligible"; diagnosis: ReturnType<typeof diagnoseLogEntries> }
-  | { state: "ineligible"; diagnosis: ReturnType<typeof diagnoseLogEntries>; reason: string }
-  | { state: "unavailable"; reason: string };
+type RerunDiscovery = RerunCheckAttempt & { status?: string };
 
 const fetchAttemptJobs = Effect.fn("pr.fetchAttemptJobs")(function* (
   runId: string,
@@ -1357,32 +1346,27 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
     if (runId !== undefined) checksByRun.set(runId, [...(checksByRun.get(runId) ?? []), check]);
   }
   if (checksByRun.size === 0) {
-    return {
+    const report: RerunChecksReport = {
       rerun: 0,
       message: failedOnly
         ? "No failed GitHub Actions runs found to rerun"
         : "No GitHub Actions runs found to rerun",
     };
+    return report;
   }
 
   const repoInfo = yield* gh.getRepoInfo();
   const repo = `${repoInfo.owner}/${repoInfo.name}`;
   const candidates: Array<{
     runId: string;
-    run: WorkflowRunJobsForRerun | null;
-    evidence: RetryEvidence;
+    run: RerunCheckAttempt | null;
+    evidence: RerunRetryEvidence;
   }> = [];
   for (const [runId, runChecks] of checksByRun) {
     const run = yield* gh
-      .runGhJson<WorkflowRunJobsForRerun>([
-        "run",
-        "view",
-        runId,
-        "--json",
-        "databaseId,attempt,jobs",
-      ])
+      .runGhJson<RerunCheckAttempt>(["run", "view", runId, "--json", "databaseId,attempt,jobs"])
       .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
-    let evidence: RetryEvidence = { state: "eligible", diagnosis: diagnoseLogEntries([]) };
+    let evidence: RerunRetryEvidence = { state: "eligible", diagnosis: diagnoseLogEntries([]) };
     if (failedOnly) {
       const jobIds = run === null ? null : resolveJobIdsForFailedChecks(runChecks, run.jobs);
       if (
@@ -1437,7 +1421,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
   if (candidates.some((candidate) => candidate.evidence.state !== "eligible")) {
     const unavailable = candidates.some((candidate) => candidate.evidence.state === "unavailable");
     const status = unavailable ? "evidence_unavailable" : "escalation_required";
-    const runs = candidates.map((candidate) => ({
+    const runs: RerunChecksRun[] = candidates.map((candidate) => ({
       runId: candidate.runId,
       success: false,
       currentAttempt: candidate.run?.attempt ?? null,
@@ -1445,7 +1429,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
       status: candidate.evidence.state === "eligible" ? "blocked" : status,
       evidence: candidate.evidence,
     }));
-    return {
+    const report: RerunChecksReport = {
       status,
       rerun: 0,
       failed: runs.length,
@@ -1454,11 +1438,12 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
         ? "Required retry evidence unavailable; no runs rerun"
         : "Escalation required; no runs rerun",
     };
+    return report;
   }
 
   const watch = options.watch === true;
   const deadline = Number(yield* Clock.currentTimeMillis) + (options.timeoutSeconds ?? 60) * 1000;
-  const results: Array<Record<string, unknown> & { runId: string; success: boolean }> = [];
+  const results: RerunChecksRun[] = [];
   for (const candidate of candidates) {
     const success = yield* gh
       .runGh(["run", "rerun", candidate.runId, ...(failedOnly ? ["--failed"] : [])])
@@ -1526,11 +1511,12 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
       { concurrency: "unbounded" },
     );
   }
-  return {
+  const report: RerunChecksReport = {
     status: results.some((result) => !result.success) ? "failed" : "rerun_started",
     rerun: results.filter((result) => result.success).length,
     failed: results.filter((result) => !result.success).length,
     runs: results,
     message: `Rerun ${results.filter((result) => result.success).length}/${results.length} GitHub Actions runs`,
   };
+  return report;
 });
