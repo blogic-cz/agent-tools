@@ -37,6 +37,8 @@ export type ReviewThread = {
   isVisibleOpen: boolean;
   lastReplyAuthor: string | null;
   lastReplyAt: string | null;
+  /** Thread ids of exact duplicates collapsed into this representative (encounter order). */
+  duplicateThreadIds: string[];
 };
 
 export type ReviewComment = {

@@ -368,6 +368,7 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
         isVisibleOpen: !node.isResolved || needsHumanReply,
         lastReplyAuthor: lastReply?.author ?? null,
         lastReplyAt: lastReply?.createdAt ?? null,
+        duplicateThreadIds: [] as string[],
       };
     })
     .filter((thread): thread is ReviewThread => thread !== null);
@@ -383,8 +384,14 @@ const enrichThreads = (threads: ThreadNode[], reviewComments: ReviewComment[]): 
       continue;
     }
     const existing = deduped[existingIndex];
-    if (existing !== undefined && existing.isResolved && !thread.isResolved) {
+    if (existing === undefined) {
+      continue;
+    }
+    if (existing.isResolved && !thread.isResolved) {
+      thread.duplicateThreadIds = [existing.threadId, ...existing.duplicateThreadIds];
       deduped[existingIndex] = thread;
+    } else {
+      existing.duplicateThreadIds.push(thread.threadId);
     }
   }
 
