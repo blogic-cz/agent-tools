@@ -252,7 +252,6 @@ export const prViewCommand = Command.make(
         const batch = Option.getOrNull(prs);
         if (batch !== null) {
           const numbers = yield* parsePrNumbers(batch);
-          if (numbers.length === 0) return yield* emptyBatchError(batch);
           const results = yield* Effect.all(
             numbers.map((n) => viewPR(n).pipe(Effect.map((info) => ({ pr: n, info })))),
             { concurrency: 5 },
@@ -578,7 +577,6 @@ export const prChecksCommand = Command.make(
             }
           }
           const numbers = yield* parsePrNumbers(batch);
-          if (numbers.length === 0) return yield* emptyBatchError(batch);
           const results = yield* Effect.all(
             numbers.map((n) =>
               fetchChecks(n, false, failFast, timeout, format === "json").pipe(
@@ -660,7 +658,6 @@ export const prWatchCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const numbers = yield* parsePrNumbers(prs);
-        if (numbers.length === 0) return yield* emptyBatchError(prs);
         yield* watchPRs(
           numbers,
           { intervalSeconds: interval, timeoutSeconds: timeout, until },
@@ -1135,7 +1132,6 @@ export const prReviewTriageBatchCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const numbers = yield* parsePrNumbers(prs);
-        if (numbers.length === 0) return yield* emptyBatchError(prs);
         const results = yield* Effect.all(
           numbers.map((prNumber) => fetchReviewTriage(prNumber, format)),
           { concurrency: "unbounded" },
