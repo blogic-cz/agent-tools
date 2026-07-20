@@ -225,6 +225,7 @@ bun audit-tool list --limit 20
 
 ```bash
 bun gh-tool pr review-triage   # interactive summary of PR feedback
+bun gh-tool pr watch --prs 12,34 --format jsonl # transition-only multi-PR CI stream
 bun k8s-tool pods --env test   # list pods (structured command)
 ```
 
@@ -250,6 +251,24 @@ export default { handleToolExecuteBefore };
 | `session-tool`       | OpenCode session browser — list, read, search sessions                                                           |
 
 All tools support `--help` for full usage documentation. Legacy `agent-tools-*` binary names (e.g. `agent-tools-gh`) still work for backwards compatibility.
+
+### gh-tool machine contracts
+
+`pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR.
+
+`pr watch --prs 12,34 --until terminal --format jsonl` accepts at most 50 unique, digits-only PR numbers and emits only JSONL state transitions. Identity uses `repo/pr/headSha/runId/attempt/jobId`; `checkId` is nullable and reserved for actual check-run IDs. State/bucket revisions emit even when identity stays stable; `supersedes` appears only when identity changes. Open PRs with no checks become terminal only after three stable empty snapshots, allowing bounded GitHub eventual consistency. `pr checks`, batch checks, triage, and batch triage keep stderr silent with `--format json`; JSONL watch is also informationally silent. Failures still return structured nonzero errors on stderr.
+
+Useful flows:
+
+```bash
+bun gh-tool pr checks-failed --pr 123 --with-logs --format json # includes diagnosis
+bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600
+bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600
+bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # infers PR and thread
+# Optional --pr/--thread-id retain legacy flow and are validated before either mutation.
+```
+
+Reruns preflight every target before mutation and fail closed with `evidence_unavailable` when attempt jobs or logs cannot be read. Failed jobs use one `gh run rerun RUN --failed` mutation per workflow run. Without `--watch`, output returns current attempt metadata immediately; with `--watch`, discovery and watching share one absolute `--timeout` deadline and report `discovery_timeout` or `watch_timeout` with latest attempt state. Repeated matching pre-test infrastructure failures return `escalation_required` without mutation. See [`skills/gh-tool/SKILL.md`](skills/gh-tool/SKILL.md) for operating guidance; this section is canonical for added output fields.
 
 `audit-tool` reads the same SQLite file the wrappers write to. By default that file lives at `~/.agent-tools/audit.sqlite`, and you can override both path and retention per repo with the global `audit` config section.
 

@@ -44,6 +44,7 @@ import {
   prReviewTriageBatchCommand,
   prReviewTriageCommand,
   prWaitMergeableCommand,
+  prWatchCommand,
 } from "./pr/index";
 import { branchRenameCommand } from "./branch";
 import {
@@ -94,6 +95,7 @@ const prCommand = Command.make("pr", {}).pipe(
     prSubmitReviewCommand,
     prChecksCommand,
     prChecksFailedCommand,
+    prWatchCommand,
     prRerunChecksCommand,
     prReplyAndResolveCommand,
     prReviewTriageCommand,

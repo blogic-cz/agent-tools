@@ -18,14 +18,20 @@ export type ReviewRequest =
   | { __typename: "Team"; name: string; slug: string };
 
 export type PRViewInfo = PRInfo & {
+  headSha: string | null;
+  baseSha: string | null;
   body: string;
   author: { login: string; is_bot: boolean };
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "";
   reviewRequests: ReviewRequest[];
 };
 
+export type FeedbackOrigin = "current_head" | "pre_existing" | "unknown";
+
 export type ReviewThread = {
   threadId: string;
+  commitSha: string | null;
+  feedbackOrigin: FeedbackOrigin;
   commentId: number;
   path: string;
   line: number;
@@ -43,6 +49,8 @@ export type ReviewThread = {
 
 export type ReviewComment = {
   id: number;
+  commitSha: string | null;
+  feedbackOrigin: FeedbackOrigin;
   inReplyToId: number | null;
   author: string;
   body: string;
@@ -62,6 +70,8 @@ export type GitHubIssueCommentUrl = typeof GitHubIssueCommentUrl.Type;
 
 export type IssueComment = {
   id: IssueCommentId;
+  commitSha: null;
+  feedbackOrigin: "unknown";
   author: string;
   body: string;
   createdAt: IsoTimestamp;
@@ -70,6 +80,8 @@ export type IssueComment = {
 
 export type PullRequestReview = {
   id: number;
+  commitSha: string | null;
+  feedbackOrigin: FeedbackOrigin;
   author: string;
   state: string;
   body: string;
@@ -86,6 +98,8 @@ export type CheckResult = {
 
 export type FailedCheckJob = {
   databaseId: number;
+  jobId: number;
+  checkId: number | null;
   name: string;
   status: string;
   conclusion: string | null;
@@ -95,6 +109,7 @@ export type FailedCheckJob = {
 
 export type FailedCheckRunContext = {
   runId: number;
+  attempt: number | null;
   url: string | null;
   workflowName: string | null;
   status: string;
@@ -106,9 +121,25 @@ export type FailedCheckDetail = CheckResult & {
   runId: number | null;
   run: FailedCheckRunContext | null;
   failedStepLogs?: string;
+  diagnosis?: LogDiagnosis;
+};
+
+export type LogDiagnosis = {
+  category:
+    | "infrastructure"
+    | "network"
+    | "timeout"
+    | "test_failure"
+    | "build_failure"
+    | "lint_failure"
+    | "unknown";
+  fingerprint: string;
+  testsStarted: boolean | null;
+  firstRelevantError: string | null;
 };
 
 export type FailedChecksReport = {
+  evidence: { headSha: string | null; baseSha: string | null } | null;
   status: "failed" | "no_failures";
   message: string;
   summary: {
@@ -125,6 +156,7 @@ export type FailedChecksReport = {
 
 export type WorkflowRunDetail = {
   databaseId: number;
+  attempt: number | null;
   url: string;
   workflowName: string | null;
   status: string;

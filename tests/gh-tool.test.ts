@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result, Layer, Sink, Stream } from "effect";
+import { Clock, Console, Effect, Fiber, Result, Layer, Sink, Stream } from "effect";
+import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -31,6 +32,7 @@ import {
   fetchFailedChecks,
   rerunChecks,
   viewPR,
+  watchPRs,
 } from "#gh/pr/core";
 import {
   fetchComments,
@@ -38,12 +40,13 @@ import {
   fetchLastHumanReviewer,
   fetchReviews,
   fetchThreads,
+  replyAndResolveComment,
   replyToComment,
   resolveThread,
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
-import { buildWatchResult, dispatchWorkflow } from "#gh/workflow";
+import { buildWatchResult, diagnoseLogEntries, dispatchWorkflow, fetchJobLogs } from "#gh/workflow";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -51,7 +54,15 @@ import {
 } from "#gh/text-input";
 import type { GitHubPrTitlePolicy, GitHubRepoConfig } from "#config";
 import { ConfigService } from "#config";
-import { classifyReviewTriage, fetchReviewTriage, parsePrNumbers } from "#gh/pr/commands";
+import {
+  classifyReviewTriage,
+  fetchCurrentComments,
+  fetchCurrentFeedback,
+  fetchCurrentReviews,
+  fetchCurrentThreads,
+  fetchReviewTriage,
+  parsePrNumbers,
+} from "#gh/pr/commands";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -838,6 +849,8 @@ describe("PR view", () => {
               return Effect.succeed({
                 ...mockPRInfo,
                 body,
+                headRefOid: "head-sha",
+                baseRefOid: "base-sha",
               });
             },
           }),
@@ -849,9 +862,66 @@ describe("PR view", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+        "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
       ]);
       expect(result.body).toBe(body);
+      expect(result.headSha).toBe("head-sha");
+      expect(result.baseSha).toBe("base-sha");
+    }),
+  );
+});
+
+describe("Workflow log diagnosis", () => {
+  it("classifies known failures and keeps fingerprints stable", () => {
+    const cases = [
+      ["No space left on device", "infrastructure"],
+      ["NuGet package cache is corrupt", "infrastructure"],
+      ["socket bind: address already in use", "infrastructure"],
+      ["Tests failed: expected true to be false", "test_failure"],
+    ] as const;
+    for (const [message, category] of cases) {
+      expect(diagnoseLogEntries([{ step: "Run tests", message }]).category).toBe(category);
+    }
+    expect(
+      diagnoseLogEntries([{ step: "Run tests", message: "Tests failed at line 42" }]).fingerprint,
+    ).toBe(
+      diagnoseLogEntries([{ step: "Run tests", message: "Tests failed at line 99" }]).fingerprint,
+    );
+  });
+
+  it.effect("returns concise diagnose metadata without entries", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchJobLogs({
+        runId: 2,
+        job: "test",
+        jobId: 20,
+        failedStepsOnly: false,
+        diagnose: true,
+        format: "json",
+        repo: null,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () =>
+              Effect.succeed({
+                stdout:
+                  "2025-01-01T00:00:00Z ##[group]Run tests\n2025-01-01T00:00:01Z Tests failed: expected true to be false",
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+      expect(result.runId).toBe(2);
+      expect(result.jobId).toBe(20);
+      expect("diagnosis" in result).toBe(true);
+      const diagnosis = result.diagnosis;
+      if (diagnosis === undefined) {
+        expect.fail("Expected diagnosis");
+      }
+      expect(diagnosis.category).toBe("test_failure");
+      expect(diagnosis.testsStarted).toBe(true);
+      expect("entries" in result).toBe(false);
     }),
   );
 });
@@ -982,7 +1052,7 @@ describe("PR edit", () => {
           "view",
           "123",
           "--json",
-          "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+          "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
         ],
       ]);
       expect(result.body).toBe(body);
@@ -1493,6 +1563,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
 
           return {
             threadId: node.id,
+            commitSha: null,
+            feedbackOrigin: "unknown",
             commentId: comment.databaseId,
             path: comment.path,
             line: comment.line,
@@ -1752,6 +1824,8 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
 
       const comments: ReviewComment[] = raw.map((c) => ({
         id: c.id,
+        commitSha: null,
+        feedbackOrigin: "unknown",
         inReplyToId: c.in_reply_to_id,
         author: c.user.login,
         body: c.body,
@@ -2011,6 +2085,180 @@ describe("Pull request reviews (REST → PullRequestReview[])", () => {
 });
 
 describe("pr feedback (aggregated review-response inventory)", () => {
+  it.effect(
+    "classifies feedback origins by exact head SHA without treating pre-existing as obsolete",
+    () =>
+      Effect.gen(function* () {
+        const commits = ["head-sha", "older-sha", null] as const;
+        const restItem = (id: number, commit_id: string | null) => ({
+          id,
+          commit_id,
+          in_reply_to_id: null,
+          user: { login: "reviewer" },
+          state: "COMMENTED",
+          body: `feedback ${id}`,
+          path: `src/${id}.ts`,
+          line: id,
+          created_at: "2026-07-16T10:00:00Z",
+          submitted_at: "2026-07-16T10:00:00Z",
+          html_url: `https://github.test/${id}`,
+        });
+        const threads = commits.map((commit, index) => ({
+          id: `thread-${index}`,
+          isResolved: false,
+          comments: {
+            nodes: [
+              {
+                id: `node-${index}`,
+                databaseId: index + 1,
+                path: `src/${index}.ts`,
+                line: index + 1,
+                body: `thread ${index}`,
+                author: { login: "reviewer" },
+                commit: commit === null ? null : { oid: commit },
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        }));
+        const layer = createMockGhLayer({
+          runGraphQL: () =>
+            Effect.succeed({
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes: threads,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            }),
+          runGh: (args) => {
+            const endpoint = args.join(" ");
+            const body = endpoint.includes("/reviews")
+              ? commits.map((sha, i) => restItem(i + 10, sha))
+              : endpoint.includes("pulls/123/comments")
+                ? commits.map((sha, i) => restItem(i + 20, sha))
+                : [
+                    {
+                      id: 30,
+                      user: { login: "x" },
+                      body: "issue",
+                      created_at: "2026-07-16T10:00:00Z",
+                      html_url: "https://github.test/30",
+                    },
+                  ];
+            return Effect.succeed({ stdout: JSON.stringify(body), stderr: "", exitCode: 0 });
+          },
+        });
+
+        const feedback = yield* fetchFeedback(123, "head-sha").pipe(Effect.provide(layer));
+        for (const items of [feedback.reviews, feedback.inlineComments, feedback.threads]) {
+          expect(items.map((item) => [item.commitSha, item.feedbackOrigin])).toEqual([
+            ["head-sha", "current_head"],
+            ["older-sha", "pre_existing"],
+            [null, "unknown"],
+          ]);
+        }
+        expect(feedback.issueComments[0]).toMatchObject({
+          commitSha: null,
+          feedbackOrigin: "unknown",
+        });
+        expect(feedback.threads[1]).toMatchObject({
+          isVisibleOpen: true,
+          feedbackOrigin: "pre_existing",
+        });
+      }),
+  );
+
+  it.effect("threads, comments, reviews, and feedback discard data when head changes", () =>
+    Effect.gen(function* () {
+      const collectors = [
+        (layer: ReturnType<typeof createMockGhLayer>) =>
+          fetchCurrentThreads(123, false, false).pipe(
+            Effect.provide(layer),
+            Effect.map((items) => items[0]),
+          ),
+        (layer: ReturnType<typeof createMockGhLayer>) =>
+          fetchCurrentComments(123, null).pipe(
+            Effect.provide(layer),
+            Effect.map((items) => items[0]),
+          ),
+        (layer: ReturnType<typeof createMockGhLayer>) =>
+          fetchCurrentReviews(123, null, null, null).pipe(
+            Effect.provide(layer),
+            Effect.map((items) => items[0]),
+          ),
+        (layer: ReturnType<typeof createMockGhLayer>) =>
+          fetchCurrentFeedback(123).pipe(
+            Effect.provide(layer),
+            Effect.map((result) => result.inlineComments[0]),
+          ),
+      ];
+      for (const collect of collectors) {
+        let views = 0;
+        const head = () => (views <= 1 ? "head-a" : "head-b");
+        const layer = createMockGhLayer({
+          runGhJson: () => {
+            views += 1;
+            return Effect.succeed({ ...mockPRInfo, headRefOid: head() });
+          },
+          runGraphQL: () =>
+            Effect.succeed({
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes: [
+                      {
+                        id: "thread",
+                        isResolved: false,
+                        comments: {
+                          nodes: [
+                            {
+                              id: "node",
+                              databaseId: 1,
+                              path: "x.ts",
+                              line: 1,
+                              body: "feedback",
+                              author: { login: "reviewer" },
+                              commit: { oid: head() },
+                            },
+                          ],
+                          pageInfo: { hasNextPage: false, endCursor: null },
+                        },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            }),
+          runGh: (args) => {
+            const endpoint = args[1] ?? "";
+            const item = {
+              id: 1,
+              in_reply_to_id: null,
+              user: { login: "reviewer" },
+              state: "COMMENTED",
+              body: "feedback",
+              path: "x.ts",
+              line: 1,
+              created_at: "2026-01-01T00:00:00Z",
+              submitted_at: "2026-01-01T00:00:00Z",
+              html_url: "https://example.test/1",
+              commit_id: head(),
+            };
+            const body = endpoint.includes("issues/") ? [] : [item];
+            return Effect.succeed({ stdout: JSON.stringify(body), stderr: "", exitCode: 0 });
+          },
+        });
+        const item = yield* collect(layer);
+        expect(views).toBe(3);
+        expect(item).toMatchObject({ commitSha: "head-b", feedbackOrigin: "current_head" });
+      }
+    }),
+  );
+
   it.effect("returns reviews, threads, inline comments, and issue comments in one call", () =>
     Effect.gen(function* () {
       const reviewsJson = JSON.stringify([
@@ -2683,6 +2931,33 @@ const mockTriageReviewCommentsRaw = [
 ];
 
 describe("PR checks", () => {
+  it.effect("JSON checks and batch checks suppress refresh hints while retaining results", () =>
+    Effect.gen(function* () {
+      const warnings: unknown[][] = [];
+      const console = yield* TestConsole.make;
+      const consoleLayer = Layer.succeed(Console.Console, {
+        ...console,
+        warn: (...args: unknown[]) => warnings.push(args),
+      });
+      const pending = [{ name: "CI", state: "in_progress", bucket: "pending", link: "x" }];
+      const ghLayer = createMockGhLayer({
+        runGhJson: () => Effect.succeed(pending),
+      });
+
+      const single = yield* fetchChecksForCommand(123, false, false, 1, true).pipe(
+        Effect.provide(ghLayer),
+        Effect.provide(consoleLayer),
+      );
+      const batch = yield* Effect.all([
+        fetchChecksForCommand(123, false, false, 1, true),
+        fetchChecksForCommand(124, false, false, 1, true),
+      ]).pipe(Effect.provide(ghLayer), Effect.provide(consoleLayer));
+      expect(single).toEqual(pending);
+      expect(batch).toEqual([pending, pending]);
+      expect(warnings).toEqual([]);
+    }),
+  );
+
   it.effect("checks-failed returns structured failure context with next commands", () =>
     Effect.gen(function* () {
       const layer = createMockGhLayer({
@@ -3010,59 +3285,403 @@ describe("PR checks", () => {
     }),
   );
 
-  it.effect("rerun-checks reruns matched failed jobs atomically", () =>
+  it.effect("checks-failed retries a push race before labeling SHA evidence", () =>
     Effect.gen(function* () {
-      const calls: string[][] = [];
-      const layer = createMockGhLayer({
-        runGhJson: (args) => {
-          if (args[0] === "pr" && args[1] === "checks") {
-            return Effect.succeed([
-              {
-                name: "deploy / deploy",
-                state: "completed",
-                bucket: "fail",
-                link: "https://github.com/test-owner/test-repo/actions/runs/42",
-              },
-            ]);
-          }
-
-          if (args[0] === "run" && args[1] === "view" && args[2] === "42") {
-            return Effect.succeed({
-              databaseId: 42,
-              jobs: [
+      let views = 0;
+      let snapshots = 0;
+      const result = yield* fetchFailedChecks(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                views += 1;
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  headRefOid: views === 1 ? "head-a" : "head-b",
+                  baseRefOid: "base",
+                });
+              }
+              snapshots += 1;
+              return Effect.succeed([
                 {
-                  databaseId: 420,
-                  name: "deploy",
-                  status: "completed",
-                  conclusion: "failure",
+                  name: `CI-${snapshots}`,
+                  state: "completed",
+                  bucket: "fail",
+                  link: "external",
                 },
-              ],
-            });
-          }
-
-          return Effect.succeed({});
-        },
-        runGh: (args) => {
-          calls.push(args);
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
-        },
-      });
-
-      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
-
-      expect(calls).toEqual([["run", "rerun", "--job", "420"]]);
-      expect(result.rerun).toBe(1);
-      expect(result.failed).toBe(0);
-      expect(result.runs).toEqual([{ runId: "42", success: true }]);
+              ]);
+            },
+          }),
+        ),
+      );
+      expect(snapshots).toBe(2);
+      expect(result.evidence).toEqual({ headSha: "head-b", baseSha: "base" });
+      expect(result.failedChecks[0]?.name).toBe("CI-2");
     }),
   );
 
-  it.effect("rerun-checks dedupes multiple failed checks mapped to the same job", () =>
+  it.effect(
+    "JSONL watch stays transition-only and emits deterministic multi-PR identities, stale-head filtering, dedupe, and supersession",
+    () =>
+      Effect.gen(function* () {
+        const events: Array<Record<string, unknown>> = [];
+        const views = new Map<number, number>();
+        const checks = new Map<number, number>();
+        const layer = createMockGhLayer({
+          runGhJson: (args) => {
+            if (args[0] === "pr" && args[1] === "view") {
+              const pr = Number(args[2]);
+              const call = (views.get(pr) ?? 0) + 1;
+              views.set(pr, call);
+              if (pr === 1 && call === 1) {
+                return Effect.succeed({ number: pr, state: "OPEN", headRefOid: "head-a" });
+              }
+              return Effect.succeed({
+                number: pr,
+                state: "OPEN",
+                headRefOid: pr === 1 ? "head-b" : "head-2",
+              });
+            }
+            if (args[0] === "pr" && args[1] === "checks") {
+              const pr = Number(args[2]);
+              const call = (checks.get(pr) ?? 0) + 1;
+              checks.set(pr, call);
+              if (pr === 2) {
+                return Effect.succeed([
+                  {
+                    name: "external",
+                    state: "completed",
+                    bucket: "pass",
+                    link: "https://checks.example/result/7",
+                  },
+                  {
+                    name: "stale",
+                    state: "completed",
+                    bucket: "fail",
+                    link: "https://github.com/test-owner/test-repo/actions/runs/99",
+                  },
+                ]);
+              }
+              return Effect.succeed([
+                {
+                  name: "CI / test",
+                  state: call < 5 ? "in_progress" : "completed",
+                  bucket: call < 5 ? "pending" : "pass",
+                  link: `https://github.com/test-owner/test-repo/actions/runs/${call < 5 ? 10 : 11}`,
+                },
+              ]);
+            }
+            if (args[0] === "run" && args[1] === "view") {
+              if (args[2] === "99") {
+                return Effect.succeed({
+                  databaseId: 99,
+                  attempt: 1,
+                  headSha: "old-head",
+                  jobs: [],
+                });
+              }
+              const checkCall = checks.get(1) ?? 0;
+              const runId = Number(args[2]);
+              const attempt = checkCall < 4 || runId === 11 ? 1 : 2;
+              return Effect.succeed({
+                databaseId: runId,
+                attempt,
+                headSha: "head-b",
+                jobs: [
+                  {
+                    databaseId: runId === 11 ? 111 : attempt === 1 ? 101 : 102,
+                    name: "CI / test",
+                  },
+                ],
+              });
+            }
+            return Effect.succeed({});
+          },
+        });
+
+        yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 10 }, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.provide(layer));
+
+        const checkEvents = events.filter((event) => event.type === "check");
+        expect(checkEvents).toHaveLength(4);
+        expect(checkEvents.some((event) => event.name === "stale")).toBe(false);
+        expect(checkEvents[0]?.identity).toBe(
+          "test-owner/test-repo/2/head-2/external//external|https://checks.example/result/7",
+        );
+        expect(checkEvents[1]?.identity).toBe("test-owner/test-repo/1/head-b/10/1/101");
+        expect(checkEvents[2]).toMatchObject({
+          identity: "test-owner/test-repo/1/head-b/10/2/102",
+          supersedes: "test-owner/test-repo/1/head-b/10/1/101",
+        });
+        expect(checkEvents[3]).toMatchObject({
+          identity: "test-owner/test-repo/1/head-b/11/1/111",
+          supersedes: "test-owner/test-repo/1/head-b/10/2/102",
+        });
+        expect(
+          events.filter((event) => event.type === "pr_terminal").map((event) => event.pr),
+        ).toEqual([2, 1]);
+        expect(events.at(-1)).toMatchObject({
+          type: "watcher_terminal",
+          status: "terminal",
+          terminal: [1, 2],
+        });
+        expect(events.map((event) => JSON.parse(JSON.stringify(event)))).toEqual(events);
+      }),
+  );
+
+  it.effect("watch emits same-identity pending to success and failure revisions", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      const checkCalls = new Map<number, number>();
+      yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({
+                  number: Number(args[2]),
+                  state: "OPEN",
+                  headRefOid: `head-${args[2]}`,
+                });
+              }
+              const pr = Number(args[2]);
+              const call = (checkCalls.get(pr) ?? 0) + 1;
+              checkCalls.set(pr, call);
+              return Effect.succeed([
+                {
+                  name: "external",
+                  state: call === 1 ? "pending" : "completed",
+                  bucket: call === 1 ? "pending" : pr === 1 ? "pass" : "fail",
+                  link: `https://checks.example/${pr}`,
+                },
+              ]);
+            },
+          }),
+        ),
+      );
+      for (const pr of [1, 2]) {
+        const revisions = events.filter((event) => event.type === "check" && event.pr === pr);
+        expect(revisions).toHaveLength(2);
+        expect(revisions[0]?.identity).toBe(revisions[1]?.identity);
+        expect(revisions[1]).not.toHaveProperty("supersedes");
+      }
+      expect(events.at(-1)).toMatchObject({ status: "terminal", terminal: [1, 2] });
+    }),
+  );
+
+  it.effect("watch waits through stable empty snapshots for eventual checks", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      let checks = 0;
+      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({ number: 7, state: "OPEN", headRefOid: "head" });
+              }
+              checks += 1;
+              if (checks <= 2) return Effect.succeed([]);
+              return Effect.succeed([
+                {
+                  name: "CI",
+                  state: checks === 3 ? "pending" : "completed",
+                  bucket: checks === 3 ? "pending" : "pass",
+                  link: "external",
+                },
+              ]);
+            },
+          }),
+        ),
+      );
+      expect(checks).toBe(4);
+      expect(events.filter((event) => event.type === "pr_terminal")).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({ status: "terminal" });
+    }),
+  );
+
+  it.effect("watch resets three-empty-snapshot grace when head SHA changes", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      let checks = 0;
+      let views = 0;
+      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                views += 1;
+                return Effect.succeed({
+                  number: 7,
+                  state: "OPEN",
+                  headRefOid: views <= 2 ? "old-head" : "new-head",
+                });
+              }
+              checks += 1;
+              return Effect.succeed(
+                checks === 1
+                  ? [{ name: "CI", state: "pending", bucket: "pending", link: "external" }]
+                  : [],
+              );
+            },
+          }),
+        ),
+      );
+      expect(checks).toBe(4);
+      expect(events.find((event) => event.type === "pr_terminal")).toMatchObject({
+        headSha: "new-head",
+        checksObserved: false,
+      });
+    }),
+  );
+
+  it.effect("watch deadline during early PR snapshot prevents later terminal observations", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      const apiPRs: number[] = [];
+      const fiber = yield* Effect.forkChild(
+        watchPRs([1, 2], { intervalSeconds: 60, timeoutSeconds: 0.01 }, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr" && args[1] === "view") {
+                  const pr = Number(args[2]);
+                  apiPRs.push(pr);
+                  return pr === 1
+                    ? Effect.sleep("20 millis").pipe(
+                        Effect.as({ number: pr, state: "OPEN", headRefOid: "head-1" }),
+                      )
+                    : Effect.succeed({ number: pr, state: "CLOSED", headRefOid: "head-2" });
+                }
+                return Effect.succeed([]);
+              },
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("20 millis");
+      yield* Fiber.join(fiber);
+      expect(apiPRs).toEqual([1]);
+      expect(events).toEqual([
+        expect.objectContaining({ type: "watcher_terminal", status: "timeout", terminal: [] }),
+      ]);
+    }),
+  );
+
+  it.effect("watch caps interval sleep to remaining absolute deadline", () =>
+    Effect.gen(function* () {
+      const start = Number(yield* Clock.currentTimeMillis);
+      const events: Array<Record<string, unknown>> = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) =>
+          args[0] === "pr" && args[1] === "view"
+            ? Effect.succeed({ number: 1, state: "OPEN", headRefOid: "head" })
+            : Effect.succeed([
+                { name: "CI", state: "pending", bucket: "pending", link: "external" },
+              ]),
+      });
+      const fiber = yield* Effect.forkChild(
+        watchPRs([1], { intervalSeconds: 60, timeoutSeconds: 0.01 }, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.provide(layer)),
+      );
+      yield* TestClock.adjust("10 millis");
+      yield* Fiber.join(fiber);
+      const elapsed = Number(yield* Clock.currentTimeMillis) - start;
+      expect(elapsed).toBe(10);
+      expect(events.at(-1)).toMatchObject({ status: "timeout" });
+    }),
+  );
+
+  it.effect("watch dedupes run enrichment and matches workflow-qualified matrix jobs", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      let runViews = 0;
+      yield* watchPRs([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({ number: 9, state: "OPEN", headRefOid: "head" });
+              }
+              if (args[0] === "pr") {
+                return Effect.succeed(
+                  ["test (node 20)", "test (node 22)"].map((name) => ({
+                    name: `CI / ${name}`,
+                    state: "completed",
+                    bucket: "pass",
+                    link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                  })),
+                );
+              }
+              runViews += 1;
+              return Effect.succeed({
+                databaseId: 42,
+                attempt: 1,
+                headSha: "head",
+                jobs: [
+                  { databaseId: 420, name: "test (node 20)" },
+                  { databaseId: 422, name: "test (node 22)" },
+                ],
+              });
+            },
+          }),
+        ),
+      );
+      expect(runViews).toBe(1);
+      expect(events.filter((event) => event.type === "check").map((event) => event.jobId)).toEqual([
+        420, 422,
+      ]);
+    }),
+  );
+
+  it.effect("watch reports mixed multi-PR terminal coverage without false timeout", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              args[0] === "pr" && args[1] === "view"
+                ? Effect.succeed({
+                    number: Number(args[2]),
+                    state: "OPEN",
+                    headRefOid: `head-${args[2]}`,
+                  })
+                : Effect.succeed([
+                    {
+                      name: "CI",
+                      state: "completed",
+                      bucket: Number(args[2]) === 1 ? "pass" : "pending",
+                      link: "external",
+                    },
+                  ]),
+          }),
+        ),
+      );
+      expect(events.at(-1)).toMatchObject({ status: "timeout", terminal: [] });
+    }),
+  );
+
+  it.effect("rerun-checks uses REST job id for eligible failed-only preflight", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
       const layer = createMockGhLayer({
         runGhJson: (args) => {
-          if (args[0] === "pr" && args[1] === "checks") {
+          if (args[0] === "pr") {
             return Effect.succeed([
               {
                 name: "Deploy / deploy",
@@ -3078,10 +3697,10 @@ describe("PR checks", () => {
               },
             ]);
           }
-
-          if (args[0] === "run" && args[1] === "view" && args[2] === "42") {
+          if (args[0] === "run") {
             return Effect.succeed({
               databaseId: 42,
+              attempt: 1,
               jobs: [
                 {
                   databaseId: 420,
@@ -3092,72 +3711,512 @@ describe("PR checks", () => {
               ],
             });
           }
-
+          if (args[0] === "api") {
+            return Effect.succeed({ jobs: [{ id: 9420, name: "deploy" }] });
+          }
           return Effect.succeed({});
         },
         runGh: (args) => {
           calls.push(args);
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+          return Effect.succeed({ stdout: "log evidence", stderr: "", exitCode: 0 });
         },
       });
 
       const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
-
-      expect(calls).toEqual([["run", "rerun", "--job", "420"]]);
+      expect(calls).toContainEqual(["api", "repos/test-owner/test-repo/actions/jobs/9420/logs"]);
+      expect(calls.filter((args) => args[0] === "run")).toEqual([
+        ["run", "rerun", "42", "--failed"],
+      ]);
       expect(result.rerun).toBe(1);
-      expect(result.failed).toBe(0);
+      expect(result.runs?.[0]).toMatchObject({ currentAttempt: 1, status: "rerun_started" });
     }),
   );
 
-  it.effect("rerun-checks falls back to run-level rerun when job mapping is ambiguous", () =>
+  it.effect("rerun-checks fails closed when later-page job evidence is unavailable", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      let pages = 0;
+      const result = yield* rerunChecks(123, true).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr") {
+                return Effect.succeed([
+                  {
+                    name: "test",
+                    state: "completed",
+                    bucket: "fail",
+                    link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                  },
+                ]);
+              }
+              if (args[0] === "run") {
+                return Effect.succeed({
+                  databaseId: 42,
+                  attempt: 1,
+                  jobs: [
+                    {
+                      databaseId: 999,
+                      name: "test",
+                      status: "completed",
+                      conclusion: "failure",
+                    },
+                  ],
+                });
+              }
+              pages += 1;
+              return Effect.succeed({
+                jobs:
+                  pages === 1
+                    ? Array.from({ length: 100 }, (_, index) => ({
+                        id: index,
+                        name: `other-${index}`,
+                      }))
+                    : [{ id: 999, name: "test" }],
+              });
+            },
+            runGh: (args) => {
+              if (args[0] === "run") mutations.push(args);
+              return Effect.fail(
+                new GitHubCommandError({
+                  command: "gh api logs",
+                  exitCode: 1,
+                  stderr: "unavailable",
+                  message: "unavailable",
+                }),
+              );
+            },
+          }),
+        ),
+      );
+      expect(pages).toBe(2);
+      expect(mutations).toEqual([]);
+      expect(result).toMatchObject({ status: "evidence_unavailable", rerun: 0 });
+    }),
+  );
+
+  it.effect("rerun-checks fails closed when job mapping is ambiguous", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
-      const layer = createMockGhLayer({
-        runGhJson: (args) => {
-          if (args[0] === "pr" && args[1] === "checks") {
-            return Effect.succeed([
-              {
-                name: "deploy",
-                state: "completed",
-                bucket: "fail",
-                link: "https://github.com/test-owner/test-repo/actions/runs/42",
-              },
-            ]);
-          }
+      const result = yield* rerunChecks(123, true).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              args[0] === "pr"
+                ? Effect.succeed([
+                    {
+                      name: "deploy",
+                      state: "completed",
+                      bucket: "fail",
+                      link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                    },
+                  ])
+                : Effect.succeed({
+                    databaseId: 42,
+                    attempt: 1,
+                    jobs: [
+                      {
+                        databaseId: 420,
+                        name: "deploy-a",
+                        status: "completed",
+                        conclusion: "failure",
+                      },
+                    ],
+                  }),
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(calls).toEqual([]);
+      expect(result).toMatchObject({ status: "evidence_unavailable", rerun: 0 });
+    }),
+  );
 
-          if (args[0] === "run" && args[1] === "view" && args[2] === "42") {
-            return Effect.succeed({
-              databaseId: 42,
-              jobs: [
-                {
-                  databaseId: 420,
-                  name: "deploy-a",
-                  status: "completed",
-                  conclusion: "failure",
-                },
-                {
-                  databaseId: 421,
-                  name: "deploy-b",
-                  status: "completed",
-                  conclusion: "failure",
-                },
-              ],
-            });
-          }
+  it.effect("rerun-checks preflights every run before mutating", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* rerunChecks(123, true).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr") {
+                return Effect.succeed(
+                  ["1", "2"].map((runId) => ({
+                    name: "CI / test",
+                    state: "completed",
+                    bucket: "fail",
+                    link: `https://github.com/test-owner/test-repo/actions/runs/${runId}`,
+                  })),
+                );
+              }
+              if (args[0] === "run") {
+                const runId = Number(args[2]);
+                return Effect.succeed({
+                  databaseId: runId,
+                  attempt: runId === 2 ? 3 : 1,
+                  jobs: [
+                    {
+                      databaseId: runId * 10,
+                      name: "test",
+                      status: "completed",
+                      conclusion: "failure",
+                    },
+                  ],
+                });
+              }
+              if (args[0] === "api") {
+                const attempt = Number(args[1]?.match(/attempts\/(\d+)/)?.[1]);
+                const firstRun = args[1]?.includes("runs/1/") ?? false;
+                return Effect.succeed({
+                  jobs: [{ id: firstRun ? 10 : 200 + attempt, name: "test" }],
+                });
+              }
+              return Effect.succeed({});
+            },
+            runGh: (args) => {
+              calls.push(args);
+              if (args[0] === "api") {
+                return Effect.succeed({
+                  stdout: args[1]?.includes("/jobs/10/")
+                    ? "##[group]Run tests\nTests failed"
+                    : "##[group]Checkout\ncheckout: No space left on device",
+                  stderr: "",
+                  exitCode: 0,
+                });
+              }
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(calls.filter((args) => args[0] === "run" && args[1] === "rerun")).toEqual([]);
+      expect(result.status).toBe("escalation_required");
+      expect(result.rerun).toBe(0);
+      expect(result.runs).toHaveLength(2);
+      expect(result.runs?.[0]?.status).toBe("blocked");
+      expect(result.runs?.[1]?.status).toBe("escalation_required");
+    }),
+  );
 
-          return Effect.succeed({});
-        },
-        runGh: (args) => {
-          calls.push(args);
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
-        },
+  it.effect(
+    "rerun-checks mutates all runs before discovery and reports shared-deadline timeouts explicitly",
+    () =>
+      Effect.gen(function* () {
+        const order: string[] = [];
+        const runViews = new Map<string, number>();
+        const fiber = yield* Effect.forkChild(
+          rerunChecks(123, false, {
+            watch: true,
+            timeoutSeconds: 0.01,
+          }).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  if (args[0] === "pr") {
+                    return Effect.succeed(
+                      ["1", "2"].map((runId) => ({
+                        name: `CI-${runId}`,
+                        state: "completed",
+                        bucket: "fail",
+                        link: `https://github.com/test-owner/test-repo/actions/runs/${runId}`,
+                      })),
+                    );
+                  }
+                  const runId = String(args[2]);
+                  const call = (runViews.get(runId) ?? 0) + 1;
+                  runViews.set(runId, call);
+                  if (call === 1) {
+                    return Effect.succeed({
+                      databaseId: Number(runId),
+                      attempt: 1,
+                      status: "completed",
+                      jobs: [{ databaseId: Number(runId) * 10, name: `CI-${runId}` }],
+                    });
+                  }
+                  order.push(`discover-${runId}`);
+                  if (runId === "1") {
+                    return Effect.sleep("20 millis").pipe(
+                      Effect.as({
+                        databaseId: 1,
+                        attempt: 1,
+                        status: "completed",
+                        jobs: [{ databaseId: 10, name: "CI-1" }],
+                      }),
+                    );
+                  }
+                  return Effect.succeed({
+                    databaseId: 2,
+                    attempt: 2,
+                    status: "completed",
+                    jobs: [{ databaseId: 21, name: "CI-2" }],
+                  });
+                },
+                runGh: (args) => {
+                  order.push(`mutate-${args[2]}`);
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                },
+              }),
+            ),
+          ),
+        );
+        yield* TestClock.adjust("20 millis");
+        const result = yield* Fiber.join(fiber);
+        expect(order.slice(0, 2)).toEqual(["mutate-1", "mutate-2"]);
+        expect(result.runs?.map((run) => run.status)).toEqual(["discovery_timeout", "completed"]);
+        expect(result.runs?.[1]).toMatchObject({ newAttempt: 2, newJobIds: [21] });
+      }),
+  );
+
+  it.effect("rerun-checks discovers and watches the exact new attempt", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      let runViews = 0;
+      const result = yield* rerunChecks(123, true, {
+        watch: true,
+        timeoutSeconds: 2,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr")
+                return Effect.succeed([
+                  {
+                    name: "test",
+                    state: "completed",
+                    bucket: "fail",
+                    link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                  },
+                ]);
+              if (args[0] === "api") return Effect.succeed({ jobs: [{ id: 420, name: "test" }] });
+              if (args[0] === "run") {
+                runViews += 1;
+                if (runViews === 1)
+                  return Effect.succeed({
+                    databaseId: 42,
+                    attempt: 1,
+                    status: "completed",
+                    jobs: [
+                      {
+                        databaseId: 420,
+                        name: "test",
+                        status: "completed",
+                        conclusion: "failure",
+                      },
+                    ],
+                  });
+                return Effect.succeed({
+                  databaseId: 42,
+                  attempt: 2,
+                  status: "completed",
+                  jobs: [
+                    {
+                      databaseId: 421,
+                      name: "test",
+                      status: "completed",
+                      conclusion: "success",
+                    },
+                  ],
+                });
+              }
+              return Effect.succeed({});
+            },
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({
+                stdout: "##[group]Run tests\nTests failed",
+                stderr: "clean diagnostic stderr",
+                exitCode: 0,
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(result.runs?.[0]).toMatchObject({
+        currentAttempt: 1,
+        currentJobIds: [420],
+        newAttempt: 2,
+        newJobIds: [421],
+        status: "completed",
       });
+      expect(runViews).toBe(2);
+      expect(calls.filter((args) => args[0] === "run" && args[1] === "rerun")).toEqual([
+        ["run", "rerun", "42", "--failed"],
+      ]);
+    }),
+  );
 
-      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
+  it.effect("rerun-checks reports bounded discovery timeout", () =>
+    Effect.gen(function* () {
+      const result = yield* rerunChecks(123, true, {
+        watch: true,
+        timeoutSeconds: 0,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr")
+                return Effect.succeed([
+                  {
+                    name: "test",
+                    state: "completed",
+                    bucket: "fail",
+                    link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                  },
+                ]);
+              if (args[0] === "run")
+                return Effect.succeed({
+                  databaseId: 42,
+                  attempt: 1,
+                  status: "completed",
+                  jobs: [
+                    {
+                      databaseId: 420,
+                      name: "test",
+                      status: "completed",
+                      conclusion: "failure",
+                    },
+                  ],
+                });
+              if (args[0] === "api") return Effect.succeed({ jobs: [{ id: 420, name: "test" }] });
+              return Effect.succeed({});
+            },
+            runGh: () =>
+              Effect.succeed({ stdout: "test failure evidence", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+      expect(result.runs?.[0]).toMatchObject({
+        currentAttempt: 1,
+        newAttempt: null,
+        status: "discovery_timeout",
+      });
+    }),
+  );
 
-      expect(calls).toEqual([["run", "rerun", "42", "--failed"]]);
-      expect(result.rerun).toBe(1);
-      expect(result.failed).toBe(0);
+  it.effect("rerun-checks reports watch_timeout with latest attempt under one deadline", () =>
+    Effect.gen(function* () {
+      let runViews = 0;
+      const result = yield* rerunChecks(123, true, { watch: true, timeoutSeconds: 0 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr")
+                return Effect.succeed([
+                  {
+                    name: "test",
+                    state: "completed",
+                    bucket: "fail",
+                    link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                  },
+                ]);
+              if (args[0] === "api") return Effect.succeed({ jobs: [{ id: 420, name: "test" }] });
+              runViews += 1;
+              return Effect.succeed(
+                runViews === 1
+                  ? {
+                      databaseId: 42,
+                      attempt: 1,
+                      status: "completed",
+                      jobs: [
+                        {
+                          databaseId: 420,
+                          name: "test",
+                          status: "completed",
+                          conclusion: "failure",
+                        },
+                      ],
+                    }
+                  : {
+                      databaseId: 42,
+                      attempt: 2,
+                      status: "in_progress",
+                      jobs: [
+                        {
+                          databaseId: 421,
+                          name: "test",
+                          status: "in_progress",
+                          conclusion: null,
+                        },
+                      ],
+                    },
+              );
+            },
+            runGh: () =>
+              Effect.succeed({ stdout: "test failure evidence", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+      expect(runViews).toBe(2);
+      expect(result.runs?.[0]).toMatchObject({
+        status: "watch_timeout",
+        newAttempt: 2,
+        latestAttempt: { attempt: 2, status: "in_progress" },
+      });
+    }),
+  );
+
+  it.effect("rerun-checks permits changed retry fingerprint and unknown evidence", () =>
+    Effect.gen(function* () {
+      for (const currentLog of [
+        "##[group]Checkout\nconnection reset by peer",
+        "##[group]Run tests\nAssertionError: expected 1 to equal 2",
+      ]) {
+        const mutations: string[][] = [];
+        const result = yield* rerunChecks(123, true, {
+          timeoutSeconds: 0,
+        }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr")
+                  return Effect.succeed([
+                    {
+                      name: "test",
+                      state: "completed",
+                      bucket: "fail",
+                      link: "https://github.com/test-owner/test-repo/actions/runs/42",
+                    },
+                  ]);
+                if (args[0] === "run")
+                  return Effect.succeed({
+                    databaseId: 42,
+                    attempt: 2,
+                    status: "completed",
+                    jobs: [
+                      {
+                        databaseId: 422,
+                        name: "test",
+                        status: "completed",
+                        conclusion: "failure",
+                      },
+                    ],
+                  });
+                if (args[0] === "api") {
+                  const attempt = Number(args[1]?.match(/attempts\/(\d+)/)?.[1]);
+                  return Effect.succeed({ jobs: [{ id: 420 + attempt, name: "test" }] });
+                }
+                return Effect.succeed({});
+              },
+              runGh: (args) => {
+                if (args[0] === "run") mutations.push(args);
+                return Effect.succeed({
+                  stdout: args[1]?.includes("421")
+                    ? "##[group]Checkout\nNo space left on device"
+                    : currentLog,
+                  stderr: "",
+                  exitCode: 0,
+                });
+              },
+            }),
+          ),
+        );
+        expect(result.status).not.toBe("escalation_required");
+        expect(mutations).toEqual([["run", "rerun", "42", "--failed"]]);
+      }
     }),
   );
 
@@ -3187,14 +4246,65 @@ describe("PR checks", () => {
       expect(result.rerun).toBe(2);
       expect(result.failed).toBe(0);
       expect(result.runs).toEqual([
-        { runId: "1", success: true },
-        { runId: "2", success: true },
+        expect.objectContaining({ runId: "1", success: true, status: "rerun_started" }),
+        expect.objectContaining({ runId: "2", success: true, status: "rerun_started" }),
       ]);
     }),
   );
 });
 
 describe("PR composite commands", () => {
+  it.effect("review-triage discards checks and feedback collected across a push race", () =>
+    Effect.gen(function* () {
+      let views = 0;
+      let snapshots = 0;
+      const result = yield* fetchReviewTriage(123, "json").pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                views += 1;
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  headRefOid: views === 1 ? "head-a" : "head-b",
+                  baseRefOid: "base",
+                  body: "",
+                  author: { login: "author", is_bot: false },
+                  reviewDecision: "APPROVED",
+                  reviewRequests: [],
+                });
+              }
+              snapshots += 1;
+              return Effect.succeed([
+                {
+                  name: `CI-${snapshots}`,
+                  state: "completed",
+                  bucket: "pass",
+                  link: "external",
+                },
+              ]);
+            },
+            runGraphQL: () =>
+              Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: {
+                      nodes: [],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              }),
+            runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+      expect(views).toBe(3);
+      expect(result.info.headSha).toBe("head-b");
+      expect(result.checks[0]?.name).toBe("CI-2");
+    }),
+  );
+
   it.effect(
     "review-triage: combined output contains PR info, unresolved threads, discussion summary, and checks",
     () =>
@@ -3230,7 +4340,21 @@ describe("PR composite commands", () => {
           },
         });
 
-        const result = yield* fetchReviewTriage(123).pipe(Effect.provide(layer));
+        const warnings: unknown[][] = [];
+        const console = yield* TestConsole.make;
+        const consoleLayer = Layer.succeed(Console.Console, {
+          ...console,
+          warn: (...args: unknown[]) => warnings.push(args),
+        });
+        const [result, batch] = yield* Effect.all([
+          fetchReviewTriage(123, "json"),
+          Effect.all([fetchReviewTriage(123, "json"), fetchReviewTriage(124, "json")]),
+        ]).pipe(Effect.provide(layer), Effect.provide(consoleLayer));
+        expect(warnings).toEqual([]);
+        expect(batch.map((item) => item.feedbackOriginCounts)).toEqual([
+          result.feedbackOriginCounts,
+          result.feedbackOriginCounts,
+        ]);
 
         expect(result.classification).toEqual({
           status: "needs_investigation",
@@ -3274,6 +4398,256 @@ describe("PR composite commands", () => {
         expect(result.checks[0]?.name).toBe("CI / build");
         expect(result.checks[0]?.bucket).toBe("pass");
         expect(result.checks[1]?.bucket).toBe("fail");
+        expect(result.feedbackOriginCounts).toEqual({
+          reviews: { current_head: 0, pre_existing: 0, unknown: 0 },
+          inlineComments: { current_head: 0, pre_existing: 0, unknown: 3 },
+          threads: { current_head: 0, pre_existing: 0, unknown: 2 },
+        });
+        expect(result.inlineComments).toHaveLength(3);
+      }),
+  );
+
+  const replyAndResolveLayer = (
+    options: {
+      comment?: { id: number; in_reply_to_id: number | null; pull_request_url: string };
+      threadId?: string;
+      paginateThreads?: boolean;
+      paginateComments?: boolean;
+      mutations?: string[];
+    } = {},
+  ) => {
+    const target = options.comment ?? {
+      id: 202,
+      in_reply_to_id: 101,
+      pull_request_url: "https://api.github.com/repos/test-owner/test-repo/pulls/123",
+    };
+    let threadPage = 0;
+    return createMockGhLayer({
+      runGhJson: () => Effect.succeed(target),
+      runGh: (args) => {
+        if (args.includes("POST")) options.mutations?.push("reply");
+        return Effect.succeed({ stdout: JSON.stringify({ id: 301 }), stderr: "", exitCode: 0 });
+      },
+      runGraphQL: (query) => {
+        if (query.includes("resolveReviewThread")) {
+          options.mutations?.push("resolve");
+          return Effect.succeed({
+            resolveReviewThread: {
+              thread: { id: options.threadId ?? "thread-2", isResolved: true },
+            },
+          });
+        }
+        if (query.includes("node(id:")) {
+          return Effect.succeed({
+            node: {
+              comments: {
+                nodes: [{ databaseId: 202 }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          });
+        }
+        threadPage += 1;
+        const matching = {
+          id: options.threadId ?? "thread-2",
+          isResolved: false,
+          comments: {
+            nodes: options.paginateComments ? [{ databaseId: 999 }] : [{ databaseId: 101 }],
+            pageInfo: options.paginateComments
+              ? { hasNextPage: true, endCursor: "comments-next" }
+              : { hasNextPage: false, endCursor: null },
+          },
+        };
+        return Effect.succeed({
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: options.paginateThreads && threadPage === 1 ? [] : [matching],
+                pageInfo:
+                  options.paginateThreads && threadPage === 1
+                    ? { hasNextPage: true, endCursor: "threads-next" }
+                    : { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        });
+      },
+    });
+  };
+
+  it.effect("reply-and-resolve infers PR/root/thread and paginates threads and comments", () =>
+    Effect.gen(function* () {
+      for (const pagination of ["none", "threads", "comments"] as const) {
+        const mutations: string[] = [];
+        const result = yield* replyAndResolveComment(null, 202, null, "done").pipe(
+          Effect.provide(
+            replyAndResolveLayer({
+              paginateThreads: pagination === "threads",
+              paginateComments: pagination === "comments",
+              mutations,
+            }),
+          ),
+        );
+        expect(result).toMatchObject({ pr: 123, threadId: "thread-2" });
+        expect(mutations).toEqual(["reply", "resolve"]);
+      }
+    }),
+  );
+
+  it.effect("reply-and-resolve rejects ambiguous comment-only thread matches", () =>
+    Effect.gen(function* () {
+      const mutations: string[] = [];
+      const result = yield* replyAndResolveComment(null, 202, null, "done").pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () =>
+              Effect.succeed({
+                id: 202,
+                in_reply_to_id: null,
+                pull_request_url: "https://api.github.com/repos/test-owner/test-repo/pulls/123",
+              }),
+            runGh: (args) => {
+              if (args.includes("POST")) mutations.push("reply");
+              return Effect.succeed({
+                stdout: JSON.stringify({ id: 301 }),
+                stderr: "",
+                exitCode: 0,
+              });
+            },
+            runGraphQL: (query) => {
+              if (query.includes("resolveReviewThread")) mutations.push("resolve");
+              if (query.includes("node(id:")) {
+                return Effect.succeed({
+                  node: {
+                    comments: {
+                      nodes: [{ databaseId: 202 }],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                });
+              }
+              return Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: {
+                      nodes: [
+                        {
+                          id: "thread-1",
+                          isResolved: false,
+                          comments: { nodes: [{ databaseId: 202 }] },
+                        },
+                        {
+                          id: "thread-2",
+                          isResolved: false,
+                          comments: { nodes: [{ databaseId: 202 }] },
+                        },
+                      ],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: "GitHubCommandError",
+          exitCode: 1,
+          message: "Comment 202 matches multiple review threads",
+        });
+      }
+      expect(mutations).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "reply-and-resolve validates explicit PR/thread before mutation and preserves legacy path",
+    () =>
+      Effect.gen(function* () {
+        for (const [pr, thread, message] of [
+          [124, "thread-2", "not explicit PR #124"],
+          [123, "wrong-thread", "not explicit thread wrong-thread"],
+        ] as const) {
+          const mutations: string[] = [];
+          const result = yield* replyAndResolveComment(pr, 202, thread, "done").pipe(
+            Effect.provide(replyAndResolveLayer({ mutations })),
+            Effect.result,
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) expect(result.failure.message).toContain(message);
+          expect(mutations).toEqual([]);
+        }
+        const result = yield* replyAndResolveComment(123, 202, "thread-2", "done").pipe(
+          Effect.provide(replyAndResolveLayer()),
+        );
+        expect(result.threadId).toBe("thread-2");
+      }),
+  );
+
+  it.effect(
+    "reply-and-resolve maps missing comment/thread to structured errors without mutation",
+    () =>
+      Effect.gen(function* () {
+        const missingComment = yield* replyAndResolveComment(null, 404, null, "done").pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.fail(
+                  new GitHubNotFoundError({
+                    message: "raw api detail",
+                    resource: "comment",
+                    identifier: "404",
+                  }),
+                ),
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(missingComment)).toBe(true);
+        if (Result.isFailure(missingComment)) {
+          expect(missingComment.failure.message).toBe(
+            "Review comment 404 was not found; it may be deleted",
+          );
+          expect(missingComment.failure.message).not.toContain("raw api detail");
+        }
+
+        const mutations: string[] = [];
+        const missingThread = yield* replyAndResolveComment(null, 202, null, "done").pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.succeed({
+                  id: 202,
+                  in_reply_to_id: 101,
+                  pull_request_url: "https://api.github.com/repos/o/r/pulls/123",
+                }),
+              runGh: () => {
+                mutations.push("reply");
+                return Effect.succeed({ stdout: "{}", stderr: "", exitCode: 0 });
+              },
+              runGraphQL: () =>
+                Effect.succeed({
+                  repository: {
+                    pullRequest: {
+                      reviewThreads: {
+                        nodes: [],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    },
+                  },
+                }),
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(missingThread)).toBe(true);
+        if (Result.isFailure(missingThread))
+          expect(missingThread.failure.message).toContain("no review thread");
+        expect(mutations).toEqual([]);
       }),
   );
 
@@ -3845,7 +5219,9 @@ describe("PR composite commands", () => {
   });
 
   it("review-triage-batch parser: accepts comma-separated PR numbers", () => {
-    expect(parsePrNumbers("309, 314, nope, 0, 346")).toEqual([309, 314, 346]);
+    expect(parsePrNumbers("309, 314,309, 346")).toEqual([309, 314, 346]);
+    expect(() => parsePrNumbers("309x,314")).toThrow();
+    expect(() => parsePrNumbers("309,,314")).toThrow();
   });
 
   it("issue snapshot-batch parser: accepts comma-separated issue numbers", () => {

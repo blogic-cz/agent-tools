@@ -5,7 +5,7 @@ import { formatOption, logFormatted } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
-import type { CheckRunAnnotation, JobAnnotations } from "./types";
+import type { CheckRunAnnotation, JobAnnotations, LogDiagnosis } from "./types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,7 +45,7 @@ type WorkflowRunDetail = WorkflowRun & {
   jobs: WorkflowJob[];
 };
 
-type LogEntry = {
+export type LogEntry = {
   step: string;
   message: string;
 };
@@ -438,6 +438,60 @@ export function formatLogEntries(entries: LogEntry[]): string {
 // Job-level log handlers
 // ---------------------------------------------------------------------------
 
+const normalizeFingerprint = (message: string) =>
+  message
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, "<url>")
+    .replace(/(?:0x)?[0-9a-f]{8,}/gi, "<id>")
+    .replace(/\b\d+\b/g, "<n>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+
+export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis => {
+  const lines = entries.map((entry) => entry.message);
+  const text = lines.join("\n");
+  const find = (pattern: RegExp) => lines.find((line) => pattern.test(line)) ?? null;
+  const testsStarted =
+    /\b(vitest|jest|pytest|go test|cargo test|test suites?|tests? (?:run|failed))\b/i.test(text)
+      ? true
+      : /\b(install|checkout|restore|setup)\b/i.test(text)
+        ? false
+        : null;
+  const matched = [
+    [
+      "infrastructure",
+      /no space left on device|disk full|corrupt.*nuget|nuget.*corrupt|address already in use|socket.*bind/i,
+    ],
+    [
+      "network",
+      /econnreset|enotfound|network.*(?:error|timeout)|connection (?:reset|refused)|could not resolve host/i,
+    ],
+    ["timeout", /timed? ?out|deadline exceeded/i],
+    ["lint_failure", /\b(?:eslint|oxlint|lint)\b.*(?:error|failed)|lint failed/i],
+    ["build_failure", /\b(?:build|compile|typescript)\b.*(?:error|failed)|compilation failed/i],
+    ["test_failure", /\b(?:test|tests|vitest|jest|pytest)\b.*(?:fail|error)|\d+ failing/i],
+  ] as const;
+  for (const [category, pattern] of matched) {
+    const error = find(pattern);
+    if (error !== null) {
+      return {
+        category,
+        fingerprint: `${category}:${normalizeFingerprint(error)}`,
+        testsStarted,
+        firstRelevantError: error,
+      };
+    }
+  }
+  const firstRelevantError = find(/\b(error|failed|fatal|exception)\b/i);
+  return {
+    category: "unknown",
+    fingerprint: `unknown:${normalizeFingerprint(firstRelevantError ?? lines[0] ?? "no-log-output")}`,
+    testsStarted,
+    firstRelevantError,
+  };
+};
+
 const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
   runId: number,
   jobName: string,
@@ -500,6 +554,7 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
   jobId?: number | null;
   failedStepNames?: readonly string[] | null;
   failedStepsOnly: boolean;
+  diagnose?: boolean;
   format: string;
   repo: string | null;
 }) {
@@ -549,13 +604,12 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
     }
   }
 
+  if (opts.diagnose) {
+    return { runId: opts.runId, job: opts.job, jobId, diagnosis: diagnoseLogEntries(entries) };
+  }
+
   if (opts.format === "json") {
-    return {
-      runId: opts.runId,
-      job: opts.job,
-      jobId,
-      entries,
-    };
+    return { runId: opts.runId, job: opts.job, jobId, entries };
   }
 
   return {
@@ -770,6 +824,10 @@ export const workflowWatchCommand = Command.make(
 export const workflowJobLogsCommand = Command.make(
   "job-logs",
   {
+    diagnose: Flag.boolean("diagnose").pipe(
+      Flag.withDescription("Return concise failure diagnosis metadata without log entries"),
+      Flag.withDefault(false),
+    ),
     failedStepsOnly: Flag.boolean("failed-steps-only").pipe(
       Flag.withDescription("Only show logs from failed steps (default: false)"),
       Flag.withDefault(false),
@@ -781,13 +839,14 @@ export const workflowJobLogsCommand = Command.make(
     repo: repoOption,
     run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
   },
-  ({ failedStepsOnly, format, job, repo, run }) =>
+  ({ diagnose, failedStepsOnly, format, job, repo, run }) =>
     Effect.gen(function* () {
       const resolvedRepo = yield* resolveRepoArg(repo);
       const result = yield* fetchJobLogs({
         runId: run,
         job,
         failedStepsOnly,
+        diagnose,
         format,
         repo: resolvedRepo,
       });

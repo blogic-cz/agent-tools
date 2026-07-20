@@ -17,7 +17,7 @@ import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
-import { fetchJobLogs } from "#gh/workflow";
+import { diagnoseLogEntries, fetchJobLogs, formatLogEntries, parseRawJobLogs } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
@@ -63,6 +63,7 @@ const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string
 
 type WorkflowRunJobsForRerun = {
   databaseId: number;
+  attempt?: number | null;
   jobs: Array<{
     databaseId: number;
     name: string;
@@ -154,7 +155,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
       "view",
       String(runId),
       "--json",
-      "databaseId,url,workflowName,status,conclusion,jobs",
+      "databaseId,attempt,url,workflowName,status,conclusion,jobs",
     ])
     .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
 
@@ -166,6 +167,8 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
     .filter((job) => job.conclusion === "failure" || job.status === "failure")
     .map((job) => ({
       databaseId: job.databaseId,
+      jobId: job.databaseId,
+      checkId: null,
       name: job.name,
       status: job.status,
       conclusion: job.conclusion,
@@ -177,6 +180,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 
   const context: FailedCheckRunContext = {
     runId: run.databaseId,
+    attempt: run.attempt ?? null,
     url: run.url,
     workflowName: run.workflowName,
     status: run.status,
@@ -201,7 +205,10 @@ const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: numbe
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
   pr: number | null,
   checks: CheckResult[],
-  options: { withLogs: boolean } = { withLogs: false },
+  options: {
+    withLogs: boolean;
+    evidence?: { headSha: string | null; baseSha: string | null } | null;
+  } = { withLogs: false },
 ) {
   const failedChecks = checks.filter((check) => check.bucket === "fail");
   const pendingChecks = checks.filter((check) => check.bucket === "pending");
@@ -214,6 +221,13 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         .filter((id) => id !== null),
     ),
   ];
+
+  const evidence =
+    options.evidence ??
+    (yield* viewPR(pr).pipe(
+      Effect.map((info) => ({ headSha: info.headSha ?? null, baseSha: info.baseSha ?? null })),
+      Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+    ));
 
   const runContexts = new Map<number, FailedCheckRunContext | null>();
   const contexts = yield* Effect.forEach(
@@ -252,14 +266,21 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
           jobId: matchedJob.databaseId,
           failedStepNames: matchedJob.failedSteps,
           failedStepsOnly: true,
-          format: "text",
+          format: "json",
           repo: null,
-        }).pipe(
-          Effect.map((result) => ("formatted" in result ? result.formatted : "")),
-          Effect.catch(() => Effect.succeed("")),
-        );
+        }).pipe(Effect.catch(() => Effect.succeed(null)));
 
-        return failedStepLogs && failedStepLogs.length > 0 ? { ...detail, failedStepLogs } : detail;
+        if (failedStepLogs === null || !("entries" in failedStepLogs) || !failedStepLogs.entries) {
+          return detail;
+        }
+        const formatted = formatLogEntries(failedStepLogs.entries);
+        return formatted.length > 0
+          ? {
+              ...detail,
+              failedStepLogs: formatted,
+              diagnosis: diagnoseLogEntries(failedStepLogs.entries),
+            }
+          : detail;
       }),
     { concurrency: 5 },
   );
@@ -305,6 +326,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         : "Inspect the failed workflow run and failed job logs to get the first concrete error, then rerun only if the failure is understood.";
 
   return {
+    evidence,
     status: failedChecks.length > 0 ? "failed" : "no_failures",
     message,
     summary: {
@@ -329,11 +351,15 @@ export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null)
   }
   args.push(
     "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+    "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
   );
 
-  const info = yield* gh.runGhJson<PRViewInfo>(args);
-  return info;
+  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string; baseRefOid?: string }>(args);
+  return {
+    ...info,
+    headSha: info.headRefOid ?? info.headSha ?? null,
+    baseSha: info.baseRefOid ?? info.baseSha ?? null,
+  };
 });
 
 export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
@@ -901,6 +927,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   watch: boolean,
   failFast: boolean,
   timeoutSeconds: number,
+  quiet = false,
 ) {
   const gh = yield* GitHubService;
 
@@ -926,7 +953,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     );
 
     const results = yield* fetchCheckResults(pr);
-    if (watchOutcome === null && results.some((c) => c.bucket === "pending")) {
+    if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
       const pending = results.filter((c) => c.bucket === "pending").length;
       yield* Console.warn(
         `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
@@ -937,7 +964,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   }
 
   const results = yield* fetchCheckResults(pr);
-  if (results.some((c) => c.bucket === "pending")) {
+  if (!quiet && results.some((c) => c.bucket === "pending")) {
     yield* Console.warn(
       `ℹ️  Some checks are still running. Re-run to refresh — each call returns the latest snapshot:\n` +
         `   ${buildChecksCommand(pr, false)}`,
@@ -950,8 +977,27 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   pr: number | null,
   withLogs = false,
 ) {
-  const checks = yield* fetchCheckResults(pr);
-  return yield* buildFailedChecksReport(pr, checks, { withLogs });
+  let before = yield* viewPR(pr);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const checks = yield* fetchCheckResults(before.number);
+    const after = yield* viewPR(before.number);
+    if (after.headSha === before.headSha) {
+      return yield* buildFailedChecksReport(before.number, checks, {
+        withLogs,
+        evidence: { headSha: after.headSha, baseSha: after.baseSha },
+      });
+    }
+    before = after;
+  }
+  return yield* Effect.fail(
+    new GitHubCommandError({
+      command: "gh-tool pr checks-failed",
+      exitCode: 1,
+      stderr: "",
+      message: "PR head changed repeatedly while collecting checks",
+      retryable: true,
+    }),
+  );
 });
 
 export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(function* (
@@ -959,12 +1005,13 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
   watch: boolean,
   failFast: boolean,
   timeoutSeconds: number,
+  quiet = false,
 ) {
   if (!watch) {
-    return yield* fetchChecks(pr, false, failFast, timeoutSeconds);
+    return yield* fetchChecks(pr, false, failFast, timeoutSeconds, quiet);
   }
 
-  const watchedChecks = yield* fetchChecks(pr, true, failFast, timeoutSeconds).pipe(
+  const watchedChecks = yield* fetchChecks(pr, true, failFast, timeoutSeconds, quiet).pipe(
     Effect.result,
     Effect.flatMap((result) => {
       if (Result.isFailure(result) && result.failure._tag !== "GitHubCommandError") {
@@ -987,30 +1034,297 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
   return yield* Effect.fail(watchedChecks.failure);
 });
 
+type WatchPR = { number: number; state: string; headRefOid?: string | null };
+type WatchRun = {
+  databaseId: number;
+  attempt?: number | null;
+  headSha?: string | null;
+  jobs?: Array<{ databaseId: number; name: string }>;
+};
+
+const watchPRState = Effect.fn("pr.watchPRState")(function* (pr: number) {
+  const gh = yield* GitHubService;
+  return yield* gh.runGhJson<WatchPR>([
+    "pr",
+    "view",
+    String(pr),
+    "--json",
+    "number,state,headRefOid",
+  ]);
+});
+
+export const watchPRs = Effect.fn("pr.watchPRs")(function* (
+  prs: readonly number[],
+  options: { intervalSeconds: number; timeoutSeconds: number; until?: "terminal" },
+  emit: (event: Record<string, unknown>) => Effect.Effect<void>,
+) {
+  if ((options.until ?? "terminal") !== "terminal") {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr watch",
+        exitCode: 1,
+        stderr: "",
+        message: `Unsupported --until value: ${String(options.until)}`,
+      }),
+    );
+  }
+  const gh = yield* GitHubService;
+  const repo = yield* gh.getRepoInfo();
+  const currentIdentity = new Map<string, string>();
+  const lastRevision = new Map<string, string>();
+  const emptySnapshots = new Map<string, number>();
+  const checksObserved = new Set<string>();
+  const headByPR = new Map<number, string>();
+  const terminal = new Set<number>();
+  const started = Number(yield* Clock.currentTimeMillis);
+  const deadline = started + options.timeoutSeconds * 1000;
+  const beforeDeadline = Effect.gen(function* () {
+    return Number(yield* Clock.currentTimeMillis) < deadline;
+  });
+
+  const snapshot = (pr: number) =>
+    Effect.gen(function* () {
+      if (!(yield* beforeDeadline)) return "timeout" as const;
+      const before = yield* watchPRState(pr);
+      if (!(yield* beforeDeadline)) return "timeout" as const;
+      const checks = yield* fetchCheckResults(pr);
+      if (!(yield* beforeDeadline)) return "timeout" as const;
+      const after = yield* watchPRState(pr);
+      const head = before.headRefOid ?? null;
+      if (head !== (after.headRefOid ?? null) || before.state !== after.state) return null;
+      const runs = new Map<number, WatchRun | null>();
+      yield* Effect.forEach(
+        [...new Set(checks.map((check) => extractRunIdFromCheckLink(check.link)))].filter(
+          (runId): runId is number => runId !== null,
+        ),
+        (runId) =>
+          Effect.gen(function* () {
+            if (!(yield* beforeDeadline)) return;
+            const run = yield* gh
+              .runGhJson<WatchRun>([
+                "run",
+                "view",
+                String(runId),
+                "--json",
+                "databaseId,attempt,headSha,jobs",
+              ])
+              .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+            runs.set(runId, run);
+          }),
+        { concurrency: 5 },
+      );
+      if (!(yield* beforeDeadline)) return "timeout" as const;
+      return {
+        pr: after,
+        head,
+        checks: checks
+          .map((check) => ({
+            check,
+            run:
+              extractRunIdFromCheckLink(check.link) === null
+                ? null
+                : (runs.get(extractRunIdFromCheckLink(check.link) ?? -1) ?? null),
+          }))
+          .filter(({ run }) => run === null || run.headSha === null || run.headSha === head),
+      };
+    });
+
+  let timedOut = false;
+  yield* Effect.whileLoop({
+    while: () => terminal.size < prs.length && !timedOut,
+    body: () =>
+      Effect.gen(function* () {
+        for (const number of prs) {
+          if (terminal.has(number)) continue;
+          if (!(yield* beforeDeadline)) {
+            timedOut = true;
+            break;
+          }
+          const state = yield* snapshot(number);
+          if (state === "timeout") {
+            timedOut = true;
+            break;
+          }
+          if (state === null) continue;
+          const headKey = `${number}/${state.head ?? ""}`;
+          const oldHeadKey = headByPR.get(number);
+          if (oldHeadKey !== undefined && oldHeadKey !== headKey) {
+            checksObserved.delete(oldHeadKey);
+            emptySnapshots.delete(oldHeadKey);
+          }
+          headByPR.set(number, headKey);
+          if (state.checks.length > 0) {
+            checksObserved.add(headKey);
+            emptySnapshots.set(headKey, 0);
+          } else {
+            emptySnapshots.set(headKey, (emptySnapshots.get(headKey) ?? 0) + 1);
+          }
+          for (const { check, run } of state.checks) {
+            const matches = failedJobsMatchingCheck(check.name, run?.jobs ?? []);
+            const jobId = matches.length === 1 ? (matches[0]?.databaseId ?? null) : null;
+            const fallback = jobId === null ? `${check.name}|${check.link}` : String(jobId);
+            const identity = [
+              repo.owner + "/" + repo.name,
+              number,
+              state.head ?? "",
+              run?.databaseId ?? "external",
+              run?.attempt ?? "",
+              fallback,
+            ].join("/");
+            const logical = `${number}/${check.name}`;
+            const previousIdentity = currentIdentity.get(logical);
+            const revision = `${check.state}/${check.bucket}`;
+            if (lastRevision.get(identity) !== revision) {
+              const event: Record<string, unknown> = {
+                type: "check",
+                repo: `${repo.owner}/${repo.name}`,
+                pr: number,
+                headSha: state.head,
+                runId: run?.databaseId ?? null,
+                attempt: run?.attempt ?? null,
+                jobId,
+                checkId: null,
+                name: check.name,
+                state: check.state,
+                bucket: check.bucket,
+                link: check.link,
+                identity,
+              };
+              if (previousIdentity !== undefined && previousIdentity !== identity) {
+                event.supersedes = previousIdentity;
+              }
+              if (!(yield* beforeDeadline)) {
+                timedOut = true;
+                break;
+              }
+              yield* emit(event);
+              lastRevision.set(identity, revision);
+            }
+            currentIdentity.set(logical, identity);
+          }
+          if (timedOut) break;
+          const hasTerminalCoverage =
+            checksObserved.has(headKey) || (emptySnapshots.get(headKey) ?? 0) >= 3;
+          const checksTerminal = state.checks.every(({ check }) => check.bucket !== "pending");
+          if (state.pr.state !== "OPEN" || (hasTerminalCoverage && checksTerminal)) {
+            if (!(yield* beforeDeadline)) {
+              timedOut = true;
+              break;
+            }
+            const identity = `${repo.owner}/${repo.name}/${number}/${state.head ?? ""}/terminal/${state.pr.state}`;
+            yield* emit({
+              type: "pr_terminal",
+              repo: `${repo.owner}/${repo.name}`,
+              pr: number,
+              headSha: state.head,
+              state: state.pr.state,
+              checksObserved: checksObserved.has(headKey),
+              identity,
+            });
+            terminal.add(number);
+          }
+        }
+        const now = Number(yield* Clock.currentTimeMillis);
+        timedOut = timedOut || (terminal.size < prs.length && now >= deadline);
+        if (!timedOut && terminal.size < prs.length) {
+          yield* Effect.sleep(
+            Duration.millis(Math.min(options.intervalSeconds * 1000, deadline - now)),
+          );
+        }
+      }),
+    step: () => undefined,
+  });
+  yield* emit({
+    type: "watcher_terminal",
+    repo: `${repo.owner}/${repo.name}`,
+    status: terminal.size === prs.length ? "terminal" : "timeout",
+    terminal: [...terminal].toSorted((a, b) => a - b),
+  });
+});
+
+type RerunDiscovery = WorkflowRunJobsForRerun & { status?: string };
+type RetryEvidence =
+  | { state: "eligible"; diagnosis: ReturnType<typeof diagnoseLogEntries> }
+  | { state: "ineligible"; diagnosis: ReturnType<typeof diagnoseLogEntries>; reason: string }
+  | { state: "unavailable"; reason: string };
+
+const fetchAttemptJobs = Effect.fn("pr.fetchAttemptJobs")(function* (
+  runId: string,
+  attempt: number,
+  repo: string,
+) {
+  const gh = yield* GitHubService;
+  const jobs: Array<{ id: number; name: string }> = [];
+  for (let page = 1; ; page += 1) {
+    const response = yield* gh
+      .runGhJson<{ jobs?: Array<{ id: number; name: string }> }>([
+        "api",
+        `repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+      ])
+      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+    if (response?.jobs === undefined) return null;
+    jobs.push(...response.jobs);
+    if (response.jobs.length < 100) return jobs;
+  }
+});
+
+const readJobDiagnosis = Effect.fn("pr.readJobDiagnosis")(function* (
+  runId: string,
+  jobName: string,
+  attempt: number,
+  repo: string,
+) {
+  const gh = yield* GitHubService;
+  const jobs = yield* fetchAttemptJobs(runId, attempt, repo);
+  if (jobs === null) return null;
+  const matches = jobs.filter((job) => job.name === jobName);
+  if (matches.length !== 1) return null;
+  const logs = yield* gh
+    .runGh(["api", `repos/${repo}/actions/jobs/${matches[0]?.id}/logs`])
+    .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+  return logs === null ? null : diagnoseLogEntries(parseRawJobLogs(logs.stdout));
+});
+
+const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
+  runId: string,
+  currentAttempt: number | null,
+  currentJobIds: readonly number[],
+  deadline: number,
+) {
+  const gh = yield* GitHubService;
+  let latest: RerunDiscovery | null = null;
+  while (Number(yield* Clock.currentTimeMillis) <= deadline) {
+    latest = yield* gh
+      .runGhJson<RerunDiscovery>(["run", "view", runId, "--json", "databaseId,attempt,status,jobs"])
+      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+    if (
+      latest !== null &&
+      ((latest.attempt ?? 0) > (currentAttempt ?? 0) ||
+        latest.jobs.some((job) => !currentJobIds.includes(job.databaseId)))
+    ) {
+      return latest;
+    }
+    const remaining = deadline - Number(yield* Clock.currentTimeMillis);
+    if (remaining <= 0) return null;
+    yield* Effect.sleep(Duration.millis(Math.min(1000, remaining)));
+  }
+  return null;
+});
+
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
   pr: number | null,
   failedOnly: boolean,
+  options: { watch?: boolean; timeoutSeconds?: number } = {},
 ) {
   const gh = yield* GitHubService;
-
   const checks = yield* fetchCheckResults(pr);
-
   const targetChecks = failedOnly ? checks.filter((check) => check.bucket === "fail") : checks;
-
-  // Extract unique GitHub Actions run IDs from links
-  const runIds = new Set<string>();
   const checksByRun = new Map<string, CheckResult[]>();
   for (const check of targetChecks) {
-    const match = check.link.match(GITHUB_ACTIONS_RUN_ID_RE);
-    if (match?.[1]) {
-      runIds.add(match[1]);
-      const existing = checksByRun.get(match[1]) ?? [];
-      existing.push(check);
-      checksByRun.set(match[1], existing);
-    }
+    const runId = check.link.match(GITHUB_ACTIONS_RUN_ID_RE)?.[1];
+    if (runId !== undefined) checksByRun.set(runId, [...(checksByRun.get(runId) ?? []), check]);
   }
-
-  if (runIds.size === 0) {
+  if (checksByRun.size === 0) {
     return {
       rerun: 0,
       message: failedOnly
@@ -1019,52 +1333,172 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
     };
   }
 
-  const results: Array<{
+  const repoInfo = yield* gh.getRepoInfo();
+  const repo = `${repoInfo.owner}/${repoInfo.name}`;
+  const candidates: Array<{
     runId: string;
-    success: boolean;
+    run: WorkflowRunJobsForRerun | null;
+    evidence: RetryEvidence;
   }> = [];
-  for (const runId of runIds) {
-    const success = yield* Effect.gen(function* () {
-      if (!failedOnly) {
-        return yield* gh.runGh(["run", "rerun", runId]).pipe(
-          Effect.map(() => true),
-          Effect.catch(() => Effect.succeed(false)),
-        );
+  for (const [runId, runChecks] of checksByRun) {
+    const run = yield* gh
+      .runGhJson<WorkflowRunJobsForRerun>([
+        "run",
+        "view",
+        runId,
+        "--json",
+        "databaseId,attempt,jobs",
+      ])
+      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+    let evidence: RetryEvidence = { state: "eligible", diagnosis: diagnoseLogEntries([]) };
+    if (failedOnly) {
+      const jobIds = run === null ? null : resolveJobIdsForFailedChecks(runChecks, run.jobs);
+      if (
+        run === null ||
+        run.attempt === null ||
+        run.attempt === undefined ||
+        jobIds === null ||
+        jobIds.length === 0
+      ) {
+        evidence = { state: "unavailable", reason: "failed jobs or current attempt unavailable" };
+      } else {
+        const targetJobs = run.jobs.filter((job) => jobIds.includes(job.databaseId));
+        for (const job of targetJobs) {
+          const current = yield* readJobDiagnosis(runId, job.name, run.attempt, repo);
+          if (current === null) {
+            evidence = {
+              state: "unavailable",
+              reason: `retry evidence unavailable for ${job.name}`,
+            };
+            break;
+          }
+          evidence = { state: "eligible", diagnosis: current };
+          const retryablePreTest =
+            current.testsStarted === false &&
+            ["infrastructure", "network", "timeout"].includes(current.category);
+          if (!retryablePreTest) continue;
+          for (let attempt = 1; attempt < run.attempt; attempt += 1) {
+            const prior = yield* readJobDiagnosis(runId, job.name, attempt, repo);
+            if (prior === null) {
+              evidence = {
+                state: "unavailable",
+                reason: `retry evidence unavailable for ${job.name} attempt ${attempt}`,
+              };
+              break;
+            }
+            if (prior.fingerprint === current.fingerprint) {
+              evidence = {
+                state: "ineligible",
+                diagnosis: current,
+                reason: "matching pre-test failure already retried",
+              };
+              break;
+            }
+          }
+          if (evidence.state !== "eligible") break;
+        }
       }
-
-      const checksForRun = checksByRun.get(runId) ?? [];
-      const run = yield* gh
-        .runGhJson<WorkflowRunJobsForRerun>(["run", "view", runId, "--json", "databaseId,jobs"])
-        .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
-
-      const jobIds = run === null ? null : resolveJobIdsForFailedChecks(checksForRun, run.jobs);
-      if (jobIds === null || jobIds.length === 0) {
-        return yield* gh.runGh(["run", "rerun", runId, "--failed"]).pipe(
-          Effect.map(() => true),
-          Effect.catch(() => Effect.succeed(false)),
-        );
-      }
-
-      const rerunResults = yield* Effect.forEach(
-        jobIds,
-        (jobId) =>
-          gh.runGh(["run", "rerun", "--job", String(jobId)]).pipe(
-            Effect.map(() => true),
-            Effect.catch(() => Effect.succeed(false)),
-          ),
-        { concurrency: 1 },
-      );
-
-      return rerunResults.every(Boolean);
-    });
-
-    results.push({ runId, success });
+    }
+    candidates.push({ runId, run, evidence });
   }
 
+  if (candidates.some((candidate) => candidate.evidence.state !== "eligible")) {
+    const unavailable = candidates.some((candidate) => candidate.evidence.state === "unavailable");
+    const status = unavailable ? "evidence_unavailable" : "escalation_required";
+    const runs = candidates.map((candidate) => ({
+      runId: candidate.runId,
+      success: false,
+      currentAttempt: candidate.run?.attempt ?? null,
+      currentJobIds: candidate.run?.jobs?.map((job) => job.databaseId) ?? null,
+      status: candidate.evidence.state === "eligible" ? "blocked" : status,
+      evidence: candidate.evidence,
+    }));
+    return {
+      status,
+      rerun: 0,
+      failed: runs.length,
+      runs,
+      message: unavailable
+        ? "Required retry evidence unavailable; no runs rerun"
+        : "Escalation required; no runs rerun",
+    };
+  }
+
+  const watch = options.watch === true;
+  const deadline = Number(yield* Clock.currentTimeMillis) + (options.timeoutSeconds ?? 60) * 1000;
+  const results: Array<Record<string, unknown> & { runId: string; success: boolean }> = [];
+  for (const candidate of candidates) {
+    const success = yield* gh
+      .runGh(["run", "rerun", candidate.runId, ...(failedOnly ? ["--failed"] : [])])
+      .pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+    results.push({
+      runId: candidate.runId,
+      success,
+      status: success ? "rerun_started" : "failed",
+      currentAttempt: candidate.run?.attempt ?? null,
+      currentJobIds: candidate.run?.jobs?.map((job) => job.databaseId) ?? null,
+      evidence: candidate.evidence,
+    });
+  }
+
+  if (watch) {
+    const discoveries = yield* Effect.forEach(
+      candidates,
+      (candidate, index) =>
+        results[index]?.success
+          ? discoverRerun(
+              candidate.runId,
+              candidate.run?.attempt ?? null,
+              candidate.run?.jobs?.map((job) => job.databaseId) ?? [],
+              deadline,
+            )
+          : Effect.succeed(null),
+      { concurrency: "unbounded" },
+    );
+    yield* Effect.forEach(
+      candidates,
+      (candidate, index) =>
+        Effect.gen(function* () {
+          const result = results[index];
+          if (result === undefined || !result.success) return;
+          const next = discoveries[index] ?? null;
+          result.newAttempt = next?.attempt ?? null;
+          result.newJobIds = next?.jobs.map((job) => job.databaseId) ?? null;
+          if (next === null) {
+            result.status = "discovery_timeout";
+            result.latestAttempt = candidate.run;
+            return;
+          }
+          let latest = next;
+          while (latest.status !== "completed") {
+            const remaining = deadline - Number(yield* Clock.currentTimeMillis);
+            if (remaining <= 0) break;
+            yield* Effect.sleep(Duration.millis(Math.min(1000, remaining)));
+            if (Number(yield* Clock.currentTimeMillis) >= deadline) break;
+            latest = yield* gh
+              .runGhJson<RerunDiscovery>([
+                "run",
+                "view",
+                candidate.runId,
+                "--json",
+                "databaseId,attempt,status,jobs",
+              ])
+              .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)));
+          }
+          result.latestAttempt = latest;
+          result.status = latest.status === "completed" ? "completed" : "watch_timeout";
+        }),
+      { concurrency: "unbounded" },
+    );
+  }
   return {
-    rerun: results.filter((r) => r.success).length,
-    failed: results.filter((r) => !r.success).length,
+    status: results.some((result) => !result.success) ? "failed" : "rerun_started",
+    rerun: results.filter((result) => result.success).length,
+    failed: results.filter((result) => !result.success).length,
     runs: results,
-    message: `Rerun ${results.filter((r) => r.success).length}/${results.length} GitHub Actions runs`,
+    message: `Rerun ${results.filter((result) => result.success).length}/${results.length} GitHub Actions runs`,
   };
 });
