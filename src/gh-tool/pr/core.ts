@@ -733,7 +733,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     yield* Console.log(
       `DRY RUN: Would merge PR #${info.number} "${info.title}" via ${opts.strategy.toUpperCase()}. ` +
         `Branch \`${info.headRefName}\` → \`${info.baseRefName}\`. ` +
-        (opts.deleteBranch ? `Branch \`${info.headRefName}\` will be deleted. ` : "") +
+        (opts.deleteBranch ? `Remote branch \`${info.headRefName}\` will be deleted. ` : "") +
         dependentNote +
         mergeableNote,
     );
@@ -752,10 +752,9 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   let willDeleteBranch = opts.deleteBranch;
   let branchDeleteSkipped = false;
   const retargetedChildren: number[] = [];
+  const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
 
-  if (opts.deleteBranch && dependentOpenPrs.length > 0) {
-    const repo = yield* gh.getRepoInfo();
-
+  if (opts.deleteBranch && dependentOpenPrs.length > 0 && repo) {
     for (const child of dependentOpenPrs) {
       const retargeted = yield* gh
         .runGh([
@@ -782,10 +781,6 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   }
 
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
-
-  if (willDeleteBranch) {
-    mergeArgs.push("--delete-branch");
-  }
 
   const mergeResult = yield* gh.runGh(mergeArgs).pipe(
     Effect.catchTag("GitHubCommandError", (error) => {
@@ -836,6 +831,27 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   );
 
   const shaMatch = mergeResult.stdout.match(/([0-9a-f]{7,40})/);
+
+  // `gh pr merge --delete-branch` aborts its remote delete when the head branch is checked out in a
+  // worktree; deleting the remote ref explicitly is worktree-independent. Local cleanup is separate.
+  if (willDeleteBranch && repo && info.headRefName) {
+    const remoteDeleted = yield* gh
+      .runGh([
+        "api",
+        "--method",
+        "DELETE",
+        `repos/${repo.owner}/${repo.name}/git/refs/heads/${info.headRefName}`,
+      ])
+      .pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+
+    if (!remoteDeleted) {
+      willDeleteBranch = false;
+      branchDeleteSkipped = true;
+    }
+  }
 
   const result: MergeResult = {
     merged: true,
