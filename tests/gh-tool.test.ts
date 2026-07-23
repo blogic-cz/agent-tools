@@ -1083,7 +1083,7 @@ describe("PR merge logic", () => {
     Effect.gen(function* () {
       const gh = yield* GitHubService;
 
-      yield* gh.runGhJson<PRInfo & { mergeable: string }>([
+      const info = yield* gh.runGhJson<PRInfo & { mergeable: string }>([
         "pr",
         "view",
         String(opts.pr),
@@ -1102,10 +1102,6 @@ describe("PR merge logic", () => {
       }
 
       const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
-
-      if (opts.deleteBranch) {
-        mergeArgs.push("--delete-branch");
-      }
 
       const mergeResult = yield* gh.runGh(mergeArgs).pipe(
         Effect.catchTag("GitHubCommandError", (error) => {
@@ -1149,10 +1145,26 @@ describe("PR merge logic", () => {
 
       const shaMatch = mergeResult.stdout.match(/([0-9a-f]{7,40})/);
 
+      let branchDeleted = false;
+      if (opts.deleteBranch && info.headRefName) {
+        const repo = yield* gh.getRepoInfo();
+        branchDeleted = yield* gh
+          .runGh([
+            "api",
+            "--method",
+            "DELETE",
+            `repos/${repo.owner}/${repo.name}/git/refs/heads/${info.headRefName}`,
+          ])
+          .pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+      }
+
       const result: MergeResult = {
         merged: true,
         strategy: opts.strategy,
-        branchDeleted: opts.deleteBranch,
+        branchDeleted,
         sha: shaMatch?.[1] ?? null,
       };
       return result;
@@ -1191,14 +1203,14 @@ describe("PR merge logic", () => {
     }),
   );
 
-  it.effect("with --confirm and squash strategy: constructs correct args", () =>
+  it.effect("with --confirm and squash strategy: merges then deletes the remote ref", () =>
     Effect.gen(function* () {
-      let capturedArgs: string[] = [];
+      const calls: string[][] = [];
 
       const layer = createMockGhLayer({
         runGhJson: () => Effect.succeed(mockPRInfo),
         runGh: (args) => {
-          capturedArgs = args;
+          calls.push(args);
           return Effect.succeed({
             stdout: "Merged PR #123 via squash commit abc1234",
             stderr: "",
@@ -1214,7 +1226,13 @@ describe("PR merge logic", () => {
         confirm: true,
       }).pipe(Effect.provide(layer));
 
-      expect(capturedArgs).toEqual(["pr", "merge", "123", "--squash", "--delete-branch"]);
+      expect(calls[0]).toEqual(["pr", "merge", "123", "--squash"]);
+      expect(calls[1]).toEqual([
+        "api",
+        "--method",
+        "DELETE",
+        "repos/test-owner/test-repo/git/refs/heads/feat/test",
+      ]);
       expect(result.merged).toBe(true);
       expect(result.strategy).toBe("squash");
       expect(result.branchDeleted).toBe(true);
@@ -1255,12 +1273,12 @@ describe("PR merge logic", () => {
 
   it.effect("with --confirm and rebase strategy: uses --rebase flag", () =>
     Effect.gen(function* () {
-      let capturedArgs: string[] = [];
+      const calls: string[][] = [];
 
       const layer = createMockGhLayer({
         runGhJson: () => Effect.succeed(mockPRInfo),
         runGh: (args) => {
-          capturedArgs = args;
+          calls.push(args);
           return Effect.succeed({
             stdout: "Rebased and merged PR #123 9a8b7c6",
             stderr: "",
@@ -1276,9 +1294,49 @@ describe("PR merge logic", () => {
         confirm: true,
       }).pipe(Effect.provide(layer));
 
-      expect(capturedArgs).toEqual(["pr", "merge", "123", "--rebase", "--delete-branch"]);
+      expect(calls[0]).toEqual(["pr", "merge", "123", "--rebase"]);
+      expect(calls[1]).toEqual([
+        "api",
+        "--method",
+        "DELETE",
+        "repos/test-owner/test-repo/git/refs/heads/feat/test",
+      ]);
       expect(result.merged).toBe(true);
+      expect(result.branchDeleted).toBe(true);
       expect(result.sha).toBe("9a8b7c6");
+    }),
+  );
+
+  it.effect("remote ref delete failing leaves the merge successful with branchDeleted false", () =>
+    Effect.gen(function* () {
+      const layer = createMockGhLayer({
+        runGhJson: () => Effect.succeed(mockPRInfo),
+        runGh: (args) =>
+          args[0] === "api"
+            ? Effect.fail(
+                new GitHubCommandError({
+                  message: "Reference does not exist",
+                  command: "gh api",
+                  exitCode: 1,
+                  stderr: "Reference does not exist",
+                }),
+              )
+            : Effect.succeed({
+                stdout: "Merged PR #123 via squash commit abc1234",
+                stderr: "",
+                exitCode: 0,
+              }),
+      });
+
+      const result = yield* simulateMerge({
+        pr: 123,
+        strategy: "squash",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.merged).toBe(true);
+      expect(result.branchDeleted).toBe(false);
     }),
   );
 
