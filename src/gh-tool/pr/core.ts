@@ -733,7 +733,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     yield* Console.log(
       `DRY RUN: Would merge PR #${info.number} "${info.title}" via ${opts.strategy.toUpperCase()}. ` +
         `Branch \`${info.headRefName}\` → \`${info.baseRefName}\`. ` +
-        (opts.deleteBranch ? `Branch \`${info.headRefName}\` will be deleted. ` : "") +
+        (opts.deleteBranch ? `Remote branch \`${info.headRefName}\` will be deleted. ` : "") +
         dependentNote +
         mergeableNote,
     );

@@ -520,7 +520,9 @@ export const prMergeCommand = Command.make(
       Flag.withDefault(false),
     ),
     deleteBranch: Flag.boolean("delete-branch").pipe(
-      Flag.withDescription("Delete branch after merge"),
+      Flag.withDescription(
+        "Delete the remote branch after merge (local/worktree cleanup is separate)",
+      ),
       Flag.withDefault(DEFAULT_DELETE_BRANCH),
     ),
     format: formatOption,
