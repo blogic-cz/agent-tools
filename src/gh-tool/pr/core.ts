@@ -796,24 +796,29 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   }
 
   const rollbackRetargets = Effect.gen(function* () {
+    const failed: number[] = [];
     if (retargetedChildren.length === 0 || !repo) {
-      return;
+      return failed;
     }
-    yield* Effect.forEach(
-      retargetedChildren,
-      (child) =>
-        gh
-          .runGh([
-            "api",
-            "--method",
-            "PATCH",
-            `repos/${repo.owner}/${repo.name}/pulls/${child}`,
-            "-f",
-            `base=${info.headRefName}`,
-          ])
-          .pipe(Effect.ignore),
-      { discard: true },
-    );
+    for (const child of retargetedChildren) {
+      const rolledBack = yield* gh
+        .runGh([
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repo.owner}/${repo.name}/pulls/${child}`,
+          "-f",
+          `base=${info.headRefName}`,
+        ])
+        .pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+      if (!rolledBack) {
+        failed.push(child);
+      }
+    }
+    return failed;
   });
 
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
@@ -821,15 +826,22 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   const mergeResult = yield* gh.runGh(mergeArgs).pipe(
     Effect.catchTag("GitHubCommandError", (error) =>
       rollbackRetargets.pipe(
-        Effect.andThen(() => {
+        Effect.andThen((rollbackFailed) => {
           const stderr = error.stderr.toLowerCase();
+          const rollbackNote =
+            rollbackFailed.length > 0
+              ? ` ROLLBACK INCOMPLETE: dependent PR(s) ${rollbackFailed
+                  .map((child) => `#${child}`)
+                  .join(", ")} are still retargeted to \`${info.baseRefName}\`; ` +
+                `manually restore their base to \`${info.headRefName}\`.`
+              : "";
 
           if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
             return Effect.fail(
               new GitHubMergeError({
                 message: `PR #${opts.pr} has merge conflicts`,
                 reason: "conflicts",
-                hint: "Resolve merge conflicts locally, push the fix, then retry the merge.",
+                hint: `Resolve merge conflicts locally, push the fix, then retry the merge.${rollbackNote}`,
                 nextCommand: `gh pr diff ${opts.pr}`,
               }),
             );
@@ -840,7 +852,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
               new GitHubMergeError({
                 message: `PR #${opts.pr} has failing required checks`,
                 reason: "checks_failing",
-                hint: "Wait for CI checks to pass or investigate failures before merging.",
+                hint: `Wait for CI checks to pass or investigate failures before merging.${rollbackNote}`,
                 nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
                 retryable: true,
               }),
@@ -852,7 +864,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
               new GitHubMergeError({
                 message: `PR #${opts.pr} targets a protected branch`,
                 reason: "branch_protected",
-                hint: "This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.",
+                hint: `This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.${rollbackNote}`,
               }),
             );
           }
@@ -861,7 +873,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
             new GitHubMergeError({
               message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
               reason: "unknown",
-              hint: "Check the PR state and branch protections. The PR may already be merged or closed.",
+              hint: `Check the PR state and branch protections. The PR may already be merged or closed.${rollbackNote}`,
               nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
             }),
           );

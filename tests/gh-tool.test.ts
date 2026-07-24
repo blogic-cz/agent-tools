@@ -1153,10 +1153,54 @@ describe("PR merge logic", () => {
       );
 
       expect(result).toBeInstanceOf(GitHubMergeError);
+      expect((result as GitHubMergeError).hint).not.toContain("ROLLBACK INCOMPLETE");
       const patchBases = ghCalls
         .filter((args) => args.includes("PATCH"))
         .map((args) => args[args.length - 1]);
       expect(patchBases).toEqual(["base=main", "base=feat/test"]);
+    }),
+  );
+
+  it.effect("failed rollback after failed merge is surfaced in the error hint", () =>
+    Effect.gen(function* () {
+      const result = yield* mergePR({
+        pr: 42,
+        strategy: "squash",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              Effect.succeed(
+                args[1] === "view"
+                  ? { ...mockPRInfo, number: 42 }
+                  : [{ number: 99, headRefName: "feat/child", baseRefName: "feat/test" }],
+              ),
+            runGh: (args) => {
+              if (
+                args[1] === "merge" ||
+                (args.includes("PATCH") && args.includes("base=feat/test"))
+              ) {
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: args.join(" "),
+                    exitCode: 1,
+                    stderr: "boom",
+                    message: "boom",
+                  }),
+                );
+              }
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(result).toBeInstanceOf(GitHubMergeError);
+      expect((result as GitHubMergeError).hint).toContain("ROLLBACK INCOMPLETE");
+      expect((result as GitHubMergeError).hint).toContain("#99");
     }),
   );
 
