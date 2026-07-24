@@ -1115,7 +1115,7 @@ describe("PR merge logic", () => {
     }),
   );
 
-  it.effect("failed merge leaves dependent PRs untouched (no retarget before merge)", () =>
+  it.effect("failed merge rolls dependent PR retargets back to the head branch", () =>
     Effect.gen(function* () {
       const ghCalls: string[][] = [];
 
@@ -1153,7 +1153,10 @@ describe("PR merge logic", () => {
       );
 
       expect(result).toBeInstanceOf(GitHubMergeError);
-      expect(ghCalls.some((args) => args.includes("PATCH"))).toBe(false);
+      const patchBases = ghCalls
+        .filter((args) => args.includes("PATCH"))
+        .map((args) => args[args.length - 1]);
+      expect(patchBases).toEqual(["base=main", "base=feat/test"]);
     }),
   );
 
