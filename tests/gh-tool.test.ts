@@ -31,6 +31,7 @@ import {
   editPR,
   fetchChecksForCommand,
   fetchFailedChecks,
+  mergePR,
   rerunChecks,
   viewPR,
   watchPRs,
@@ -1074,6 +1075,88 @@ describe("PR edit", () => {
   );
 });
 describe("PR merge logic", () => {
+  it.effect("long-lived head (promotion PR) merges without retargeting or branch deletion", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const jsonCalls: string[][] = [];
+
+      const result = yield* mergePR({
+        pr: 458,
+        strategy: "merge",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              jsonCalls.push(args);
+              return Effect.succeed({
+                ...mockPRInfo,
+                number: 458,
+                headRefName: "main",
+                baseRefName: "staging",
+              });
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.succeed({ stdout: "abc1234", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(jsonCalls.some((args) => args.includes("--base"))).toBe(false);
+      expect(ghCalls.some((args) => args.includes("PATCH"))).toBe(false);
+      expect(ghCalls.some((args) => args.includes("DELETE"))).toBe(false);
+      expect(result.merged).toBe(true);
+      expect(result.branchDeleted).toBe(false);
+      expect(result.branchDeleteSkipped).toBe(true);
+      expect(result.retargetedChildren).toBeUndefined();
+    }),
+  );
+
+  it.effect("failed merge leaves dependent PRs untouched (no retarget before merge)", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+
+      const result = yield* mergePR({
+        pr: 42,
+        strategy: "squash",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              Effect.succeed(
+                args[1] === "view"
+                  ? { ...mockPRInfo, number: 42 }
+                  : [{ number: 99, headRefName: "feat/child", baseRefName: "feat/test" }],
+              ),
+            runGh: (args) => {
+              ghCalls.push(args);
+              if (args[1] === "merge") {
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh pr merge",
+                    exitCode: 1,
+                    stderr: "GraphQL: Pull Request is still a draft (mergePullRequest)",
+                    message: "merge failed",
+                  }),
+                );
+              }
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(result).toBeInstanceOf(GitHubMergeError);
+      expect(ghCalls.some((args) => args.includes("PATCH"))).toBe(false);
+    }),
+  );
+
   const simulateMerge = (opts: {
     pr: number;
     strategy: MergeStrategy;

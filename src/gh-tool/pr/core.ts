@@ -24,6 +24,7 @@ import { runLocalCommand } from "./helpers";
 import { diagnoseLogEntries, fetchJobLogs, formatLogEntries, parseRawJobLogs } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
+const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
 const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
 
@@ -695,13 +696,19 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
   ]);
 
+  // A long-lived branch (default/env branch) as PR head means a promotion PR
+  // (e.g. main -> staging). PRs based on it are unrelated work, not a stack —
+  // retargeting them would mass-rewrite their base — and the branch itself
+  // must never be deleted.
+  const headIsLongLived = LONG_LIVED_BRANCHES.has(info.headRefName);
+
   // Stacked-PR safety: find open PRs that depend on this PR's head branch.
   // Deleting the head branch of an open PR that uses it as its base CLOSES that
   // PR (GitHub CLI behavior, see cli/cli#1168) instead of retargeting it. We
   // retarget such dependents onto this PR's base first, and only delete the
   // branch if EVERY retarget succeeds (fail-closed).
   const dependentOpenPrs =
-    opts.deleteBranch && info.headRefName
+    opts.deleteBranch && !headIsLongLived && info.headRefName
       ? yield* gh.runGhJson<Array<{ number: number; headRefName: string; baseRefName: string }>>([
           "pr",
           "list",
@@ -722,11 +729,16 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
         ? "PR is mergeable."
         : `PR mergeable status: ${info.mergeable}`;
 
-    const dependentNote =
-      dependentOpenPrs.length > 0
+    const dependentNote = headIsLongLived
+      ? opts.deleteBranch
+        ? `Head \`${info.headRefName}\` is a long-lived branch; deletion and dependent retargeting are skipped. `
+        : ""
+      : dependentOpenPrs.length > 0
         ? `${dependentOpenPrs.length} dependent open PR(s) (${dependentOpenPrs
             .map((d) => `#${d.number}`)
-            .join(", ")}) will be retargeted to \`${info.baseRefName}\` before deletion; ` +
+            .join(
+              ", ",
+            )}) will be retargeted to \`${info.baseRefName}\` after merge, before deletion; ` +
           "branch deletion is skipped if any retarget fails. "
         : "";
 
@@ -747,38 +759,10 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     return result;
   }
 
-  // Retarget dependents BEFORE merging so the head branch can be deleted safely.
-  // If any retarget fails, keep the branch (fail-closed) so no dependent PR is closed.
-  let willDeleteBranch = opts.deleteBranch;
-  let branchDeleteSkipped = false;
+  let willDeleteBranch = opts.deleteBranch && !headIsLongLived;
+  let branchDeleteSkipped = opts.deleteBranch && headIsLongLived;
   const retargetedChildren: number[] = [];
-  const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
-
-  if (opts.deleteBranch && dependentOpenPrs.length > 0 && repo) {
-    for (const child of dependentOpenPrs) {
-      const retargeted = yield* gh
-        .runGh([
-          "api",
-          "--method",
-          "PATCH",
-          `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
-          "-f",
-          `base=${info.baseRefName}`,
-        ])
-        .pipe(
-          Effect.as(true),
-          Effect.orElseSucceed(() => false),
-        );
-
-      if (retargeted) {
-        retargetedChildren.push(child.number);
-      } else {
-        willDeleteBranch = false;
-        branchDeleteSkipped = true;
-        break;
-      }
-    }
-  }
+  const repo = willDeleteBranch ? yield* gh.getRepoInfo() : null;
 
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
 
@@ -831,6 +815,36 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   );
 
   const shaMatch = mergeResult.stdout.match(/([0-9a-f]{7,40})/);
+
+  // Retarget dependents only after the merge succeeded (a failed merge must
+  // leave them untouched) and before deleting their base branch, which would
+  // close them (cli/cli#1168). If any retarget fails, keep the branch
+  // (fail-closed) so no dependent PR is closed.
+  if (willDeleteBranch && dependentOpenPrs.length > 0 && repo) {
+    for (const child of dependentOpenPrs) {
+      const retargeted = yield* gh
+        .runGh([
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
+          "-f",
+          `base=${info.baseRefName}`,
+        ])
+        .pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+
+      if (retargeted) {
+        retargetedChildren.push(child.number);
+      } else {
+        willDeleteBranch = false;
+        branchDeleteSkipped = true;
+        break;
+      }
+    }
+  }
 
   // `gh pr merge --delete-branch` aborts its remote delete when the head branch is checked out in a
   // worktree; deleting the remote ref explicitly is worktree-independent. Local cleanup is separate.
