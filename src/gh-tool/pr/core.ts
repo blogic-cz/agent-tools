@@ -16,6 +16,7 @@ import type {
   WorkflowRunDetail,
 } from "#gh/types";
 
+import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
@@ -24,6 +25,7 @@ import { runLocalCommand } from "./helpers";
 import { diagnoseLogEntries, fetchJobLogs, formatLogEntries, parseRawJobLogs } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
+const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
 const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
 
@@ -695,13 +697,22 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
   ]);
 
+  const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
+
+  // A long-lived branch (default/env branch) as PR head means a promotion PR
+  // (e.g. main -> staging). PRs based on it are unrelated work, not a stack —
+  // retargeting them would mass-rewrite their base — and the branch itself
+  // must never be deleted.
+  const headIsLongLived =
+    LONG_LIVED_BRANCHES.has(info.headRefName) || info.headRefName === repo?.defaultBranch;
+
   // Stacked-PR safety: find open PRs that depend on this PR's head branch.
   // Deleting the head branch of an open PR that uses it as its base CLOSES that
   // PR (GitHub CLI behavior, see cli/cli#1168) instead of retargeting it. We
   // retarget such dependents onto this PR's base first, and only delete the
   // branch if EVERY retarget succeeds (fail-closed).
   const dependentOpenPrs =
-    opts.deleteBranch && info.headRefName
+    opts.deleteBranch && !headIsLongLived && info.headRefName
       ? yield* gh.runGhJson<Array<{ number: number; headRefName: string; baseRefName: string }>>([
           "pr",
           "list",
@@ -722,18 +733,23 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
         ? "PR is mergeable."
         : `PR mergeable status: ${info.mergeable}`;
 
-    const dependentNote =
-      dependentOpenPrs.length > 0
+    const dependentNote = headIsLongLived
+      ? opts.deleteBranch
+        ? `Head \`${info.headRefName}\` is a long-lived branch; deletion and dependent retargeting are skipped. `
+        : ""
+      : dependentOpenPrs.length > 0
         ? `${dependentOpenPrs.length} dependent open PR(s) (${dependentOpenPrs
             .map((d) => `#${d.number}`)
-            .join(", ")}) will be retargeted to \`${info.baseRefName}\` before deletion; ` +
-          "branch deletion is skipped if any retarget fails. "
+            .join(", ")}) will be retargeted to \`${info.baseRefName}\` before deletion ` +
+          "(rolled back if the merge fails); branch deletion is skipped if any retarget fails. "
         : "";
 
     yield* Console.log(
       `DRY RUN: Would merge PR #${info.number} "${info.title}" via ${opts.strategy.toUpperCase()}. ` +
         `Branch \`${info.headRefName}\` → \`${info.baseRefName}\`. ` +
-        (opts.deleteBranch ? `Remote branch \`${info.headRefName}\` will be deleted. ` : "") +
+        (opts.deleteBranch && !headIsLongLived
+          ? `Remote branch \`${info.headRefName}\` will be deleted. `
+          : "") +
         dependentNote +
         mergeableNote,
     );
@@ -747,14 +763,16 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     return result;
   }
 
-  // Retarget dependents BEFORE merging so the head branch can be deleted safely.
-  // If any retarget fails, keep the branch (fail-closed) so no dependent PR is closed.
-  let willDeleteBranch = opts.deleteBranch;
-  let branchDeleteSkipped = false;
+  let willDeleteBranch = opts.deleteBranch && !headIsLongLived;
+  let branchDeleteSkipped = opts.deleteBranch && headIsLongLived;
   const retargetedChildren: number[] = [];
-  const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
 
-  if (opts.deleteBranch && dependentOpenPrs.length > 0 && repo) {
+  // Retarget dependents BEFORE merging: repos with "Automatically delete head
+  // branches" delete the head as part of the merge itself, which closes any PR
+  // still based on it (cli/cli#1168). A failed merge rolls the retargets back.
+  // If any retarget fails, keep the branch (fail-closed) so no dependent PR is
+  // closed.
+  if (willDeleteBranch && dependentOpenPrs.length > 0 && repo) {
     for (const child of dependentOpenPrs) {
       const retargeted = yield* gh
         .runGh([
@@ -780,54 +798,102 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     }
   }
 
+  const rollbackRetargets = Effect.gen(function* () {
+    const failed: number[] = [];
+    if (retargetedChildren.length === 0 || !repo) {
+      return failed;
+    }
+    for (const child of retargetedChildren) {
+      const rolledBack = yield* gh
+        .runGh([
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repo.owner}/${repo.name}/pulls/${child}`,
+          "-f",
+          `base=${info.headRefName}`,
+        ])
+        .pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+      if (!rolledBack) {
+        failed.push(child);
+      }
+    }
+    return failed;
+  });
+
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
 
   const mergeResult = yield* gh.runGh(mergeArgs).pipe(
-    Effect.catchTag("GitHubCommandError", (error) => {
-      const stderr = error.stderr.toLowerCase();
+    Effect.catch((error) =>
+      rollbackRetargets.pipe(
+        Effect.andThen(
+          (
+            rollbackFailed,
+          ): Effect.Effect<never, GitHubNotFoundError | GitHubAuthError | GitHubMergeError> => {
+            const rollbackNote =
+              rollbackFailed.length > 0
+                ? ` ROLLBACK INCOMPLETE: dependent PR(s) ${rollbackFailed
+                    .map((child) => `#${child}`)
+                    .join(", ")} are still retargeted to \`${info.baseRefName}\`; ` +
+                  `manually restore their base to \`${info.headRefName}\`.`
+                : "";
 
-      if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
-        return Effect.fail(
-          new GitHubMergeError({
-            message: `PR #${opts.pr} has merge conflicts`,
-            reason: "conflicts",
-            hint: "Resolve merge conflicts locally, push the fix, then retry the merge.",
-            nextCommand: `gh pr diff ${opts.pr}`,
-          }),
-        );
-      }
+            if (error._tag !== "GitHubCommandError") {
+              return rollbackNote === ""
+                ? Effect.fail(error)
+                : Console.error(rollbackNote.trim()).pipe(Effect.andThen(Effect.fail(error)));
+            }
 
-      if (stderr.includes("required status check") || stderr.includes("checks")) {
-        return Effect.fail(
-          new GitHubMergeError({
-            message: `PR #${opts.pr} has failing required checks`,
-            reason: "checks_failing",
-            hint: "Wait for CI checks to pass or investigate failures before merging.",
-            nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
-            retryable: true,
-          }),
-        );
-      }
+            const stderr = error.stderr.toLowerCase();
 
-      if (stderr.includes("protected branch")) {
-        return Effect.fail(
-          new GitHubMergeError({
-            message: `PR #${opts.pr} targets a protected branch`,
-            reason: "branch_protected",
-            hint: "This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.",
-          }),
-        );
-      }
+            if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
+              return Effect.fail(
+                new GitHubMergeError({
+                  message: `PR #${opts.pr} has merge conflicts`,
+                  reason: "conflicts",
+                  hint: `Resolve merge conflicts locally, push the fix, then retry the merge.${rollbackNote}`,
+                  nextCommand: `gh pr diff ${opts.pr}`,
+                }),
+              );
+            }
 
-      return Effect.fail(
-        new GitHubMergeError({
-          message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
-          reason: "unknown",
-          hint: "Check the PR state and branch protections. The PR may already be merged or closed.",
-          nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
-        }),
-      );
-    }),
+            if (stderr.includes("required status check") || stderr.includes("checks")) {
+              return Effect.fail(
+                new GitHubMergeError({
+                  message: `PR #${opts.pr} has failing required checks`,
+                  reason: "checks_failing",
+                  hint: `Wait for CI checks to pass or investigate failures before merging.${rollbackNote}`,
+                  nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
+                  retryable: true,
+                }),
+              );
+            }
+
+            if (stderr.includes("protected branch")) {
+              return Effect.fail(
+                new GitHubMergeError({
+                  message: `PR #${opts.pr} targets a protected branch`,
+                  reason: "branch_protected",
+                  hint: `This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.${rollbackNote}`,
+                }),
+              );
+            }
+
+            return Effect.fail(
+              new GitHubMergeError({
+                message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
+                reason: "unknown",
+                hint: `Check the PR state and branch protections. The PR may already be merged or closed.${rollbackNote}`,
+                nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+              }),
+            );
+          },
+        ),
+      ),
+    ),
   );
 
   const shaMatch = mergeResult.stdout.match(/([0-9a-f]{7,40})/);
