@@ -270,7 +270,6 @@ export class K8sService extends Context.Service<
 
         const executeCommand = Effect.fn("K8sService.executeCommand")(function* (
           argv: readonly string[],
-          cmd: string,
           profile?: string,
         ) {
           const k8sConfig = yield* requireK8sConfig(profile);
@@ -364,7 +363,7 @@ export class K8sService extends Context.Service<
             });
           }
 
-          const result = yield* executeCommand(securityCheck.argv, cmd, profile);
+          const result = yield* executeCommand(securityCheck.argv, profile);
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
               message: result.stderr ?? `kubectl exited with code ${result.exitCode}`,
@@ -408,7 +407,7 @@ export class K8sService extends Context.Service<
             };
           }
 
-          const result = yield* executeCommand(securityCheck.argv, cmd, profile);
+          const result = yield* executeCommand(securityCheck.argv, profile);
 
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
@@ -455,11 +454,7 @@ export class K8sService extends Context.Service<
           }
 
           const realpathArgv = ["exec", pod, "--", "realpath", normalizedBase, normalizedPath];
-          const realpathResult = yield* executeCommand(
-            realpathArgv,
-            realpathArgv.map(renderArg).join(" "),
-            profile,
-          );
+          const realpathResult = yield* executeCommand(realpathArgv, profile);
           if (realpathResult.exitCode !== 0) {
             return yield* new K8sCommandError({
               message:
@@ -493,7 +488,7 @@ export class K8sService extends Context.Service<
 
           const argv = ["exec", pod, "--", "tail", "-n", String(lines), canonicalPath];
           const startTime = Date.now();
-          const result = yield* executeCommand(argv, argv.map(renderArg).join(" "), profile);
+          const result = yield* executeCommand(argv, profile);
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
               message: result.stderr ?? `kubectl exited with code ${result.exitCode}`,
