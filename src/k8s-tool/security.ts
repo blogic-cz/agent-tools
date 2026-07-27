@@ -136,6 +136,7 @@ const controlledFlags = new Set([
   "--insecure-skip-tls-verify",
   "--insecure-skip-tls-verify-backend",
 ]);
+const attachedShortValueFlags = ["-n", "-o", "-l", "-L"] as const;
 const flagsWithoutValues = new Set([
   "-A",
   "--all-namespaces",
@@ -173,6 +174,12 @@ function resourceOperand(argv: string[], verbIndex: number): string | null | und
         if (!arg.includes("=")) i++;
         continue;
       }
+      if (
+        attachedShortValueFlags.some(
+          (shortFlag) => arg.startsWith(shortFlag) && arg.length > shortFlag.length,
+        )
+      )
+        continue;
       if (flag !== undefined && flagsWithoutValues.has(flag)) continue;
       return null;
     }

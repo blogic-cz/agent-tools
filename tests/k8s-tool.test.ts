@@ -1657,6 +1657,11 @@ describe("kubectl command security", () => {
       "get pod secret",
       "get pods -n secret",
       "get configmap secret",
+      "get -ntest pods",
+      "get -ojson pods",
+      "get -lapp=api pods",
+      "get -Lteam pods",
+      "describe -ntest pod/app-pod",
     ]) {
       it(`allows ordinary resource read '${cmd}'`, () => {
         expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);

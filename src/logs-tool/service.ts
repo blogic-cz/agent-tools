@@ -1,7 +1,7 @@
 import { isAbsolute, posix, relative, resolve } from "node:path";
 
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Context, Effect, Layer, Result, Stream } from "effect";
+import { Context, Effect, Layer, Result } from "effect";
 
 import type { Environment, LogFile, ReadOptions } from "./types";
 
@@ -9,6 +9,7 @@ import { K8sService, K8sServiceLayer } from "#k8s/service";
 import { ConfigService, ConfigServiceLayer, getToolConfig } from "#config/loader";
 import type { LogsConfig } from "#config/types";
 import { LogsNotFoundError, LogsReadError, type LogsError } from "./errors";
+import { collectProcessOutput } from "#shared/exec";
 import { transformLogOutput } from "./transformers";
 
 export const parseLogFiles = (output: string): LogFile[] => {
@@ -101,15 +102,7 @@ export class LogsService extends Context.Service<
               stderr: "pipe",
             });
             const process = yield* executor.spawn(command);
-
-            const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
-            const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
-
-            const stdout = stdoutChunk.join("");
-            const stderr = stderrChunk.join("");
-            const exitCode = yield* process.exitCode;
-
-            return { stdout, stderr, exitCode };
+            return yield* collectProcessOutput(process);
           }),
         ).pipe(
           Effect.catch((platformError) =>
@@ -129,13 +122,7 @@ export class LogsService extends Context.Service<
               stderr: "pipe",
             });
             const process = yield* executor.spawn(command);
-            const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
-            const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
-            return {
-              stdout: stdoutChunk.join(""),
-              stderr: stderrChunk.join(""),
-              exitCode: yield* process.exitCode,
-            };
+            return yield* collectProcessOutput(process);
           }),
         ).pipe(
           Effect.catch((platformError) =>
