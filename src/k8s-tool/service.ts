@@ -1,3 +1,5 @@
+import { posix } from "node:path";
+
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Context, Effect, Layer, Option, Ref, Stream } from "effect";
 
@@ -16,7 +18,7 @@ import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
-import { isKubectlCommandAllowed } from "./security";
+import { isKubectlCommandAllowed, isSafeLogPath } from "./security";
 
 export class K8sService extends Context.Service<
   K8sService,
@@ -32,6 +34,16 @@ export class K8sService extends Context.Service<
     readonly runKubectl: (
       cmd: string,
       dryRun: boolean,
+      profile?: string,
+    ) => Effect.Effect<
+      CommandResult,
+      K8sContextError | K8sCommandError | K8sTimeoutError | K8sDangerousCommandError
+    >;
+    readonly runLogTail: (
+      pod: string,
+      basePath: string,
+      path: string,
+      lines: number,
       profile?: string,
     ) => Effect.Effect<
       CommandResult,
@@ -86,6 +98,10 @@ export class K8sService extends Context.Service<
 
         const withKubeconfig = (command: string, kubeconfig: string | undefined) =>
           kubeconfig ? `KUBECONFIG=${quoteShellArg(kubeconfig)} ${command}` : command;
+        const renderArg = (arg: string) =>
+          /^[A-Za-z0-9_./:=,@+-]+$/.test(arg) ? arg : quoteShellArg(arg);
+        const renderKubectlCommand = (context: string, argv: readonly string[]) =>
+          ["kubectl", "--context", context, ...argv].map(renderArg).join(" ");
 
         // Cache context by selected profile/cluster instead of a single default profile.
         const contextRef = yield* Ref.make<Record<string, string>>({});
@@ -253,6 +269,7 @@ export class K8sService extends Context.Service<
         });
 
         const executeCommand = Effect.fn("K8sService.executeCommand")(function* (
+          argv: readonly string[],
           cmd: string,
           profile?: string,
         ) {
@@ -275,9 +292,29 @@ export class K8sService extends Context.Service<
                 });
               }
 
-              const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
-
-              const resultOption = yield* runShellCommand(fullCommand, timeoutMs);
+              const fullCommand = renderKubectlCommand(context, argv);
+              const command = ChildProcess.make("kubectl", ["--context", context, ...argv], {
+                stdout: "pipe",
+                stderr: "pipe",
+                ...(kubeconfig ? { env: { KUBECONFIG: kubeconfig }, extendEnv: true } : {}),
+              });
+              const resultOption = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const process = yield* executor.spawn(command);
+                  return yield* collectProcessOutput(process);
+                }),
+              ).pipe(
+                Effect.timeoutOption(timeoutMs),
+                Effect.mapError(
+                  (platformError) =>
+                    new K8sCommandError({
+                      message: `Command execution failed: ${String(platformError)}`,
+                      command: fullCommand,
+                      exitCode: -1,
+                      stderr: undefined,
+                    }),
+                ),
+              );
 
               if (Option.isNone(resultOption)) {
                 return yield* new K8sTimeoutError({
@@ -316,16 +353,18 @@ export class K8sService extends Context.Service<
         ) {
           // Security: block dangerous commands before execution
           const securityCheck = isKubectlCommandAllowed(cmd);
-          if (!securityCheck.allowed) {
+          if (!securityCheck.allowed || !securityCheck.argv) {
             return yield* new K8sDangerousCommandError({
               message: securityCheck.reason ?? "Command not allowed",
               command: cmd,
-              verb: securityCheck.verb,
-              hint: "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
+              ...(securityCheck.verb ? { verb: securityCheck.verb } : {}),
+              hint:
+                securityCheck.hint ??
+                "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
             });
           }
 
-          const result = yield* executeCommand(cmd, profile);
+          const result = yield* executeCommand(securityCheck.argv, cmd, profile);
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
               message: result.stderr ?? `kubectl exited with code ${result.exitCode}`,
@@ -345,20 +384,22 @@ export class K8sService extends Context.Service<
         ) {
           // Security: block dangerous commands before execution (even dry-run)
           const securityCheck = isKubectlCommandAllowed(cmd);
-          if (!securityCheck.allowed) {
+          if (!securityCheck.allowed || !securityCheck.argv) {
             return yield* new K8sDangerousCommandError({
               message: securityCheck.reason ?? "Command not allowed",
               command: cmd,
-              verb: securityCheck.verb,
-              hint: "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
+              ...(securityCheck.verb ? { verb: securityCheck.verb } : {}),
+              hint:
+                securityCheck.hint ??
+                "AI agents can only run read-only kubectl commands. For mutating operations, use kubectl directly or ask a human operator.",
             });
           }
 
           const startTime = Date.now();
           if (dryRun) {
             const k8sConfig = yield* requireK8sConfig(profile);
-            const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
-            const fullCommand = withKubeconfig(`kubectl --context ${context} ${cmd}`, kubeconfig);
+            const { context } = yield* resolveContext(profile, k8sConfig);
+            const fullCommand = renderKubectlCommand(context, securityCheck.argv);
             return {
               success: true,
               command: fullCommand,
@@ -367,7 +408,7 @@ export class K8sService extends Context.Service<
             };
           }
 
-          const result = yield* executeCommand(cmd, profile);
+          const result = yield* executeCommand(securityCheck.argv, cmd, profile);
 
           if (result.exitCode !== 0) {
             return yield* new K8sCommandError({
@@ -386,7 +427,91 @@ export class K8sService extends Context.Service<
           };
         });
 
-        return { runCommand, runKubectl };
+        const runLogTail = Effect.fn("K8sService.runLogTail")(function* (
+          pod: string,
+          basePath: string,
+          path: string,
+          lines: number,
+          profile?: string,
+        ) {
+          const normalizedBase = posix.resolve(basePath);
+          const normalizedPath = posix.resolve(path);
+          const lexicalRelative = posix.relative(normalizedBase, normalizedPath);
+          if (
+            !/^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$/.test(pod) ||
+            !Number.isInteger(lines) ||
+            lines < 1 ||
+            lexicalRelative === ".." ||
+            lexicalRelative.startsWith("../") ||
+            posix.isAbsolute(lexicalRelative) ||
+            !isSafeLogPath(normalizedPath)
+          ) {
+            return yield* new K8sDangerousCommandError({
+              message: "Invalid internal log-tail request.",
+              command: "exec tail",
+              verb: "exec",
+              hint: "Use logs-tool with a log file inside its configured remote directory.",
+            });
+          }
+
+          const realpathArgv = ["exec", pod, "--", "realpath", normalizedBase, normalizedPath];
+          const realpathResult = yield* executeCommand(
+            realpathArgv,
+            realpathArgv.map(renderArg).join(" "),
+            profile,
+          );
+          if (realpathResult.exitCode !== 0) {
+            return yield* new K8sCommandError({
+              message:
+                realpathResult.stderr ||
+                `Remote realpath exited with code ${realpathResult.exitCode}`,
+              command: realpathResult.command,
+              exitCode: realpathResult.exitCode,
+              stderr: realpathResult.stderr || undefined,
+            });
+          }
+          const [canonicalBase, canonicalPath] = realpathResult.stdout.trim().split("\n");
+          const canonicalRelative =
+            canonicalBase === undefined || canonicalPath === undefined
+              ? ".."
+              : posix.relative(canonicalBase, canonicalPath);
+          if (
+            canonicalBase === undefined ||
+            canonicalPath === undefined ||
+            canonicalRelative === ".." ||
+            canonicalRelative.startsWith("../") ||
+            posix.isAbsolute(canonicalRelative) ||
+            !isSafeLogPath(canonicalPath)
+          ) {
+            return yield* new K8sDangerousCommandError({
+              message: "Canonical log path escapes the configured remote directory.",
+              command: realpathResult.command,
+              verb: "exec",
+              hint: "Remove symlinks that point outside the configured remote log directory.",
+            });
+          }
+
+          const argv = ["exec", pod, "--", "tail", "-n", String(lines), canonicalPath];
+          const startTime = Date.now();
+          const result = yield* executeCommand(argv, argv.map(renderArg).join(" "), profile);
+          if (result.exitCode !== 0) {
+            return yield* new K8sCommandError({
+              message: result.stderr ?? `kubectl exited with code ${result.exitCode}`,
+              command: result.command,
+              exitCode: result.exitCode,
+              stderr: result.stderr ?? undefined,
+            });
+          }
+
+          return {
+            success: true,
+            output: result.stdout.trim(),
+            command: result.command,
+            executionTimeMs: Date.now() - startTime,
+          };
+        });
+
+        return { runCommand, runKubectl, runLogTail };
       }),
     ),
   );

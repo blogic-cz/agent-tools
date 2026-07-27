@@ -72,11 +72,20 @@ function createMockChildProcessSpawnerLayer(
       const shellCommand = commandToShellString(command);
       observedShellCommands?.push(shellCommand);
 
-      const response = shellResponses[shellCommand] ?? {
-        stdout: "",
-        stderr: `No mock shell response for command: ${shellCommand}`,
-        exitCode: 127,
-      };
+      const directRealpathResponse =
+        command._tag === "StandardCommand" && command.command === "realpath"
+          ? {
+              stdout: `${command.args.at(-2) ?? ""}\n${command.args.at(-1) ?? ""}\n`,
+              stderr: "",
+              exitCode: 0,
+            }
+          : undefined;
+      const response = shellResponses[shellCommand] ??
+        directRealpathResponse ?? {
+          stdout: "",
+          stderr: `No mock shell response for command: ${shellCommand}`,
+          exitCode: 127,
+        };
 
       return Effect.succeed(createMockProcess(response));
     }),
@@ -105,6 +114,21 @@ function createMockK8sServiceLayer(
           executionTimeMs: 0,
         },
       );
+    },
+    runLogTail: (pod: string, _basePath: string, path: string, lines: number, profile?: string) => {
+      const cmd = `exec ${JSON.stringify(pod)} -- tail -n ${lines} ${JSON.stringify(path)}`;
+      observedK8sCommands?.push(profile ? `${profile}:${cmd}` : cmd);
+      const response = k8sResponses[cmd];
+      return response instanceof K8sCommandError
+        ? Effect.fail(response)
+        : Effect.succeed(
+            response ?? {
+              success: true,
+              output: "",
+              command: `kubectl ${cmd}`,
+              executionTimeMs: 0,
+            },
+          );
     },
   });
 }
@@ -330,7 +354,7 @@ describe("LogsService", () => {
   });
 
   describe("readLogs", () => {
-    it.effect("sanitizes local grep shell argument to prevent injection", () => {
+    it.effect("filters local logs literally without interpolating grep into the shell", () => {
       const observedShellCommands: Array<string> = [];
       return Effect.gen(function* () {
         const service = yield* LogsService;
@@ -342,10 +366,9 @@ describe("LogsService", () => {
 
         const result = yield* service.readLogs("local", options);
 
-        expect(result).toBe("matched line");
-        expect(observedShellCommands).toContain(
-          "tail -100 '/app/logs/app.log' | grep -i 'error'\\''; rm -rf /; `whoami`'",
-        );
+        expect(result).toBe("error'; rm -rf /; `whoami` line");
+        expect(observedShellCommands).toContain("tail -100 '/app/logs/app.log'");
+        expect(observedShellCommands.every((command) => !command.includes("grep"))).toBe(true);
       }).pipe(
         Effect.provide(
           createLogsServiceLayer({
@@ -356,8 +379,8 @@ describe("LogsService", () => {
                 stderr: "",
                 exitCode: 0,
               },
-              "tail -100 '/app/logs/app.log' | grep -i 'error'\\''; rm -rf /; `whoami`'": {
-                stdout: "matched line\n",
+              "tail -100 '/app/logs/app.log'": {
+                stdout: "other line\nerror'; rm -rf /; `whoami` line\n",
                 stderr: "",
                 exitCode: 0,
               },
@@ -396,7 +419,7 @@ describe("LogsService", () => {
       ),
     );
 
-    it.effect("returns no matching lines when local grep exits with code 1", () =>
+    it.effect("returns no matching lines when local literal filter has no match", () =>
       Effect.gen(function* () {
         const service = yield* LogsService;
         const options: ReadOptions = {
@@ -413,16 +436,114 @@ describe("LogsService", () => {
         Effect.provide(
           createLogsServiceLayer({
             shellResponses: {
-              "tail -25 '/app/logs/app.log' | grep -i 'timeout'": {
-                stdout: "",
+              "tail -25 '/app/logs/app.log'": {
+                stdout: "request completed\n",
                 stderr: "",
-                exitCode: 1,
+                exitCode: 0,
               },
             },
           }),
         ),
       ),
     );
+
+    it.effect("uses the same case-insensitive literal filter locally and remotely", () =>
+      Effect.gen(function* () {
+        const service = yield* LogsService;
+        const options: ReadOptions = {
+          tail: 10,
+          file: "app.log",
+          grep: "error[42]",
+          pretty: false,
+        };
+
+        expect(yield* service.readLogs("local", options)).toBe("ERROR[42] local");
+        expect(yield* service.readLogs("test", options)).toBe("error[42] remote");
+      }).pipe(
+        Effect.provide(
+          createLogsServiceLayer({
+            shellResponses: {
+              "tail -10 '/app/logs/app.log'": {
+                stdout: "ERROR4 regex-only\nERROR[42] local\n",
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+            k8sResponses: {
+              "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
+                {
+                  success: true,
+                  output: "app-pod",
+                  command: "kubectl get pods",
+                  executionTimeMs: 1,
+                },
+              'exec "app-pod" -- tail -n 10 "/var/log/app/app.log"': {
+                success: true,
+                output: "error4 regex-only\nerror[42] remote\n",
+                command: "kubectl exec",
+                executionTimeMs: 1,
+              },
+            },
+          }),
+        ),
+      ),
+    );
+
+    it.effect("rejects local and remote log path traversal before any command", () => {
+      const observedShellCommands: string[] = [];
+      const observedK8sCommands: string[] = [];
+
+      return Effect.gen(function* () {
+        const service = yield* LogsService;
+        for (const env of ["local", "test"] as const) {
+          const result = yield* service
+            .readLogs(env, {
+              tail: 20,
+              file: "../../../etc/credentials.log",
+              pretty: false,
+            })
+            .pipe(Effect.result);
+          Result.match(result, {
+            onFailure: (error) => expect(error).toBeInstanceOf(LogsReadError),
+            onSuccess: () => expect.fail("Expected traversal rejection"),
+          });
+        }
+
+        expect(observedShellCommands).toEqual([]);
+        expect(observedK8sCommands).toEqual([]);
+      }).pipe(
+        Effect.provide(createLogsServiceLayer({ observedShellCommands, observedK8sCommands })),
+      );
+    });
+
+    it.effect("rejects a local log symlink that resolves outside the configured directory", () => {
+      const observedShellCommands: string[] = [];
+      return Effect.gen(function* () {
+        const service = yield* LogsService;
+        const result = yield* service
+          .readLogs("local", { tail: 20, file: "debug.log", pretty: false })
+          .pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (error) => expect(error).toBeInstanceOf(LogsReadError),
+          onSuccess: () => expect.fail("Expected symlink escape rejection"),
+        });
+        expect(observedShellCommands).toEqual(["realpath /app/logs /app/logs/debug.log"]);
+      }).pipe(
+        Effect.provide(
+          createLogsServiceLayer({
+            observedShellCommands,
+            shellResponses: {
+              "realpath /app/logs /app/logs/debug.log": {
+                stdout: "/app/logs\n/var/run/secrets/debug.log\n",
+                stderr: "",
+                exitCode: 0,
+              },
+            },
+          }),
+        ),
+      );
+    });
 
     it.effect("fails local read when command exits non-zero and not grep-empty", () =>
       Effect.gen(function* () {
@@ -472,9 +593,9 @@ describe("LogsService", () => {
 
         const result = yield* service.readLogs("test", options);
 
-        expect(result).toBe("fatal line");
+        expect(result).toBe("fatal'; echo bad line");
         expect(observedK8sCommands).toContain(
-          "exec app-pod -- sh -c \"tail -50 '/var/log/app/api.log' | grep -i 'fatal'\\''; echo bad'\"",
+          'exec "app-pod" -- tail -n 50 "/var/log/app/api.log"',
         );
       }).pipe(
         Effect.provide(
@@ -488,13 +609,12 @@ describe("LogsService", () => {
                   command: "kubectl get pods",
                   executionTimeMs: 5,
                 },
-              "exec app-pod -- sh -c \"tail -50 '/var/log/app/api.log' | grep -i 'fatal'\\''; echo bad'\"":
-                {
-                  success: true,
-                  output: "fatal line\n",
-                  command: "kubectl exec app-pod -- sh -c ...",
-                  executionTimeMs: 9,
-                },
+              'exec "app-pod" -- tail -n 50 "/var/log/app/api.log"': {
+                success: true,
+                output: "fatal'; echo bad line\n",
+                command: "kubectl exec app-pod -- tail ...",
+                executionTimeMs: 9,
+              },
             },
           }),
         ),
@@ -524,7 +644,7 @@ describe("LogsService", () => {
                   command: "kubectl get pods",
                   executionTimeMs: 3,
                 },
-              "exec prod-pod -- sh -c \"tail -2 '/var/log/app/app.log'\"": {
+              'exec "prod-pod" -- tail -n 2 "/var/log/app/app.log"': {
                 success: true,
                 output: '{"x":1}\nnot json',
                 command: "kubectl exec prod-pod -- sh -c ...",
@@ -560,12 +680,12 @@ describe("LogsService", () => {
                   command: "kubectl get pods",
                   executionTimeMs: 4,
                 },
-              "exec prod-pod -- sh -c \"tail -10 '/var/log/app/app.log' | grep -i 'never-happens'\"":
-                new K8sCommandError({
-                  message: "grep found no results",
-                  command: "kubectl exec prod-pod -- sh -c ...",
-                  exitCode: 1,
-                }),
+              'exec "prod-pod" -- tail -n 10 "/var/log/app/app.log"': {
+                success: true,
+                output: "ordinary line",
+                command: "kubectl exec prod-pod -- tail ...",
+                executionTimeMs: 8,
+              },
             },
           }),
         ),
@@ -603,7 +723,7 @@ describe("LogsService", () => {
                   command: "kubectl get pods",
                   executionTimeMs: 4,
                 },
-              "exec test-pod -- sh -c \"tail -10 '/var/log/app/app.log'\"": new K8sCommandError({
+              'exec "test-pod" -- tail -n 10 "/var/log/app/app.log"': new K8sCommandError({
                 message: "tail failed",
                 command: "kubectl exec test-pod -- sh -c ...",
                 exitCode: 2,

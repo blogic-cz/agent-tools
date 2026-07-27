@@ -1,9 +1,10 @@
+import { isAbsolute, posix, relative, resolve } from "node:path";
+
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Context, Effect, Layer, Result, Stream } from "effect";
 
 import type { Environment, LogFile, ReadOptions } from "./types";
 
-import { K8sCommandError } from "#k8s/errors";
 import { K8sService, K8sServiceLayer } from "#k8s/service";
 import { ConfigService, ConfigServiceLayer, getToolConfig } from "#config/loader";
 import type { LogsConfig } from "#config/types";
@@ -46,6 +47,33 @@ export const formatPrettyOutput = (output: string): string => {
 export const sanitizeShellArg = (input: string): string => `'${input.replace(/'/g, "'\\''")}'`;
 
 const readCommandOutput = (output: unknown): string => (typeof output === "string" ? output : "");
+const filterLogLines = (output: string, grep: string | undefined): string => {
+  if (!grep) return output;
+  const needle = grep.toLowerCase();
+  return output
+    .split("\n")
+    .filter((line) => line.toLowerCase().includes(needle))
+    .join("\n");
+};
+const resolveLocalLogPath = (base: string, file: string): string | undefined => {
+  const resolvedBase = resolve(base);
+  const resolvedPath = resolve(resolvedBase, file);
+  const relativePath = relative(resolvedBase, resolvedPath);
+  return relativePath === ".." ||
+    relativePath.startsWith(`..${pathSeparator}`) ||
+    isAbsolute(relativePath)
+    ? undefined
+    : resolvedPath;
+};
+const pathSeparator = process.platform === "win32" ? "\\" : "/";
+const resolveRemoteLogPath = (base: string, file: string): string | undefined => {
+  const resolvedBase = posix.resolve(base);
+  const resolvedPath = posix.resolve(resolvedBase, file);
+  const relativePath = posix.relative(resolvedBase, resolvedPath);
+  return relativePath === ".." || relativePath.startsWith("../") || posix.isAbsolute(relativePath)
+    ? undefined
+    : resolvedPath;
+};
 
 export class LogsService extends Context.Service<
   LogsService,
@@ -90,6 +118,28 @@ export class LogsService extends Context.Service<
               stderr: String(platformError),
               exitCode: -1,
             }),
+          ),
+        );
+
+      const runDirectCommand = (executable: string, args: readonly string[]) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const command = ChildProcess.make(executable, args, {
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            const process = yield* executor.spawn(command);
+            const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
+            const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
+            return {
+              stdout: stdoutChunk.join(""),
+              stderr: stderrChunk.join(""),
+              exitCode: yield* process.exitCode,
+            };
+          }),
+        ).pipe(
+          Effect.catch((platformError) =>
+            Effect.succeed({ stdout: "", stderr: String(platformError), exitCode: -1 }),
           ),
         );
 
@@ -196,27 +246,45 @@ export class LogsService extends Context.Service<
           logFile = latestPath.split("/").pop() ?? latestPath;
         }
 
-        const fullPath = `${localDir}/${logFile}`;
-        let command = `tail -${options.tail} ${sanitizeShellArg(fullPath)}`;
-
-        if (options.grep) {
-          command += ` | grep -i ${sanitizeShellArg(options.grep)}`;
+        const lexicalPath = resolveLocalLogPath(localDir, logFile);
+        if (lexicalPath === undefined) {
+          return yield* new LogsReadError({
+            message: "Log file must stay within the configured local log directory.",
+            source: localDir,
+          });
         }
-
+        const realpathResult = yield* runDirectCommand("realpath", [localDir, lexicalPath]);
+        if (realpathResult.exitCode !== 0) {
+          return yield* new LogsReadError({
+            message:
+              realpathResult.stderr.trim() ||
+              `realpath failed with exit code ${realpathResult.exitCode}`,
+            source: lexicalPath,
+          });
+        }
+        const [canonicalBase, canonicalPath] = realpathResult.stdout.trim().split("\n");
+        if (
+          canonicalBase === undefined ||
+          canonicalPath === undefined ||
+          resolveLocalLogPath(canonicalBase, canonicalPath) !== canonicalPath ||
+          !canonicalPath.endsWith(".log")
+        ) {
+          return yield* new LogsReadError({
+            message: "Canonical log path escapes the configured local log directory.",
+            source: localDir,
+          });
+        }
+        const command = `tail -${options.tail} ${sanitizeShellArg(canonicalPath)}`;
         const result = yield* runShellCommand(command);
 
-        if (result.exitCode !== 0 && result.exitCode !== 1) {
+        if (result.exitCode !== 0) {
           return yield* new LogsReadError({
             message: result.stderr.trim() || `Command failed with exit code ${result.exitCode}`,
-            source: fullPath,
+            source: canonicalPath,
           });
         }
 
-        if (result.exitCode === 1 && options.grep) {
-          return "(no matching lines)";
-        }
-
-        const output = result.stdout.trim();
+        const output = filterLogLines(result.stdout, options.grep).trim();
         if (!output) {
           return "(no matching lines)";
         }
@@ -231,6 +299,14 @@ export class LogsService extends Context.Service<
       ) {
         const remotePath = logsConfig.remotePath;
         const kubernetesProfile = logsConfig.kubernetesProfile;
+        const logFile = options.file ?? "app.log";
+        const logPath = resolveRemoteLogPath(remotePath, logFile);
+        if (logPath === undefined) {
+          return yield* new LogsReadError({
+            message: "Log file must stay within the configured remote log directory.",
+            source: remotePath,
+          });
+        }
 
         const podResult = yield* k8s
           .runKubectl(
@@ -249,38 +325,22 @@ export class LogsService extends Context.Service<
           );
 
         const pod = readCommandOutput(podResult.output).replace(/'/g, "");
-        const logFile = options.file ?? "app.log";
-        const logPath = `${remotePath}/${logFile}`;
-        let command = `tail -${options.tail} ${sanitizeShellArg(logPath)}`;
-
-        if (options.grep) {
-          command += ` | grep -i ${sanitizeShellArg(options.grep)}`;
-        }
-
         const execResult = yield* k8s
-          .runKubectl(`exec ${pod} -- sh -c "${command}"`, false, kubernetesProfile)
+          .runLogTail(pod, remotePath, logPath, options.tail, kubernetesProfile)
           .pipe(Effect.result);
 
         return yield* Result.match(execResult, {
-          onFailure: (error) => {
-            if (error instanceof K8sCommandError && error.exitCode === 1 && options.grep) {
-              return Effect.succeed("(no matching lines)");
-            }
-
-            return Effect.fail(
+          onFailure: (error) =>
+            Effect.fail(
               new LogsReadError({
                 message: error instanceof Error ? error.message : "Failed to read remote logs",
                 source: `${pod}:${logPath}`,
               }),
-            );
-          },
+            ),
           onSuccess: (result) => {
-            const trimmed = readCommandOutput(result.output).trim();
-            if (!trimmed) {
-              return Effect.succeed("(no matching lines)");
-            }
-
-            return Effect.succeed(transformLogOutput(trimmed));
+            const output = readCommandOutput(result.output);
+            const trimmed = filterLogLines(output, options.grep).trim();
+            return Effect.succeed(trimmed ? transformLogOutput(trimmed) : "(no matching lines)");
           },
         });
       });

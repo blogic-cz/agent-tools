@@ -158,7 +158,7 @@ const readCommand = Command.make(
     ),
     format: formatOption,
     grep: Flag.string("grep").pipe(
-      Flag.withDescription("Filter lines containing pattern"),
+      Flag.withDescription("Filter lines containing case-insensitive literal text"),
       Flag.optional,
     ),
     pretty: Flag.boolean("pretty").pipe(
