@@ -18,7 +18,10 @@ Auth: no auth needed for local files; uses k8s-tool for remote access.
 bun logs-tool list --env local          # List available log files
 bun logs-tool read --env local --file app.log  # Read specific log
 bun logs-tool read --env test --file app.log --tail 50
+bun logs-tool read --env test --file app.log --grep "connection refused"
 ```
+
+`--grep` uses the same case-insensitive literal substring match for local and remote logs; it is not a regular expression. File paths are confined to the configured local or remote log directory. Treat configured log directories as trusted: workloads must not replace checked files or ancestors with symlinks during a read.
 
 Environment is any string (e.g. `local`, `test`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.
 

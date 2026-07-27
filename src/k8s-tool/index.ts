@@ -219,7 +219,7 @@ const kubectlCommand = Command.make(
     `Kubernetes CLI Tool for Coding Agents
 
 Executes kubectl commands against the correct cluster context.
-Supports shell pipes and complex commands.
+Parses commands into arguments and rejects shell syntax.
 
 IMPORTANT FOR AI AGENTS:
 Always use this tool instead of kubectl directly to ensure
@@ -233,24 +233,25 @@ CLUSTER CONFIGURATION:
 
 WORKFLOW FOR AI AGENTS:
   1. Use this tool for ALL kubectl operations on test/prod
-  2. Pipes are supported - use shell syntax
-  3. Use -n <namespace> for target namespace
+  2. Do not use pipes, chaining, substitution, or shell interpreters
+  3. Use logs-tool for remote log filtering
+  4. Use -n <namespace> for target namespace
 
 EXAMPLES:
   # List pods in test namespace
   bun run src/k8s-tool kubectl --env test --cmd "get pods -n my-app-test"
 
-  # Get pod logs with grep
-  bun run src/k8s-tool kubectl --env test --cmd "logs -l app=web-app -n my-app-test --tail=100 | grep error"
+  # Get pod logs (use logs-tool when filtering is required)
+  bun run src/k8s-tool kubectl --env test --cmd "logs -l app=web-app -n my-app-test --tail=100"
 
   # Check resource usage
   bun run src/k8s-tool kubectl --env test --cmd "top pod -n my-app-test"
 
-  # Describe pod with filtered output
-  bun run src/k8s-tool kubectl --env test --cmd "describe pod web-app-xxx -n my-app-test | grep -A20 Events"
+  # Describe a pod
+  bun run src/k8s-tool kubectl --env test --cmd "describe pod web-app-xxx -n my-app-test"
 
-  # Execute command in pod
-  bun run src/k8s-tool kubectl --env test --cmd "exec web-app-xxx -n my-app-test -- cat /app/logs/app.log | tail -50"
+  # Execute an allowlisted diagnostic in a pod
+  bun run src/k8s-tool kubectl --env test --cmd "exec web-app-xxx -n my-app-test -- redis-cli INFO commandstats"
 
   # Dry run - show command without executing
   bun run src/k8s-tool kubectl --env test --cmd "get pods -n my-app-test" --dry-run
@@ -367,7 +368,7 @@ const execCommand = Command.make(
     ...commonFlags,
     pod: Flag.string("pod").pipe(Flag.withDescription("Pod name")),
     execCmd: Flag.string("exec-cmd").pipe(
-      Flag.withDescription("Command to run inside the pod; wrap in quotes for spaces"),
+      Flag.withDescription("Allowlisted diagnostic: redis-cli PING/INFO or ls"),
     ),
     namespace: Flag.string("namespace").pipe(
       Flag.withDescription("Namespace containing the pod"),
@@ -391,7 +392,7 @@ const execCommand = Command.make(
       ]);
       return yield* runK8sCommand(command, { dryRun, env, format, profile });
     }),
-).pipe(Command.withDescription("Execute a command in a pod (kubectl exec <pod> -- <cmd>)"));
+).pipe(Command.withDescription("Run an allowlisted diagnostic in a pod"));
 
 const topCommand = Command.make(
   "top",

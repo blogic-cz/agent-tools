@@ -252,6 +252,12 @@ export default { handleToolExecuteBefore };
 
 All tools support `--help` for full usage documentation. Legacy `agent-tools-*` binary names (e.g. `agent-tools-gh`) still work for backwards compatibility.
 
+### Kubernetes command safety
+
+`k8s-tool` parses generic kubectl commands into arguments and invokes `kubectl` directly. Shell pipelines, chaining, substitution, user overrides of the configured cluster or credentials, mutating `config`/`auth` subcommands, and `cluster-info dump` are rejected. Direct Secret reads, raw kubeconfig output, filename/kustomize reads, and `kubectl diff` are also blocked.
+
+Pod `exec` is limited to direct `redis-cli PING/INFO` and `ls` diagnostics. Generic exec cannot read file contents; use `logs-tool`, which confines files to the configured log directory, tails them through an internal structured operation, and applies the same case-insensitive literal substring filter locally and remotely. Configured log directories are a trusted boundary and must not permit adversarial symlink replacement during reads.
+
 ### gh-tool machine contracts
 
 `pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR.

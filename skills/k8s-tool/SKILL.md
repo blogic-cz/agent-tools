@@ -28,6 +28,15 @@ bun k8s-tool top --env test                      # Show resource usage
 
 Environment is any string (e.g. `test`, `prod`). Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call. Implicit production access is blocked for safety.
 
+## Safety Boundary
+
+- Generic kubectl commands are parsed into arguments and executed without a user-controlled shell. Do not use pipes, chaining, substitution, or shell interpreters.
+- The configured context, kubeconfig, server, authentication, TLS, and impersonation settings cannot be overridden in `--cmd`.
+- Only read-only `config` and `auth` subcommands are allowed; `cluster-info dump` is blocked.
+- Secret reads, raw kubeconfig output, filename/kustomize reads, and `kubectl diff` are blocked.
+- Pod exec accepts only direct `redis-cli PING/INFO` and `ls` diagnostics; generic exec cannot read file contents.
+- Use `logs-tool` for confined remote log-file access and filtering.
+
 ## Tips
 
 - Use `bun k8s-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
