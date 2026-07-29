@@ -18,6 +18,20 @@ const CredentialGuardConfigSchema = Schema.Struct({
 });
 
 const CleanupPolicySchema = Schema.Literals(["leave-running", "stop-if-started"]);
+const VPN_TIMER_FIELDS = ["connectTimeoutMs", "disconnectTimeoutMs", "idleDisconnectMs"] as const;
+const MAX_TIMER_MS = 2_147_483_647;
+
+function validateVpnTimer(key: string, field: (typeof VPN_TIMER_FIELDS)[number], value: unknown) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > MAX_TIMER_MS
+  ) {
+    throw new Error(`VPN "${key}" ${field} must be an integer from 0 to ${MAX_TIMER_MS}.`);
+  }
+}
 
 const VpnPrerequisiteSchema = Schema.Struct({
   type: Schema.Literal("vpn"),
@@ -56,8 +70,7 @@ const VpnConfigSchema = Schema.Struct({
   defaultCleanup: Schema.optionalKey(CleanupPolicySchema),
   connectTimeoutMs: Schema.optionalKey(Schema.Number),
   disconnectTimeoutMs: Schema.optionalKey(Schema.Number),
-  cooldownMs: Schema.optionalKey(Schema.Number),
-  leaseTtlMs: Schema.optionalKey(Schema.Number),
+  idleDisconnectMs: Schema.optionalKey(Schema.Number),
   secretEnvVar: Schema.optionalKey(Schema.String),
   drivers: Schema.optionalKey(
     Schema.Struct({
@@ -215,8 +228,29 @@ export function decodeConfig(
   const sanitized = stripUnknownTopLevelKeys(parsed);
 
   try {
-    const decoded = Schema.decodeUnknownSync(AgentToolsConfigSchema)(sanitized);
-    return decoded as AgentToolsConfig;
+    if (isRecord(sanitized) && isRecord(sanitized.vpns)) {
+      for (const [key, value] of Object.entries(sanitized.vpns)) {
+        if (!isRecord(value)) continue;
+        if ("cooldownMs" in value || "leaseTtlMs" in value) {
+          throw new Error(`VPN "${key}" uses removed cooldownMs or leaseTtlMs configuration.`);
+        }
+        for (const field of VPN_TIMER_FIELDS) {
+          if (value[field] !== undefined) validateVpnTimer(key, field, value[field]);
+        }
+      }
+    }
+    const decoded = Schema.decodeUnknownSync(AgentToolsConfigSchema)(sanitized) as AgentToolsConfig;
+    return decoded.vpns
+      ? {
+          ...decoded,
+          vpns: Object.fromEntries(
+            Object.entries(decoded.vpns).map(([key, vpn]) => [
+              key,
+              { idleDisconnectMs: 30_000, ...vpn },
+            ]),
+          ),
+        }
+      : decoded;
   } catch (error) {
     throw new Error(
       `Invalid agent-tools config at ${configPath}: ${

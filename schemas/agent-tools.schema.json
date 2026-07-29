@@ -558,16 +558,25 @@
           "enum": ["leave-running", "stop-if-started"]
         },
         "connectTimeoutMs": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "multipleOf": 1
         },
         "disconnectTimeoutMs": {
-          "type": "number"
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "multipleOf": 1,
+          "description": "Total bounded stop-and-confirm window in milliseconds."
         },
-        "cooldownMs": {
-          "type": "number"
-        },
-        "leaseTtlMs": {
-          "type": "number"
+        "idleDisconnectMs": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "multipleOf": 1,
+          "default": 30000,
+          "description": "Managed VPN reuse window after the last lease. Set to 0 for immediate cleanup."
         },
         "secretEnvVar": {
           "type": "string",

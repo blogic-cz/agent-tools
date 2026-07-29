@@ -8,8 +8,8 @@
 
   // VPN definitions referenced by tool prerequisites.
   vpns: {
-    officeVpn: { name: "OfficeVPN" },
-    testVpn: { name: "TestVPN" },
+    officeVpn: { name: "OfficeVPN", idleDisconnectMs: 30000 },
+    testVpn: { name: "TestVPN", idleDisconnectMs: 0 },
   },
 
   // Azure DevOps profiles

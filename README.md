@@ -178,6 +178,10 @@ bun run agent-tools/example-tool/index.ts ping
       // auto defaults to true:
       // darwin -> macos-scutil, linux -> linux-nmcli, win32 -> windows-rasdial
       name: "ExampleVPN",
+      // Reuse package-managed connections for 30 seconds after the last command. Set 0 for immediate cleanup.
+      idleDisconnectMs: 30000,
+      // Total window for stop plus disconnected-status confirmation.
+      disconnectTimeoutMs: 10000,
       // Optional: pass IPSec shared secret to macOS scutil from env without storing the value in config.
       secretEnvVar: "EXAMPLE_VPN_IPSEC_SHARED_SECRET",
     },
@@ -187,8 +191,7 @@ bun run agent-tools/example-tool/index.ts ping
       clusterId: "your-cluster-id",
       namespaces: { test: "your-ns-test", prod: "your-ns-prod" },
       prerequisites: [{ type: "vpn", key: "exampleVpn" }],
-      // Prerequisites are currently decoded and validated as config metadata;
-      // automatic VPN connect/disconnect execution is planned for a follow-up release.
+      // agent-tools starts disconnected VPNs, shares package-local leases, and disconnects only connections it owns.
     },
   },
   logs: {
@@ -420,7 +423,7 @@ Secrets are **never** stored in the config file. The `db-tool` config references
 }
 ```
 
-Database VPN prerequisites can be set at the database profile or environment level. If an environment declares `vpn` or `prerequisites`, that environment config replaces the profile prerequisites; `prerequisites: []` explicitly disables inherited VPN setup. DB commands try the query directly first and only connect VPN prerequisites if direct access fails.
+Database VPN prerequisites can be set at the database profile or environment level. If an environment declares `vpn` or `prerequisites`, that environment config replaces the profile prerequisites; `prerequisites: []` explicitly disables inherited VPN setup. DB commands try the query directly first and only connect VPN prerequisites if direct access fails. Package-managed VPNs remain reusable for `idleDisconnectMs` (default 30000) after the last lease; `0` restores immediate cleanup. Preconnected or `leave-running` connections are treated as external and never stopped automatically. If runtime state is corrupt, unknown, or contains legacy artifacts, first stop all agent-tools processes using the VPN, then remove that VPN state directory under `~/.agent-tools/runtime/vpn-prerequisites`.
 
 ```json5
 {
