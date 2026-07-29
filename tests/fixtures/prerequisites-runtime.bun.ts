@@ -1781,7 +1781,7 @@ describe("runWithProfilePrerequisites", () => {
           (_command, label) =>
             Effect.sync(() => {
               state.commands.push(label);
-              return { stdout: "indeterminate", stderr: "", exitCode: 0 };
+              return { stdout: "", stderr: "status failed", exitCode: 1 };
             }),
           Effect.sync(() => {
             workRan = true;
