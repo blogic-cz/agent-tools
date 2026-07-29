@@ -616,6 +616,40 @@ describe("VPN prerequisites config", () => {
     ]);
   });
 
+  it("defaults VPN idle reuse to 30 seconds and preserves zero", () => {
+    const defaults = decodeConfig({ vpns: { exampleVpn: { name: "ExampleVPN" } } });
+    const immediate = decodeConfig({
+      vpns: { exampleVpn: { name: "ExampleVPN", idleDisconnectMs: 0 } },
+    });
+
+    expect(defaults.vpns?.exampleVpn?.idleDisconnectMs).toBe(30000);
+    expect(immediate.vpns?.exampleVpn?.idleDisconnectMs).toBe(0);
+  });
+
+  it("rejects removed VPN lifecycle options", () => {
+    for (const option of [{ cooldownMs: 1 }, { leaseTtlMs: 1 }]) {
+      expect(() =>
+        decodeConfig({ vpns: { exampleVpn: { name: "ExampleVPN", ...option } } }),
+      ).toThrow("Invalid agent-tools config");
+    }
+  });
+
+  it("requires timer-safe integer VPN lifecycle values", () => {
+    const fields = ["connectTimeoutMs", "disconnectTimeoutMs", "idleDisconnectMs"] as const;
+    for (const field of fields) {
+      for (const value of [-1, 0.25, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+        expect(() =>
+          decodeConfig({ vpns: { exampleVpn: { name: "ExampleVPN", [field]: value } } }),
+        ).toThrow(`VPN "exampleVpn" ${field} must be an integer from 0 to 2147483647.`);
+      }
+      expect(
+        decodeConfig({
+          vpns: { exampleVpn: { name: "ExampleVPN", [field]: 2_147_483_647 } },
+        }).vpns?.exampleVpn?.[field],
+      ).toBe(2_147_483_647);
+    }
+  });
+
   it("accepts vpn profile sugar without normalizing at decode time", () => {
     const config = decodeConfig({
       vpns: { exampleVpn: { name: "ExampleVPN" } },

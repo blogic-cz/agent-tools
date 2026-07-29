@@ -43,9 +43,10 @@ export type VpnConfig = {
   auto?: boolean;
   defaultCleanup?: CleanupPolicy;
   connectTimeoutMs?: number;
+  /** Total bounded stop-and-confirm window in milliseconds. */
   disconnectTimeoutMs?: number;
-  cooldownMs?: number;
-  leaseTtlMs?: number;
+  /** Managed VPN reuse window after the last lease. Defaults to 30000; 0 disconnects immediately. */
+  idleDisconnectMs?: number;
   /** Name of environment variable holding the VPN shared secret for supported drivers. */
   secretEnvVar?: string;
   drivers?: {

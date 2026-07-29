@@ -36,28 +36,3 @@ export type PrerequisiteCommandRunner<E> = (
   command: ChildProcess.Command,
   label: string,
 ) => Effect.Effect<PrerequisiteCommandResult, E, never>;
-
-export type VpnLease = {
-  readonly pid: number;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-};
-
-export type VpnStartState = {
-  readonly pid: number;
-  readonly startedAt: number;
-};
-
-export type VpnLockOwner = {
-  readonly pid: number;
-  readonly createdAt: number;
-};
-
-export type VpnLeaseHandle = {
-  readonly directory: string;
-  readonly leasePath: string;
-  readonly statePath: string;
-  readonly lockPath: string;
-  readonly ttlMs: number;
-  readonly lockTimeoutMs: number;
-};
