@@ -19,6 +19,8 @@ bun run check ci   # all parallel, format --check only (no file modification)
 
 Bun async filesystem APIs are preferred throughout the project. Synchronous `node:fs` is permitted only for `src/shared/prerequisites/store.ts` package-local SQLite VPN coordination and for tests that isolate that runtime state. Keep this exception bounded to private runtime-directory setup, SQLite state validation, and deterministic cleanup.
 
+Asynchronous `node:fs/promises` is additionally permitted in a module whose logic is covered by the vitest suite. Vitest runs under Node, so `Bun.file`, `Bun.Glob` and `import("bun")` are unavailable there and any code path a test reaches cannot use them. `src/session-tool/pi.ts` is the current case. Prefer Bun APIs everywhere the tests do not reach, and revisit this if the suite ever runs under the Bun runtime.
+
 ## Version control
 
 Standard Git. Branch with `git switch -c <prefix>/<name>` (`feat/`, `fix/`, `chore/`, `refactor/`), conventional commits, `gh pr create` for PRs. Run `bun run format` before committing and `bun run check` before pushing.
