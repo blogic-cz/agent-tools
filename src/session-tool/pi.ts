@@ -1,4 +1,6 @@
 import { Effect } from "effect";
+// node:fs/promises, not Bun.file/Bun.Glob: vitest runs under Node, where the Bun globals do not
+// exist, and every function below is reached by the suite. See AGENTS.md.
 import { open, readFile, readdir, stat } from "node:fs/promises";
 
 import type { MessageSummary, SessionSummary } from "./types";
