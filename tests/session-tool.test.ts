@@ -1,3 +1,7 @@
+import { Effect } from "effect";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,7 +10,22 @@ import {
   extractTextFromContent,
   parseJsonlLine,
 } from "#session/claude-code";
-import { extractPiText, extractPiTitle, getPiSessionId, parsePiLine } from "#session/pi";
+import {
+  extractPiText,
+  extractPiTitle,
+  getPiSessionId,
+  getPiSessions,
+  parsePiLine,
+  PI_SUMMARY_HEAD_MAX_BYTES,
+  PI_SUMMARY_TAIL_MAX_BYTES,
+  readPiMessages,
+  readPiSessionMetadata,
+} from "#session/pi";
+import {
+  projectSessionFilter,
+  sessionSummariesFromMessages,
+  sortSessionSummaries,
+} from "#session/summaries";
 
 describe("session-tool Claude Code helpers", () => {
   it("encodeProjectPath replaces slashes with dashes", () => {
@@ -202,6 +221,223 @@ describe("session-tool pi helpers", () => {
         "/x/--dir--/2026-07-15T14-18-56-724Z_019f6625-1f54-7588-83dc-6eed11fc7ec0.jsonl",
       ),
     ).toBe("019f6625-1f54-7588-83dc-6eed11fc7ec0");
+  });
+
+  it("reads bounded head and tail metadata from a large session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "session-tool-pi-"));
+    const file = join(dir, "2026-01-01T00-00-00-000Z_11111111-1111-4111-8111-111111111111.jsonl");
+    try {
+      await writeFile(
+        file,
+        [
+          JSON.stringify({
+            type: "session",
+            id: "11111111-1111-4111-8111-111111111111",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            cwd: "/project",
+          }),
+          "malformed",
+          JSON.stringify({ type: "model_change", timestamp: "2026-01-01T12:00:00.000Z" }),
+          JSON.stringify({
+            type: "message",
+            timestamp: "2026-01-02T00:00:00.000Z",
+            message: { role: "user", content: "bounded title" },
+          }),
+          "x".repeat(1_000_000),
+          JSON.stringify({ type: "custom", timestamp: "2026-01-03T00:00:00.000Z" }),
+        ].join("\n"),
+      );
+
+      const metadata = await readPiSessionMetadata(file);
+      expect(metadata).toMatchObject({
+        sessionID: "11111111-1111-4111-8111-111111111111",
+        title: "bounded title",
+        createdAt: Date.parse("2026-01-01T00:00:00.000Z"),
+        updatedAt: Date.parse("2026-01-03T00:00:00.000Z"),
+        cwd: "/project",
+        source: "pi",
+      });
+      expect(metadata.bytesRead).toBeLessThanOrEqual(
+        PI_SUMMARY_HEAD_MAX_BYTES + PI_SUMMARY_TAIL_MAX_BYTES + 1,
+      );
+      expect(metadata.parsedLines).toBeLessThan(10);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a complete record when the tail starts exactly at a line boundary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "session-tool-pi-"));
+    const file = join(dir, "tail-boundary.jsonl");
+    const tailRecord = JSON.stringify({
+      type: "custom",
+      timestamp: "2026-01-03T00:00:00.000Z",
+    });
+    const tail = `${tailRecord}\n${"z".repeat(PI_SUMMARY_TAIL_MAX_BYTES - tailRecord.length - 1)}`;
+    const header = `${JSON.stringify({
+      type: "session",
+      id: "tail-boundary",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    })}\n`;
+    const prefix = `${header}${"x".repeat(PI_SUMMARY_HEAD_MAX_BYTES)}\n`;
+    try {
+      await writeFile(file, prefix + tail);
+      const metadata = await readPiSessionMetadata(file);
+      expect(metadata.updatedAt).toBe(Date.parse("2026-01-03T00:00:00.000Z"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a UTF-8-split boundary line but keeps following tail records", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "session-tool-pi-"));
+    const file = join(dir, "tail-utf8.jsonl");
+    const record = JSON.stringify({
+      type: "custom",
+      timestamp: "2026-01-04T00:00:00.000Z",
+    });
+    const boundaryLine = "🙂".repeat(100);
+    const suffixBase = `${boundaryLine}\n${record}\n`;
+    const suffix = `${suffixBase}${"z".repeat(
+      PI_SUMMARY_TAIL_MAX_BYTES + 1 - Buffer.byteLength(suffixBase),
+    )}`;
+    const prefix = `${JSON.stringify({
+      type: "session",
+      id: "tail-utf8",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    })}\n${"x".repeat(PI_SUMMARY_HEAD_MAX_BYTES)}\n`;
+    try {
+      await writeFile(file, prefix + suffix);
+      const metadata = await readPiSessionMetadata(file);
+      expect(metadata.updatedAt).toBe(Date.parse("2026-01-04T00:00:00.000Z"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps full Pi message reads independent from bounded list metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "session-tool-pi-"));
+    const file = join(dir, "full-read.jsonl");
+    try {
+      await writeFile(
+        file,
+        [
+          JSON.stringify({ type: "session", id: "full-read" }),
+          "x".repeat(600_000),
+          JSON.stringify({
+            type: "message",
+            timestamp: "2026-01-02T00:00:00.000Z",
+            message: { role: "user", content: "middle message remains searchable" },
+          }),
+          "y".repeat(600_000),
+        ].join("\n"),
+      );
+
+      const messages = await Effect.runPromise(readPiMessages([file]));
+      expect(messages.map((message) => message.body)).toContain(
+        "middle message remains searchable",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses file mtime when session timestamps are unavailable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "session-tool-pi-"));
+    const file = join(dir, "fallback.jsonl");
+    const modified = new Date("2026-02-03T04:05:06.000Z");
+    try {
+      await writeFile(
+        file,
+        `${JSON.stringify({ type: "session", id: "fallback", timestamp: "invalid" })}\nmalformed`,
+      );
+      await utimes(file, modified, modified);
+
+      const metadata = await readPiSessionMetadata(file);
+      expect(metadata.createdAt).toBe(modified.getTime());
+      expect(metadata.updatedAt).toBe(modified.getTime());
+      expect(metadata.title).toBe("Untitled session");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filters projects from bounded Pi headers", async () => {
+    const base = await mkdtemp(join(tmpdir(), "session-tool-pi-"));
+    const sessions = join(base, "project");
+    await mkdir(sessions);
+    const matching = join(sessions, "matching.jsonl");
+    const other = join(sessions, "other.jsonl");
+    try {
+      await writeFile(
+        matching,
+        `${JSON.stringify({ type: "session", id: "matching", cwd: "/target" })}\n${"x".repeat(500_000)}`,
+      );
+      await writeFile(
+        other,
+        `${JSON.stringify({ type: "session", id: "other", cwd: "/other" })}\n${"x".repeat(500_000)}`,
+      );
+
+      await expect(Effect.runPromise(getPiSessions(base, "/target"))).resolves.toEqual([matching]);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps project session IDs scoped to their source", () => {
+    const collision = "11111111-1111-4111-8111-111111111111";
+    const filters = new Map([
+      ["pi" as const, new Set([collision])],
+      ["codex" as const, new Set<string>()],
+    ]);
+
+    expect(projectSessionFilter(filters, "pi", false)).toEqual(new Set([collision]));
+    expect(projectSessionFilter(filters, "codex", false)).toEqual(new Set());
+    expect(projectSessionFilter(filters, "codex", true)).toBeNull();
+  });
+
+  it("keeps created and updated session times distinct and sorts deterministically", () => {
+    const summaries = sessionSummariesFromMessages([
+      {
+        sessionID: "b",
+        id: "late",
+        title: "latest title",
+        body: "late",
+        created: 30,
+        role: "assistant",
+        source: "codex",
+      },
+      {
+        sessionID: "b",
+        id: "early",
+        title: "early title",
+        body: "early",
+        created: 10,
+        role: "user",
+        source: "codex",
+      },
+    ]);
+    expect(summaries).toEqual([
+      {
+        sessionID: "b",
+        title: "latest title",
+        createdAt: 10,
+        updatedAt: 30,
+        source: "codex",
+      },
+    ]);
+    expect(
+      sortSessionSummaries([
+        ...summaries,
+        {
+          sessionID: "a",
+          title: "tie",
+          createdAt: 10,
+          updatedAt: 30,
+          source: "codex",
+        },
+      ]).map((summary) => summary.sessionID),
+    ).toEqual(["a", "b"]);
   });
 });
 

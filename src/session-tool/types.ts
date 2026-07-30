@@ -23,6 +23,14 @@ export type MessageSummary = {
   source: SessionSource;
 };
 
+export type SessionSummary = {
+  sessionID: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  source: SessionSource;
+};
+
 export type SessionResult = {
   success: boolean;
   data?: unknown;

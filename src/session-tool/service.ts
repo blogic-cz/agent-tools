@@ -1,11 +1,11 @@
 import { Context, Effect, Layer } from "effect";
 import { readdir } from "node:fs/promises";
 
-import type { MessageSummary, SessionInfo, SessionSource } from "./types";
+import type { MessageSummary, SessionInfo, SessionSource, SessionSummary } from "./types";
 
 import { getClaudeCodeSessions, readClaudeCodeMessages } from "./claude-code";
 import { getCodexSessions, getCodexSessionId, readCodexMessages } from "./codex";
-import { getPiSessions, getPiSessionId, readPiMessages } from "./pi";
+import { getPiSessions, getPiSessionId, readPiMessages, readPiSessionSummaries } from "./pi";
 import { ResolvedPaths } from "./config";
 import { SessionReadError, SessionStorageNotFoundError, type SessionError } from "./errors";
 
@@ -78,6 +78,16 @@ const detectSourceFilter = (filterSessions: Set<string> | null): SourceFilter =>
   }
 
   return ALL_SOURCES;
+};
+
+const requestedSourceFilter = (
+  filterSessions: Set<string> | null,
+  requested?: ReadonlySet<SessionSource>,
+): SourceFilter => {
+  const detected = detectSourceFilter(filterSessions);
+  return requested === undefined
+    ? detected
+    : new Set([...detected].filter((source) => requested.has(source)));
 };
 
 /**
@@ -158,9 +168,14 @@ export class SessionService extends Context.Service<
   {
     readonly getSessionsForProject: (
       projectDir: string | null,
+      sources?: ReadonlySet<SessionSource>,
     ) => Effect.Effect<Set<string>, SessionError>;
+    readonly getPiSessionSummaries: (
+      filterSessions: Set<string> | null,
+    ) => Effect.Effect<SessionSummary[], SessionError>;
     readonly getMessageSummaries: (
       filterSessions: Set<string> | null,
+      sources?: ReadonlySet<SessionSource>,
     ) => Effect.Effect<MessageSummary[], SessionError>;
     readonly searchSummaries: (summaries: MessageSummary[], query: string) => MessageSummary[];
   }
@@ -173,27 +188,33 @@ export class SessionService extends Context.Service<
       return {
         getSessionsForProject: Effect.fn("SessionService.getSessionsForProject")(function* (
           projectDir: string | null,
+          sources?: ReadonlySet<SessionSource>,
         ) {
-          const opencodeSessions = yield* Effect.gen(function* () {
-            const files = yield* readJsonFilesInTree(paths.sessionsPath);
-            const matchingSessions = new Set<string>();
+          const sourceFilter = sources ?? ALL_SOURCES;
+          const opencodeSessions = !sourceFilter.has("opencode")
+            ? new Set<string>()
+            : yield* Effect.gen(function* () {
+                const files = yield* readJsonFilesInTree(paths.sessionsPath);
+                const matchingSessions = new Set<string>();
 
-            for (const { content } of files) {
-              const parsed = parseJson<SessionInfo>(content);
-              if (parsed === null) continue;
+                for (const { content } of files) {
+                  const parsed = parseJson<SessionInfo>(content);
+                  if (parsed === null) continue;
 
-              if (projectDir === null || parsed.directory === projectDir) {
-                matchingSessions.add(parsed.id);
-              }
-            }
+                  if (projectDir === null || parsed.directory === projectDir) {
+                    matchingSessions.add(parsed.id);
+                  }
+                }
 
-            return matchingSessions;
-          }).pipe(
-            Effect.catchTag("SessionStorageNotFoundError", () => Effect.succeed(new Set<string>())),
-          );
+                return matchingSessions;
+              }).pipe(
+                Effect.catchTag("SessionStorageNotFoundError", () =>
+                  Effect.succeed(new Set<string>()),
+                ),
+              );
 
           const claudeSessions =
-            paths.claudeCodePath === null
+            !sourceFilter.has("claude-code") || paths.claudeCodePath === null
               ? new Set<string>()
               : yield* getClaudeCodeSessions(paths.claudeCodePath, projectDir).pipe(
                   Effect.map(
@@ -208,7 +229,7 @@ export class SessionService extends Context.Service<
                 );
 
           const codexSessions =
-            paths.codexPath === null
+            !sourceFilter.has("codex") || paths.codexPath === null
               ? new Set<string>()
               : yield* getCodexSessions(paths.codexPath, projectDir).pipe(
                   Effect.map(
@@ -221,7 +242,7 @@ export class SessionService extends Context.Service<
                 );
 
           const piSessions =
-            paths.piPath === null
+            !sourceFilter.has("pi") || paths.piPath === null
               ? new Set<string>()
               : yield* getPiSessions(paths.piPath, projectDir).pipe(
                   Effect.map(
@@ -246,10 +267,31 @@ export class SessionService extends Context.Service<
           return matchingSessions;
         }),
 
-        getMessageSummaries: Effect.fn("SessionService.getMessageSummaries")(function* (
+        getPiSessionSummaries: Effect.fn("SessionService.getPiSessionSummaries")(function* (
           filterSessions: Set<string> | null,
         ) {
-          const sourceFilter = detectSourceFilter(filterSessions);
+          if (paths.piPath === null) return [];
+          return yield* getPiSessions(paths.piPath, null).pipe(
+            Effect.map((sessionFiles) =>
+              filterSessions === null
+                ? sessionFiles
+                : sessionFiles.filter((sessionFile) =>
+                    filterSessions.has(getPiSessionId(sessionFile)),
+                  ),
+            ),
+            Effect.flatMap(readPiSessionSummaries),
+            Effect.catchTags({
+              SessionStorageNotFoundError: () => Effect.succeed([]),
+              SessionReadError: () => Effect.succeed([]),
+            }),
+          );
+        }),
+
+        getMessageSummaries: Effect.fn("SessionService.getMessageSummaries")(function* (
+          filterSessions: Set<string> | null,
+          sources?: ReadonlySet<SessionSource>,
+        ) {
+          const sourceFilter = requestedSourceFilter(filterSessions, sources);
 
           const opencodeSummaries = !sourceFilter.has("opencode")
             ? []

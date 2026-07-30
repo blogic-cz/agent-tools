@@ -18,6 +18,11 @@ import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
 import { formatDate, SessionService, SessionServiceLayer, truncate } from "./service";
+import {
+  projectSessionFilter,
+  sessionSummariesFromMessages,
+  sortSessionSummaries,
+} from "./summaries";
 
 const AppLayer = SessionServiceLayer.pipe(Layer.provideMerge(ResolvedPathsLayer));
 
@@ -31,19 +36,10 @@ const filterBySource = (summaries: MessageSummary[], source: string): MessageSum
   return summaries.filter((s) => s.source === (source as SessionSource));
 };
 
-const latestSessionSummaries = (summaries: MessageSummary[]): MessageSummary[] => {
-  const bySession = new Map<string, MessageSummary>();
-
-  for (const summary of summaries) {
-    const key = `${summary.source}:${summary.sessionID}`;
-    const previous = bySession.get(key);
-    if (previous === undefined || summary.created > previous.created) {
-      bySession.set(key, summary);
-    }
-  }
-
-  return [...bySession.values()].toSorted((left, right) => right.created - left.created);
-};
+const sourceSet = (source: string): ReadonlySet<SessionSource> =>
+  source === "all"
+    ? new Set(["opencode", "claude-code", "codex", "pi"])
+    : new Set([source as SessionSource]);
 
 const buildScopeLabel = (searchAll: boolean, currentDir: string) => {
   if (searchAll) {
@@ -97,9 +93,19 @@ const listCommand = Command.make(
       const scope = buildScopeLabel(all, currentDir);
 
       const result = yield* Effect.gen(function* () {
-        const sessionFilter = all ? null : yield* sessionService.getSessionsForProject(currentDir);
+        const sources = sourceSet(source);
+        const projectSessions = new Map<SessionSource, Set<string>>();
+        if (!all) {
+          for (const sessionSource of sources) {
+            const matching = yield* sessionService.getSessionsForProject(
+              currentDir,
+              new Set([sessionSource]),
+            );
+            projectSessions.set(sessionSource, matching);
+          }
+        }
 
-        if (sessionFilter !== null && sessionFilter.size === 0) {
+        if (!all && [...projectSessions.values()].every((sessions) => sessions.size === 0)) {
           return {
             success: false,
             error: "No sessions found for current project",
@@ -113,10 +119,29 @@ const listCommand = Command.make(
           } satisfies SessionResult;
         }
 
-        const allSummaries = yield* sessionService.getMessageSummaries(sessionFilter);
-        const summaries = latestSessionSummaries(filterBySource(allSummaries, source));
+        const nonPiSources = [...sources].filter((item) => item !== "pi");
+        const [messagesBySource, piSummaries] = yield* Effect.all([
+          Effect.all(
+            nonPiSources.map((sessionSource) =>
+              sessionService.getMessageSummaries(
+                projectSessionFilter(projectSessions, sessionSource, all),
+                new Set([sessionSource]),
+              ),
+            ),
+          ),
+          sources.has("pi")
+            ? sessionService.getPiSessionSummaries(projectSessionFilter(projectSessions, "pi", all))
+            : Effect.succeed([]),
+        ]);
+        const messages = messagesBySource.flat();
+        const summaries = sortSessionSummaries([
+          ...sessionSummariesFromMessages(messages),
+          ...piSummaries,
+        ]);
         const results = summaries.slice(0, limit).map((summary) => ({
-          created: formatDate(summary.created),
+          created: formatDate(summary.createdAt),
+          createdAt: formatDate(summary.createdAt),
+          updatedAt: formatDate(summary.updatedAt),
           sessionID: summary.sessionID,
           title: summary.title,
           source: summary.source,
