@@ -1,4 +1,4 @@
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag, Param } from "effect/unstable/cli";
 import { Console, Effect, Option } from "effect";
 
 import type { CheckResult, PRStatusResult } from "#gh/types";
@@ -39,6 +39,7 @@ import {
   listPRs,
   mergePR,
   rerunChecks,
+  triggerChecks,
   watchPRs,
   viewPR,
   waitForMergeable,
@@ -181,6 +182,101 @@ export const fetchCurrentFeedback = (pr: number | null) =>
     operation: "feedback",
     command: "gh-tool pr feedback",
   }).pipe(Effect.map(({ value }) => value));
+
+// Bot bodies carry base64 report payloads that no agent reads but every agent pays for.
+const BASE64_PAYLOAD_RE = /data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{40,}/gi;
+
+export const trimNoisyBody = (body: string): string =>
+  body.replace(BASE64_PAYLOAD_RE, "[base64 payload omitted]");
+
+export const FEEDBACK_FILTERS = [
+  "all",
+  "visible-open",
+  "needs-human-reply",
+  "current-head",
+] as const;
+
+export type FeedbackFilter = (typeof FEEDBACK_FILTERS)[number];
+
+type FeedbackInventory = {
+  readonly reviews: ReadonlyArray<{ author: string; body: string; feedbackOrigin: string }>;
+  readonly threads: ReadonlyArray<{
+    commentId: number;
+    body: string;
+    feedbackOrigin: string;
+    isVisibleOpen: boolean;
+    needsHumanReply: boolean;
+  }>;
+  readonly inlineComments: ReadonlyArray<{
+    id: number;
+    inReplyToId: number | null;
+    author: string;
+    body: string;
+    feedbackOrigin: string;
+  }>;
+  readonly issueComments: ReadonlyArray<{ author: string; body: string; feedbackOrigin: string }>;
+};
+
+export const filterFeedback = <T extends FeedbackInventory>(
+  feedback: T,
+  options: {
+    only: FeedbackFilter;
+    excludeAuthors: ReadonlyArray<string>;
+    rawBodies: boolean;
+  },
+) => {
+  const excluded = options.excludeAuthors
+    .map((author) => author.toLowerCase())
+    .filter((a) => a !== "");
+  const keepAuthor = (author: string) =>
+    !excluded.some((needle) => author.toLowerCase().includes(needle));
+
+  const threads = feedback.threads.filter((thread) =>
+    options.only === "visible-open"
+      ? thread.isVisibleOpen
+      : options.only === "needs-human-reply"
+        ? thread.needsHumanReply
+        : options.only === "current-head"
+          ? thread.feedbackOrigin === "current_head"
+          : true,
+  );
+  const keptThreadRoots = new Set(threads.map((thread) => thread.commentId));
+
+  const inlineComments = feedback.inlineComments
+    .filter((comment) =>
+      options.only === "all"
+        ? true
+        : options.only === "current-head"
+          ? comment.feedbackOrigin === "current_head"
+          : keptThreadRoots.has(comment.inReplyToId ?? comment.id),
+    )
+    .filter((comment) => keepAuthor(comment.author));
+
+  const reviews = feedback.reviews
+    .filter((review) => options.only !== "current-head" || review.feedbackOrigin === "current_head")
+    .filter((review) => keepAuthor(review.author));
+
+  const issueComments = (options.only === "all" ? feedback.issueComments : []).filter((comment) =>
+    keepAuthor(comment.author),
+  );
+
+  const body = <I extends { body: string }>(item: I): I =>
+    options.rawBodies ? item : { ...item, body: trimNoisyBody(item.body) };
+
+  return {
+    filter: options.only,
+    omitted: {
+      reviews: feedback.reviews.length - reviews.length,
+      threads: feedback.threads.length - threads.length,
+      inlineComments: feedback.inlineComments.length - inlineComments.length,
+      issueComments: feedback.issueComments.length - issueComments.length,
+    },
+    reviews: reviews.map(body),
+    threads: threads.map(body),
+    inlineComments: inlineComments.map(body),
+    issueComments: issueComments.map(body),
+  };
+};
 
 const countFeedbackOrigins = (items: ReadonlyArray<{ feedbackOrigin: string }>) => ({
   current_head: items.filter((item) => item.feedbackOrigin === "current_head").length,
@@ -720,6 +816,39 @@ export const prRerunChecksCommand = Command.make(
   Command.withDescription("Rerun CI checks for a PR (GitHub Actions only, failed by default)"),
 );
 
+export const prTriggerChecksCommand = Command.make(
+  "trigger-checks",
+  {
+    field: Param.variadic(
+      Param.string(Param.flagKind, "field").pipe(
+        Param.withAlias("f"),
+        Param.withDescription("Workflow input as key=value; may be repeated"),
+      ),
+    ),
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+    workflow: Flag.string("workflow").pipe(
+      Flag.withDescription("workflow_dispatch workflow file to run against the PR head branch"),
+    ),
+  },
+  ({ field, format, pr, repo, workflow }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* triggerChecks(Option.getOrNull(pr), workflow, field);
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Dispatch a workflow against the PR head branch when no checks were reported, and verify the created run matches the PR head",
+  ),
+);
+
 export const prThreadsCommand = Command.make(
   "threads",
   {
@@ -851,24 +980,50 @@ export const prReviewsCommand = Command.make(
 export const prFeedbackCommand = Command.make(
   "feedback",
   {
+    excludeAuthors: Flag.string("exclude-authors").pipe(
+      Flag.withDescription(
+        "Comma-separated author substrings to drop (e.g. github-actions,dependabot)",
+      ),
+      Flag.optional,
+    ),
     format: formatOption,
+    only: Flag.choice("only", FEEDBACK_FILTERS).pipe(
+      Flag.withDefault("all" as FeedbackFilter),
+      Flag.withDescription(
+        "all (default) | visible-open | needs-human-reply | current-head; narrowed filters drop issue comments",
+      ),
+    ),
     pr: Flag.integer("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    rawBodies: Flag.boolean("raw-bodies").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription("Keep base64 report payloads in bodies instead of omitting them"),
+    ),
     repo: repoOption,
   },
-  ({ format, pr, repo }) =>
+  ({ excludeAuthors, format, only, pr, rawBodies, repo }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const feedback = yield* fetchCurrentFeedback(Option.getOrNull(pr));
-        yield* logFormatted(feedback, format);
+        yield* logFormatted(
+          filterFeedback(feedback, {
+            only,
+            excludeAuthors:
+              Option.getOrNull(excludeAuthors)
+                ?.split(",")
+                .map((a) => a.trim()) ?? [],
+            rawBodies,
+          }),
+          format,
+        );
       }),
     ),
 ).pipe(
   Command.withDescription(
-    "Full review-response inventory in one call: submitted reviews + threads (with state) + inline comments + issue comments",
+    "Full review-response inventory in one call: submitted reviews + threads (with state) + inline comments + issue comments. Narrow with --only, drop bots with --exclude-authors; `omitted` reports what each filter removed",
   ),
 );
 
@@ -1110,28 +1265,60 @@ export const prSubmitReviewCommand = Command.make(
   ),
 );
 
+export const OMITTABLE_TRIAGE_SECTIONS = [
+  "reviews",
+  "inlineComments",
+  "unresolvedThreads",
+] as const;
+
+export type OmittableTriageSection = (typeof OMITTABLE_TRIAGE_SECTIONS)[number];
+
+export const omitTriageSections = <T extends Record<string, unknown>>(
+  triage: T,
+  omit: ReadonlyArray<string>,
+) => {
+  const requested = omit.map((section) => section.trim()).filter((section) => section !== "");
+  const applied = requested.filter((section): section is OmittableTriageSection =>
+    (OMITTABLE_TRIAGE_SECTIONS as ReadonlyArray<string>).includes(section),
+  );
+  if (applied.length === 0) return triage;
+  const kept = Object.fromEntries(
+    Object.entries(triage).filter(([key]) => !applied.includes(key as OmittableTriageSection)),
+  ) as Partial<T>;
+  return { ...kept, omittedSections: applied };
+};
+
 export const prReviewTriageCommand = Command.make(
   "review-triage",
   {
     format: formatOption,
+    omit: Flag.string("omit").pipe(
+      Flag.withDescription(
+        `Comma-separated sections to leave out (${OMITTABLE_TRIAGE_SECTIONS.join(", ")}) — use for cheap repeated snapshots; \`pr feedback\` owns the full inventory`,
+      ),
+      Flag.optional,
+    ),
     pr: Flag.integer("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
   },
-  ({ format, pr, repo }) =>
+  ({ format, omit, pr, repo }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
         const result = yield* fetchReviewTriage(prNumber, format);
-        yield* logFormatted(result, format);
+        yield* logFormatted(
+          omitTriageSections(result, Option.getOrNull(omit)?.split(",") ?? []),
+          format,
+        );
       }),
     ),
 ).pipe(
   Command.withDescription(
-    "Composite: PR info + unresolved threads + visible-open threads + discussion summary + checks status in one call",
+    "Composite: PR info + merge-readiness verdict + unresolved threads + visible-open threads + discussion summary + checks status in one call",
   ),
 );
 

@@ -58,6 +58,8 @@ bun gh-tool pr review-triage --pr 123  # Combined info+threads+checks; leads wit
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # Infer PR + thread
 bun gh-tool pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done" # Explicit IDs validated first
 bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600 # Attempt-aware rerun
+bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # Zero checks reported: dispatch on the PR head branch and verify the run matches it
+bun gh-tool pr feedback --pr 123 --only visible-open --exclude-authors github-actions # Narrowed inventory; `omitted` says what was dropped
 ```
 
 ## Workflow Commands
@@ -99,6 +101,7 @@ bun gh-tool branch rename --old-name feature/old --new-name feature/new --repo o
 - Use `bun gh-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
 - Output defaults to **TOON** (token-efficient) — leave it as-is to save tokens. Add `--format json` only when you'll machine-parse output; JSON/JSONL modes suppress informational stderr but preserve structured errors.
 - `checks-failed --with-logs` returns diagnosis. `rerun-checks` preflights all attempt jobs/logs and performs one `--failed` mutation per workflow run; `evidence_unavailable` and `escalation_required` mutate nothing. Discovery runs only with `--watch`, and discovery/watch share `--timeout`.
-- Feedback SHA/origin fields and JSONL event schema are defined canonically in [README gh-tool machine contracts](../../README.md#gh-tool-machine-contracts). `jobId` is workflow job database ID; nullable `checkId` is never a job ID. `pre_existing` means different known commit, not obsolete.
+- Zero reported checks is a state, not an error — every checks read returns `[]` for it. When no run exists at all (GitHub dropped the `pull_request` event), use `pr trigger-checks`; never `workflow run` without a ref, which dispatches on the default branch and goes green for the wrong commit. Treat `matchesPrHead: false` and `checksObserved: false` as "not evidence".
+- Feedback SHA/origin fields and JSONL event schema are defined canonically in [README gh-tool machine contracts](../../README.md#gh-tool-machine-contracts). `jobId` is the workflow job database ID and is omitted when unavailable, as are `runId` and `attempt`; `checkId` is no longer emitted. `pre_existing` means different known commit, not obsolete.
 - Error responses include `hint`, `nextCommand`, and `retryable` fields — always check them on failure.
 - Prefer CLI tool over MCP tools — more efficient, doesn't load extra context.

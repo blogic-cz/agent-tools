@@ -265,19 +265,26 @@ Pod `exec` is limited to direct `redis-cli PING/INFO` and `ls` diagnostics. Gene
 
 `pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR.
 
-`pr watch --prs 12,34 --until terminal --format jsonl` accepts at most 50 unique, digits-only PR numbers and emits only JSONL state transitions. Identity uses `repo/pr/headSha/runId/attempt/jobId`; `checkId` is nullable and reserved for actual check-run IDs. State/bucket revisions emit even when identity stays stable; `supersedes` appears only when identity changes. Open PRs with no checks become terminal only after three stable empty snapshots, allowing bounded GitHub eventual consistency. `pr checks`, batch checks, triage, and batch triage keep stderr silent with `--format json`; JSONL watch is also informationally silent. Failures still return structured nonzero errors on stderr.
+`pr watch --prs 12,34 --until terminal --format jsonl` accepts at most 50 unique, digits-only PR numbers and emits only JSONL state transitions. Identity uses `repo/pr/headSha/runId/attempt/jobId`; `runId`, `attempt`, and `jobId` are omitted from an event rather than emitted as `null`, and `checkId` is no longer emitted. State/bucket revisions emit even when identity stays stable; `supersedes` appears only when identity changes. Open PRs with no checks become terminal only after three stable empty snapshots, allowing bounded GitHub eventual consistency, and carry `checksObserved: false` — a terminal snapshot with no observed check is never green evidence. `pr checks`, batch checks, triage, and batch triage keep stderr silent with `--format json`; JSONL watch is also informationally silent. Failures still return structured nonzero errors on stderr.
 
 Useful flows:
 
 ```bash
 bun gh-tool pr checks-failed --pr 123 --with-logs --format json # includes diagnosis
 bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600
+bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # only when zero checks reported
 bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # infers PR and thread
 # Optional --pr/--thread-id retain legacy flow and are validated before either mutation.
 ```
 
 Reruns preflight every target before mutation and fail closed with `evidence_unavailable` when attempt jobs or logs cannot be read. Failed jobs use one `gh run rerun RUN --failed` mutation per workflow run. Without `--watch`, output returns current attempt metadata immediately; with `--watch`, discovery and watching share one absolute `--timeout` deadline and report `discovery_timeout` or `watch_timeout` with latest attempt state. Repeated matching pre-test infrastructure failures return `escalation_required` without mutation. See [`skills/gh-tool/SKILL.md`](skills/gh-tool/SKILL.md) for operating guidance; this section is canonical for added output fields.
+
+Zero reported checks is a state, not an error: `gh pr checks` exits nonzero on an empty result, and every command that reads checks maps that to `[]`. `pr trigger-checks` covers the case where GitHub dropped the `pull_request` event and no run exists at all — it dispatches the named `workflow_dispatch` workflow **on the PR head branch**, then compares the created run's `headSha` back to the PR head and reports `matchesPrHead`. A run dispatched on the wrong ref goes green for another branch and must never be read as PR evidence, so `workflow run` also returns the discovered `runId`/`headSha` instead of a bare `dispatched: true`.
+
+`pr feedback` returns the whole inventory by default. Narrow it with `--only visible-open|needs-human-reply|current-head` (narrowed filters drop issue comments), drop bots with `--exclude-authors github-actions,dependabot`, and read `omitted` for what each filter removed. Base64 report payloads in bodies are replaced with `[base64 payload omitted]`; pass `--raw-bodies` to keep them. `review-triage --omit reviews,inlineComments` trims a repeated snapshot to the verdict and check state, and lists what it left out in `omittedSections`.
+
+Call the wrappers through `bun run --silent <tool>` in repos that expose them as package scripts; without `--silent` every invocation echoes the resolved command line into the agent's context.
 
 `audit-tool` reads the same SQLite file the wrappers write to. By default that file lives at `~/.agent-tools/audit.sqlite`, and you can override both path and retention per repo with the global `audit` config section.
 
