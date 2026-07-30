@@ -40,6 +40,7 @@ import {
   prChecksCommand,
   prChecksFailedCommand,
   prRerunChecksCommand,
+  prTriggerChecksCommand,
   prReplyAndResolveCommand,
   prReviewTriageBatchCommand,
   prReviewTriageCommand,
@@ -97,6 +98,7 @@ const prCommand = Command.make("pr", {}).pipe(
     prChecksFailedCommand,
     prWatchCommand,
     prRerunChecksCommand,
+    prTriggerChecksCommand,
     prReplyAndResolveCommand,
     prReviewTriageCommand,
     prReviewTriageBatchCommand,
@@ -174,7 +176,7 @@ WORKFLOW FOR AI AGENTS:
   2. Use 'pr discussion-summary' for overview (counts + latest discussion comment)
   3. Use 'pr threads' and 'pr issue-comments-latest --author <username> --body-contains "Review"' for review context
   4. Use 'pr submit-review', 'pr reply', 'pr comment' and 'pr resolve' to handle feedback
-  5. Use 'pr checks' to monitor CI status
+  5. Use 'pr checks' to monitor CI status; 'pr trigger-checks --workflow <file.yml>' when zero checks were reported
   6. Use 'pr merge' to merge (dry-run by default)
   7. Use 'issue list' to list open/closed issues
   8. Use 'issue triage --issue N --verbosity full' to inspect one issue in one call

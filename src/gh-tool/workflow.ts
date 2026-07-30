@@ -1,5 +1,5 @@
 import { Command, Flag, Param } from "effect/unstable/cli";
-import { Console, Effect, Option } from "effect";
+import { Console, Duration, Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
@@ -239,6 +239,65 @@ export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function*
     repo: opts.repo,
     fields: opts.fields,
   };
+});
+
+export type DispatchedRun = {
+  databaseId: number;
+  headSha: string;
+  status: string;
+  conclusion: string | null;
+  url: string;
+};
+
+const DISPATCH_DISCOVERY_ATTEMPTS = 8;
+const DISPATCH_DISCOVERY_INTERVAL_MS = 2000;
+
+export const listDispatchedRuns = Effect.fn("workflow.listDispatchedRuns")(function* (opts: {
+  workflow: string;
+  ref: string;
+  repo: string | null;
+}) {
+  const gh = yield* GitHubService;
+  const args = [
+    "run",
+    "list",
+    "--json",
+    "databaseId,headSha,status,conclusion,url",
+    "--limit",
+    "20",
+    "--workflow",
+    opts.workflow,
+    "--branch",
+    opts.ref,
+    "--event",
+    "workflow_dispatch",
+  ];
+
+  if (opts.repo !== null) {
+    args.push("--repo", opts.repo);
+  }
+
+  return yield* gh
+    .runGhJson<DispatchedRun[]>(args)
+    .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed<DispatchedRun[]>([])));
+});
+
+// `gh workflow run` and the REST dispatch endpoint both return an empty body — there is no
+// dispatch-to-run mapping. Polling the run list for an id absent before the dispatch is the only
+// way to name the run we just created, and an unnamed run cannot be watched or verified.
+export const discoverDispatchedRun = Effect.fn("workflow.discoverDispatchedRun")(function* (opts: {
+  workflow: string;
+  ref: string;
+  repo: string | null;
+  knownRunIds: ReadonlySet<number>;
+}) {
+  for (let attempt = 0; attempt < DISPATCH_DISCOVERY_ATTEMPTS; attempt += 1) {
+    const runs = yield* listDispatchedRuns(opts);
+    const created = runs.find((run) => !opts.knownRunIds.has(run.databaseId));
+    if (created !== undefined) return created;
+    yield* Effect.sleep(Duration.millis(DISPATCH_DISCOVERY_INTERVAL_MS));
+  }
+  return null;
 });
 
 // `gh run watch` has no native timeout (observed hanging 36 min). Block for the caller's --timeout,
@@ -781,13 +840,32 @@ export const workflowRunCommand = Command.make(
   ({ field, format, ref, repo, workflow }) =>
     Effect.gen(function* () {
       const resolvedRepo = yield* resolveRepoArg(repo);
+      const before = yield* listDispatchedRuns({ workflow, ref, repo: resolvedRepo });
       const result = yield* dispatchWorkflow({
         workflow,
         ref,
         fields: field,
         repo: resolvedRepo,
       });
-      yield* logFormatted(result, format);
+      const created = yield* discoverDispatchedRun({
+        workflow,
+        ref,
+        repo: resolvedRepo,
+        knownRunIds: new Set(before.map((run) => run.databaseId)),
+      });
+      yield* logFormatted(
+        {
+          ...result,
+          runId: created?.databaseId ?? null,
+          headSha: created?.headSha ?? null,
+          url: created?.url ?? null,
+          nextCommand:
+            created === null
+              ? `agent-tools-gh workflow list --workflow ${workflow} --branch ${ref}`
+              : `agent-tools-gh workflow watch --run ${created.databaseId}`,
+        },
+        format,
+      );
     }),
 ).pipe(Command.withDescription("Dispatch a workflow_dispatch workflow run"));
 

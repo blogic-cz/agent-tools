@@ -14,6 +14,41 @@ const NETWORK_ERROR_RE =
 const AUTH_401_RE = /HTTP 401|Bad credentials/i;
 const MAX_GH_RETRIES = 2;
 
+// A bare `gh` stderr tells an agent what broke but never what to do next. `hint`/`nextCommand`
+// already exist on GitHubCommandError; these fill them for the failures agents actually hit.
+const KNOWN_STDERR_HINTS: ReadonlyArray<{
+  readonly re: RegExp;
+  readonly hint: string;
+  readonly nextCommand?: string;
+}> = [
+  {
+    re: /no checks reported/i,
+    hint: "The head commit carries no check runs yet. Wait for CI to register, or trigger the workflow when the push event was dropped.",
+    nextCommand: "agent-tools-gh pr trigger-checks --pr <number> --workflow <file.yml>",
+  },
+  {
+    re: /no commits between/i,
+    hint: "Head and base point at the same commit. Push a commit before opening or updating the PR.",
+  },
+  {
+    re: /already exists/i,
+    hint: "The resource already exists. Fetch the existing one and update it instead of creating another.",
+  },
+  {
+    re: /pending review/i,
+    hint: "A pending (unsubmitted) review blocks this mutation. Inspect its contents and submit or discard it before retrying.",
+    nextCommand: "agent-tools-gh pr reviews --pr <number>",
+  },
+  {
+    re: /workflow does not have 'workflow_dispatch'/i,
+    hint: "This workflow cannot be dispatched manually. Re-run an existing run instead.",
+    nextCommand: "agent-tools-gh workflow rerun --run <run-id>",
+  },
+];
+
+const resolveStderrHint = (stderr: string) =>
+  KNOWN_STDERR_HINTS.find((entry) => entry.re.test(stderr));
+
 // Only retry verbs that are unambiguously idempotent reads — never replay a mutation on a timeout.
 const READ_VERBS = new Set(["view", "list", "checks", "status", "diff"]);
 const MUTATION_TOKENS =
@@ -204,11 +239,14 @@ export class GitHubService extends Context.Service<
               });
             }
 
+            const known = resolveStderrHint(result.stderr);
             return yield* new GitHubCommandError({
               message: result.stderr,
               command: `gh ${args.join(" ")}`,
               exitCode: result.exitCode,
               stderr: result.stderr,
+              ...(known === undefined ? {} : { hint: known.hint }),
+              ...(known?.nextCommand === undefined ? {} : { nextCommand: known.nextCommand }),
             });
           }
 

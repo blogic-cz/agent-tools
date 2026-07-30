@@ -33,6 +33,7 @@ import {
   fetchFailedChecks,
   mergePR,
   rerunChecks,
+  triggerChecks,
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
@@ -48,7 +49,13 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
-import { buildWatchResult, diagnoseLogEntries, dispatchWorkflow, fetchJobLogs } from "#gh/workflow";
+import {
+  buildWatchResult,
+  diagnoseLogEntries,
+  discoverDispatchedRun,
+  dispatchWorkflow,
+  fetchJobLogs,
+} from "#gh/workflow";
 import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
@@ -63,7 +70,10 @@ import {
   fetchCurrentReviews,
   fetchCurrentThreads,
   fetchReviewTriage,
+  filterFeedback,
+  omitTriageSections,
   parsePrNumbers,
+  trimNoisyBody,
 } from "#gh/pr/commands";
 
 const mockRepoInfo = {
@@ -5754,4 +5764,412 @@ describe("Branch rename", () => {
       expect(capturedArgs[1]).toBe("repos/owner/repo/branches/feature%2Fmy%20branch/rename");
     }),
   );
+});
+
+const noChecksFailure = (branch = "feat/test") =>
+  Effect.fail(
+    new GitHubCommandError({
+      message: `no checks reported on the '${branch}' branch`,
+      command: "gh pr checks",
+      exitCode: 1,
+      stderr: `no checks reported on the '${branch}' branch`,
+    }),
+  );
+
+describe("zero reported checks", () => {
+  it.effect("an empty `gh pr checks` result becomes [] instead of a hard failure", () =>
+    Effect.gen(function* () {
+      const checks = yield* fetchChecksForCommand(123, false, false, 1, true).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              args[0] === "pr" && args[1] === "checks" ? noChecksFailure() : Effect.succeed({}),
+          }),
+        ),
+      );
+
+      expect(checks).toEqual([]);
+    }),
+  );
+
+  it.effect("any other checks failure still propagates", () =>
+    Effect.gen(function* () {
+      const outcome = yield* fetchChecksForCommand(123, false, false, 1, true).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () =>
+              Effect.fail(
+                new GitHubCommandError({
+                  message: "HTTP 403: Resource not accessible by integration",
+                  command: "gh pr checks",
+                  exitCode: 1,
+                  stderr: "HTTP 403: Resource not accessible by integration",
+                }),
+              ),
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(outcome)).toBe(true);
+    }),
+  );
+
+  it.effect("watch reaches terminal with checksObserved:false when no check ever registers", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+      let checkCalls = 0;
+
+      yield* watchPRs([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({ number: 9, state: "OPEN", headRefOid: "head" });
+              }
+              checkCalls += 1;
+              return noChecksFailure();
+            },
+          }),
+        ),
+      );
+
+      const terminal = events.filter((event) => event.type === "pr_terminal");
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ checksObserved: false, headSha: "head" });
+      expect(checkCalls).toBeGreaterThanOrEqual(3);
+      expect(events.filter((event) => event.type === "check")).toEqual([]);
+    }),
+  );
+});
+
+describe("watch check events", () => {
+  it.effect("omits run/attempt/job keys instead of emitting them as null", () =>
+    Effect.gen(function* () {
+      const events: Array<Record<string, unknown>> = [];
+
+      yield* watchPRs([11], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({ number: 11, state: "OPEN", headRefOid: "head" });
+              }
+              return Effect.succeed([
+                { name: "External", state: "completed", bucket: "pass", link: "external" },
+              ]);
+            },
+          }),
+        ),
+      );
+
+      const check = events.find((event) => event.type === "check");
+      expect(check).toMatchObject({ name: "External", bucket: "pass" });
+      expect(check).not.toHaveProperty("runId");
+      expect(check).not.toHaveProperty("attempt");
+      expect(check).not.toHaveProperty("jobId");
+      expect(check).not.toHaveProperty("checkId");
+    }),
+  );
+});
+
+describe("pr trigger-checks", () => {
+  const prViewJson = {
+    ...mockPRInfo,
+    body: "",
+    headRefOid: "pr-head",
+    baseRefOid: "base",
+  };
+
+  it.effect("refuses to dispatch while checks are already reported", () =>
+    Effect.gen(function* () {
+      const result = yield* triggerChecks(123, "dotnet-pull-request.yml", []).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") return Effect.succeed(prViewJson);
+              if (args[0] === "pr" && args[1] === "checks") {
+                return Effect.succeed([
+                  { name: "CI", state: "completed", bucket: "pass", link: "external" },
+                ]);
+              }
+              return Effect.succeed({});
+            },
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ triggered: false, pr: 123, prHeadSha: "pr-head" });
+    }),
+  );
+
+  it.effect("dispatches on the PR head branch and confirms the run matches the PR head", () =>
+    Effect.gen(function* () {
+      const dispatched: string[][] = [];
+
+      const result = yield* triggerChecks(123, "dotnet-pull-request.yml", ["pr_number=123"]).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              dispatched.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") return Effect.succeed(prViewJson);
+              if (args[0] === "pr" && args[1] === "checks") return noChecksFailure();
+              if (args[0] === "run" && args[1] === "list") {
+                return Effect.succeed(
+                  dispatched.length === 0
+                    ? []
+                    : [
+                        {
+                          databaseId: 555,
+                          headSha: "pr-head",
+                          status: "in_progress",
+                          conclusion: null,
+                          url: "https://github.com/test-owner/test-repo/actions/runs/555",
+                        },
+                      ],
+                );
+              }
+              return Effect.succeed({});
+            },
+          }),
+        ),
+      );
+
+      expect(dispatched[0]).toEqual([
+        "workflow",
+        "run",
+        "dotnet-pull-request.yml",
+        "--ref",
+        "feat/test",
+        "--repo",
+        "test-owner/test-repo",
+        "-f",
+        "pr_number=123",
+      ]);
+      expect(result).toMatchObject({
+        triggered: true,
+        ref: "feat/test",
+        runId: 555,
+        runHeadSha: "pr-head",
+        prHeadSha: "pr-head",
+        matchesPrHead: true,
+        nextCommand: "agent-tools-gh workflow watch --run 555",
+      });
+    }),
+  );
+
+  it.effect("flags a dispatched run that landed on another commit as not PR evidence", () =>
+    Effect.gen(function* () {
+      let dispatchedOnce = false;
+
+      const result = yield* triggerChecks(123, "dotnet-pull-request.yml", []).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () => {
+              dispatchedOnce = true;
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") return Effect.succeed(prViewJson);
+              if (args[0] === "pr" && args[1] === "checks") return noChecksFailure();
+              if (args[0] === "run" && args[1] === "list") {
+                return Effect.succeed(
+                  dispatchedOnce
+                    ? [
+                        {
+                          databaseId: 777,
+                          headSha: "main-head",
+                          status: "in_progress",
+                          conclusion: null,
+                          url: "https://github.com/test-owner/test-repo/actions/runs/777",
+                        },
+                      ]
+                    : [],
+                );
+              }
+              return Effect.succeed({});
+            },
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ triggered: true, runId: 777, matchesPrHead: false });
+      expect(result.message).toContain("not evidence for this PR");
+    }),
+  );
+});
+
+describe("dispatched run discovery", () => {
+  it.effect("returns the run absent from the pre-dispatch list", () =>
+    Effect.gen(function* () {
+      const created = yield* discoverDispatchedRun({
+        workflow: "ci.yml",
+        ref: "feat/test",
+        repo: "test-owner/test-repo",
+        knownRunIds: new Set([1, 2]),
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () =>
+              Effect.succeed([
+                {
+                  databaseId: 1,
+                  headSha: "a",
+                  status: "completed",
+                  conclusion: "success",
+                  url: "u1",
+                },
+                { databaseId: 3, headSha: "b", status: "queued", conclusion: null, url: "u3" },
+              ]),
+          }),
+        ),
+      );
+
+      expect(created).toMatchObject({ databaseId: 3, headSha: "b" });
+    }),
+  );
+});
+
+describe("feedback filtering", () => {
+  const inventory = {
+    reviews: [
+      { author: "human", body: "please fix", feedbackOrigin: "current_head" },
+      { author: "github-actions[bot]", body: "report", feedbackOrigin: "pre_existing" },
+    ],
+    threads: [
+      {
+        commentId: 10,
+        body: "open concern",
+        feedbackOrigin: "current_head",
+        isVisibleOpen: true,
+        needsHumanReply: true,
+      },
+      {
+        commentId: 20,
+        body: "settled",
+        feedbackOrigin: "pre_existing",
+        isVisibleOpen: false,
+        needsHumanReply: false,
+      },
+    ],
+    inlineComments: [
+      {
+        id: 10,
+        inReplyToId: null,
+        author: "human",
+        body: "open concern",
+        feedbackOrigin: "current_head",
+      },
+      {
+        id: 20,
+        inReplyToId: null,
+        author: "claude[bot]",
+        body: "settled",
+        feedbackOrigin: "pre_existing",
+      },
+    ],
+    issueComments: [
+      {
+        author: "github-actions[bot]",
+        body: "results [x]:data:application/gzip;base64,H4sIAAAAAAAAA0tMSk7hys3MU8jPS1XIzC1IzUsBAOaNVfMYAAAA",
+        feedbackOrigin: "unknown",
+      },
+    ],
+  };
+
+  it("keeps everything by default and strips base64 payloads", () => {
+    const result = filterFeedback(inventory, {
+      only: "all",
+      excludeAuthors: [],
+      rawBodies: false,
+    });
+
+    expect(result.threads).toHaveLength(2);
+    expect(result.issueComments).toHaveLength(1);
+    expect(result.issueComments[0]?.body).toContain("[base64 payload omitted]");
+    expect(result.omitted).toEqual({
+      reviews: 0,
+      threads: 0,
+      inlineComments: 0,
+      issueComments: 0,
+    });
+  });
+
+  it("narrows to visible-open threads, drops issue comments, and reports the counts", () => {
+    const result = filterFeedback(inventory, {
+      only: "visible-open",
+      excludeAuthors: [],
+      rawBodies: false,
+    });
+
+    expect(result.threads.map((thread) => thread.commentId)).toEqual([10]);
+    expect(result.inlineComments.map((comment) => comment.id)).toEqual([10]);
+    expect(result.issueComments).toEqual([]);
+    expect(result.omitted).toEqual({
+      reviews: 0,
+      threads: 1,
+      inlineComments: 1,
+      issueComments: 1,
+    });
+  });
+
+  it("drops excluded authors by substring", () => {
+    const result = filterFeedback(inventory, {
+      only: "all",
+      excludeAuthors: ["github-actions", "claude"],
+      rawBodies: false,
+    });
+
+    expect(result.reviews.map((review) => review.author)).toEqual(["human"]);
+    expect(result.inlineComments.map((comment) => comment.author)).toEqual(["human"]);
+    expect(result.issueComments).toEqual([]);
+  });
+
+  it("keeps raw bodies when asked", () => {
+    const result = filterFeedback(inventory, {
+      only: "all",
+      excludeAuthors: [],
+      rawBodies: true,
+    });
+
+    expect(result.issueComments[0]?.body).toContain("base64,H4sI");
+  });
+
+  it("leaves a body without a payload untouched", () => {
+    expect(trimNoisyBody("plain review body")).toBe("plain review body");
+  });
+});
+
+describe("review-triage section omission", () => {
+  const triage = {
+    ready: { ready: false, blocking: ["mergeable=CONFLICTING"] },
+    info: { number: 1 },
+    reviews: [{ id: 1 }],
+    inlineComments: [{ id: 2 }],
+    unresolvedThreads: [{ threadId: "t" }],
+  };
+
+  it("returns the triage unchanged when nothing valid is requested", () => {
+    expect(omitTriageSections(triage, [])).toBe(triage);
+    expect(omitTriageSections(triage, ["info", "ready"])).toBe(triage);
+  });
+
+  it("drops requested sections and records what it dropped", () => {
+    const result = omitTriageSections(triage, ["reviews", " inlineComments "]);
+
+    expect(result).not.toHaveProperty("reviews");
+    expect(result).not.toHaveProperty("inlineComments");
+    expect(result).toMatchObject({
+      omittedSections: ["reviews", "inlineComments"],
+      unresolvedThreads: [{ threadId: "t" }],
+    });
+    expect(result.ready).toEqual(triage.ready);
+  });
 });

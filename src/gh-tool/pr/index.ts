@@ -21,6 +21,7 @@ export {
   prStatusCommand,
   prSubmitReviewCommand,
   prThreadsCommand,
+  prTriggerChecksCommand,
   prWaitMergeableCommand,
   prReviewTriageCommand,
   prReviewTriageBatchCommand,

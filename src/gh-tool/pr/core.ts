@@ -22,7 +22,15 @@ import { GitHubService } from "#gh/service";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
-import { diagnoseLogEntries, fetchJobLogs, formatLogEntries, parseRawJobLogs } from "#gh/workflow";
+import {
+  diagnoseLogEntries,
+  discoverDispatchedRun,
+  dispatchWorkflow,
+  fetchJobLogs,
+  formatLogEntries,
+  listDispatchedRuns,
+  parseRawJobLogs,
+} from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
@@ -187,6 +195,10 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
   return context;
 });
 
+// `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
+// is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
+export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+
 const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
   const gh = yield* GitHubService;
 
@@ -195,7 +207,15 @@ const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: numbe
     args.push(String(pr));
   }
 
-  return yield* gh.runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS]);
+  return yield* gh
+    .runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS])
+    .pipe(
+      Effect.catchTag("GitHubCommandError", (error) =>
+        NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
+          ? Effect.succeed<CheckResult[]>([])
+          : Effect.fail(error),
+      ),
+    );
 });
 
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
@@ -1049,6 +1069,69 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   return results;
 });
 
+// Dispatching on the wrong ref produces a green run for another branch that reads as PR evidence.
+// The ref is therefore taken from the PR head, and the created run's headSha is compared back to it.
+export const triggerChecks = Effect.fn("pr.triggerChecks")(function* (
+  pr: number | null,
+  workflow: string,
+  fields: ReadonlyArray<string>,
+) {
+  const gh = yield* GitHubService;
+  const info = yield* viewPR(pr);
+  const repoInfo = yield* gh.getRepoInfo();
+  const repo = `${repoInfo.owner}/${repoInfo.name}`;
+
+  const existing = yield* fetchCheckResults(info.number);
+  if (existing.length > 0) {
+    return {
+      triggered: false as const,
+      pr: info.number,
+      prHeadSha: info.headSha,
+      message: `${existing.length} check(s) already reported for ${info.headSha ?? "head"}; nothing to trigger.`,
+      nextCommand: `agent-tools-gh pr watch --prs ${info.number} --until terminal --format jsonl`,
+    };
+  }
+
+  const before = yield* listDispatchedRuns({ workflow, ref: info.headRefName, repo });
+  yield* dispatchWorkflow({ workflow, ref: info.headRefName, fields, repo });
+  const created = yield* discoverDispatchedRun({
+    workflow,
+    ref: info.headRefName,
+    repo,
+    knownRunIds: new Set(before.map((run) => run.databaseId)),
+  });
+
+  const matchesPrHead = created !== null && created.headSha === info.headSha;
+  if (created !== null && !matchesPrHead) {
+    yield* Console.warn(
+      `⚠️  Dispatched run ${created.databaseId} is on ${created.headSha}, not PR head ${info.headSha ?? "unknown"}. ` +
+        `Its result is NOT evidence for PR #${info.number}.`,
+    );
+  }
+
+  return {
+    triggered: true as const,
+    pr: info.number,
+    workflow,
+    ref: info.headRefName,
+    runId: created?.databaseId ?? null,
+    runHeadSha: created?.headSha ?? null,
+    prHeadSha: info.headSha,
+    matchesPrHead,
+    url: created?.url ?? null,
+    message:
+      created === null
+        ? "Dispatched, but no matching run appeared yet. List runs to find it before treating anything as evidence."
+        : matchesPrHead
+          ? `Run ${created.databaseId} is running against PR head ${info.headSha ?? "unknown"}.`
+          : `Run ${created.databaseId} is on ${created.headSha}, not PR head ${info.headSha ?? "unknown"}; not evidence for this PR.`,
+    nextCommand:
+      created === null
+        ? `agent-tools-gh workflow list --workflow ${workflow} --branch ${info.headRefName}`
+        : `agent-tools-gh workflow watch --run ${created.databaseId}`,
+  };
+});
+
 export const collectWithStableState = <S, A, E1, R1, E2, R2>(
   initial: S,
   collect: (state: S) => Effect.Effect<A, E1, R1>,
@@ -1284,10 +1367,13 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
                 repo: `${repo.owner}/${repo.name}`,
                 pr: number,
                 headSha: state.head,
-                runId: run?.databaseId ?? null,
-                attempt: run?.attempt ?? null,
-                jobId,
-                checkId: null,
+                ...(run?.databaseId === undefined || run.databaseId === null
+                  ? {}
+                  : { runId: run.databaseId }),
+                ...(run?.attempt === undefined || run.attempt === null
+                  ? {}
+                  : { attempt: run.attempt }),
+                ...(jobId === null ? {} : { jobId }),
                 name: check.name,
                 state: check.state,
                 bucket: check.bucket,
