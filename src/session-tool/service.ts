@@ -3,6 +3,8 @@ import { readdir } from "node:fs/promises";
 
 import type { MessageSummary, SessionInfo, SessionSource, SessionSummary } from "./types";
 
+import { ALL_SESSION_SOURCES } from "./types";
+
 import { getClaudeCodeSessions, readClaudeCodeMessages } from "./claude-code";
 import { getCodexSessions, getCodexSessionId, readCodexMessages } from "./codex";
 import { getPiSessions, getPiSessionId, readPiMessages, readPiSessionSummaries } from "./pi";
@@ -42,12 +44,7 @@ type FileEntry = { filePath: string; content: string };
 
 type SourceFilter = ReadonlySet<SessionSource>;
 
-const ALL_SOURCES: SourceFilter = new Set<SessionSource>([
-  "opencode",
-  "claude-code",
-  "codex",
-  "pi",
-]);
+const ALL_SOURCES: SourceFilter = ALL_SESSION_SOURCES;
 const UUID_SOURCES: SourceFilter = new Set<SessionSource>(["claude-code", "codex", "pi"]);
 const OPENCODE_ONLY: SourceFilter = new Set<SessionSource>(["opencode"]);
 

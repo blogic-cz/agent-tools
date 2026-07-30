@@ -13,6 +13,8 @@ import { Console, Effect, Layer, Result } from "effect";
 
 import type { MessageSummary, SessionResult, SessionSource } from "./types";
 
+import { ALL_SESSION_SOURCES } from "./types";
+
 import { makeSchemaCommand, formatOption, formatOutput, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
@@ -37,9 +39,7 @@ const filterBySource = (summaries: MessageSummary[], source: string): MessageSum
 };
 
 const sourceSet = (source: string): ReadonlySet<SessionSource> =>
-  source === "all"
-    ? new Set(["opencode", "claude-code", "codex", "pi"])
-    : new Set([source as SessionSource]);
+  source === "all" ? ALL_SESSION_SOURCES : new Set([source as SessionSource]);
 
 const buildScopeLabel = (searchAll: boolean, currentDir: string) => {
   if (searchAll) {
@@ -139,7 +139,6 @@ const listCommand = Command.make(
           ...piSummaries,
         ]);
         const results = summaries.slice(0, limit).map((summary) => ({
-          created: formatDate(summary.createdAt),
           createdAt: formatDate(summary.createdAt),
           updatedAt: formatDate(summary.updatedAt),
           sessionID: summary.sessionID,
