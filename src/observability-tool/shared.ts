@@ -67,6 +67,31 @@ async function discoverDatasources(url: string, token?: string): Promise<Grafana
   return (await response.json()) as GrafanaDatasource[];
 }
 
+function findTempoUid(datasources: GrafanaDatasource[]): string | undefined {
+  return (
+    datasources.find((datasource) => datasource.uid === DEFAULT_TEMPO_UID)?.uid ??
+    datasources.find((datasource) => datasource.type === "tempo")?.uid
+  );
+}
+
+/**
+ * Trace commands need a Tempo datasource. Fails with an explicit message instead of
+ * building a request against an undefined datasource UID.
+ */
+export function requireTempoUid(
+  config: ObservabilityEnvConfig,
+): Effect.Effect<string, ObservabilityToolError> {
+  return config.tempoUid
+    ? Effect.succeed(config.tempoUid)
+    : Effect.fail(
+        new ObservabilityToolError({
+          cause: new Error(
+            "No Tempo datasource found on this Grafana instance - trace commands are unavailable (metrics query still works)",
+          ),
+        }),
+      );
+}
+
 async function resolveFromProfile(
   profile: ObservabilityConfig | undefined,
   env: string,
@@ -79,13 +104,9 @@ async function resolveFromProfile(
   const token = resolveToken(environment.tokenEnvVar);
   const datasources = await discoverDatasources(environment.url, token);
 
-  const tempoUid =
-    datasources.find((datasource) => datasource.uid === DEFAULT_TEMPO_UID)?.uid ??
-    datasources.find((datasource) => datasource.type === "tempo")?.uid;
-
-  if (!tempoUid) {
-    throw new Error(`No Tempo datasource found in observability.${env} config`);
-  }
+  // Tempo is optional: metrics/logs work on Grafana instances without it (e.g. Percona PMM).
+  // Trace commands fail later with an explicit message via requireTempoUid().
+  const tempoUid = findTempoUid(datasources);
 
   return {
     url: environment.url,
@@ -146,17 +167,10 @@ export const resolveConfig = (env: string, profile: Option.Option<string>) =>
         const resolved = resolveFromEnv(env);
 
         const datasources = await discoverDatasources(resolved.url, resolved.token);
-        const tempoUid =
-          datasources.find((datasource) => datasource.uid === DEFAULT_TEMPO_UID)?.uid ??
-          datasources.find((datasource) => datasource.type === "tempo")?.uid;
-
-        if (!tempoUid) {
-          throw new Error(`No Tempo datasource found for environment '${env}'`);
-        }
 
         return {
           ...resolved,
-          tempoUid,
+          tempoUid: findTempoUid(datasources),
         } satisfies ObservabilityEnvConfig;
       },
       catch: (cause) => new ObservabilityToolError({ cause }),

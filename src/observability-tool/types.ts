@@ -5,7 +5,8 @@ export type ObservabilityEnvConfig = {
   token?: string;
   prometheusUid: string;
   lokiUid: string;
-  tempoUid: string;
+  /** Undefined when the Grafana instance has no Tempo datasource (e.g. Percona PMM). */
+  tempoUid?: string;
 };
 
 export type LogLine = {
