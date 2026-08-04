@@ -11,6 +11,7 @@ import {
   observabilityDsQuery,
   observabilityFetch,
   profileOption,
+  requireTempoUid,
   resolveConfig,
 } from "./shared";
 import { extractLogsFromDsQuery } from "./logs";
@@ -232,15 +233,18 @@ function searchTempoBySpanId(
   spanId: string,
   window: SearchWindow,
 ): Effect.Effect<TempoSearchResponse, ObservabilityToolError> {
-  const now = Math.floor(Date.now() / 1000);
-  const startEpoch = relativeToEpoch(window.start, now);
-  const endEpoch = relativeToEpoch(window.end, now);
-  const traceql = encodeURIComponent(`{ span:id = "${spanId}" }`);
-  const searchUrl =
-    `/api/datasources/proxy/uid/${config.tempoUid}/api/search` +
-    `?q=${traceql}&start=${startEpoch}&end=${endEpoch}&limit=5`;
+  return Effect.gen(function* () {
+    const tempoUid = yield* requireTempoUid(config);
+    const now = Math.floor(Date.now() / 1000);
+    const startEpoch = relativeToEpoch(window.start, now);
+    const endEpoch = relativeToEpoch(window.end, now);
+    const traceql = encodeURIComponent(`{ span:id = "${spanId}" }`);
+    const searchUrl =
+      `/api/datasources/proxy/uid/${tempoUid}/api/search` +
+      `?q=${traceql}&start=${startEpoch}&end=${endEpoch}&limit=5`;
 
-  return observabilityFetch<TempoSearchResponse>(config, searchUrl);
+    return yield* observabilityFetch<TempoSearchResponse>(config, searchUrl);
+  });
 }
 
 function fetchFullTrace(
@@ -248,9 +252,10 @@ function fetchFullTrace(
   traceId: string,
 ): Effect.Effect<FlattenedSpan[], ObservabilityToolError> {
   return Effect.gen(function* () {
+    const tempoUid = yield* requireTempoUid(config);
     const raw = yield* observabilityFetch<TempoTraceResponse>(
       config,
-      `/api/datasources/proxy/uid/${config.tempoUid}/api/traces/${traceId}`,
+      `/api/datasources/proxy/uid/${tempoUid}/api/traces/${traceId}`,
     );
     return flattenTrace(raw);
   });
@@ -382,7 +387,7 @@ function handleTraceGet(
       data: {
         environment: env,
         grafanaUrl: config.url,
-        tempoDatasourceUid: config.tempoUid,
+        tempoDatasourceUid: config.tempoUid ?? null,
         input: parsed,
         resolution,
         summary: summarizeTrace(resolution.resolvedTraceId, spans),
