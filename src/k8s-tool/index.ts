@@ -17,6 +17,7 @@ import { K8sService, K8sServiceLayer } from "./service";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { K8sContextError } from "./errors";
+import { selectK8sProfile } from "./profile";
 import {
   transformDescribe,
   transformGenericKubectl,
@@ -60,6 +61,21 @@ const resolveEnv = (
     });
   });
 
+const resolveEnvAndProfile = (
+  envOption: Option.Option<string>,
+  profileOption: Option.Option<string>,
+  config: Parameters<typeof getDefaultEnvironment>[0],
+) =>
+  Effect.gen(function* () {
+    const resolvedEnv = yield* resolveEnv(envOption, config);
+    const profileName = selectK8sProfile(
+      config?.kubernetes,
+      Option.getOrUndefined(profileOption),
+      resolvedEnv,
+    );
+    return { env: resolvedEnv, profile: profileName };
+  });
+
 type CommonK8sCommandOptions = {
   readonly env: Option.Option<string>;
   readonly dryRun: boolean;
@@ -70,7 +86,11 @@ type CommonK8sCommandOptions = {
 const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
   Effect.gen(function* () {
     const config = yield* ConfigService;
-    const profileName = Option.getOrUndefined(options.profile);
+    const { env: resolvedEnv, profile: profileName } = yield* resolveEnvAndProfile(
+      options.env,
+      options.profile,
+      config,
+    );
     const k8sConfig = getToolConfig<K8sConfig>(config, "kubernetes", profileName);
 
     if (!k8sConfig) {
@@ -84,8 +104,6 @@ const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
       };
       return result;
     }
-
-    const resolvedEnv = yield* resolveEnv(options.env, config);
 
     const k8sService = yield* K8sService;
     const result = yield* k8sService.runKubectl(command, options.dryRun, profileName).pipe(
@@ -190,8 +208,11 @@ const resolveStructuredNamespace = (
     if (explicitNamespace) return explicitNamespace;
 
     const config = yield* ConfigService;
-    const resolvedEnv = yield* resolveEnv(envOption, config);
-    const profileName = Option.getOrUndefined(profileOption);
+    const { env: resolvedEnv, profile: profileName } = yield* resolveEnvAndProfile(
+      envOption,
+      profileOption,
+      config,
+    );
     const k8sConfig = getToolConfig<K8sConfig>(config, "kubernetes", profileName);
 
     if (!k8sConfig) return undefined;

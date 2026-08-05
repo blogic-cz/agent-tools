@@ -17,6 +17,7 @@ import {
   K8sTimeoutError,
 } from "#k8s/errors";
 import { ConfigService } from "#config/loader";
+import { selectK8sProfile } from "#k8s/profile";
 import { K8sService } from "#k8s/service";
 import { formatOutput } from "#shared";
 
@@ -1841,5 +1842,28 @@ describe("kubectl command security", () => {
       expect(error.hint).toBeUndefined();
       expect(error.nextCommand).toBeUndefined();
     });
+  });
+});
+
+describe("selectK8sProfile", () => {
+  const kubernetesSection = {
+    default: { clusterId: "nexus-k8s-dev", namespaces: { management: "management" } },
+    prod: { clusterId: "nexus-k8s-prd", namespaces: { prod: "app" } },
+  };
+
+  it("--env prod with no --profile resolves to the named prod profile, not default", () => {
+    expect(selectK8sProfile(kubernetesSection, undefined, "prod")).toBe("prod");
+  });
+
+  it("--env dev with no matching kubernetes.dev section falls back to default", () => {
+    expect(selectK8sProfile(kubernetesSection, undefined, "dev")).toBeUndefined();
+  });
+
+  it("explicit --profile always wins over --env", () => {
+    expect(selectK8sProfile(kubernetesSection, "default", "prod")).toBe("default");
+  });
+
+  it("returns undefined when there is no kubernetes section at all", () => {
+    expect(selectK8sProfile(undefined, undefined, "prod")).toBeUndefined();
   });
 });
