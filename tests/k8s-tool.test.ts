@@ -289,6 +289,42 @@ describe("K8sService", () => {
       );
     });
 
+    it.effect("still runs the VPN prerequisite when the probe is disabled", () => {
+      const observedShellCommands: Array<string> = [];
+
+      return Effect.gen(function* () {
+        const service = yield* K8sService;
+        const result = yield* service.runKubectl("get pods", false, "selected").pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (error) =>
+            expect(error.message).toBe('VPN prerequisite "undefined-vpn" is not defined.'),
+          onSuccess: () => expect.fail("Expected the VPN prerequisite to fail"),
+        });
+        expect(observedShellCommands).toEqual([contextQuery]);
+      }).pipe(
+        Effect.provide(K8sService.layer),
+        Effect.provide(
+          createMockChildProcessSpawnerLayer(
+            { [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 } },
+            observedShellCommands,
+          ),
+        ),
+        Effect.provide(
+          Layer.succeed(ConfigService, {
+            kubernetes: {
+              selected: {
+                clusterId: "selected-cluster",
+                namespaces: { test: "selected" },
+                apiProbeTimeoutMs: 0,
+                prerequisites: [{ type: "vpn" as const, key: "undefined-vpn" }],
+              },
+            },
+          }),
+        ),
+      );
+    });
+
     it.effect("still runs the VPN prerequisite and surfaces its failure when unreachable", () => {
       const observedShellCommands: Array<string> = [];
 

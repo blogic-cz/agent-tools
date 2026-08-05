@@ -342,7 +342,7 @@ export class K8sService extends Context.Service<
                 command: fullCommand,
               };
             }),
-            { alreadySatisfied: reachableWithoutPrerequisites },
+            { alreadySatisfied: apiProbeTimeoutMs > 0 && reachableWithoutPrerequisites },
           ).pipe(
             Effect.mapError((error) =>
               isPrerequisiteRunError(error)
