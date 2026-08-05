@@ -141,16 +141,55 @@ const disconnectedOutput = () =>
       ? ""
       : "No connections\nCommand completed successfully.\n";
 
-const runtimeConfig = (idleDisconnectMs = 0) => ({
+const runtimeConfig = (idleDisconnectMs = 0, connectTimeoutMs = 50) => ({
   vpns: {
     work: {
       name: "ExampleVPN",
       idleDisconnectMs,
-      connectTimeoutMs: 50,
+      connectTimeoutMs,
       disconnectTimeoutMs: 50,
     },
   },
 });
+
+const statusLabel = () => {
+  const spec = vpnCommandSpec(driver, "status");
+  return [spec.executable, ...spec.args].join(" ");
+};
+
+const isStartCommand = (label: string) =>
+  label.includes("connection up") || label === "rasdial ExampleVPN" || label.includes("--nc start");
+
+const isMutatingCommand = (label: string) =>
+  isStartCommand(label) ||
+  label.includes("--nc stop") ||
+  label.includes("connection down") ||
+  label.includes("/disconnect");
+
+const POISONED_EVIDENCE =
+  "VPN still reported connected after stop when the disconnect deadline expired.";
+
+const poisonUnknown = async (runtimeRoot: string) => {
+  const store = VpnStore.open(driver, { root: runtimeRoot, now: 0 });
+  const held = makeManaged(store);
+  store.releaseLease({ ...held, idleDisconnectMs: 0, now: 10 });
+  let clock = 10;
+  await stopWhenIdle(
+    store,
+    { ...init(runtimeRoot, held.leaseId, held.guardianId), disconnectTimeoutMs: 10 },
+    (action) => {
+      clock += 6;
+      return Promise.resolve({
+        stdout: action === "stop" ? "" : connectedOutput(),
+        stderr: "",
+        exitCode: 0,
+      });
+    },
+    () => clock,
+  );
+  expect(store.snapshot()).toMatchObject({ lifecycle: "UNKNOWN", evidence: POISONED_EVIDENCE });
+  store.close();
+};
 
 const replacementFailingSpawn = (
   runtimeRoot: string,
@@ -1430,14 +1469,14 @@ describe("runWithProfilePrerequisites", () => {
             (_command, label) =>
               Effect.sync(() => {
                 commands.push(label);
-                return { stdout: "", stderr: "", exitCode: 0 };
+                return { stdout: "", stderr: "status failed", exitCode: 1 };
               }),
             Effect.void,
             { runGuardianInProcess: true },
           ),
         ),
       );
-      expect(commands).toEqual([]);
+      expect(commands).toEqual([statusLabel()]);
     }
   });
 
@@ -1672,14 +1711,14 @@ describe("runWithProfilePrerequisites", () => {
           (_command, label) =>
             Effect.sync(() => {
               commands.push(label);
-              return { stdout: "", stderr: "", exitCode: 0 };
+              return { stdout: "", stderr: "status failed", exitCode: 1 };
             }),
           Effect.void,
           { runGuardianInProcess: true },
         ),
       ),
     );
-    expect(commands).toEqual([]);
+    expect(commands).toEqual([statusLabel()]);
   });
 
   test("redacts macOS secret start failures from errors, evidence, state files, and logs", async () => {
@@ -1864,9 +1903,17 @@ describe("runWithProfilePrerequisites", () => {
 
     const gated = await Effect.runPromise(
       Effect.result(
-        runWithProfilePrerequisites(runtimeConfig(), { vpn: "work" }, commandRunner(state), work, {
-          runGuardianInProcess: true,
-        }),
+        runWithProfilePrerequisites(
+          runtimeConfig(),
+          { vpn: "work" },
+          (_command, label) =>
+            Effect.sync(() => {
+              state.commands.push(label);
+              return { stdout: "", stderr: "status failed", exitCode: 1 };
+            }),
+          work,
+          { runGuardianInProcess: true },
+        ),
       ),
     );
     expect(gated._tag).toBe("Failure");
@@ -1874,6 +1921,128 @@ describe("runWithProfilePrerequisites", () => {
       expect(gated.failure.message).toContain('VPN prerequisite "work" has unknown ownership');
     }
     expect(runs).toBe(1);
+  });
+
+  test("poisoned UNKNOWN self-heals to DOWN from an observed disconnected status", async () => {
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    await poisonUnknown(runtimeRoot);
+
+    const state = { connected: false, commands: [] as string[] };
+    const value = await Effect.runPromise(
+      runWithProfilePrerequisites(
+        runtimeConfig(0, 5_000),
+        { vpn: "work" },
+        commandRunner(state),
+        Effect.succeed("ok"),
+        { runGuardianInProcess: true },
+      ),
+    );
+
+    expect(value).toBe("ok");
+    expect(state.commands[0]).toBe(statusLabel());
+    expect(state.commands.some(isStartCommand)).toBe(true);
+    const store = VpnStore.open(driver, { root: runtimeRoot });
+    expect(store.snapshot().lifecycle).not.toBe("UNKNOWN");
+    store.close();
+  });
+
+  test("poisoned UNKNOWN self-heals to EXTERNAL when the VPN is connected elsewhere", async () => {
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    await poisonUnknown(runtimeRoot);
+
+    const state = { connected: true, commands: [] as string[] };
+    const value = await Effect.runPromise(
+      runWithProfilePrerequisites(
+        runtimeConfig(0, 5_000),
+        { vpn: "work" },
+        commandRunner(state),
+        Effect.succeed("ok"),
+        { runGuardianInProcess: true },
+      ),
+    );
+
+    expect(value).toBe("ok");
+    expect(state.connected).toBe(true);
+    expect(state.commands.some(isMutatingCommand)).toBe(false);
+    const store = VpnStore.open(driver, { root: runtimeRoot });
+    expect(store.snapshot()).toMatchObject({ lifecycle: "EXTERNAL" });
+    store.close();
+  });
+
+  test("unobservable status keeps UNKNOWN failed closed with its original evidence", async () => {
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    await poisonUnknown(runtimeRoot);
+
+    const commands: string[] = [];
+    let workRan = false;
+    const result = await Effect.runPromise(
+      Effect.result(
+        runWithProfilePrerequisites(
+          runtimeConfig(),
+          { vpn: "work" },
+          (_command, label) =>
+            Effect.sync(() => {
+              commands.push(label);
+              return { stdout: "", stderr: "status failed", exitCode: 1 };
+            }),
+          Effect.sync(() => {
+            workRan = true;
+          }),
+          { runGuardianInProcess: true },
+        ),
+      ),
+    );
+
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.message).toBe(
+        `VPN prerequisite "work" has unknown ownership: ${POISONED_EVIDENCE}`,
+      );
+    }
+    expect(workRan).toBe(false);
+    expect(commands).toEqual([statusLabel()]);
+    const store = VpnStore.open(driver, { root: runtimeRoot });
+    expect(store.snapshot()).toMatchObject({
+      lifecycle: "UNKNOWN",
+      evidence: POISONED_EVIDENCE,
+    });
+    store.close();
+  });
+
+  test("UNKNOWN never reconciles while another lease is active", async () => {
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    await poisonUnknown(runtimeRoot);
+    const holder = VpnStore.open(driver, { root: runtimeRoot });
+    reserve(holder, "held-lease", "held-guardian", 20);
+    expect(holder.activateLease("held-lease", "held-guardian", 21)).toBe(true);
+    holder.close();
+
+    const state = { connected: false, commands: [] as string[] };
+    const result = await Effect.runPromise(
+      Effect.result(
+        runWithProfilePrerequisites(
+          runtimeConfig(),
+          { vpn: "work" },
+          commandRunner(state),
+          Effect.void,
+          { runGuardianInProcess: true },
+        ),
+      ),
+    );
+
+    expect(result._tag).toBe("Failure");
+    expect(state.commands).toEqual([]);
+    const store = VpnStore.open(driver, { root: runtimeRoot });
+    expect(store.snapshot()).toMatchObject({
+      lifecycle: "UNKNOWN",
+      evidence: POISONED_EVIDENCE,
+      activeLeases: 1,
+    });
+    store.close();
   });
 
   test("preserves direct-first retry and missing-config errors", async () => {

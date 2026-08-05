@@ -534,6 +534,28 @@ export class VpnStore {
     return false;
   }
 
+  /** Recovers terminal UNKNOWN from an observed status; fenced so it can never take ownership from a holder. */
+  reconcileUnknown(snapshot: VpnStateSnapshot, connected: boolean, now: number): boolean {
+    return this.immediate(
+      () =>
+        this.db
+          .query(
+            `UPDATE vpn_state SET lifecycle=?, managed_epoch_id=NULL, idle_deadline=NULL,
+               revision=revision+1, evidence=?, updated_at=?
+             WHERE singleton=1 AND lifecycle='UNKNOWN' AND operation_id IS NULL AND revision=?
+               AND NOT EXISTS (SELECT 1 FROM leases WHERE status='ACTIVE')`,
+          )
+          .run(
+            connected ? "EXTERNAL" : "DOWN",
+            connected
+              ? "Recovered from unknown ownership: VPN observed connected outside agent-tools."
+              : "Recovered from unknown ownership: VPN observed disconnected.",
+            now,
+            snapshot.revision,
+          ).changes === 1,
+    );
+  }
+
   private commitOperation(
     guard: OperationGuard,
     from: VpnLifecycle,
