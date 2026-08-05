@@ -120,8 +120,10 @@ const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
           const errorResult: CommandResult = {
             success: false,
             error: error.message,
-            hint: `Verify cluster ID "${k8sConfig.clusterId}" matches a context in kubectl config. Run: kubectl config get-contexts`,
-            nextCommand: "kubectl config get-contexts",
+            hint:
+              error.hint ??
+              `Verify cluster ID "${k8sConfig.clusterId}" matches a context in kubectl config. Run: kubectl config get-contexts`,
+            ...(error.hint ? {} : { nextCommand: "kubectl config get-contexts" }),
             executionTimeMs: 0,
           };
           return Effect.succeed(errorResult);

@@ -78,32 +78,38 @@ export async function stopWhenIdle(
   const deadline = now() + init.disconnectTimeoutMs;
   let evidence = "VPN stop did not produce confirmed disconnected status.";
   try {
-    let remaining = deadline - now();
+    const remaining = deadline - now();
     if (remaining > 0) {
       const stop = await runCommand("stop", remaining);
-      remaining = deadline - now();
       if (stop.exitCode !== 0) {
-        evidence = "VPN stop command failed; ownership is unknown and stop will not be retried.";
+        evidence = `VPN stop command failed (exit ${stop.exitCode}); ownership is unknown and stop will not be retried.`;
       } else {
-        const confirmDisconnected = async (): Promise<boolean> => {
+        const stillConnected =
+          "VPN still reported connected after stop when the disconnect deadline expired.";
+        const confirmDisconnected = async (): Promise<true | string> => {
           const statusRemaining = deadline - now();
-          if (statusRemaining <= 0) return false;
+          if (statusRemaining <= 0) {
+            return "VPN stop was dispatched, but the disconnect deadline expired before status could be confirmed.";
+          }
           const status = await runCommand("status", statusRemaining);
-          remaining = deadline - now();
           const connected = parseVpnStatus(init.driver, status);
           if (connected === false) return true;
-          if (connected === undefined || remaining <= 0) return false;
+          if (connected === undefined) {
+            return status.exitCode === 0
+              ? "VPN status output after stop was unparseable; ownership is unknown."
+              : `VPN status command after stop failed (exit ${status.exitCode}); ownership is unknown.`;
+          }
           const sleepRemaining = deadline - now();
-          if (sleepRemaining <= 0) return false;
+          if (sleepRemaining <= 0) return stillConnected;
           await sleep(Math.min(250, sleepRemaining));
-          remaining = deadline - now();
-          return remaining > 0 && confirmDisconnected();
+          return deadline - now() > 0 ? confirmDisconnected() : stillConnected;
         };
-        if (await confirmDisconnected()) {
+        const confirmed = await confirmDisconnected();
+        if (confirmed === true) {
           store.commitStop(guard, true, "VPN stop confirmed disconnected.", now());
           return;
         }
-        evidence = "VPN status failed, stayed connected, or was unparseable after stop.";
+        evidence = confirmed;
       }
     } else {
       evidence = "VPN disconnect deadline expired before a command could safely start.";
