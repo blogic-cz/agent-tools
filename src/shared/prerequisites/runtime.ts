@@ -557,10 +557,23 @@ const acquireVpn = <E>(
         while (true) {
           const snapshot = store.snapshot();
           if (snapshot.lifecycle === "UNKNOWN") {
+            const contended = snapshot.activeLeases > 0;
+            if (!contended) {
+              const observed = yield* runStatusBefore(driver, connectDeadline, runCommand);
+              if (
+                observed !== undefined &&
+                (store.reconcileUnknown(snapshot, observed, Date.now()) ||
+                  store.snapshot().lifecycle !== "UNKNOWN")
+              ) {
+                continue;
+              }
+            }
             return yield* fail(
               new PrerequisiteRunError({
                 message: `VPN prerequisite "${key}" has unknown ownership: ${snapshot.evidence ?? "no evidence"}`,
-                hint: "Quiesce all agent-tools processes and remove its VPN runtime state before retrying.",
+                hint: contended
+                  ? "Another agent-tools process holds an active lease on this VPN. Retry once it has finished."
+                  : missingVpnToolHint(driver),
               }),
             );
           }

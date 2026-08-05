@@ -12,5 +12,5 @@ it("passes Bun-native SQLite VPN lifecycle tests", () => {
 
   const output = `${result.stdout}\n${result.stderr}`;
   expect(result.status, output).toBe(0);
-  expect(output).toContain("40 pass");
+  expect(output).toContain("44 pass");
 });
