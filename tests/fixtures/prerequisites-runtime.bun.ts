@@ -2035,6 +2035,11 @@ describe("runWithProfilePrerequisites", () => {
     );
 
     expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.hint).toBe(
+        "Another agent-tools process holds an active lease on this VPN. Retry once it has finished.",
+      );
+    }
     expect(state.commands).toEqual([]);
     const store = VpnStore.open(driver, { root: runtimeRoot });
     expect(store.snapshot()).toMatchObject({
