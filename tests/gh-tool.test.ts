@@ -75,6 +75,8 @@ import {
   filterFeedback,
   omitTriageSections,
   parsePrNumbers,
+  parseReviewers,
+  requestReview,
   trimNoisyBody,
 } from "#gh/pr/commands";
 
@@ -5686,6 +5688,103 @@ describe("PR composite commands", () => {
     expect(() => Effect.runSync(parsePrNumbers("309x,314"))).toThrow();
     expect(() => Effect.runSync(parsePrNumbers("309,,314"))).toThrow();
   });
+
+  it("request-review normalizes, deduplicates, and validates reviewers", () => {
+    expect(Effect.runSync(parseReviewers("Zoe, alice,ALICE"))).toEqual(["alice", "zoe"]);
+    expect(Effect.runSync(parseReviewers("a".repeat(39)))).toEqual(["a".repeat(39)]);
+    for (const value of [
+      "",
+      "alice,,zoe",
+      "alice,invalid_login",
+      "-alice",
+      "alice--zoe",
+      "a".repeat(40),
+    ]) {
+      expect(() => Effect.runSync(parseReviewers(value))).toThrow();
+    }
+  });
+
+  it.effect("request-review makes one sorted API mutation and reports confirmed reviewers", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* requestReview(123, "Zoe,alice,ALICE").pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              calls.push(args);
+              return Effect.succeed({
+                requested_reviewers: [{ login: "zoe" }, { login: "bob" }, { login: "alice" }],
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(calls).toEqual([
+        [
+          "api",
+          "--method",
+          "POST",
+          "repos/test-owner/test-repo/pulls/123/requested_reviewers",
+          "-f",
+          "reviewers[]=alice",
+          "-f",
+          "reviewers[]=zoe",
+        ],
+      ]);
+      expect(result).toEqual({
+        pr: 123,
+        submittedReviewers: ["alice", "zoe"],
+        requestedReviewers: ["alice", "bob", "zoe"],
+      });
+    }),
+  );
+
+  it.effect(
+    "request-review rejects invalid PR or reviewers before mutation and preserves API errors",
+    () =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const layer = createMockGhLayer({
+          runGhJson: () => {
+            calls++;
+            return Effect.fail(
+              new GitHubCommandError({
+                message: "GitHub denied request",
+                command: "gh api",
+                exitCode: 1,
+                stderr: "denied",
+              }),
+            );
+          },
+        });
+        for (const [pr, reviewers] of [
+          [0, "alice"],
+          [1, "alice,,zoe"],
+        ] as const) {
+          expect(() =>
+            Effect.runSync(requestReview(pr, reviewers).pipe(Effect.provide(layer))),
+          ).toThrow();
+        }
+        expect(calls).toBe(0);
+        const error = yield* requestReview(1, "alice").pipe(Effect.provide(layer), Effect.flip);
+        expect(error).toBeInstanceOf(GitHubCommandError);
+        expect(error.message).toBe("GitHub denied request");
+      }),
+  );
+
+  it.effect("request-review rejects malformed requested-reviewers responses with exit code 1", () =>
+    Effect.gen(function* () {
+      for (const response of [{}, { requested_reviewers: [{ login: 42 }] }]) {
+        const error = yield* requestReview(123, "alice").pipe(
+          Effect.provide(createMockGhLayer({ runGhJson: () => Effect.succeed(response) })),
+          Effect.flip,
+        );
+        expect(error).toBeInstanceOf(GitHubCommandError);
+        if (error instanceof GitHubCommandError) expect(error.exitCode).toBe(1);
+      }
+    }),
+  );
 
   it("issue snapshot-batch parser: accepts comma-separated issue numbers", () => {
     expect(parseIssueNumbers("262, 186, nope, 0, 348")).toEqual([262, 186, 348]);

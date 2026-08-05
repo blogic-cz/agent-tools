@@ -76,6 +76,85 @@ const withRepo = <A, E, R>(repo: Option.Option<string>, effect: Effect.Effect<A,
     return yield* gh.withRepoTarget(Option.getOrNull(repo), effect);
   });
 
+const reviewerInputError = (reviewers: string) =>
+  new GitHubCommandError({
+    message: `--reviewers must be comma-separated GitHub user logins without empty segments: ${JSON.stringify(reviewers)}`,
+    command: "gh-tool pr request-review",
+    exitCode: 1,
+    stderr: "",
+    hint: "Pass user logins such as --reviewers octocat,hubot.",
+  });
+
+const prNumberError = (pr: number) =>
+  new GitHubCommandError({
+    message: `--pr must be a positive integer: ${pr}`,
+    command: "gh-tool pr request-review",
+    exitCode: 1,
+    stderr: "",
+    hint: "Pass a positive PR number, e.g. --pr 123.",
+  });
+
+const GITHUB_LOGIN_RE = /^(?!.*--)[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/;
+
+export const parseReviewers = (reviewers: string) => {
+  const parsed = reviewers.split(",").map((reviewer) => reviewer.trim().toLowerCase());
+  if (parsed.length === 0 || parsed.some((reviewer) => !GITHUB_LOGIN_RE.test(reviewer))) {
+    return Effect.fail(reviewerInputError(reviewers));
+  }
+  return Effect.succeed([...new Set(parsed)].toSorted());
+};
+
+type RequestedReviewersResponse = { requested_reviewers?: unknown };
+
+const confirmedReviewers = (response: RequestedReviewersResponse) => {
+  if (!Array.isArray(response.requested_reviewers)) {
+    return Effect.fail(
+      new GitHubCommandError({
+        message: "GitHub requested-reviewers response omitted requested_reviewers.",
+        command: "gh-tool pr request-review",
+        exitCode: 1,
+        stderr: JSON.stringify(response),
+      }),
+    );
+  }
+  const logins = response.requested_reviewers.map((reviewer) =>
+    typeof reviewer === "object" && reviewer !== null && "login" in reviewer
+      ? (reviewer as { login?: unknown }).login
+      : undefined,
+  );
+  if (logins.some((login) => typeof login !== "string")) {
+    return Effect.fail(
+      new GitHubCommandError({
+        message: "GitHub requested-reviewers response contained an invalid reviewer.",
+        command: "gh-tool pr request-review",
+        exitCode: 1,
+        stderr: JSON.stringify(response),
+      }),
+    );
+  }
+  return Effect.succeed([...new Set(logins as string[])].toSorted());
+};
+
+export const requestReview = (pr: number, reviewers: string) =>
+  Effect.gen(function* () {
+    if (!Number.isInteger(pr) || pr <= 0) return yield* prNumberError(pr);
+    const submittedReviewers = yield* parseReviewers(reviewers);
+    const gh = yield* GitHubService;
+    const repo = yield* gh.getRepoInfo();
+    const response = yield* gh.runGhJson<RequestedReviewersResponse>([
+      "api",
+      "--method",
+      "POST",
+      `repos/${repo.owner}/${repo.name}/pulls/${pr}/requested_reviewers`,
+      ...submittedReviewers.flatMap((reviewer) => ["-f", `reviewers[]=${reviewer}`]),
+    ]);
+    return {
+      pr,
+      submittedReviewers,
+      requestedReviewers: yield* confirmedReviewers(response),
+    };
+  });
+
 type ReviewTriageSummary = {
   readonly visibleOpenReviewThreadsCount: number;
   readonly unrepliedReviewThreadsCount: number;
@@ -1346,6 +1425,25 @@ export const prReviewTriageCommand = Command.make(
     "Composite: PR info + merge-readiness verdict + unresolved threads + visible-open threads + discussion summary + checks status in one call",
   ),
 );
+
+export const prRequestReviewCommand = Command.make(
+  "request-review",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(Flag.withDescription("Positive pull request number")),
+    repo: repoOption,
+    reviewers: Flag.string("reviewers").pipe(
+      Flag.withDescription("Comma-separated GitHub user logins"),
+    ),
+  },
+  ({ format, pr, repo, reviewers }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        yield* logFormatted(yield* requestReview(pr, reviewers), format);
+      }),
+    ),
+).pipe(Command.withDescription("Request review from comma-separated GitHub user logins"));
 
 export const prReviewTriageBatchCommand = Command.make(
   "review-triage-batch",

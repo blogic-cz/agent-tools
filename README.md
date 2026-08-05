@@ -263,7 +263,7 @@ Pod `exec` is limited to direct `redis-cli PING/INFO` and `ls` diagnostics. Gene
 
 ### gh-tool machine contracts
 
-`pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR.
+`pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR. `pr request-review --reviewers alice,bob` emits sorted `submittedReviewers` (normalized input) and `requestedReviewers` (GitHub-confirmed result).
 
 `pr watch --prs 12,34 --until terminal --format jsonl` accepts at most 50 unique, digits-only PR numbers and emits only JSONL state transitions. Identity uses `repo/pr/headSha/runId/attempt/jobId`; `runId`, `attempt`, and `jobId` are omitted from an event rather than emitted as `null`, and `checkId` is no longer emitted. State/bucket revisions emit even when identity stays stable; `supersedes` appears only when identity changes. Open PRs with no checks become terminal only after three stable empty snapshots, allowing bounded GitHub eventual consistency, and carry `checksObserved: false` — a terminal snapshot with no observed check is never green evidence. `pr checks`, batch checks, triage, and batch triage keep stderr silent with `--format json`; JSONL watch is also informationally silent. Failures still return structured nonzero errors on stderr.
 
@@ -275,6 +275,7 @@ bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600
 bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # only when zero checks reported
 bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # infers PR and thread
+bun gh-tool pr request-review --repo be --pr 123 --reviewers alice,bob
 # Optional --pr/--thread-id retain legacy flow and are validated before either mutation.
 ```
 
