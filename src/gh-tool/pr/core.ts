@@ -972,6 +972,23 @@ export const closePR = Effect.fn("pr.closePR")(function* (opts: {
   return yield* viewPR(opts.pr);
 });
 
+export const readyPR = Effect.fn("pr.readyPR")(function* (opts: { pr: number | null }) {
+  const gh = yield* GitHubService;
+
+  const info = yield* viewPR(opts.pr);
+
+  // Idempotent: a PR that's already ready needs no mutation, and `gh pr ready` on a
+  // non-draft PR is a no-op that would just add a pointless call.
+  if (!info.isDraft) {
+    return { ...info, wasAlreadyReady: true };
+  }
+
+  yield* gh.runGh(["pr", "ready", String(info.number)]);
+
+  const updated = yield* viewPR(info.number);
+  return { ...updated, wasAlreadyReady: false };
+});
+
 export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   pr: number;
   title: string | null;

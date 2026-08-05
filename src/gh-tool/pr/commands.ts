@@ -38,6 +38,7 @@ import {
   fetchFailedChecks,
   listPRs,
   mergePR,
+  readyPR,
   rerunChecks,
   triggerChecks,
   watchPRs,
@@ -643,6 +644,30 @@ export const prMergeCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Merge a PR (dry-run by default, use --confirm to execute)"));
+
+export const prReadyCommand = Command.make(
+  "ready",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+  },
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* readyPR({ pr: Option.getOrNull(pr) });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Mark a draft PR as ready for review (no-op if it's already ready for review)",
+  ),
+);
 
 export const prChecksCommand = Command.make(
   "checks",

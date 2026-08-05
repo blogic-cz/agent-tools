@@ -32,6 +32,7 @@ import {
   fetchChecksForCommand,
   fetchFailedChecks,
   mergePR,
+  readyPR,
   rerunChecks,
   triggerChecks,
   viewPR,
@@ -1084,6 +1085,56 @@ describe("PR edit", () => {
     }),
   );
 });
+describe("PR ready", () => {
+  it.effect("marks a draft PR ready for review", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      let viewCount = 0;
+
+      const result = yield* readyPR({ pr: 123 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: () => {
+              viewCount += 1;
+              return Effect.succeed({ ...mockPRInfo, isDraft: viewCount === 1 });
+            },
+          }),
+        ),
+      );
+
+      expect(ghCalls).toEqual([["pr", "ready", "123"]]);
+      expect(result.isDraft).toBe(false);
+      expect(result.wasAlreadyReady).toBe(false);
+    }),
+  );
+
+  it.effect("is a no-op when the PR is already ready for review", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+
+      const result = yield* readyPR({ pr: 123 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: () => Effect.succeed({ ...mockPRInfo, isDraft: false }),
+          }),
+        ),
+      );
+
+      expect(ghCalls).toEqual([]);
+      expect(result.isDraft).toBe(false);
+      expect(result.wasAlreadyReady).toBe(true);
+    }),
+  );
+});
+
 describe("PR merge logic", () => {
   it.effect("long-lived head (promotion PR) merges without retargeting or branch deletion", () =>
     Effect.gen(function* () {
