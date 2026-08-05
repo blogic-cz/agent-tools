@@ -257,6 +257,40 @@ export const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts:
   };
 });
 
+export const createIssue = Effect.fn("issue.createIssue")(function* (opts: {
+  title: string;
+  body: string;
+  assignee: string | null;
+  labels: string | null;
+}) {
+  const gh = yield* GitHubService;
+
+  const args = ["issue", "create", "--title", opts.title, "--body", opts.body];
+
+  if (opts.assignee !== null) {
+    args.push("--assignee", opts.assignee);
+  }
+  if (opts.labels !== null) {
+    args.push("--label", opts.labels);
+  }
+
+  const result = yield* gh.runGh(args);
+
+  const urlMatch = result.stdout.match(/\/issues\/(\d+)/);
+  if (!urlMatch?.[1]) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh issue create",
+        exitCode: 0,
+        stderr: "Issue was created but its number could not be parsed from the output.",
+        message: "Issue was created but its number could not be parsed from the output.",
+      }),
+    );
+  }
+
+  return yield* viewIssue(Number(urlMatch[1]));
+});
+
 export const editIssue = Effect.fn("issue.editIssue")(function* (opts: {
   issue: number;
   title: string | null;

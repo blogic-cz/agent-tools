@@ -10,6 +10,7 @@ import {
   issueCloseCommand,
   issueCommentCommand,
   issueCommentsCommand,
+  issueCreateCommand,
   issueEditCommand,
   issueListCommand,
   issueReopenCommand,
@@ -109,7 +110,7 @@ const prCommand = Command.make("pr", {}).pipe(
 
 const issueCommand = Command.make("issue", {}).pipe(
   Command.withDescription(
-    "Issue operations (list, view, comments, triage, snapshot-batch, close, reopen, comment, edit)",
+    "Issue operations (list, view, comments, triage, snapshot-batch, create, close, reopen, comment, edit)",
   ),
   Command.withSubcommands([
     issueListCommand,
@@ -117,6 +118,7 @@ const issueCommand = Command.make("issue", {}).pipe(
     issueCommentsCommand,
     issueTriageCommand,
     issueSnapshotBatchCommand,
+    issueCreateCommand,
     issueCloseCommand,
     issueReopenCommand,
     issueCommentCommand,
