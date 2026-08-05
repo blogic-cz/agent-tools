@@ -16,6 +16,7 @@ import type { K8sConfig } from "#config";
 import { collectProcessOutput, quoteShellArg } from "#shared/exec";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
+import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { isKubectlCommandAllowed, isSafeLogPath } from "./security";
@@ -275,14 +276,23 @@ export class K8sService extends Context.Service<
           const k8sConfig = yield* requireK8sConfig(profile);
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
           const apiProbeTimeoutMs = k8sConfig.apiProbeTimeoutMs ?? 2000;
+          const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
+          const reachableWithoutPrerequisites = yield* probeApiReachable(
+            context,
+            kubeconfig,
+            apiProbeTimeoutMs,
+          );
+          const vpnGated = normalizeProfilePrerequisites(k8sConfig).some(
+            (prerequisite) => prerequisite.type === "vpn",
+          );
           return yield* runWithProfilePrerequisites(
             config ?? {},
             k8sConfig,
             runPrerequisiteCommand,
             Effect.gen(function* () {
-              const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
-
-              const reachable = yield* probeApiReachable(context, kubeconfig, apiProbeTimeoutMs);
+              const reachable =
+                reachableWithoutPrerequisites ||
+                (vpnGated && (yield* probeApiReachable(context, kubeconfig, apiProbeTimeoutMs)));
               if (!reachable) {
                 return yield* new K8sContextError({
                   message: `Kubernetes API server (${k8sConfig.clusterId}) not reachable within ${apiProbeTimeoutMs}ms. VPN likely not connected, or the cluster API is degraded.`,
@@ -332,6 +342,7 @@ export class K8sService extends Context.Service<
                 command: fullCommand,
               };
             }),
+            { alreadySatisfied: reachableWithoutPrerequisites },
           ).pipe(
             Effect.mapError((error) =>
               isPrerequisiteRunError(error)

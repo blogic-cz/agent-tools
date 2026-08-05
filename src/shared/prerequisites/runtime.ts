@@ -742,6 +742,8 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
   runCommand: PrerequisiteCommandRunner<CommandError>,
   effect: Effect.Effect<A, E, never>,
   options?: {
+    /** Caller proved the target is already reachable: skip the VPN entirely (no status, no lease). */
+    alreadySatisfied?: boolean;
     tryWithoutPrerequisites?: boolean;
     runGuardianInProcess?: boolean;
     guardianSpawn?: GuardianSpawner;
@@ -750,7 +752,7 @@ export const runWithProfilePrerequisites = <A, E, CommandError>(
   const vpnPrerequisites = normalizeProfilePrerequisites(profile).filter(
     (prerequisite) => prerequisite.type === "vpn",
   );
-  if (vpnPrerequisites.length === 0) return effect;
+  if (vpnPrerequisites.length === 0 || options?.alreadySatisfied === true) return effect;
 
   return Effect.gen(function* () {
     const tryDirect = () => effect.pipe(Effect.result);

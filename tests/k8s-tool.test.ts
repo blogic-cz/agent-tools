@@ -248,6 +248,75 @@ describe("K8sService", () => {
     );
   });
 
+  describe("VPN prerequisite gate", () => {
+    const contextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+    const probeCommand =
+      "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
+    const podsCommand = "kubectl --context selected-context get pods";
+    const gatedConfig = () =>
+      Layer.succeed(ConfigService, {
+        kubernetes: {
+          selected: {
+            clusterId: "selected-cluster",
+            namespaces: { test: "selected" },
+            prerequisites: [{ type: "vpn" as const, key: "undefined-vpn" }],
+          },
+        },
+      });
+
+    it.effect("skips the VPN when the API server is already reachable", () => {
+      const observedShellCommands: Array<string> = [];
+
+      return Effect.gen(function* () {
+        const service = yield* K8sService;
+        const result = yield* service.runKubectl("get pods", false, "selected");
+
+        expect(result.success).toBe(true);
+        expect(observedShellCommands).toEqual([contextQuery, probeCommand, podsCommand]);
+      }).pipe(
+        Effect.provide(K8sService.layer),
+        Effect.provide(
+          createMockChildProcessSpawnerLayer(
+            {
+              [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              [probeCommand]: { stdout: '{"major":"1"}', stderr: "", exitCode: 0 },
+              [podsCommand]: { stdout: "pod-a\n", stderr: "", exitCode: 0 },
+            },
+            observedShellCommands,
+          ),
+        ),
+        Effect.provide(gatedConfig()),
+      );
+    });
+
+    it.effect("still runs the VPN prerequisite and surfaces its failure when unreachable", () => {
+      const observedShellCommands: Array<string> = [];
+
+      return Effect.gen(function* () {
+        const service = yield* K8sService;
+        const result = yield* service.runKubectl("get pods", false, "selected").pipe(Effect.result);
+
+        Result.match(result, {
+          onFailure: (error) => {
+            expect(error).toBeInstanceOf(K8sContextError);
+            expect(error.message).toBe('VPN prerequisite "undefined-vpn" is not defined.');
+          },
+          onSuccess: () => expect.fail("Expected the VPN prerequisite to fail"),
+        });
+        expect(observedShellCommands).toEqual([contextQuery, probeCommand]);
+      }).pipe(
+        Effect.provide(K8sService.layer),
+        Effect.provide(
+          createMockChildProcessSpawnerLayer(
+            { [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 } },
+            observedShellCommands,
+          ),
+        ),
+        Effect.provide(gatedConfig()),
+      );
+    });
+  });
+
   describe("runKubectl - successful execution", () => {
     it.effect("uses the selected profile for context resolution and timeout", () => {
       const observedShellCommands: Array<string> = [];
