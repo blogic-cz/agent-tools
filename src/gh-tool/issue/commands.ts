@@ -2,11 +2,16 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
-import { resolveOptionalTextInput, resolveRequiredTextInput } from "#gh/text-input";
+import {
+  resolveDefaultTextInput,
+  resolveOptionalTextInput,
+  resolveRequiredTextInput,
+} from "#gh/text-input";
 
 import {
   closeIssue,
   commentOnIssue,
+  createIssue,
   editIssue,
   fetchIssueComments,
   listIssues,
@@ -191,6 +196,57 @@ export const issueReopenCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Reopen a closed issue"));
+
+export const issueCreateCommand = Command.make(
+  "create",
+  {
+    assignee: Flag.string("assignee").pipe(
+      Flag.withDescription("Assignee login (comma-separated for multiple)"),
+      Flag.optional,
+    ),
+    body: Flag.string("body").pipe(Flag.withDescription("Issue body"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read issue body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
+    bodyStdin: Flag.boolean("body-stdin").pipe(
+      Flag.withDescription("Read issue body from stdin"),
+      Flag.withDefault(false),
+    ),
+    format: formatOption,
+    labels: Flag.string("labels").pipe(
+      Flag.withDescription("Labels to apply (comma-separated)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+    title: Flag.string("title").pipe(Flag.withDescription("Issue title")),
+  },
+  ({ assignee, body, bodyFile, bodyStdin, format, labels, repo, title }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const resolvedBody = yield* resolveDefaultTextInput({
+          command: "gh-tool issue create",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          stdin: bodyStdin,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          stdinFlag: "--body-stdin",
+          label: "body",
+          defaultValue: "",
+        });
+
+        const result = yield* createIssue({
+          assignee: Option.getOrNull(assignee),
+          body: resolvedBody,
+          labels: Option.getOrNull(labels),
+          title,
+        });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(Command.withDescription("Create a new issue"));
 
 export const issueCommentCommand = Command.make(
   "comment",

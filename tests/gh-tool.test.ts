@@ -17,6 +17,7 @@ import { GitHubService } from "#gh/service";
 import {
   closeIssue,
   commentOnIssue,
+  createIssue,
   editIssue,
   fetchIssueComments as fetchIssueDiscussionComments,
   reopenIssue,
@@ -5570,6 +5571,72 @@ describe("PR composite commands", () => {
         "1",
         "--comment",
         inventedShellSensitiveText,
+      ]);
+    }),
+  );
+
+  it.effect("createIssue creates an issue and returns its number/url", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({
+            stdout: "https://github.com/test-owner/test-repo/issues/42\n",
+            stderr: "",
+            exitCode: 0,
+          });
+        },
+        runGhJson: () => Effect.succeed({ ...mockPRInfo, number: 42 }),
+      });
+
+      const result = yield* createIssue({
+        title: "Title",
+        body: "Body",
+        assignee: null,
+        labels: null,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.number).toBe(42);
+      expect(forwardedArgs).toEqual(["issue", "create", "--title", "Title", "--body", "Body"]);
+    }),
+  );
+
+  it.effect("createIssue forwards --assignee correctly", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGh: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({
+            stdout: "https://github.com/test-owner/test-repo/issues/42\n",
+            stderr: "",
+            exitCode: 0,
+          });
+        },
+        runGhJson: () => Effect.succeed({ ...mockPRInfo, number: 42 }),
+      });
+
+      yield* createIssue({
+        title: "Title",
+        body: "Body",
+        assignee: "MarekBlogic",
+        labels: "bug",
+      }).pipe(Effect.provide(layer));
+
+      expect(forwardedArgs).toEqual([
+        "issue",
+        "create",
+        "--title",
+        "Title",
+        "--body",
+        "Body",
+        "--assignee",
+        "MarekBlogic",
+        "--label",
+        "bug",
       ]);
     }),
   );

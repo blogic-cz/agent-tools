@@ -2,6 +2,7 @@ export {
   issueCloseCommand,
   issueCommentCommand,
   issueCommentsCommand,
+  issueCreateCommand,
   issueEditCommand,
   issueListCommand,
   issueReopenCommand,
