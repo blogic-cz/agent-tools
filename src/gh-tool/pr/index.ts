@@ -13,6 +13,7 @@ export {
   prLastHumanReviewerCommand,
   prListCommand,
   prMergeCommand,
+  prReadyCommand,
   prReplyCommand,
   prRerunChecksCommand,
   prReplyAndResolveCommand,
