@@ -14,3 +14,9 @@ export function selectK8sProfile(
 
   return undefined;
 }
+
+export function hasKubernetesConfig(
+  kubernetesSection: Record<string, unknown> | undefined,
+): boolean {
+  return !!kubernetesSection && Object.keys(kubernetesSection).length > 0;
+}

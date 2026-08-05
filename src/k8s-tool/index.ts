@@ -17,7 +17,7 @@ import { K8sService, K8sServiceLayer } from "./service";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { K8sContextError } from "./errors";
-import { selectK8sProfile } from "./profile";
+import { hasKubernetesConfig, selectK8sProfile } from "./profile";
 import {
   transformDescribe,
   transformGenericKubectl,
@@ -83,9 +83,25 @@ type CommonK8sCommandOptions = {
   readonly profile: Option.Option<string>;
 };
 
+const noKubernetesConfigResult = (): CommandResult => ({
+  success: false,
+  error: "No Kubernetes configuration found",
+  hint: "Add a 'kubernetes' section to agent-tools.json5 with clusterId and namespaces.",
+  nextCommand:
+    "echo '{ kubernetes: { default: { clusterId: \"my-cluster\" } } }' > agent-tools.json5",
+  executionTimeMs: 0,
+});
+
 const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
   Effect.gen(function* () {
     const config = yield* ConfigService;
+
+    // Check for a missing 'kubernetes' section before resolving --env, so that case still
+    // surfaces "add a kubernetes section" instead of an env-resolution error (e.g. prod-safety).
+    if (!hasKubernetesConfig(config?.kubernetes)) {
+      return noKubernetesConfigResult();
+    }
+
     const { env: resolvedEnv, profile: profileName } = yield* resolveEnvAndProfile(
       options.env,
       options.profile,
@@ -94,15 +110,7 @@ const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
     const k8sConfig = getToolConfig<K8sConfig>(config, "kubernetes", profileName);
 
     if (!k8sConfig) {
-      const result: CommandResult = {
-        success: false,
-        error: "No Kubernetes configuration found",
-        hint: "Add a 'kubernetes' section to agent-tools.json5 with clusterId and namespaces.",
-        nextCommand:
-          "echo '{ kubernetes: { default: { clusterId: \"my-cluster\" } } }' > agent-tools.json5",
-        executionTimeMs: 0,
-      };
-      return result;
+      return noKubernetesConfigResult();
     }
 
     const k8sService = yield* K8sService;

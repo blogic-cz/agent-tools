@@ -17,7 +17,7 @@ import {
   K8sTimeoutError,
 } from "#k8s/errors";
 import { ConfigService } from "#config/loader";
-import { selectK8sProfile } from "#k8s/profile";
+import { hasKubernetesConfig, selectK8sProfile } from "#k8s/profile";
 import { K8sService } from "#k8s/service";
 import { formatOutput } from "#shared";
 
@@ -1865,5 +1865,19 @@ describe("selectK8sProfile", () => {
 
   it("returns undefined when there is no kubernetes section at all", () => {
     expect(selectK8sProfile(undefined, undefined, "prod")).toBeUndefined();
+  });
+});
+
+describe("hasKubernetesConfig", () => {
+  it("false when there is no kubernetes section at all (precedes --env resolution)", () => {
+    expect(hasKubernetesConfig(undefined)).toBe(false);
+  });
+
+  it("false when the kubernetes section is present but empty", () => {
+    expect(hasKubernetesConfig({})).toBe(false);
+  });
+
+  it("true when at least one kubernetes profile is configured", () => {
+    expect(hasKubernetesConfig({ default: { clusterId: "nexus-k8s-dev" } })).toBe(true);
   });
 });
