@@ -1,11 +1,12 @@
 import { Effect } from "effect";
 import { readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 import type { MessageSummary } from "./types";
 
 import { SessionReadError, SessionStorageNotFoundError, type SessionError } from "./errors";
 
-export const encodeProjectPath = (dir: string): string => dir.replaceAll("/", "-");
+export const encodeProjectPath = (dir: string): string => dir.replaceAll(/[/\\:]/g, "-");
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -172,7 +173,7 @@ export const getClaudeCodeSessions = (
           continue;
         }
 
-        const projectPath = `${basePath}/${entry.name}`;
+        const projectPath = join(basePath, entry.name);
         let files: string[];
         try {
           // eslint-disable-next-line eslint/no-await-in-loop -- directory scan must finish before filtering file list
@@ -186,7 +187,7 @@ export const getClaudeCodeSessions = (
             continue;
           }
 
-          sessionFiles.push(`${projectPath}/${fileName}`);
+          sessionFiles.push(join(projectPath, fileName));
         }
       }
 
@@ -200,8 +201,8 @@ export const getClaudeCodeSessions = (
   });
 
 const getFileNameWithoutExtension = (filePath: string): string => {
-  const fileName = filePath.split("/").pop();
-  if (fileName === undefined) {
+  const fileName = basename(filePath);
+  if (fileName === "") {
     return "";
   }
 

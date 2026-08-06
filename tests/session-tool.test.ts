@@ -32,6 +32,14 @@ describe("session-tool Claude Code helpers", () => {
     expect(encodeProjectPath("/Users/foo/bar")).toBe("-Users-foo-bar");
   });
 
+  it("encodeProjectPath replaces Windows separators and drive colon with dashes", () => {
+    expect(encodeProjectPath("C:\\Work\\SAB\\nexus")).toBe("C--Work-SAB-nexus");
+  });
+
+  it("encodeProjectPath handles mixed separators", () => {
+    expect(encodeProjectPath("C:/Work/SAB/nexus")).toBe("C--Work-SAB-nexus");
+  });
+
   it("parseJsonlLine parses user record", () => {
     const line = JSON.stringify({
       type: "user",
