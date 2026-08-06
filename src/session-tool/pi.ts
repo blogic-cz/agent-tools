@@ -2,6 +2,7 @@ import { Effect } from "effect";
 // node:fs/promises, not Bun.file/Bun.Glob: vitest runs under Node, where the Bun globals do not
 // exist, and every function below is reached by the suite. See AGENTS.md.
 import { open, readFile, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 import type { MessageSummary, SessionSummary } from "./types";
 
@@ -117,10 +118,10 @@ const walkSessionFiles = async (basePath: string): Promise<string[]> => {
     directories
       .filter((entry) => entry.isDirectory())
       .map(async (directory) => {
-        const directoryPath = `${basePath}/${directory.name}`;
+        const directoryPath = join(basePath, directory.name);
         return (await readdir(directoryPath, { withFileTypes: true }))
           .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-          .map((entry) => `${directoryPath}/${entry.name}`);
+          .map((entry) => join(directoryPath, entry.name));
       }),
   );
   return files.flat();

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import { readdir } from "node:fs/promises";
+import { basename } from "node:path";
 
 import type { MessageSummary, SessionInfo, SessionSource, SessionSummary } from "./types";
 
@@ -52,7 +53,7 @@ const UUID_SESSION_ID_REGEX =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/u;
 
 const getSessionIdFromClaudeFile = (filePath: string): string => {
-  const fileName = filePath.split("/").pop() ?? "";
+  const fileName = basename(filePath);
   return fileName.endsWith(".jsonl") ? fileName.slice(0, -".jsonl".length) : fileName;
 };
 
@@ -333,7 +334,7 @@ export class SessionService extends Context.Service<
 
                     summaries.push({
                       sessionID: parsed.sessionID ?? sessionId,
-                      id: parsed.id ?? filePath.split("/").pop()?.replace(".json", "") ?? "",
+                      id: parsed.id ?? basename(filePath).replace(".json", ""),
                       title: parsed.summary.title,
                       body: parsed.summary.body ?? "",
                       created: parsed.time?.created ?? 0,
