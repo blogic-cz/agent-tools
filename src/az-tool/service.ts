@@ -141,7 +141,7 @@ export class AzService extends Context.Service<
             message: result.stderr || `Command failed with exit code ${result.exitCode}`,
             command: fullCommand,
             exitCode: result.exitCode,
-            stderr: result.stderr || undefined,
+            ...(result.stderr ? { stderr: result.stderr } : {}),
           });
         }
 
@@ -209,7 +209,7 @@ export class AzService extends Context.Service<
             message: result.stderr || `Invoke failed with exit code ${result.exitCode}`,
             command: fullCommand,
             exitCode: result.exitCode,
-            stderr: result.stderr || undefined,
+            ...(result.stderr ? { stderr: result.stderr } : {}),
           });
         }
 

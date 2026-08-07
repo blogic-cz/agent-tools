@@ -10,7 +10,7 @@ import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/con
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
-import { PSQL_MISSING_HINT, resolvePsqlSearchPath } from "./psql";
+import { PSQL_MISSING_HINT, PSQL_SILENT_FAILURE_HINT, resolvePsqlSearchPath } from "./psql";
 import {
   DbConnectionError,
   DbMutationBlockedError,
@@ -483,6 +483,16 @@ export class DbService extends Context.Service<
             .filter((name) => name.length > 0);
         });
 
+        const psqlFailureFields = (result: { stderr: string; exitCode: number }) => {
+          const stderr = result.stderr.trim();
+          return stderr
+            ? { message: stderr, stderr }
+            : {
+                message: `psql exited with code ${result.exitCode} without writing any error output.`,
+                hint: PSQL_SILENT_FAILURE_HINT,
+              };
+        };
+
         const executeSelectQuery = Effect.fn("DbService.executeSelectQuery")(function* (
           config: DbConfig,
           sql: string,
@@ -498,10 +508,11 @@ export class DbService extends Context.Service<
           const endTime = yield* Clock.currentTimeMillis;
 
           if (result.exitCode !== 0) {
+            const failure = psqlFailureFields(result);
             const schemaError = detectSchemaError(result.stderr, sql);
             const baseResult: QueryResult = {
               success: false,
-              error: result.stderr.trim() || `psql exited with code ${result.exitCode}`,
+              error: failure.message,
               executionTimeMs: Number(endTime) - startTimeMs,
             };
 
@@ -527,11 +538,7 @@ export class DbService extends Context.Service<
               };
             }
 
-            return yield* new DbQueryError({
-              message: baseResult.error ?? "Query failed",
-              sql,
-              stderr: result.stderr.trim() || undefined,
-            });
+            return yield* new DbQueryError({ sql, ...failure });
           }
 
           const trimmedOutput = result.stdout.trim();
@@ -582,11 +589,7 @@ export class DbService extends Context.Service<
           const endTime = yield* Clock.currentTimeMillis;
 
           if (result.exitCode !== 0) {
-            return yield* new DbQueryError({
-              message: result.stderr.trim() || `psql exited with code ${result.exitCode}`,
-              sql,
-              stderr: result.stderr.trim() || undefined,
-            });
+            return yield* new DbQueryError({ sql, ...psqlFailureFields(result) });
           }
 
           const output = result.stdout.trim();

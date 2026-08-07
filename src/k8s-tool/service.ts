@@ -473,7 +473,7 @@ export class K8sService extends Context.Service<
                 `Remote realpath exited with code ${realpathResult.exitCode}`,
               command: realpathResult.command,
               exitCode: realpathResult.exitCode,
-              stderr: realpathResult.stderr || undefined,
+              ...(realpathResult.stderr ? { stderr: realpathResult.stderr } : {}),
             });
           }
           const [canonicalBase, canonicalPath] = realpathResult.stdout.trim().split("\n");

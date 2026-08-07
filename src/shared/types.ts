@@ -10,6 +10,12 @@ export type BaseResult = {
   hint?: string;
 };
 
+// Widening BaseResult itself is not honest: db-tool's select branch emits no message.
+export type ToolResult = BaseResult & {
+  message: string;
+  data?: unknown;
+};
+
 export type CommandOptions = {
   cwd?: string;
   env?: Record<string, string>;

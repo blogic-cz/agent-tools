@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer, Sink, Stream } from "effect";
 import type { ChildProcess } from "effect/unstable/process";
@@ -13,7 +17,7 @@ import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError }
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
-import { resolvePsqlSearchPath } from "#db/psql";
+import { isExecutableFile, resolvePsqlSearchPath } from "#db/psql";
 
 /**
  * Mock DbService layer factory for testing
@@ -1128,5 +1132,26 @@ describe("resolvePsqlSearchPath", () => {
   it("tolerates an unset PATH", () => {
     const exists = (candidate: string) => candidate === "/usr/local/opt/libpq/bin/psql";
     expect(resolvePsqlSearchPath(undefined, exists)).toBe("/usr/local/opt/libpq/bin");
+  });
+});
+
+describe("isExecutableFile", () => {
+  const directory = mkdtempSync(join(tmpdir(), "psql-lookup-"));
+
+  it("rejects a non-executable psql so the keg-only fallback still applies", () => {
+    const candidate = join(directory, "psql");
+    writeFileSync(candidate, "#!/bin/sh\nexit 2\n", { mode: 0o644 });
+    expect(isExecutableFile(candidate)).toBe(false);
+  });
+
+  it("accepts an executable psql", () => {
+    const candidate = join(directory, "psql-executable");
+    writeFileSync(candidate, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(isExecutableFile(candidate)).toBe(true);
+  });
+
+  it("rejects a directory and a missing entry", () => {
+    expect(isExecutableFile(directory)).toBe(false);
+    expect(isExecutableFile(join(directory, "absent"))).toBe(false);
   });
 });
