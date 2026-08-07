@@ -13,6 +13,8 @@ import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError }
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
+import { delimiter, join } from "node:path";
+
 import { resolvePsqlSearchPath } from "#db/psql";
 
 /**
@@ -1107,17 +1109,21 @@ describe("DbService", () => {
 });
 
 describe("resolvePsqlSearchPath", () => {
+  const psqlIn = (directory: string) => join(directory, "psql");
+  const pathOf = (...directories: string[]) => directories.join(delimiter);
+
   it("leaves PATH untouched when it already provides psql", () => {
-    const exists = (candidate: string) => candidate === "/usr/local/bin/psql";
-    expect(resolvePsqlSearchPath("/usr/bin:/usr/local/bin", exists)).toBe(
-      "/usr/bin:/usr/local/bin",
-    );
+    const exists = (candidate: string) => candidate === psqlIn("/usr/local/bin");
+    const pathEnv = pathOf("/usr/bin", "/usr/local/bin");
+
+    expect(resolvePsqlSearchPath(pathEnv, exists)).toBe(pathEnv);
   });
 
   it("appends the keg-only libpq directory when PATH has no psql", () => {
-    const exists = (candidate: string) => candidate === "/opt/homebrew/opt/libpq/bin/psql";
-    expect(resolvePsqlSearchPath("/usr/bin:/usr/local/bin", exists)).toBe(
-      "/usr/bin:/usr/local/bin:/opt/homebrew/opt/libpq/bin",
+    const exists = (candidate: string) => candidate === psqlIn("/opt/homebrew/opt/libpq/bin");
+
+    expect(resolvePsqlSearchPath(pathOf("/usr/bin", "/usr/local/bin"), exists)).toBe(
+      pathOf("/usr/bin", "/usr/local/bin", "/opt/homebrew/opt/libpq/bin"),
     );
   });
 
@@ -1126,7 +1132,8 @@ describe("resolvePsqlSearchPath", () => {
   });
 
   it("tolerates an unset PATH", () => {
-    const exists = (candidate: string) => candidate === "/usr/local/opt/libpq/bin/psql";
+    const exists = (candidate: string) => candidate === psqlIn("/usr/local/opt/libpq/bin");
+
     expect(resolvePsqlSearchPath(undefined, exists)).toBe("/usr/local/opt/libpq/bin");
   });
 });
