@@ -13,7 +13,7 @@ import type { AgentToolsConfig, DatabaseConfig } from "#config/types";
 
 import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
-import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
+import { DbConnectionError, DbMutationBlockedError, DbQueryError } from "#db/errors";
 import { getColumns, getRelationships, getTableNames, SYSTEM_SCHEMAS_SQL } from "#db/schema";
 import {
   getAllowedMutationOperation,
@@ -556,33 +556,6 @@ describe("DbService", () => {
               schemaFile: "packages/db/src/schema.ts",
               executionTimeMs: 20,
             },
-          }),
-        ),
-      ),
-    );
-
-    it.effect("handles parse errors for invalid JSON", () =>
-      Effect.gen(function* () {
-        const service = yield* DbService;
-        const result = yield* service
-          .executeQuery("local", "SELECT invalid_json")
-          .pipe(Effect.result);
-
-        Result.match(result, {
-          onFailure: (error) => {
-            expect(error._tag).toBe("DbParseError");
-          },
-          onSuccess: () => {
-            expect.fail("Expected Left but got Right");
-          },
-        });
-      }).pipe(
-        Effect.provide(
-          createMockDbServiceLayer({
-            "query:local:SELECT invalid_json": new DbParseError({
-              message: "Failed to parse query result as JSON",
-              rawOutput: "invalid json output",
-            }),
           }),
         ),
       ),

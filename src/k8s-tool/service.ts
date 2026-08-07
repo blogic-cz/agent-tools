@@ -14,7 +14,7 @@ import {
 import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { collectProcessOutput, quoteShellArg } from "#shared/exec";
-import { missingBinary } from "#shared/binary-preflight";
+import { describeMissingBinary, missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
@@ -112,17 +112,6 @@ export class K8sService extends Context.Service<
         const runShellCommand = (commandStr: string, timeoutMs: number) =>
           Effect.scoped(
             Effect.gen(function* () {
-              const missing = yield* missingBinary("kubectl");
-              if (missing) {
-                return yield* new K8sCommandError({
-                  message: missing.message,
-                  command: commandStr,
-                  exitCode: -1,
-                  stderr: missing.message,
-                  hint: missing.hint,
-                });
-              }
-
               const command = ChildProcess.make("sh", ["-c", commandStr], {
                 stdout: "pipe",
                 stderr: "pipe",
@@ -154,6 +143,9 @@ export class K8sService extends Context.Service<
                   command: commandStr,
                   exitCode: -1,
                   stderr: String(platformError),
+                  ...(missingBinaryFromSpawnFailure("kubectl", String(platformError))
+                    ? { hint: describeMissingBinary("kubectl").hint }
+                    : {}),
                 }),
             ),
           );
@@ -288,16 +280,6 @@ export class K8sService extends Context.Service<
           const k8sConfig = yield* requireK8sConfig(profile);
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
           const apiProbeTimeoutMs = k8sConfig.apiProbeTimeoutMs ?? 2000;
-          const missingKubectl = yield* missingBinary("kubectl");
-          if (missingKubectl) {
-            return yield* new K8sCommandError({
-              message: missingKubectl.message,
-              command: "kubectl",
-              exitCode: -1,
-              stderr: missingKubectl.message,
-              hint: missingKubectl.hint,
-            });
-          }
 
           const { context, kubeconfig } = yield* resolveContext(profile, k8sConfig);
           const reachableWithoutPrerequisites = yield* probeApiReachable(
@@ -344,6 +326,9 @@ export class K8sService extends Context.Service<
                       command: fullCommand,
                       exitCode: -1,
                       stderr: String(platformError),
+                      ...(missingBinaryFromSpawnFailure("kubectl", String(platformError))
+                        ? { hint: describeMissingBinary("kubectl").hint }
+                        : {}),
                     }),
                 ),
               );

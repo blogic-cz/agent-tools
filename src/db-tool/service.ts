@@ -9,7 +9,6 @@ import { resolveEnvTemplate } from "#shared/env-template";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
-import { missingBinary } from "#shared/binary-preflight";
 import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import { DbSqlClient, type DbConnection } from "./sql-client";
 import {
@@ -588,15 +587,6 @@ export class DbService extends Context.Service<
 
           return Effect.scoped(
             Effect.gen(function* () {
-              const missingKubectl = yield* missingBinary("kubectl");
-              if (missingKubectl) {
-                return yield* new DbTunnelError({
-                  message: missingKubectl.message,
-                  port: config.port,
-                  hint: missingKubectl.hint,
-                });
-              }
-
               const reachable = yield* probeApiServerReachable(config);
               if (!reachable) {
                 return yield* new DbTunnelError({

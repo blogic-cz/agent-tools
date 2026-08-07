@@ -1,8 +1,3 @@
-import { access } from "node:fs/promises";
-import { constants } from "node:fs";
-import { delimiter, join } from "node:path";
-import { Effect } from "effect";
-
 export const REQUIRED_BINARIES = {
   az: {
     tools: "az-tool",
@@ -24,39 +19,18 @@ export const REQUIRED_BINARIES = {
     install:
       "Install it with `brew install kubectl` (macOS) or see https://kubernetes.io/docs/tasks/tools/.",
   },
+  psql: {
+    tools: "db-tool schema introspection",
+    install:
+      "Install it with `brew install libpq` (macOS); libpq is keg-only, so add its bin directory to PATH.",
+  },
 } as const;
 
 export type RequiredBinary = keyof typeof REQUIRED_BINARIES;
 
 export type MissingBinary = { binary: RequiredBinary; message: string; hint: string };
 
-export type BinaryExists = (candidate: string) => Promise<boolean>;
-
-const existsOnDisk: BinaryExists = async (candidate) => {
-  try {
-    await access(candidate, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 const isRequiredBinary = (binary: string): binary is RequiredBinary => binary in REQUIRED_BINARIES;
-
-export const findOnPath = async (
-  binary: string,
-  pathEnv: string | undefined,
-  exists: BinaryExists = existsOnDisk,
-): Promise<boolean> => {
-  const directories = (pathEnv ?? "").split(delimiter).filter((entry) => entry.length > 0);
-  const found = await Promise.all(directories.map((directory) => exists(join(directory, binary))));
-
-  return found.includes(true);
-};
-
-const resolutionCache = new Map<RequiredBinary, Promise<boolean>>();
-
-export const resetBinaryPreflightCache = () => resolutionCache.clear();
 
 export const describeMissingBinary = (binary: RequiredBinary): MissingBinary => ({
   binary,
@@ -64,26 +38,10 @@ export const describeMissingBinary = (binary: RequiredBinary): MissingBinary => 
   hint: `${binary} is needed by ${REQUIRED_BINARIES[binary].tools}. ${REQUIRED_BINARIES[binary].install}`,
 });
 
-export const missingBinary = (
+export const missingBinaryFromSpawnFailure = (
   binary: string,
-  exists?: BinaryExists,
-): Effect.Effect<MissingBinary | undefined> =>
-  Effect.promise(async () => {
-    if (!isRequiredBinary(binary)) {
-      return undefined;
-    }
-
-    if (exists) {
-      return (await findOnPath(binary, process.env.PATH, exists))
-        ? undefined
-        : describeMissingBinary(binary);
-    }
-
-    let resolved = resolutionCache.get(binary);
-    if (!resolved) {
-      resolved = findOnPath(binary, process.env.PATH);
-      resolutionCache.set(binary, resolved);
-    }
-
-    return (await resolved) ? undefined : describeMissingBinary(binary);
-  });
+  failure: string,
+): MissingBinary | undefined =>
+  isRequiredBinary(binary) && failure.includes("NotFound")
+    ? describeMissingBinary(binary)
+    : undefined;

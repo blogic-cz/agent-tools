@@ -9,7 +9,6 @@ import { AzSecurityError, AzCommandError, AzTimeoutError, AzParseError } from ".
 import { isCommandAllowed, isInvokeAllowed } from "./security";
 import { transformCmdOutput } from "./transformers";
 import { ConfigService, getToolConfig } from "#config";
-import { missingBinary } from "#shared/binary-preflight";
 
 export class AzService extends Context.Service<
   AzService,
@@ -47,16 +46,6 @@ export class AzService extends Context.Service<
       const runShellCommand = (fullCommand: string, timeoutMs: number) =>
         Effect.scoped(
           Effect.gen(function* () {
-            const missing = yield* missingBinary("az");
-            if (missing) {
-              return yield* new AzCommandError({
-                message: missing.message,
-                command: fullCommand,
-                exitCode: -1,
-                hint: missing.hint,
-              });
-            }
-
             const command = ChildProcess.make("sh", ["-c", fullCommand], {
               stdout: "pipe",
               stderr: "pipe",
