@@ -829,50 +829,52 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     expect(output).toContain("--env prod");
   });
 
-  it("k8s structured pods uses namespace from env mapping when --namespace is omitted", () => {
-    const k8sDir = join(tmpdir(), `agent-tools-k8s-fallback-${Date.now()}`);
-    const binDir = join(k8sDir, "bin");
+  // Skipped on Windows: this fixture fakes kubectl with a shebang script, and Bun cannot exec
+  // shebang scripts, .cmd or .bat files, so the fake is unreachable when kubectl is spawned
+  // without a shell.
+  it.skipIf(process.platform === "win32")(
+    "k8s structured pods uses namespace from env mapping when --namespace is omitted",
+    () => {
+      const k8sDir = join(tmpdir(), `agent-tools-k8s-fallback-${Date.now()}`);
+      const binDir = join(k8sDir, "bin");
 
-    mkdirSync(binDir, { recursive: true });
+      mkdirSync(binDir, { recursive: true });
 
-    writeFileSync(
-      join(k8sDir, "agent-tools.json5"),
-      JSON.stringify({
-        defaultEnvironment: "test",
-        kubernetes: {
-          default: {
-            clusterId: "test-cluster-id",
-            namespaces: { test: "mapped-test-ns", prod: "mapped-prod-ns" },
+      writeFileSync(
+        join(k8sDir, "agent-tools.json5"),
+        JSON.stringify({
+          defaultEnvironment: "test",
+          kubernetes: {
+            default: {
+              clusterId: "test-cluster-id",
+              namespaces: { test: "mapped-test-ns", prod: "mapped-prod-ns" },
+            },
           },
-        },
-      }),
-    );
+        }),
+      );
 
-    const kubectlPath = join(binDir, "kubectl");
-    writeFileSync(
-      kubectlPath,
-      '#!/bin/sh\nif [ "$1" = "config" ] && [ "$2" = "view" ]; then\n  echo \'{"contexts":[{"name":"ctx-test","context":{"cluster":"test-cluster-id"}}],"clusters":[{"name":"test-cluster-id","cluster":{"server":"https://test"}}]}\'\n  exit 0\nfi\necho "kubectl-mock"\n',
-    );
-    chmodSync(kubectlPath, 0o755);
+      const kubectlPath = join(binDir, "kubectl");
+      writeFileSync(
+        kubectlPath,
+        '#!/bin/sh\nif [ "$1" = "config" ] && [ "$2" = "view" ]; then\n  echo \'{"contexts":[{"name":"ctx-test","context":{"cluster":"test-cluster-id"}}],"clusters":[{"name":"test-cluster-id","cluster":{"server":"https://test"}}]}\'\n  exit 0\nfi\necho "kubectl-mock"\n',
+      );
+      chmodSync(kubectlPath, 0o755);
 
-    const jqPath = join(binDir, "jq");
-    writeFileSync(jqPath, "#!/bin/sh\necho ctx-test\n");
-    chmodSync(jqPath, 0o755);
+      const result = runToolWithEnv(
+        "src/k8s-tool/index.ts",
+        ["pods", "--env", "test", "--dry-run", "--format", "json"],
+        k8sDir,
+        { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      );
 
-    const result = runToolWithEnv(
-      "src/k8s-tool/index.ts",
-      ["pods", "--env", "test", "--dry-run", "--format", "json"],
-      k8sDir,
-      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
-    );
+      rmSync(k8sDir, { recursive: true, force: true });
 
-    rmSync(k8sDir, { recursive: true, force: true });
-
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout.trim()) as { command: string };
-    expect(parsed.command).toContain("get pods");
-    expect(parsed.command).toContain("-n mapped-test-ns");
-  });
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout.trim()) as { command: string };
+      expect(parsed.command).toContain("get pods");
+      expect(parsed.command).toContain("-n mapped-test-ns");
+    },
+  );
 
   const runDbTunnelTest = (
     service: string | undefined,

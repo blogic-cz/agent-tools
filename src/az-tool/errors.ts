@@ -11,8 +11,8 @@ export class AzSecurityError extends Schema.TaggedErrorClass<AzSecurityError>()(
 export class AzCommandError extends Schema.TaggedErrorClass<AzCommandError>()("AzCommandError", {
   message: Schema.String,
   command: Schema.String,
-  exitCode: Schema.optionalKey(Schema.Number),
-  stderr: Schema.optionalKey(Schema.String),
+  exitCode: Schema.optional(Schema.Number),
+  stderr: Schema.optional(Schema.String),
   hint: Schema.optionalKey(Schema.String),
   nextCommand: Schema.optionalKey(Schema.String),
   retryable: Schema.optionalKey(Schema.Boolean),

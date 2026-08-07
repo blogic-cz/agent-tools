@@ -41,6 +41,13 @@ function commandToShellString(command: ChildProcess.Command): string {
   return [commandToShellString(command.left), commandToShellString(command.right)].join(" | ");
 }
 
+function kubeConfigView(contextName: string, clusterName: string): string {
+  return JSON.stringify({
+    contexts: [{ name: contextName, context: { cluster: clusterName } }],
+    clusters: [{ name: clusterName, cluster: { server: "https://cluster.example.test:6443" } }],
+  });
+}
+
 function createMockProcess(result: ShellResult) {
   const encoder = new TextEncoder();
 
@@ -205,7 +212,7 @@ describe("K8sService", () => {
 
   it.effect("rejects a remote log symlink that canonicalizes outside its base", () => {
     const observedCommands: string[] = [];
-    const contextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+    const contextQuery = "kubectl config view -o json";
     const probeCommand =
       "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
     const realpathCommand =
@@ -227,7 +234,11 @@ describe("K8sService", () => {
       Effect.provide(
         createMockChildProcessSpawnerLayer(
           {
-            [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+            [contextQuery]: {
+              stdout: kubeConfigView("selected-context", "selected-cluster"),
+              stderr: "",
+              exitCode: 0,
+            },
             [probeCommand]: { stdout: '{"major":"1"}', stderr: "", exitCode: 0 },
             [realpathCommand]: {
               stdout: "/var/log/app\n/var/run/secrets/debug.log\n",
@@ -249,7 +260,7 @@ describe("K8sService", () => {
   });
 
   describe("VPN prerequisite gate", () => {
-    const contextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+    const contextQuery = "kubectl config view -o json";
     const probeCommand =
       "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
     const podsCommand = "kubectl --context selected-context get pods";
@@ -278,7 +289,11 @@ describe("K8sService", () => {
         Effect.provide(
           createMockChildProcessSpawnerLayer(
             {
-              [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              [contextQuery]: {
+                stdout: kubeConfigView("selected-context", "selected-cluster"),
+                stderr: "",
+                exitCode: 0,
+              },
               [probeCommand]: { stdout: '{"major":"1"}', stderr: "", exitCode: 0 },
               [podsCommand]: { stdout: "pod-a\n", stderr: "", exitCode: 0 },
             },
@@ -306,7 +321,13 @@ describe("K8sService", () => {
         Effect.provide(K8sService.layer),
         Effect.provide(
           createMockChildProcessSpawnerLayer(
-            { [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 } },
+            {
+              [contextQuery]: {
+                stdout: kubeConfigView("selected-context", "selected-cluster"),
+                stderr: "",
+                exitCode: 0,
+              },
+            },
             observedShellCommands,
           ),
         ),
@@ -344,7 +365,13 @@ describe("K8sService", () => {
         Effect.provide(K8sService.layer),
         Effect.provide(
           createMockChildProcessSpawnerLayer(
-            { [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 } },
+            {
+              [contextQuery]: {
+                stdout: kubeConfigView("selected-context", "selected-cluster"),
+                stderr: "",
+                exitCode: 0,
+              },
+            },
             observedShellCommands,
           ),
         ),
@@ -356,7 +383,7 @@ describe("K8sService", () => {
   describe("runKubectl - successful execution", () => {
     it.effect("uses the selected profile for context resolution and timeout", () => {
       const observedShellCommands: Array<string> = [];
-      const selectedContextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+      const selectedContextQuery = "kubectl config view -o json";
 
       return Effect.gen(function* () {
         const service = yield* K8sService;
@@ -374,7 +401,11 @@ describe("K8sService", () => {
         Effect.provide(
           createMockChildProcessSpawnerLayer(
             {
-              [selectedContextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              [selectedContextQuery]: {
+                stdout: kubeConfigView("selected-context", "selected-cluster"),
+                stderr: "",
+                exitCode: 0,
+              },
               "kubectl --context selected-context get --raw=/version --request-timeout=2000ms": {
                 stdout: '{"major":"1"}',
                 stderr: "",
@@ -407,11 +438,11 @@ describe("K8sService", () => {
     it.effect("uses configured kubeconfig when resolving and executing kubectl", () => {
       const observedShellCommands: Array<string> = [];
       const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
-      const contextQuery = `KUBECONFIG='/tmp/nexus-kubeconfig' kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+      const contextQuery = "kubectl --kubeconfig /tmp/agent-kubeconfig config view -o json";
 
       return Effect.gen(function* () {
         const previousKubeconfig = process.env.NEXUS_KUBECONFIG;
-        process.env.NEXUS_KUBECONFIG = "/tmp/nexus-kubeconfig";
+        process.env.NEXUS_KUBECONFIG = "/tmp/agent-kubeconfig";
         try {
           const service = yield* K8sService;
           const result = yield* service.runKubectl("get pods", false, "selected");
@@ -420,7 +451,7 @@ describe("K8sService", () => {
           expect(result.command).toBe("kubectl --context selected-context get pods");
           expect(observedShellCommands).toEqual([
             contextQuery,
-            "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms",
+            "kubectl --kubeconfig /tmp/agent-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms",
             "kubectl --context selected-context get pods",
           ]);
         } finally {
@@ -435,8 +466,12 @@ describe("K8sService", () => {
         Effect.provide(
           createMockChildProcessSpawnerLayer(
             {
-              [contextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
-              "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms":
+              [contextQuery]: {
+                stdout: kubeConfigView("selected-context", "selected-cluster"),
+                stderr: "",
+                exitCode: 0,
+              },
+              "kubectl --kubeconfig /tmp/agent-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms":
                 {
                   stdout: '{"major":"1"}',
                   stderr: "",
@@ -467,7 +502,7 @@ describe("K8sService", () => {
 
     it.effect("fails fast when the API-server reachability probe does not pass", () => {
       const observedShellCommands: Array<string> = [];
-      const selectedContextQuery = `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "selected-cluster") | .name' | head -1`;
+      const selectedContextQuery = "kubectl config view -o json";
       const probeCommand =
         "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
 
@@ -489,7 +524,11 @@ describe("K8sService", () => {
         Effect.provide(
           createMockChildProcessSpawnerLayer(
             {
-              [selectedContextQuery]: { stdout: "selected-context\n", stderr: "", exitCode: 0 },
+              [selectedContextQuery]: {
+                stdout: kubeConfigView("selected-context", "selected-cluster"),
+                stderr: "",
+                exitCode: 0,
+              },
               [probeCommand]: {
                 stdout: "",
                 stderr: "Unable to connect to the server",

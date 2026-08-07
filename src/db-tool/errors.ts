@@ -14,7 +14,7 @@ export class DbConnectionError extends Schema.TaggedErrorClass<DbConnectionError
 export class DbQueryError extends Schema.TaggedErrorClass<DbQueryError>()("DbQueryError", {
   message: Schema.String,
   sql: Schema.String,
-  stderr: Schema.optionalKey(Schema.String),
+  stderr: Schema.optional(Schema.String),
   hint: Schema.optionalKey(Schema.String),
   nextCommand: Schema.optionalKey(Schema.String),
   retryable: Schema.optionalKey(Schema.Boolean),
