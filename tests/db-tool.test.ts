@@ -244,6 +244,13 @@ describe("db schema introspection SQL", () => {
     expect(hasMultipleStatements("select 1 -- ; not a statement")).toBe(false);
   });
 
+  it("does not let a quote inside a dollar-quoted body hide a batched statement", () => {
+    expect(hasMultipleStatements("SELECT $$O'Brien$$ AS name; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements('SELECT $$say "hi"$$ AS greeting; DROP TABLE users')).toBe(true);
+    expect(hasMultipleStatements("SELECT $tag$O'Brien$tag$ AS name; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT $$O'Brien$$ AS name")).toBe(false);
+  });
+
   it("does not let a comment token inside a quoted region hide a batched statement", () => {
     expect(hasMultipleStatements('SELECT * FROM "weird--table"; DROP TABLE users')).toBe(true);
     expect(hasMultipleStatements('SELECT * FROM "weird/*x*/table"; DROP TABLE users')).toBe(true);
