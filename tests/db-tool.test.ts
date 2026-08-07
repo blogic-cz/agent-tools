@@ -13,6 +13,7 @@ import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError }
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
+import { resolvePsqlSearchPath } from "#db/psql";
 
 /**
  * Mock DbService layer factory for testing
@@ -1102,5 +1103,30 @@ describe("DbService", () => {
       expect(error.hint).toBeUndefined();
       expect(error.nextCommand).toBeUndefined();
     });
+  });
+});
+
+describe("resolvePsqlSearchPath", () => {
+  it("leaves PATH untouched when it already provides psql", () => {
+    const exists = (candidate: string) => candidate === "/usr/local/bin/psql";
+    expect(resolvePsqlSearchPath("/usr/bin:/usr/local/bin", exists)).toBe(
+      "/usr/bin:/usr/local/bin",
+    );
+  });
+
+  it("appends the keg-only libpq directory when PATH has no psql", () => {
+    const exists = (candidate: string) => candidate === "/opt/homebrew/opt/libpq/bin/psql";
+    expect(resolvePsqlSearchPath("/usr/bin:/usr/local/bin", exists)).toBe(
+      "/usr/bin:/usr/local/bin:/opt/homebrew/opt/libpq/bin",
+    );
+  });
+
+  it("leaves PATH untouched when psql is installed nowhere", () => {
+    expect(resolvePsqlSearchPath("/usr/bin", () => false)).toBe("/usr/bin");
+  });
+
+  it("tolerates an unset PATH", () => {
+    const exists = (candidate: string) => candidate === "/usr/local/opt/libpq/bin/psql";
+    expect(resolvePsqlSearchPath(undefined, exists)).toBe("/usr/local/opt/libpq/bin");
   });
 });
