@@ -57,7 +57,8 @@ const runWithBunSql = (connection: DbConnection, sql: string) =>
           command: result.command ?? "",
         };
       } finally {
-        await client.close();
+        // A rejecting close() would replace the real query error via try/finally semantics.
+        await client.close().catch(() => undefined);
       }
     },
     catch: (cause) => {

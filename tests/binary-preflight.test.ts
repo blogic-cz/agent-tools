@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -59,12 +61,36 @@ describe("binary preflight", () => {
     expect(result).toBeUndefined();
   });
 
-  it("does not let a cached present result mask a later absent resolver", async () => {
+  it("keeps an injected resolver independent of the process-wide cache", async () => {
     resetBinaryPreflightCache();
 
     await Effect.runPromise(missingBinary("az", presentEverywhere));
     const result = await Effect.runPromise(missingBinary("az", presentNowhere));
 
     expect(result?.binary).toBe("az");
+  });
+
+  it("memoizes the uninjected PATH lookup until the cache is reset", async () => {
+    const originalPath = process.env.PATH;
+    const binDir = mkdtempSync(join(tmpdir(), "agent-tools-preflight-"));
+    const kubectlPath = join(binDir, "kubectl");
+    writeFileSync(kubectlPath, "#!/bin/sh\nexit 0\n");
+    chmodSync(kubectlPath, 0o755);
+
+    try {
+      resetBinaryPreflightCache();
+      process.env.PATH = binDir;
+      expect(await Effect.runPromise(missingBinary("kubectl"))).toBeUndefined();
+
+      process.env.PATH = "";
+      expect(await Effect.runPromise(missingBinary("kubectl"))).toBeUndefined();
+
+      resetBinaryPreflightCache();
+      expect((await Effect.runPromise(missingBinary("kubectl")))?.binary).toBe("kubectl");
+    } finally {
+      process.env.PATH = originalPath;
+      resetBinaryPreflightCache();
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 });
