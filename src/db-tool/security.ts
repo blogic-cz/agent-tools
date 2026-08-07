@@ -25,9 +25,14 @@ const MUTATION_TARGET_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
   ["delete", new RegExp(String.raw`^\s*DELETE\s+FROM\s+(${QUALIFIED_IDENTIFIER_PATTERN})`, "i")],
 ];
 
+const DOLLAR_QUOTE_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
+
 /**
- * Strip SQL comments (block and line) while preserving string literals.
- * This prevents bypass via inline comment masking before DELETE statements.
+ * Strip SQL comments (block and line) while preserving every quoted region verbatim.
+ * Single quotes, double-quoted identifiers and dollar-quoted bodies must all be tracked:
+ * a comment token recognised inside a region another check treats as quoted is a guard
+ * bypass, e.g. `SELECT * FROM "weird--table"; DROP TABLE users` would otherwise lose its
+ * statement separator and read as a single harmless SELECT.
  */
 export function stripSqlComments(sql: string): string {
   let result = "";
@@ -38,16 +43,15 @@ export function stripSqlComments(sql: string): string {
     const ch = sql[i];
     const next = i + 1 < len ? sql[i + 1] : "";
 
-    // Single-quoted string literal — skip through
-    if (ch === "'") {
+    if (ch === "'" || ch === '"') {
       result += ch;
       i++;
       while (i < len) {
-        if (sql[i] === "'" && i + 1 < len && sql[i + 1] === "'") {
-          result += "''";
+        if (sql[i] === ch && sql[i + 1] === ch) {
+          result += ch + ch;
           i += 2;
-        } else if (sql[i] === "'") {
-          result += "'";
+        } else if (sql[i] === ch) {
+          result += ch;
           i++;
           break;
         } else {
@@ -58,18 +62,39 @@ export function stripSqlComments(sql: string): string {
       continue;
     }
 
-    // Block comment /* ... */
-    if (ch === "/" && next === "*") {
-      i += 2;
-      while (i + 1 < len && !(sql[i] === "*" && sql[i + 1] === "/")) {
-        i++;
+    if (ch === "$") {
+      const tag = DOLLAR_QUOTE_TAG.exec(sql.slice(i))?.[0];
+      if (tag) {
+        const closing = sql.indexOf(tag, i + tag.length);
+        const stop = closing === -1 ? len : closing + tag.length;
+        result += sql.slice(i, stop);
+        i = stop;
+        continue;
       }
-      i += 2; // skip closing */
-      result += " "; // replace comment with space
+    }
+
+    // Postgres block comments nest, so track depth rather than stopping at the first */.
+    if (ch === "/" && next === "*") {
+      let depth = 1;
+      i += 2;
+      while (i + 1 < len && depth > 0) {
+        if (sql[i] === "/" && sql[i + 1] === "*") {
+          depth++;
+          i += 2;
+        } else if (sql[i] === "*" && sql[i + 1] === "/") {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (depth > 0) {
+        i = len;
+      }
+      result += " ";
       continue;
     }
 
-    // Line comment -- ...
     if (ch === "-" && next === "-") {
       i += 2;
       while (i < len && sql[i] !== "\n") {
