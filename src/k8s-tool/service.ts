@@ -14,7 +14,7 @@ import {
 import { ConfigService, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
 import { collectProcessOutput, quoteShellArg } from "#shared/exec";
-import { describeMissingBinary, missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
+import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
@@ -136,18 +136,16 @@ export class K8sService extends Context.Service<
             }),
           ).pipe(
             Effect.timeoutOption(timeoutMs),
-            Effect.mapError(
-              (platformError) =>
-                new K8sCommandError({
-                  message: `Command execution failed: ${String(platformError)}`,
-                  command: commandStr,
-                  exitCode: -1,
-                  stderr: String(platformError),
-                  ...(missingBinaryFromSpawnFailure("kubectl", String(platformError))
-                    ? { hint: describeMissingBinary("kubectl").hint }
-                    : {}),
-                }),
-            ),
+            Effect.mapError((platformError) => {
+              const missing = missingBinaryFromSpawnFailure("kubectl", String(platformError));
+              return new K8sCommandError({
+                message: `Command execution failed: ${String(platformError)}`,
+                command: commandStr,
+                exitCode: -1,
+                stderr: String(platformError),
+                ...(missing ? { hint: missing.hint } : {}),
+              });
+            }),
           );
 
         const runPrerequisiteCommand = (command: ChildProcess.Command, label: string) =>
@@ -157,15 +155,16 @@ export class K8sService extends Context.Service<
               return yield* collectProcessOutput(process);
             }),
           ).pipe(
-            Effect.mapError(
-              (platformError) =>
-                new K8sCommandError({
-                  message: `Prerequisite command failed (${label}): ${String(platformError)}`,
-                  command: label,
-                  exitCode: -1,
-                  stderr: String(platformError),
-                }),
-            ),
+            Effect.mapError((platformError) => {
+              const missing = missingBinaryFromSpawnFailure("kubectl", String(platformError));
+              return new K8sCommandError({
+                message: `Prerequisite command failed (${label}): ${String(platformError)}`,
+                command: label,
+                exitCode: -1,
+                stderr: String(platformError),
+                ...(missing ? { hint: missing.hint } : {}),
+              });
+            }),
           );
 
         /**
@@ -319,18 +318,16 @@ export class K8sService extends Context.Service<
                 }),
               ).pipe(
                 Effect.timeoutOption(timeoutMs),
-                Effect.mapError(
-                  (platformError) =>
-                    new K8sCommandError({
-                      message: `Command execution failed: ${String(platformError)}`,
-                      command: fullCommand,
-                      exitCode: -1,
-                      stderr: String(platformError),
-                      ...(missingBinaryFromSpawnFailure("kubectl", String(platformError))
-                        ? { hint: describeMissingBinary("kubectl").hint }
-                        : {}),
-                    }),
-                ),
+                Effect.mapError((platformError) => {
+                  const missing = missingBinaryFromSpawnFailure("kubectl", String(platformError));
+                  return new K8sCommandError({
+                    message: `Command execution failed: ${String(platformError)}`,
+                    command: fullCommand,
+                    exitCode: -1,
+                    stderr: String(platformError),
+                    ...(missing ? { hint: missing.hint } : {}),
+                  });
+                }),
               );
 
               if (Option.isNone(resultOption)) {

@@ -9,6 +9,7 @@ import { resolveEnvTemplate } from "#shared/env-template";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
+import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
 import { DbSqlClient, type DbConnection } from "./sql-client";
 import {
@@ -232,14 +233,15 @@ export class DbService extends Context.Service<
               return { stdout, stderr, exitCode };
             }),
           ).pipe(
-            Effect.mapError(
-              (platformError) =>
-                new DbQueryError({
-                  message: `Command execution failed: ${String(platformError)}`,
-                  sql: "shell command",
-                  stderr: String(platformError),
-                }),
-            ),
+            Effect.mapError((platformError) => {
+              const missing = missingBinaryFromSpawnFailure("kubectl", String(platformError));
+              return new DbQueryError({
+                message: `Command execution failed: ${String(platformError)}`,
+                sql: "shell command",
+                stderr: String(platformError),
+                ...(missing ? { hint: missing.hint } : {}),
+              });
+            }),
           );
 
         const checkPortOpen = (port: number) =>
