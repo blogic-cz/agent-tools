@@ -20,6 +20,7 @@ import {
   getMutationTarget,
   hasMultipleStatements,
   isValidTableName,
+  stripSqlComments,
 } from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
 import { DbSqlClient, type DbConnection } from "#db/sql-client";
@@ -241,6 +242,20 @@ describe("db schema introspection SQL", () => {
     expect(hasMultipleStatements("select ';' as semi")).toBe(false);
     expect(hasMultipleStatements('select "we;ird" from foo')).toBe(false);
     expect(hasMultipleStatements("select 1 -- ; not a statement")).toBe(false);
+  });
+
+  it("does not let a comment token inside a quoted region hide a batched statement", () => {
+    expect(hasMultipleStatements('SELECT * FROM "weird--table"; DROP TABLE users')).toBe(true);
+    expect(hasMultipleStatements('SELECT * FROM "weird/*x*/table"; DROP TABLE users')).toBe(true);
+    expect(hasMultipleStatements("SELECT 'a--b'; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT $$a--b$$; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT $tag$a--b$tag$; DROP TABLE users")).toBe(true);
+  });
+
+  it("still strips real comments so masked mutations are classified correctly", () => {
+    expect(stripSqlComments("select 1 -- drop table users").trim()).toBe("select 1");
+    expect(stripSqlComments("/* a /* nested */ b */select 1").trim()).toBe("select 1");
+    expect(stripSqlComments('select "keep--me" from t')).toContain('"keep--me"');
   });
 
   it("detects mutation targets including quoted schema-qualified identifiers", () => {
