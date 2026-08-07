@@ -19,11 +19,6 @@ export const REQUIRED_BINARIES = {
     install:
       "Install it with `brew install kubectl` (macOS) or see https://kubernetes.io/docs/tasks/tools/.",
   },
-  psql: {
-    tools: "db-tool schema introspection",
-    install:
-      "Install it with `brew install libpq` (macOS); libpq is keg-only, so add its bin directory to PATH.",
-  },
 } as const;
 
 export type RequiredBinary = keyof typeof REQUIRED_BINARIES;
