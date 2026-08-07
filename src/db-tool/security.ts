@@ -28,6 +28,17 @@ const MUTATION_TARGET_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
 const DOLLAR_QUOTE_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
 
 /**
+ * Postgres treats a backslash as an escape only inside an E'...' literal; in a standard string
+ * it is an ordinary character, so applying escapes everywhere would swallow a real closing quote.
+ */
+function isEscapeStringPrefix(sql: string, quoteIndex: number): boolean {
+  const prefix = sql[quoteIndex - 1];
+  if (prefix !== "E" && prefix !== "e") return false;
+  const before = sql[quoteIndex - 2];
+  return before === undefined || !/[A-Za-z0-9_$]/.test(before);
+}
+
+/**
  * Strip SQL comments (block and line) and empty out every string literal, keeping only
  * double-quoted identifiers verbatim because the mutation-target parser needs them.
  * Single quotes, double-quoted identifiers and dollar-quoted bodies must all be tracked:
@@ -47,10 +58,14 @@ export function stripSqlComments(sql: string): string {
 
     if (ch === "'" || ch === '"') {
       const keepBody = ch === '"';
+      const backslashEscapes = ch === "'" && isEscapeStringPrefix(sql, i);
       result += ch;
       i++;
       while (i < len) {
-        if (sql[i] === ch && sql[i + 1] === ch) {
+        if (backslashEscapes && sql[i] === "\\" && i + 1 < len) {
+          if (keepBody) result += sql[i] + sql[i + 1];
+          i += 2;
+        } else if (sql[i] === ch && sql[i + 1] === ch) {
           if (keepBody) result += ch + ch;
           i += 2;
         } else if (sql[i] === ch) {
