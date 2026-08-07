@@ -27,6 +27,11 @@ These tools wrap each CLI with:
 bun add -d @blogic-cz/agent-tools
 ```
 
+`effect` is a peer dependency pinned to an exact version, and package managers install
+it for you. If your project depends on `effect` too, pin it to the same exact version.
+Two copies of `effect` are structurally incompatible types, so the values this package
+exports stop typechecking in your project when the versions drift.
+
 ### Skill installation
 
 Install per-tool skills for only the tools your project uses:

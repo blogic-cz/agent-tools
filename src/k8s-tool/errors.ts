@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class K8sContextError extends Schema.TaggedErrorClass<K8sContextError>()("K8sContextError", {
+export class K8sContextError extends Schema.TaggedError<K8sContextError>()("K8sContextError", {
   message: Schema.String,
   clusterId: Schema.String,
   hint: Schema.optionalKey(Schema.String),
@@ -8,7 +8,7 @@ export class K8sContextError extends Schema.TaggedErrorClass<K8sContextError>()(
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export class K8sCommandError extends Schema.TaggedErrorClass<K8sCommandError>()("K8sCommandError", {
+export class K8sCommandError extends Schema.TaggedError<K8sCommandError>()("K8sCommandError", {
   message: Schema.String,
   command: Schema.String,
   exitCode: Schema.optionalKey(Schema.Number),
@@ -18,7 +18,7 @@ export class K8sCommandError extends Schema.TaggedErrorClass<K8sCommandError>()(
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export class K8sTimeoutError extends Schema.TaggedErrorClass<K8sTimeoutError>()("K8sTimeoutError", {
+export class K8sTimeoutError extends Schema.TaggedError<K8sTimeoutError>()("K8sTimeoutError", {
   message: Schema.String,
   command: Schema.String,
   timeoutMs: Schema.Number,
@@ -27,7 +27,7 @@ export class K8sTimeoutError extends Schema.TaggedErrorClass<K8sTimeoutError>()(
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export class K8sDangerousCommandError extends Schema.TaggedErrorClass<K8sDangerousCommandError>()(
+export class K8sDangerousCommandError extends Schema.TaggedError<K8sDangerousCommandError>()(
   "K8sDangerousCommandError",
   {
     message: Schema.String,

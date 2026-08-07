@@ -3,7 +3,7 @@ import { Effect, Schema, Stream } from "effect";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
-export class ExecError extends Schema.TaggedErrorClass<ExecError>()("ExecError", {
+export class ExecError extends Schema.TaggedError<ExecError>()("ExecError", {
   message: Schema.String,
   command: Schema.String,
   exitCode: Schema.Number,

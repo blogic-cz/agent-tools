@@ -2,7 +2,7 @@ import { Effect, Ref, Schema } from "effect";
 
 const WINDOW_MS = 60000;
 
-export class ThrottleError extends Schema.TaggedErrorClass<ThrottleError>()("ThrottleError", {
+export class ThrottleError extends Schema.TaggedError<ThrottleError>()("ThrottleError", {
   message: Schema.String,
   label: Schema.String,
   limit: Schema.Number,
