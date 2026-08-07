@@ -25,6 +25,6 @@ describe("missingBinaryFromSpawnFailure", () => {
 
   it("names the tools that need the binary", () => {
     expect(describeMissingBinary("gh").hint).toContain("gh-tool");
-    expect(describeMissingBinary("psql").hint).toContain("libpq is keg-only");
+    expect(describeMissingBinary("kubectl").hint).toContain("k8s-tool and db-tool tunnels");
   });
 });
