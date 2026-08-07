@@ -25,9 +25,27 @@ const MUTATION_TARGET_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
   ["delete", new RegExp(String.raw`^\s*DELETE\s+FROM\s+(${QUALIFIED_IDENTIFIER_PATTERN})`, "i")],
 ];
 
+const DOLLAR_QUOTE_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
+
 /**
- * Strip SQL comments (block and line) while preserving string literals.
- * This prevents bypass via inline comment masking before DELETE statements.
+ * Postgres treats a backslash as an escape only inside an E'...' literal; in a standard string
+ * it is an ordinary character, so applying escapes everywhere would swallow a real closing quote.
+ */
+function isEscapeStringPrefix(sql: string, quoteIndex: number): boolean {
+  const prefix = sql[quoteIndex - 1];
+  if (prefix !== "E" && prefix !== "e") return false;
+  const before = sql[quoteIndex - 2];
+  return before === undefined || !/[A-Za-z0-9_$]/.test(before);
+}
+
+/**
+ * Strip SQL comments (block and line) and empty out every string literal, keeping only
+ * double-quoted identifiers verbatim because the mutation-target parser needs them.
+ * Single quotes, double-quoted identifiers and dollar-quoted bodies must all be tracked:
+ * a quote or comment token surviving inside a region another check reads differently is a
+ * guard bypass. `SELECT * FROM "weird--table"; DROP TABLE users` would lose its statement
+ * separator to a phantom comment, and `SELECT $$O\'Brien$$ AS n; DROP TABLE users` would
+ * leave an unpaired apostrophe that swallows the separator instead.
  */
 export function stripSqlComments(sql: string): string {
   let result = "";
@@ -38,38 +56,63 @@ export function stripSqlComments(sql: string): string {
     const ch = sql[i];
     const next = i + 1 < len ? sql[i + 1] : "";
 
-    // Single-quoted string literal — skip through
-    if (ch === "'") {
+    if (ch === "'" || ch === '"') {
+      const keepBody = ch === '"';
+      const backslashEscapes = ch === "'" && isEscapeStringPrefix(sql, i);
       result += ch;
       i++;
       while (i < len) {
-        if (sql[i] === "'" && i + 1 < len && sql[i + 1] === "'") {
-          result += "''";
+        if (backslashEscapes && sql[i] === "\\" && i + 1 < len) {
+          if (keepBody) result += sql[i] + sql[i + 1];
           i += 2;
-        } else if (sql[i] === "'") {
-          result += "'";
+        } else if (sql[i] === ch && sql[i + 1] === ch) {
+          if (keepBody) result += ch + ch;
+          i += 2;
+        } else if (sql[i] === ch) {
+          result += ch;
           i++;
           break;
         } else {
-          result += sql[i];
+          if (keepBody) result += sql[i];
           i++;
         }
       }
       continue;
     }
 
-    // Block comment /* ... */
-    if (ch === "/" && next === "*") {
-      i += 2;
-      while (i + 1 < len && !(sql[i] === "*" && sql[i + 1] === "/")) {
-        i++;
+    if (ch === "$") {
+      const tag = DOLLAR_QUOTE_TAG.exec(sql.slice(i))?.[0];
+      if (tag) {
+        const closing = sql.indexOf(tag, i + tag.length);
+        const stop = closing === -1 ? len : closing + tag.length;
+        result += closing === -1 ? tag : tag + tag;
+        i = stop;
+        continue;
       }
-      i += 2; // skip closing */
-      result += " "; // replace comment with space
+    }
+
+    // Postgres block comments nest, so track depth rather than stopping at the first */.
+    if (ch === "/" && next === "*") {
+      let depth = 1;
+      i += 2;
+      while (i + 1 < len && depth > 0) {
+        if (sql[i] === "/" && sql[i + 1] === "*") {
+          depth++;
+          i += 2;
+        } else if (sql[i] === "*" && sql[i + 1] === "/") {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (depth > 0) {
+        i = len;
+      }
+      result += " ";
       continue;
     }
 
-    // Line comment -- ...
     if (ch === "-" && next === "-") {
       i += 2;
       while (i < len && sql[i] !== "\n") {
@@ -84,6 +127,44 @@ export function stripSqlComments(sql: string): string {
   }
 
   return result;
+}
+
+/**
+ * Postgres runs every statement in a simple-query batch, but MUTATION_PATTERNS only match the
+ * first one, so `select 1; delete from x` would otherwise pass the guard as a plain read.
+ * Dollar-quoted bodies containing `;` are rejected as well: this fails closed by design.
+ */
+export function hasMultipleStatements(sql: string): boolean {
+  const stripped = stripSqlComments(sql);
+  let index = 0;
+
+  while (index < stripped.length) {
+    const char = stripped[index];
+
+    if (char === "'" || char === '"') {
+      index++;
+      while (index < stripped.length) {
+        if (stripped[index] === char && stripped[index + 1] === char) {
+          index += 2;
+          continue;
+        }
+        if (stripped[index] === char) {
+          index++;
+          break;
+        }
+        index++;
+      }
+      continue;
+    }
+
+    if (char === ";" && stripped.slice(index + 1).trim().length > 0) {
+      return true;
+    }
+
+    index++;
+  }
+
+  return false;
 }
 
 export function isMutationQuery(sql: string): boolean {

@@ -17,6 +17,7 @@ import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#confi
 import { DbConfigService, makeDbConfigLayer } from "./config-service";
 import { DbConnectionError } from "./errors";
 import { DbService } from "./service";
+import { DbSqlClient } from "./sql-client";
 
 // Extract --profile from argv before @effect/cli parsing
 // so we can build the correct config layer.
@@ -243,6 +244,7 @@ const dbConfigLayer = makeDbConfigLayer(profileArg);
 const MainLayer = DbService.layer.pipe(
   // provideMerge (not provide) so DbConfigService stays in the program context for the `envs` command,
   // which reads it directly rather than going through DbService.
+  Layer.provideMerge(DbSqlClient.layer),
   Layer.provideMerge(dbConfigLayer),
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),

@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { connect } from "node:net";
 import { Readable } from "node:stream";
 
 const TOOLS_ROOT = join(__dirname, "..");
@@ -113,6 +114,26 @@ function runTool(toolPath: string, args: string[], cwd?: string, timeout = 5000)
     encoding: "utf8",
     timeout,
   });
+}
+
+async function waitForPort(port: number, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const reachable = await new Promise<boolean>((resolve) => {
+      const socket = connect({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (reachable) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Port ${port} did not open within ${timeoutMs}ms`);
 }
 
 function runToolWithEnv(
@@ -884,8 +905,9 @@ describe("Integration: env safety + k8s namespace fallback", () => {
     const tunnelReadyPath = join(dbDir, "tunnel-ready");
     const vpnReadyPath = join(dbDir, "vpn-ready");
     const kubectlArgsPath = join(dbDir, "kubectl-args.txt");
-    const psqlArgsPath = join(dbDir, "psql-args.txt");
-    const psqlAttemptsPath = join(dbDir, "psql-attempts");
+    const startupParamsPath = join(dbDir, "startup-params.txt");
+    const connectionAttemptsPath = join(dbDir, "connection-attempts");
+    const fakePostgresPath = join(TOOLS_ROOT, "tests/fixtures/fake-postgres.ts");
     const vpnArgsPath = join(dbDir, "vpn-args.txt");
     // eslint-disable-next-line eslint/no-template-curly-in-string -- verifies config env-template expansion
     const testDbUserTemplate = "${TEST_DB_USER}";
@@ -952,10 +974,7 @@ case "$*" in
 esac
 printf '%s' "$*" > "${kubectlArgsPath}"
 touch "${tunnelReadyPath}"
-trap 'exit 0' TERM INT
-while true; do
-  sleep 1
-done
+exec bun "${fakePostgresPath}" 25437 "${startupParamsPath}" "${connectionAttemptsPath}" "${options?.requireVpnForTunnel ? vpnReadyPath : ""}"
 `,
     );
     chmodSync(kubectlPath, 0o755);
@@ -1028,38 +1047,6 @@ exit 1
       chmodSync(vpnPath, 0o755);
     }
 
-    const ncPath = join(binDir, "nc");
-    writeFileSync(
-      ncPath,
-      `#!/bin/sh
-if [ -f "${tunnelReadyPath}" ]; then
-  exit 0
-fi
-exit 1
-`,
-    );
-    chmodSync(ncPath, 0o755);
-
-    const psqlPath = join(binDir, "psql");
-    writeFileSync(
-      psqlPath,
-      `#!/bin/sh
-printf '%s' "$*" > "${psqlArgsPath}"
-attempts=0
-if [ -f "${psqlAttemptsPath}" ]; then
-  attempts=$(cat "${psqlAttemptsPath}")
-fi
-attempts=$((attempts + 1))
-printf '%s' "$attempts" > "${psqlAttemptsPath}"
-if [ "${options?.requireVpnForTunnel ? "yes" : "no"}" = "yes" ] && [ ! -f "${vpnReadyPath}" ]; then
-  printf 'connection requires VPN\n' >&2
-  exit 1
-fi
-printf '[{"ok":1}]\n'
-`,
-    );
-    chmodSync(psqlPath, 0o755);
-
     const result = runToolWithEnv(
       "src/db-tool/index.ts",
       ["sql", "--env", "test", "--sql", "select 1 as ok", "--format", "json"],
@@ -1079,9 +1066,9 @@ printf '[{"ok":1}]\n'
       data?: Array<{ ok: number }>;
     };
     const kubectlArgs = readFileSync(kubectlArgsPath, "utf8");
-    const psqlArgs = readFileSync(psqlArgsPath, "utf8");
-    const psqlAttempts = existsSync(psqlAttemptsPath)
-      ? readFileSync(psqlAttemptsPath, "utf8")
+    const startupParams = readFileSync(startupParamsPath, "utf8");
+    const connectionAttempts = existsSync(connectionAttemptsPath)
+      ? readFileSync(connectionAttemptsPath, "utf8")
       : "0";
     const vpnArgs =
       options?.withVpn && existsSync(vpnArgsPath) ? readFileSync(vpnArgsPath, "utf8") : "";
@@ -1095,19 +1082,76 @@ printf '[{"ok":1}]\n'
       ? `--kubeconfig /tmp/test-kubeconfig port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`
       : `port-forward --context example-cluster --namespace system svc/${expectedService} 25437:5432`;
     expect(kubectlArgs).toContain(expectedKubectlArgs);
-    expect(psqlArgs).toContain("-h 127.0.0.1 -p 25437 -U readonly-user -d app-test");
+    expect(startupParams).toContain("user,readonly-user");
+    expect(startupParams).toContain("database,app-test");
+    expect(startupParams).toContain("default_transaction_read_only,on");
 
     if (options?.requireVpnForTunnel) {
       expect(vpnArgs).toContain("ExampleVPN");
-      expect(psqlAttempts).toBe("2");
+      expect(connectionAttempts).toBe("2");
     } else if (options?.withVpn) {
       expect(vpnArgs).toBe("");
-      expect(psqlAttempts).toBe("1");
+      expect(connectionAttempts).toBe("1");
     }
   };
 
   it("db-tool opens a tunnel to the default PostgreSQL service", () => {
     runDbTunnelTest(undefined, "postgresql");
+  });
+
+  it("reports mutation rowCount and command decoded from the wire protocol", async () => {
+    const dbDir = join(tmpdir(), `agent-tools-db-mutation-${Date.now()}`);
+    const fakePostgresPath = join(TOOLS_ROOT, "tests/fixtures/fake-postgres.ts");
+    mkdirSync(dbDir, { recursive: true });
+
+    writeFileSync(
+      join(dbDir, "agent-tools.json5"),
+      JSON.stringify({
+        database: {
+          default: {
+            environments: {
+              local: {
+                host: "127.0.0.1",
+                port: 25539,
+                user: "local-user",
+                database: "local-db",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const server = spawn(
+      "bun",
+      [fakePostgresPath, "25539", join(dbDir, "startup-params.txt"), join(dbDir, "attempts")],
+      { stdio: "ignore" },
+    );
+
+    let result;
+    try {
+      await waitForPort(25539);
+      result = runToolWithEnv(
+        "src/db-tool/index.ts",
+        ["sql", "--env", "local", "--sql", "insert into probe values (1)", "--format", "json"],
+        dbDir,
+        { AGENT_TOOLS_RUNTIME_DIR: join(dbDir, "runtime") },
+      );
+    } finally {
+      server.kill();
+    }
+
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      success: boolean;
+      message?: string;
+      rowCount?: number;
+    };
+
+    rmSync(dbDir, { recursive: true, force: true });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.rowCount).toBe(2);
+    expect(parsed.message).toBe("INSERT 2");
   });
 
   it("db-tool opens a tunnel to a configured service", () => {

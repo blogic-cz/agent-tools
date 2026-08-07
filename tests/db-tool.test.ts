@@ -1,7 +1,3 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer, Sink, Stream } from "effect";
 import type { ChildProcess } from "effect/unstable/process";
@@ -13,11 +9,17 @@ import type { AgentToolsConfig, DatabaseConfig } from "#config/types";
 
 import { ConfigService } from "#config/loader";
 import { DbConfigService } from "#db/config-service";
-import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError } from "#db/errors";
-import { getColumns, getRelationships, getTableNames } from "#db/schema";
-import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
+import { DbConnectionError, DbMutationBlockedError, DbQueryError } from "#db/errors";
+import { getColumns, getRelationships, getTableNames, SYSTEM_SCHEMAS_SQL } from "#db/schema";
+import {
+  getAllowedMutationOperation,
+  getMutationTarget,
+  hasMultipleStatements,
+  isValidTableName,
+  stripSqlComments,
+} from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
-import { isExecutableFile, PSQL_SILENT_FAILURE_HINT, resolvePsqlSearchPath } from "#db/psql";
+import { DbSqlClient, type DbConnection } from "#db/sql-client";
 
 /**
  * Mock DbService layer factory for testing
@@ -135,13 +137,49 @@ function createMockChildProcessSpawnerLayer(
   );
 }
 
+type SqlResponse = {
+  rows?: Record<string, unknown>[];
+  rowCount?: number;
+  command?: string;
+  error?: string;
+};
+
+type ObservedSql = { sql: string; connection: DbConnection };
+
+function createMockSqlClientLayer(
+  sqlResponses: Record<string, SqlResponse>,
+  observedSql: Array<ObservedSql>,
+) {
+  return Layer.succeed(DbSqlClient, {
+    run: (connection: DbConnection, sql: string) => {
+      observedSql.push({ sql, connection });
+
+      const response = sqlResponses[sql];
+      if (!response || response.error !== undefined) {
+        const message = response?.error ?? `No mock SQL response for: ${sql}`;
+        return Effect.fail(new DbQueryError({ message, sql, stderr: message }));
+      }
+
+      const rows = response.rows ?? [];
+      return Effect.succeed({
+        rows,
+        rowCount: response.rowCount ?? rows.length,
+        command: response.command ?? "SELECT",
+      });
+    },
+  });
+}
+
 function createRealDbServiceLayer(
   config: AgentToolsConfig,
   databaseConfig: DatabaseConfig,
-  shellResponses: Record<string, ShellResult>,
-  observedShellCommands: Array<string>,
+  sqlResponses: Record<string, SqlResponse>,
+  observedSql: Array<ObservedSql>,
+  shellResponses: Record<string, ShellResult> = {},
+  observedShellCommands: Array<string> = [],
 ) {
   return DbService.layer.pipe(
+    Layer.provide(createMockSqlClientLayer(sqlResponses, observedSql)),
     Layer.provide(createMockChildProcessSpawnerLayer(shellResponses, observedShellCommands)),
     Layer.provide(Layer.succeed(ConfigService, config)),
     Layer.provide(Layer.succeed(DbConfigService, databaseConfig)),
@@ -189,6 +227,46 @@ describe("db schema introspection SQL", () => {
     expect(getAllowedMutationOperation("/* comment */ update users set name = 'x'")).toBe("update");
     expect(getAllowedMutationOperation("delete from users")).toBe("delete");
     expect(getAllowedMutationOperation("truncate users")).toBeUndefined();
+  });
+
+  it("detects statement batching that would hide a mutation behind a leading read", () => {
+    expect(hasMultipleStatements("select 1; delete from foo")).toBe(true);
+    expect(hasMultipleStatements("select 1 /* x */; drop table foo")).toBe(true);
+    expect(hasMultipleStatements("select 1")).toBe(false);
+    expect(hasMultipleStatements("select 1;")).toBe(false);
+    expect(hasMultipleStatements("select 1;   \n  ")).toBe(false);
+    expect(hasMultipleStatements("select ';' as semi")).toBe(false);
+    expect(hasMultipleStatements('select "we;ird" from foo')).toBe(false);
+    expect(hasMultipleStatements("select 1 -- ; not a statement")).toBe(false);
+  });
+
+  it("closes an E'' literal on a backslash-escaped quote without escaping standard strings", () => {
+    expect(hasMultipleStatements("SELECT E'\\'' ; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT E'\\\\' ; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT 'a\\'; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT 'a\\' AS backslash")).toBe(false);
+    expect(hasMultipleStatements("SELECT E'no quotes' AS ok")).toBe(false);
+  });
+
+  it("does not let a quote inside a dollar-quoted body hide a batched statement", () => {
+    expect(hasMultipleStatements("SELECT $$O'Brien$$ AS name; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements('SELECT $$say "hi"$$ AS greeting; DROP TABLE users')).toBe(true);
+    expect(hasMultipleStatements("SELECT $tag$O'Brien$tag$ AS name; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT $$O'Brien$$ AS name")).toBe(false);
+  });
+
+  it("does not let a comment token inside a quoted region hide a batched statement", () => {
+    expect(hasMultipleStatements('SELECT * FROM "weird--table"; DROP TABLE users')).toBe(true);
+    expect(hasMultipleStatements('SELECT * FROM "weird/*x*/table"; DROP TABLE users')).toBe(true);
+    expect(hasMultipleStatements("SELECT 'a--b'; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT $$a--b$$; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT $tag$a--b$tag$; DROP TABLE users")).toBe(true);
+  });
+
+  it("still strips real comments so masked mutations are classified correctly", () => {
+    expect(stripSqlComments("select 1 -- drop table users").trim()).toBe("select 1");
+    expect(stripSqlComments("/* a /* nested */ b */select 1").trim()).toBe("select 1");
+    expect(stripSqlComments('select "keep--me" from t')).toContain('"keep--me"');
   });
 
   it("detects mutation targets including quoted schema-qualified identifiers", () => {
@@ -479,33 +557,6 @@ describe("DbService", () => {
       ),
     );
 
-    it.effect("handles parse errors for invalid JSON", () =>
-      Effect.gen(function* () {
-        const service = yield* DbService;
-        const result = yield* service
-          .executeQuery("local", "SELECT invalid_json")
-          .pipe(Effect.result);
-
-        Result.match(result, {
-          onFailure: (error) => {
-            expect(error._tag).toBe("DbParseError");
-          },
-          onSuccess: () => {
-            expect.fail("Expected Left but got Right");
-          },
-        });
-      }).pipe(
-        Effect.provide(
-          createMockDbServiceLayer({
-            "query:local:SELECT invalid_json": new DbParseError({
-              message: "Failed to parse query result as JSON",
-              rawOutput: "invalid json output",
-            }),
-          }),
-        ),
-      ),
-    );
-
     it.effect("tracks execution time", () =>
       Effect.gen(function* () {
         const service = yield* DbService;
@@ -526,44 +577,8 @@ describe("DbService", () => {
       ),
     );
 
-    it.effect("reports a silent non-zero psql exit as a tagged failure with a hint", () => {
-      const observedShellCommands: string[] = [];
-      const databaseConfig: DatabaseConfig = {
-        environments: {
-          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
-        },
-      };
-      const wrappedSql = "SELECT json_agg(t) FROM (SELECT 1) t;";
-      const psqlCommand = `psql -h db.internal -p 5432 -U readonly -d app -t -A -c ${wrappedSql}`;
-
-      return Effect.gen(function* () {
-        const service = yield* DbService;
-        const outcome = yield* service.executeQuery("prod", "SELECT 1").pipe(Effect.result);
-
-        Result.match(outcome, {
-          onFailure: (error) => {
-            expect(error._tag).toBe("DbQueryError");
-            expect((error as DbQueryError).message).toBe(
-              "psql exited with code 2 without writing any error output.",
-            );
-            expect((error as DbQueryError).hint).toBe(PSQL_SILENT_FAILURE_HINT);
-            expect((error as DbQueryError).stderr).toBeUndefined();
-          },
-          onSuccess: () => expect.unreachable("expected a DbQueryError"),
-        });
-      }).pipe(
-        Effect.provide(
-          createRealDbServiceLayer(
-            {},
-            databaseConfig,
-            { [psqlCommand]: { stdout: "", stderr: "", exitCode: 2 } },
-            observedShellCommands,
-          ),
-        ),
-      );
-    });
-
     it.effect("uses direct access before environment-scoped VPN prerequisites", () => {
+      const observedSql: ObservedSql[] = [];
       const observedShellCommands: string[] = [];
       const databaseConfig: DatabaseConfig = {
         vpn: "profileVpn",
@@ -577,8 +592,6 @@ describe("DbService", () => {
           },
         },
       };
-      const wrappedSql = "SELECT json_agg(t) FROM (SELECT 1) t;";
-      const psqlCommand = `psql -h db.internal -p 5432 -U readonly -d app -t -A -c ${wrappedSql}`;
 
       return Effect.gen(function* () {
         const service = yield* DbService;
@@ -586,7 +599,8 @@ describe("DbService", () => {
 
         expect(result.success).toBe(true);
         expect(result.data).toEqual([{ "?column?": 1 }]);
-        expect(observedShellCommands).toEqual([psqlCommand]);
+        expect(observedSql.map((entry) => entry.sql)).toEqual(["SELECT 1"]);
+        expect(observedShellCommands).toEqual([]);
       }).pipe(
         Effect.provide(
           createRealDbServiceLayer(
@@ -597,21 +611,91 @@ describe("DbService", () => {
               },
             },
             databaseConfig,
-            {
-              [psqlCommand]: {
-                stdout: '[{"?column?":1}]\n',
-                stderr: "",
-                exitCode: 0,
-              },
-            },
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+            {},
             observedShellCommands,
           ),
         ),
       );
     });
 
+    it.effect("refuses batched statements before they reach the driver", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "writer", database: "app" },
+        },
+        allowedMutationTargets: { prod: { insert: ["ticker.TimeTickers"] } },
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const blocked = yield* service
+          .executeQuery("prod", "select 1; delete from users")
+          .pipe(Effect.result);
+
+        Result.match(blocked, {
+          onFailure: (error) => expect(error._tag).toBe("DbQueryError"),
+          onSuccess: () => expect.fail("Expected batched statements to be refused"),
+        });
+        expect(observedSql).toEqual([]);
+      }).pipe(Effect.provide(createRealDbServiceLayer({}, databaseConfig, {}, observedSql)));
+    });
+
+    it.effect("marks the connection read-only for a fully read-only environment", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        yield* service.executeQuery("prod", "SELECT 1");
+
+        expect(observedSql[0].connection.readOnly).toBe(true);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("leaves the connection writable when mutation targets are configured", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "writer", database: "app" },
+        },
+        allowedMutationTargets: { prod: { insert: ["ticker.TimeTickers"] } },
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        yield* service.executeQuery("prod", "SELECT 1");
+
+        expect(observedSql[0].connection.readOnly).toBe(false);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
     it.effect("allows only configured mutation targets on remote environments", () => {
-      const observedShellCommands: string[] = [];
+      const observedSql: ObservedSql[] = [];
       const databaseConfig: DatabaseConfig = {
         environments: {
           prod: {
@@ -627,7 +711,6 @@ describe("DbService", () => {
       };
       const allowedSql = 'INSERT INTO ticker."TimeTickers" ("Id") VALUES (1)';
       const blockedSql = 'INSERT INTO public."OtherTable" ("Id") VALUES (1)';
-      const psqlCommand = `psql -h db.internal -p 5432 -U writer -d app -c ${allowedSql}`;
 
       return Effect.gen(function* () {
         const service = yield* DbService;
@@ -642,27 +725,22 @@ describe("DbService", () => {
 
         expect(result.success).toBe(true);
         expect(result.rowCount).toBe(1);
-        expect(observedShellCommands).toEqual([psqlCommand]);
+        expect(result.message).toBe("INSERT 1");
+        expect(observedSql.map((entry) => entry.sql)).toEqual([allowedSql]);
       }).pipe(
         Effect.provide(
           createRealDbServiceLayer(
             {},
             databaseConfig,
-            {
-              [psqlCommand]: {
-                stdout: "INSERT 0 1\n",
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-            observedShellCommands,
+            { [allowedSql]: { rows: [], rowCount: 1, command: "INSERT" } },
+            observedSql,
           ),
         ),
       );
     });
 
-    it.effect("strips a trailing semicolon before wrapping select SQL", () => {
-      const observedShellCommands: string[] = [];
+    it.effect("strips a trailing semicolon before sending select SQL", () => {
+      const observedSql: ObservedSql[] = [];
       const databaseConfig: DatabaseConfig = {
         environments: {
           prod: {
@@ -673,28 +751,52 @@ describe("DbService", () => {
           },
         },
       };
-      const wrappedSql = "SELECT json_agg(t) FROM (SELECT 1) t;";
-      const psqlCommand = `psql -h db.internal -p 5432 -U readonly -d app -t -A -c ${wrappedSql}`;
 
       return Effect.gen(function* () {
         const service = yield* DbService;
         const result = yield* service.executeQuery("prod", "SELECT 1;");
 
         expect(result.success).toBe(true);
-        expect(observedShellCommands).toEqual([psqlCommand]);
+        expect(observedSql.map((entry) => entry.sql)).toEqual(["SELECT 1"]);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("surfaces available tables when the driver reports a missing relation", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+      const missingSql = "SELECT * FROM nope";
+      const tableListSql = `SELECT schemaname || '.' || tablename FROM pg_tables WHERE schemaname NOT IN (${SYSTEM_SCHEMAS_SQL}) ORDER BY schemaname, tablename;`;
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service.executeQuery("prod", missingSql);
+
+        expect(result.success).toBe(false);
+        expect(result.availableTables).toEqual(["public.users"]);
+        expect(result.hint).toContain('Table "nope" not found');
       }).pipe(
         Effect.provide(
           createRealDbServiceLayer(
             {},
             databaseConfig,
             {
-              [psqlCommand]: {
-                stdout: '[{"?column?":1}]\n',
-                stderr: "",
-                exitCode: 0,
-              },
+              [missingSql]: { error: 'relation "nope" does not exist' },
+              [tableListSql]: { rows: [{ "?column?": "public.users" }] },
             },
-            observedShellCommands,
+            observedSql,
           ),
         ),
       );
@@ -1144,51 +1246,5 @@ describe("DbService", () => {
       expect(error.hint).toBeUndefined();
       expect(error.nextCommand).toBeUndefined();
     });
-  });
-});
-
-describe("resolvePsqlSearchPath", () => {
-  it("leaves PATH untouched when it already provides psql", () => {
-    const exists = (candidate: string) => candidate === "/usr/local/bin/psql";
-    expect(resolvePsqlSearchPath("/usr/bin:/usr/local/bin", exists)).toBe(
-      "/usr/bin:/usr/local/bin",
-    );
-  });
-
-  it("appends the keg-only libpq directory when PATH has no psql", () => {
-    const exists = (candidate: string) => candidate === "/opt/homebrew/opt/libpq/bin/psql";
-    expect(resolvePsqlSearchPath("/usr/bin:/usr/local/bin", exists)).toBe(
-      "/usr/bin:/usr/local/bin:/opt/homebrew/opt/libpq/bin",
-    );
-  });
-
-  it("leaves PATH untouched when psql is installed nowhere", () => {
-    expect(resolvePsqlSearchPath("/usr/bin", () => false)).toBe("/usr/bin");
-  });
-
-  it("tolerates an unset PATH", () => {
-    const exists = (candidate: string) => candidate === "/usr/local/opt/libpq/bin/psql";
-    expect(resolvePsqlSearchPath(undefined, exists)).toBe("/usr/local/opt/libpq/bin");
-  });
-});
-
-describe("isExecutableFile", () => {
-  const directory = mkdtempSync(join(tmpdir(), "psql-lookup-"));
-
-  it("rejects a non-executable psql so the keg-only fallback still applies", () => {
-    const candidate = join(directory, "psql");
-    writeFileSync(candidate, "#!/bin/sh\nexit 2\n", { mode: 0o644 });
-    expect(isExecutableFile(candidate)).toBe(false);
-  });
-
-  it("accepts an executable psql", () => {
-    const candidate = join(directory, "psql-executable");
-    writeFileSync(candidate, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    expect(isExecutableFile(candidate)).toBe(true);
-  });
-
-  it("rejects a directory and a missing entry", () => {
-    expect(isExecutableFile(directory)).toBe(false);
-    expect(isExecutableFile(join(directory, "absent"))).toBe(false);
   });
 });

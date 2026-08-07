@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Clock, Context, Duration, Effect, Layer, Ref, Stream } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Ref, Result, Stream } from "effect";
 
 import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./types";
 
@@ -9,12 +9,12 @@ import { resolveEnvTemplate } from "#shared/env-template";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
+import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
-import { PSQL_MISSING_HINT, PSQL_SILENT_FAILURE_HINT, resolvePsqlSearchPath } from "./psql";
+import { DbSqlClient, type DbConnection } from "./sql-client";
 import {
   DbConnectionError,
   DbMutationBlockedError,
-  DbParseError,
   DbQueryError,
   DbTunnelError,
   type DbError,
@@ -30,6 +30,7 @@ import {
   detectSchemaError,
   getAllowedMutationOperation,
   getMutationTarget,
+  hasMultipleStatements,
   isValidTableName,
   isMutationQuery,
 } from "./security";
@@ -87,6 +88,7 @@ export class DbService extends Context.Service<
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const sqlClient = yield* DbSqlClient;
         const agentToolsConfig = yield* ConfigService;
         const dbConfig = yield* DbConfigService;
 
@@ -231,23 +233,29 @@ export class DbService extends Context.Service<
               return { stdout, stderr, exitCode };
             }),
           ).pipe(
-            Effect.mapError(
-              (platformError) =>
-                new DbQueryError({
-                  message: `Command execution failed: ${String(platformError)}`,
-                  sql: "shell command",
-                  stderr: String(platformError),
-                  ...(String(platformError).includes("psql") ? { hint: PSQL_MISSING_HINT } : {}),
-                }),
-            ),
+            Effect.mapError((platformError) => {
+              const missing = missingBinaryFromSpawnFailure("kubectl", String(platformError));
+              return new DbQueryError({
+                message: `Command execution failed: ${String(platformError)}`,
+                sql: "shell command",
+                stderr: String(platformError),
+                ...(missing ? { hint: missing.hint } : {}),
+              });
+            }),
           );
 
         const checkPortOpen = (port: number) =>
-          executeShellCommand(
-            ChildProcess.make("nc", ["-z", "localhost", String(port)], {
-              stdout: "pipe",
-              stderr: "pipe",
-            }),
+          Effect.tryPromise(async () => {
+            const socket = await Bun.connect({
+              hostname: "127.0.0.1",
+              port,
+              socket: { data: () => undefined },
+            });
+            socket.end();
+            return true;
+          }).pipe(
+            Effect.timeout(TUNNEL_CHECK_INTERVAL_MS),
+            Effect.orElseSucceed(() => false),
           );
 
         const runWithVpnPrerequisites = <E>(
@@ -284,11 +292,7 @@ export class DbService extends Context.Service<
                 return false;
               }
 
-              const result = yield* checkPortOpen(port).pipe(
-                Effect.catch(() => Effect.succeed({ exitCode: 1 })),
-              );
-
-              if (result.exitCode === 0) {
+              if (yield* checkPortOpen(port)) {
                 return true;
               }
 
@@ -378,69 +382,34 @@ export class DbService extends Context.Service<
           return result.exitCode === 0;
         });
 
-        const buildPsqlCommand = (
-          config: DbConfig,
-          sql: string,
-          password: string,
-          useTuplesOnly: boolean,
-        ) => {
-          const args = [
-            "-h",
-            config.host,
-            "-p",
-            String(config.port),
-            "-U",
-            config.user,
-            "-d",
-            config.database,
-          ];
-
-          const commandArgs = useTuplesOnly
-            ? [...args, "-t", "-A", "-c", sql]
-            : [...args, "-c", sql];
-
-          return ChildProcess.make("psql", commandArgs, {
-            stdout: "pipe",
-            stderr: "pipe",
-            env: {
-              ...process.env,
-              PATH: resolvePsqlSearchPath(process.env.PATH),
-              ...(password ? { PGPASSWORD: password } : {}),
-              ...(isFullyReadOnly(config)
-                ? { PGOPTIONS: "-c default_transaction_read_only=on" }
-                : {}),
-            } as Record<string, string>,
-          });
-        };
-
-        const fetchTableNamesForError = Effect.fn("DbService.fetchTableNamesForError")(function* (
-          config: DbConfig,
-          password: string,
-        ) {
-          const command = buildPsqlCommand(
-            config,
-            `SELECT schemaname || '.' || tablename FROM pg_tables WHERE schemaname NOT IN (${SYSTEM_SCHEMAS_SQL}) ORDER BY schemaname, tablename;`,
-            password,
-            true,
-          );
-          const result = yield* executeShellCommand(command).pipe(
-            Effect.catch(() =>
-              Effect.succeed({
-                stdout: "",
-                stderr: "",
-                exitCode: 1,
-              }),
-            ),
-          );
-          if (result.exitCode !== 0) {
-            return [] as string[];
-          }
-
-          return result.stdout
-            .trim()
-            .split("\n")
-            .filter((name) => name.length > 0);
+        const toConnection = (config: DbConfig, password: string): DbConnection => ({
+          host: config.host,
+          port: config.port,
+          user: config.user,
+          database: config.database,
+          password,
+          readOnly: isFullyReadOnly(config),
         });
+
+        const runSql = (config: DbConfig, password: string, sql: string) =>
+          sqlClient.run(toConnection(config, password), sql);
+
+        const fetchSingleColumn = (config: DbConfig, password: string, sql: string) =>
+          runSql(config, password, sql).pipe(
+            Effect.map((outcome) =>
+              outcome.rows
+                .map((row) => String(Object.values(row)[0] ?? ""))
+                .filter((value) => value.length > 0),
+            ),
+            Effect.orElseSucceed(() => [] as string[]),
+          );
+
+        const fetchTableNamesForError = (config: DbConfig, password: string) =>
+          fetchSingleColumn(
+            config,
+            password,
+            `SELECT schemaname || '.' || tablename FROM pg_tables WHERE schemaname NOT IN (${SYSTEM_SCHEMAS_SQL}) ORDER BY schemaname, tablename;`,
+          );
 
         const fetchColumnNamesForError = Effect.fn("DbService.fetchColumnNamesForError")(function* (
           config: DbConfig,
@@ -458,40 +427,12 @@ export class DbService extends Context.Service<
             ? `AND table_schema = '${escapedSchemaName}'`
             : `AND table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})`;
 
-          const command = buildPsqlCommand(
+          return yield* fetchSingleColumn(
             config,
-            `SELECT column_name FROM information_schema.columns WHERE table_name = '${escapedTableName}' ${schemaFilter} ORDER BY table_schema, ordinal_position;`,
             password,
-            true,
+            `SELECT column_name FROM information_schema.columns WHERE table_name = '${escapedTableName}' ${schemaFilter} ORDER BY table_schema, ordinal_position;`,
           );
-          const result = yield* executeShellCommand(command).pipe(
-            Effect.catch(() =>
-              Effect.succeed({
-                stdout: "",
-                stderr: "",
-                exitCode: 1,
-              }),
-            ),
-          );
-          if (result.exitCode !== 0) {
-            return [] as string[];
-          }
-
-          return result.stdout
-            .trim()
-            .split("\n")
-            .filter((name) => name.length > 0);
         });
-
-        const psqlFailureFields = (result: { stderr: string; exitCode: number }) => {
-          const stderr = result.stderr.trim();
-          return stderr
-            ? { message: stderr, stderr }
-            : {
-                message: `psql exited with code ${result.exitCode} without writing any error output.`,
-                hint: PSQL_SILENT_FAILURE_HINT,
-              };
-        };
 
         const executeSelectQuery = Effect.fn("DbService.executeSelectQuery")(function* (
           config: DbConfig,
@@ -502,17 +443,15 @@ export class DbService extends Context.Service<
           limit?: number,
         ) {
           const selectSql = sql.trim().replace(/;\s*$/, "");
-          const wrappedSql = `SELECT json_agg(t) FROM (${selectSql}) t;`;
-          const command = buildPsqlCommand(config, wrappedSql, password, true);
-          const result = yield* executeShellCommand(command);
+          const outcome = yield* Effect.result(runSql(config, password, selectSql));
           const endTime = yield* Clock.currentTimeMillis;
 
-          if (result.exitCode !== 0) {
-            const failure = psqlFailureFields(result);
-            const schemaError = detectSchemaError(result.stderr, sql);
+          if (Result.isFailure(outcome)) {
+            const failureMessage = outcome.failure.message.trim();
+            const schemaError = detectSchemaError(failureMessage, sql);
             const baseResult: QueryResult = {
               success: false,
-              error: failure.message,
+              error: failureMessage || "Query failed",
               executionTimeMs: Number(endTime) - startTimeMs,
             };
 
@@ -538,28 +477,10 @@ export class DbService extends Context.Service<
               };
             }
 
-            return yield* new DbQueryError({ sql, ...failure });
+            return yield* outcome.failure;
           }
 
-          const trimmedOutput = result.stdout.trim();
-          if (!trimmedOutput || trimmedOutput === "null") {
-            return {
-              success: true,
-              data: [],
-              rowCount: 0,
-              executionTimeMs: Number(endTime) - startTimeMs,
-            };
-          }
-
-          const rawData = yield* Effect.try({
-            try: () => JSON.parse(trimmedOutput) as Record<string, unknown>[],
-            catch: () =>
-              new DbParseError({
-                message: "Failed to parse query result as JSON.",
-                rawOutput: trimmedOutput.slice(0, 500),
-              }),
-          });
-
+          const rawData = outcome.success.rows;
           const transformed = applyTransform
             ? transformQueryResult(rawData, limit)
             : {
@@ -584,21 +505,13 @@ export class DbService extends Context.Service<
           password: string,
           startTimeMs: number,
         ) {
-          const command = buildPsqlCommand(config, sql, password, false);
-          const result = yield* executeShellCommand(command);
+          const outcome = yield* runSql(config, password, sql);
           const endTime = yield* Clock.currentTimeMillis;
-
-          if (result.exitCode !== 0) {
-            return yield* new DbQueryError({ sql, ...psqlFailureFields(result) });
-          }
-
-          const output = result.stdout.trim();
-          const rowCountMatch = output.match(/(?:UPDATE|DELETE|INSERT \d+)\s+(\d+)/i);
-          const rowCount = rowCountMatch ? parseInt(rowCountMatch[1], 10) : 0;
+          const rowCount = outcome.rowCount;
 
           return {
             success: true,
-            message: output,
+            message: `${outcome.command} ${rowCount}`.trim(),
             rowCount,
             executionTimeMs: Number(endTime) - startTimeMs,
           };
@@ -751,6 +664,15 @@ export class DbService extends Context.Service<
           const startTimeMs = yield* Clock.currentTimeMillis;
           const resolvedConfig = yield* resolveDbConfig(config, env);
           const password = yield* resolvePassword(resolvedConfig, env);
+          if (hasMultipleStatements(sql)) {
+            return yield* new DbQueryError({
+              message:
+                "Multiple SQL statements in a single call are not allowed; the mutation guard only inspects the first statement.",
+              sql,
+              hint: "Send one statement per call.",
+            });
+          }
+
           const mutation = isMutationQuery(sql);
           const mutationOperation = mutation ? getAllowedMutationOperation(sql) : undefined;
           const mutationTarget = mutation ? getMutationTarget(sql) : undefined;
