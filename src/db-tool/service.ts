@@ -432,16 +432,6 @@ export class DbService extends Context.Service<
           );
         });
 
-        const psqlFailureFields = (result: { stderr: string; exitCode: number }) => {
-          const stderr = result.stderr.trim();
-          return stderr
-            ? { message: stderr, stderr }
-            : {
-                message: `psql exited with code ${result.exitCode} without writing any error output.`,
-                hint: PSQL_SILENT_FAILURE_HINT,
-              };
-        };
-
         const executeSelectQuery = Effect.fn("DbService.executeSelectQuery")(function* (
           config: DbConfig,
           sql: string,
