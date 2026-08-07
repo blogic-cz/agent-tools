@@ -35,3 +35,5 @@ export function makeDbConfigLayer(profile?: string) {
 export const DbConfigServiceLayer = makeDbConfigLayer();
 
 export const TUNNEL_CHECK_INTERVAL_MS = 100;
+
+export const TUNNEL_PORT_PROBE_TIMEOUT_MS = 1000;

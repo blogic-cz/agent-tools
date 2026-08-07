@@ -9,7 +9,12 @@ import { resolveEnvTemplate } from "#shared/env-template";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
-import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
+import { isTcpPortOpen } from "#shared/tcp";
+import {
+  DbConfigService,
+  TUNNEL_CHECK_INTERVAL_MS,
+  TUNNEL_PORT_PROBE_TIMEOUT_MS,
+} from "./config-service";
 import { PSQL_MISSING_HINT, resolvePsqlSearchPath } from "./psql";
 import {
   DbConnectionError,
@@ -242,13 +247,8 @@ export class DbService extends Context.Service<
             ),
           );
 
-        const checkPortOpen = (port: number) =>
-          executeShellCommand(
-            ChildProcess.make("nc", ["-z", "localhost", String(port)], {
-              stdout: "pipe",
-              stderr: "pipe",
-            }),
-          );
+        const checkPortOpen = (host: string, port: number) =>
+          Effect.promise(() => isTcpPortOpen(host, port, TUNNEL_PORT_PROBE_TIMEOUT_MS));
 
         const runWithVpnPrerequisites = <E>(
           port: number,
@@ -273,7 +273,7 @@ export class DbService extends Context.Service<
             ),
           );
 
-        const waitForPort = (port: number, timeoutMs: number, intervalMs: number) =>
+        const waitForPort = (host: string, port: number, timeoutMs: number, intervalMs: number) =>
           Effect.gen(function* () {
             const startTime = yield* Clock.currentTimeMillis;
             const deadline = Number(startTime) + timeoutMs;
@@ -284,11 +284,9 @@ export class DbService extends Context.Service<
                 return false;
               }
 
-              const result = yield* checkPortOpen(port).pipe(
-                Effect.catch(() => Effect.succeed({ exitCode: 1 })),
-              );
+              const isOpen = yield* checkPortOpen(host, port);
 
-              if (result.exitCode === 0) {
+              if (isOpen) {
                 return true;
               }
 
@@ -682,6 +680,7 @@ export class DbService extends Context.Service<
               );
 
               const ready = yield* waitForPort(
+                config.host,
                 config.port,
                 tunnelTimeoutMs,
                 TUNNEL_CHECK_INTERVAL_MS,

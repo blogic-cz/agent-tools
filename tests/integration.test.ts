@@ -951,8 +951,11 @@ case "$*" in
     ;;
 esac
 printf '%s' "$*" > "${kubectlArgsPath}"
+localPort=$(printf '%s\\n' "$@" | grep -E '^[0-9]+:[0-9]+$' | head -1 | cut -d: -f1)
+LISTEN_PORT="$localPort" bun -e "require('node:net').createServer().listen(Number(process.env.LISTEN_PORT), '127.0.0.1')" &
+listenerPid=$!
 touch "${tunnelReadyPath}"
-trap 'exit 0' TERM INT
+trap 'kill $listenerPid 2>/dev/null; exit 0' TERM INT
 while true; do
   sleep 1
 done
@@ -1027,18 +1030,6 @@ exit 1
       );
       chmodSync(vpnPath, 0o755);
     }
-
-    const ncPath = join(binDir, "nc");
-    writeFileSync(
-      ncPath,
-      `#!/bin/sh
-if [ -f "${tunnelReadyPath}" ]; then
-  exit 0
-fi
-exit 1
-`,
-    );
-    chmodSync(ncPath, 0o755);
 
     const psqlPath = join(binDir, "psql");
     writeFileSync(
