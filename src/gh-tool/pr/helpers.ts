@@ -2,6 +2,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Effect, Stream } from "effect";
 
 import { GitHubCommandError } from "#gh/errors";
+import { missingBinary } from "#shared/binary-preflight";
 
 export type LocalCommandResult = {
   stdout: string;
@@ -31,6 +32,17 @@ export const runLocalCommand = Effect.fn("pr.runLocalCommand")(function* (
   args: string[],
 ) {
   const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+  const missing = yield* missingBinary(binary);
+  if (missing) {
+    return yield* new GitHubCommandError({
+      message: missing.message,
+      command: [binary, ...args].join(" "),
+      exitCode: -1,
+      stderr: missing.message,
+      hint: missing.hint,
+    });
+  }
 
   const command = ChildProcess.make(binary, args, {
     stdout: "pipe",

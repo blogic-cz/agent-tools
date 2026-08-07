@@ -86,6 +86,44 @@ export function stripSqlComments(sql: string): string {
   return result;
 }
 
+/**
+ * Postgres runs every statement in a simple-query batch, but MUTATION_PATTERNS only match the
+ * first one, so `select 1; delete from x` would otherwise pass the guard as a plain read.
+ * Dollar-quoted bodies containing `;` are rejected as well: this fails closed by design.
+ */
+export function hasMultipleStatements(sql: string): boolean {
+  const stripped = stripSqlComments(sql);
+  let index = 0;
+
+  while (index < stripped.length) {
+    const char = stripped[index];
+
+    if (char === "'" || char === '"') {
+      index++;
+      while (index < stripped.length) {
+        if (stripped[index] === char && stripped[index + 1] === char) {
+          index += 2;
+          continue;
+        }
+        if (stripped[index] === char) {
+          index++;
+          break;
+        }
+        index++;
+      }
+      continue;
+    }
+
+    if (char === ";" && stripped.slice(index + 1).trim().length > 0) {
+      return true;
+    }
+
+    index++;
+  }
+
+  return false;
+}
+
 export function isMutationQuery(sql: string): boolean {
   const stripped = stripSqlComments(sql);
   return MUTATION_PATTERNS.some((pattern) => pattern.test(stripped));
