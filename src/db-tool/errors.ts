@@ -28,14 +28,6 @@ export class DbTunnelError extends Schema.TaggedErrorClass<DbTunnelError>()("DbT
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export class DbParseError extends Schema.TaggedErrorClass<DbParseError>()("DbParseError", {
-  message: Schema.String,
-  rawOutput: Schema.String,
-  hint: Schema.optionalKey(Schema.String),
-  nextCommand: Schema.optionalKey(Schema.String),
-  retryable: Schema.optionalKey(Schema.Boolean),
-}) {}
-
 export class DbMutationBlockedError extends Schema.TaggedErrorClass<DbMutationBlockedError>()(
   "DbMutationBlockedError",
   {
@@ -47,9 +39,4 @@ export class DbMutationBlockedError extends Schema.TaggedErrorClass<DbMutationBl
   },
 ) {}
 
-export type DbError =
-  | DbConnectionError
-  | DbMutationBlockedError
-  | DbParseError
-  | DbQueryError
-  | DbTunnelError;
+export type DbError = DbConnectionError | DbMutationBlockedError | DbQueryError | DbTunnelError;
