@@ -10,6 +10,7 @@ import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/con
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
+import { PSQL_MISSING_HINT, resolvePsqlSearchPath } from "./psql";
 import {
   DbConnectionError,
   DbMutationBlockedError,
@@ -235,7 +236,8 @@ export class DbService extends Context.Service<
                 new DbQueryError({
                   message: `Command execution failed: ${String(platformError)}`,
                   sql: "shell command",
-                  stderr: undefined,
+                  stderr: String(platformError),
+                  ...(String(platformError).includes("psql") ? { hint: PSQL_MISSING_HINT } : {}),
                 }),
             ),
           );
@@ -402,6 +404,7 @@ export class DbService extends Context.Service<
             stderr: "pipe",
             env: {
               ...process.env,
+              PATH: resolvePsqlSearchPath(process.env.PATH),
               ...(password ? { PGPASSWORD: password } : {}),
               ...(isFullyReadOnly(config)
                 ? { PGOPTIONS: "-c default_transaction_read_only=on" }

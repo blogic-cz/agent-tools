@@ -141,7 +141,7 @@ export class K8sService extends Context.Service<
                   message: `Command execution failed: ${String(platformError)}`,
                   command: commandStr,
                   exitCode: -1,
-                  stderr: undefined,
+                  stderr: String(platformError),
                 }),
             ),
           );
@@ -320,7 +320,7 @@ export class K8sService extends Context.Service<
                       message: `Command execution failed: ${String(platformError)}`,
                       command: fullCommand,
                       exitCode: -1,
-                      stderr: undefined,
+                      stderr: String(platformError),
                     }),
                 ),
               );
