@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class GitHubCommandError extends Schema.TaggedErrorClass<GitHubCommandError>()(
+export class GitHubCommandError extends Schema.TaggedError<GitHubCommandError>()(
   "GitHubCommandError",
   {
     message: Schema.String,
@@ -13,7 +13,7 @@ export class GitHubCommandError extends Schema.TaggedErrorClass<GitHubCommandErr
   },
 ) {}
 
-export class GitHubNotFoundError extends Schema.TaggedErrorClass<GitHubNotFoundError>()(
+export class GitHubNotFoundError extends Schema.TaggedError<GitHubNotFoundError>()(
   "GitHubNotFoundError",
   {
     message: Schema.String,
@@ -25,25 +25,22 @@ export class GitHubNotFoundError extends Schema.TaggedErrorClass<GitHubNotFoundE
   },
 ) {}
 
-export class GitHubAuthError extends Schema.TaggedErrorClass<GitHubAuthError>()("GitHubAuthError", {
+export class GitHubAuthError extends Schema.TaggedError<GitHubAuthError>()("GitHubAuthError", {
   message: Schema.String,
   hint: Schema.optionalKey(Schema.String),
   nextCommand: Schema.optionalKey(Schema.String),
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export class GitHubMergeError extends Schema.TaggedErrorClass<GitHubMergeError>()(
-  "GitHubMergeError",
-  {
-    message: Schema.String,
-    reason: Schema.Literals(["conflicts", "checks_failing", "branch_protected", "unknown"]),
-    hint: Schema.optionalKey(Schema.String),
-    nextCommand: Schema.optionalKey(Schema.String),
-    retryable: Schema.optionalKey(Schema.Boolean),
-  },
-) {}
+export class GitHubMergeError extends Schema.TaggedError<GitHubMergeError>()("GitHubMergeError", {
+  message: Schema.String,
+  reason: Schema.Literals(["conflicts", "checks_failing", "branch_protected", "unknown"]),
+  hint: Schema.optionalKey(Schema.String),
+  nextCommand: Schema.optionalKey(Schema.String),
+  retryable: Schema.optionalKey(Schema.Boolean),
+}) {}
 
-export class GitHubTimeoutError extends Schema.TaggedErrorClass<GitHubTimeoutError>()(
+export class GitHubTimeoutError extends Schema.TaggedError<GitHubTimeoutError>()(
   "GitHubTimeoutError",
   {
     message: Schema.String,

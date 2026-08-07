@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class PrerequisiteRunError extends Schema.TaggedErrorClass<PrerequisiteRunError>()(
+export class PrerequisiteRunError extends Schema.TaggedError<PrerequisiteRunError>()(
   "PrerequisiteRunError",
   {
     message: Schema.String,

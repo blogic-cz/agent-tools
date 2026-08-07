@@ -85,21 +85,24 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-beta.98",
-    "@toon-format/toon": "2.1.0",
-    "effect": "4.0.0-beta.98"
+    "@effect/platform-bun": "4.0.0-beta.105",
+    "@toon-format/toon": "2.1.0"
   },
   "devDependencies": {
     "@effect/language-service": "0.86.2",
-    "@effect/vitest": "4.0.0-beta.98",
+    "@effect/vitest": "4.0.0-beta.105",
     "@types/bun": "1.3.12",
+    "effect": "4.0.0-beta.105",
     "oxfmt": "0.44.0",
     "oxlint": "1.59.0",
     "typescript": "6.0.2",
     "vitest": "^4.1.4"
   },
+  "peerDependencies": {
+    "effect": "4.0.0-beta.105"
+  },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-beta.98"
+    "@effect/platform-node-shared": "4.0.0-beta.105"
   },
   "engines": {
     "bun": ">=1.3.0"

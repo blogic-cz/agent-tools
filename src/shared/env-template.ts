@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 
 const envTemplateRegex = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
-export class EnvTemplateError extends Schema.TaggedErrorClass<EnvTemplateError>()(
+export class EnvTemplateError extends Schema.TaggedError<EnvTemplateError>()(
   "@agent-tools/EnvTemplateError",
   { envVar: Schema.String },
 ) {}
