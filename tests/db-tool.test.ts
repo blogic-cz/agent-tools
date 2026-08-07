@@ -240,6 +240,14 @@ describe("db schema introspection SQL", () => {
     expect(hasMultipleStatements("select 1 -- ; not a statement")).toBe(false);
   });
 
+  it("closes an E'' literal on a backslash-escaped quote without escaping standard strings", () => {
+    expect(hasMultipleStatements("SELECT E'\\'' ; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT E'\\\\' ; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT 'a\\'; DROP TABLE users")).toBe(true);
+    expect(hasMultipleStatements("SELECT 'a\\' AS backslash")).toBe(false);
+    expect(hasMultipleStatements("SELECT E'no quotes' AS ok")).toBe(false);
+  });
+
   it("does not let a quote inside a dollar-quoted body hide a batched statement", () => {
     expect(hasMultipleStatements("SELECT $$O'Brien$$ AS name; DROP TABLE users")).toBe(true);
     expect(hasMultipleStatements('SELECT $$say "hi"$$ AS greeting; DROP TABLE users')).toBe(true);
