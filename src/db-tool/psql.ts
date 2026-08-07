@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { join } from "node:path";
 
 // Homebrew keeps libpq keg-only, so psql is routinely installed yet absent from PATH.
@@ -12,8 +12,15 @@ export const PSQL_SILENT_FAILURE_HINT =
 
 // Mere existence let a directory, a dangling symlink or a stub suppress the keg-only fallback.
 export const isExecutableFile = (candidate: string): boolean => {
-  const stats = statSync(candidate, { throwIfNoEntry: false });
-  return stats !== undefined && stats.isFile() && (stats.mode & 0o111) !== 0;
+  if (statSync(candidate, { throwIfNoEntry: false })?.isFile() !== true) {
+    return false;
+  }
+  try {
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 export const resolvePsqlSearchPath = (
