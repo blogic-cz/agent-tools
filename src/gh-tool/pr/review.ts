@@ -126,27 +126,6 @@ const LAST_HUMAN_REVIEWER_QUERY = `
             submittedAt
           }
         }
-        timelineItems(first: 250, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT]) {
-          nodes {
-            __typename
-            ... on ReviewRequestedEvent {
-              requestedReviewer {
-                __typename
-                ... on User { login }
-                ... on Team { name }
-                ... on Bot { login }
-              }
-            }
-            ... on ReviewRequestRemovedEvent {
-              requestedReviewer {
-                __typename
-                ... on User { login }
-                ... on Team { name }
-                ... on Bot { login }
-              }
-            }
-          }
-        }
       }
     }
   }
@@ -235,12 +214,6 @@ type LastHumanReviewerQueryResult = {
           author: { login: string } | null;
           state: string;
           submittedAt: string | null;
-        }>;
-      };
-      timelineItems: {
-        nodes: Array<{
-          __typename: string;
-          requestedReviewer: RequestedReviewerNode;
         }>;
       };
     };
@@ -1066,30 +1039,11 @@ export const fetchLastHumanReviewer = Effect.fn("pr.fetchLastHumanReviewer")(fun
 
   const prNode = response.repository.pullRequest;
 
-  const requestedFromTimeline: string[] = [];
-  for (const item of prNode.timelineItems.nodes) {
-    const login = requestedReviewerLogin(item.requestedReviewer);
-    if (login === null) {
-      continue;
-    }
-    if (item.__typename === "ReviewRequestedEvent") {
-      if (!requestedFromTimeline.includes(login)) {
-        requestedFromTimeline.push(login);
-      }
-    } else {
-      const index = requestedFromTimeline.indexOf(login);
-      if (index !== -1) {
-        requestedFromTimeline.splice(index, 1);
-      }
-    }
-  }
-
-  const currentRequestedReviewers =
-    requestedFromTimeline.length > 0
-      ? requestedFromTimeline
-      : prNode.reviewRequests.nodes
-          .map((node) => requestedReviewerLogin(node.requestedReviewer))
-          .filter((login): login is string => login !== null);
+  // GitHub clears a pending request on review submit without a ReviewRequestRemovedEvent, so
+  // only reviewRequests is authoritative; timeline replay would report stale reviewers forever.
+  const currentRequestedReviewers = prNode.reviewRequests.nodes
+    .map((node) => requestedReviewerLogin(node.requestedReviewer))
+    .filter((login): login is string => login !== null);
 
   const latestHumanReview = prNode.reviews.nodes.reduce<{ login: string; at: string } | null>(
     (latest, review) => {

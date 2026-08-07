@@ -2805,7 +2805,9 @@ describe("PR last human reviewer", () => {
       const response = {
         repository: {
           pullRequest: {
-            reviewRequests: { nodes: [] },
+            reviewRequests: {
+              nodes: [{ requestedReviewer: { __typename: "User", login: "michal" } }],
+            },
             reviews: {
               nodes: [
                 {
@@ -2832,22 +2834,6 @@ describe("PR last human reviewer", () => {
                   author: { login: "michal" },
                   state: "COMMENTED",
                   submittedAt: "2026-07-16T08:00:00Z",
-                },
-              ],
-            },
-            timelineItems: {
-              nodes: [
-                {
-                  __typename: "ReviewRequestedEvent",
-                  requestedReviewer: { __typename: "User", login: "roman" },
-                },
-                {
-                  __typename: "ReviewRequestedEvent",
-                  requestedReviewer: { __typename: "User", login: "michal" },
-                },
-                {
-                  __typename: "ReviewRequestRemovedEvent",
-                  requestedReviewer: { __typename: "User", login: "roman" },
                 },
               ],
             },
@@ -2882,7 +2868,6 @@ describe("PR last human reviewer", () => {
                 },
               ],
             },
-            timelineItems: { nodes: [] },
           },
         },
       };
@@ -2896,6 +2881,50 @@ describe("PR last human reviewer", () => {
       expect(result.lastHumanReviewer).toBeNull();
       expect(result.lastHumanReviewAt).toBeNull();
       expect(result.currentRequestedReviewers).toEqual([]);
+    }).pipe(Effect.provide(createMockGhLayer())),
+  );
+
+  it.effect("omits a reviewer whose pending request was cleared by submitting a review", () =>
+    Effect.gen(function* () {
+      const response = {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [{ requestedReviewer: { __typename: "User", login: "Hookyns" } }],
+            },
+            reviews: {
+              nodes: [
+                {
+                  author: { login: "MarekBlogic" },
+                  state: "APPROVED",
+                  submittedAt: "2026-07-30T10:00:00Z",
+                },
+              ],
+            },
+            timelineItems: {
+              nodes: [
+                {
+                  __typename: "ReviewRequestedEvent",
+                  requestedReviewer: { __typename: "User", login: "MarekBlogic" },
+                },
+                {
+                  __typename: "ReviewRequestedEvent",
+                  requestedReviewer: { __typename: "User", login: "Hookyns" },
+                },
+              ],
+            },
+          },
+        },
+      };
+
+      const layer = createMockGhLayer({
+        runGraphQL: () => Effect.succeed(response),
+      });
+
+      const result = yield* fetchLastHumanReviewer(490).pipe(Effect.provide(layer));
+
+      expect(result.currentRequestedReviewers).toEqual(["Hookyns"]);
+      expect(result.lastHumanReviewer).toBe("MarekBlogic");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
@@ -5713,7 +5742,10 @@ describe("PR composite commands", () => {
             runGhJson: (args) => {
               calls.push(args);
               return Effect.succeed({
-                requested_reviewers: [{ login: "zoe" }, { login: "bob" }, { login: "alice" }],
+                requested_reviewers:
+                  calls.length === 1
+                    ? [{ login: "bob" }]
+                    : [{ login: "zoe" }, { login: "bob" }, { login: "alice" }],
               });
             },
           }),
@@ -5721,6 +5753,7 @@ describe("PR composite commands", () => {
       );
 
       expect(calls).toEqual([
+        ["api", "repos/test-owner/test-repo/pulls/123"],
         [
           "api",
           "--method",
@@ -5735,8 +5768,34 @@ describe("PR composite commands", () => {
       expect(result).toEqual({
         pr: 123,
         submittedReviewers: ["alice", "zoe"],
+        newlyRequested: ["alice", "zoe"],
+        alreadyPending: [],
         requestedReviewers: ["alice", "bob", "zoe"],
       });
+    }),
+  );
+
+  it.effect("request-review separates fresh requests from already-pending ones", () =>
+    Effect.gen(function* () {
+      let call = 0;
+      const result = yield* requestReview(490, "MarekBlogic,Hookyns").pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () => {
+              call++;
+              return Effect.succeed({
+                requested_reviewers:
+                  call === 1
+                    ? [{ login: "Hookyns" }]
+                    : [{ login: "Hookyns" }, { login: "MarekBlogic" }],
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(result.newlyRequested).toEqual(["marekblogic"]);
+      expect(result.alreadyPending).toEqual(["hookyns"]);
     }),
   );
 

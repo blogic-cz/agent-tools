@@ -141,6 +141,15 @@ export const requestReview = (pr: number, reviewers: string) =>
     const submittedReviewers = yield* parseReviewers(reviewers);
     const gh = yield* GitHubService;
     const repo = yield* gh.getRepoInfo();
+    // ponytail: not atomic — a concurrent request between GET and POST misreports newlyRequested.
+    const pendingBefore = new Set(
+      (yield* confirmedReviewers(
+        yield* gh.runGhJson<RequestedReviewersResponse>([
+          "api",
+          `repos/${repo.owner}/${repo.name}/pulls/${pr}`,
+        ]),
+      )).map((login) => login.toLowerCase()),
+    );
     const response = yield* gh.runGhJson<RequestedReviewersResponse>([
       "api",
       "--method",
@@ -151,6 +160,8 @@ export const requestReview = (pr: number, reviewers: string) =>
     return {
       pr,
       submittedReviewers,
+      newlyRequested: submittedReviewers.filter((reviewer) => !pendingBefore.has(reviewer)),
+      alreadyPending: submittedReviewers.filter((reviewer) => pendingBefore.has(reviewer)),
       requestedReviewers: yield* confirmedReviewers(response),
     };
   });
