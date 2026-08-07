@@ -10,6 +10,12 @@ export type BaseResult = {
   hint?: string;
 };
 
+// Separate from BaseResult, not a widening of it: k8s, logs and session results carry no message.
+export type ToolResult = BaseResult & {
+  message: string;
+  data?: unknown;
+};
+
 export type CommandOptions = {
   cwd?: string;
   env?: Record<string, string>;

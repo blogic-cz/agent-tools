@@ -1,4 +1,11 @@
-export type { BaseResult, CommandOptions, CommandResult, Environment, OutputFormat } from "./types";
+export type {
+  BaseResult,
+  CommandOptions,
+  CommandResult,
+  Environment,
+  OutputFormat,
+  ToolResult,
+} from "./types";
 
 export { formatAny, formatOption, formatOutput, logFormatted } from "./format";
 
