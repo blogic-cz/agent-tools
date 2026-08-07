@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { connect } from "node:net";
 import { Readable } from "node:stream";
 
 const TOOLS_ROOT = join(__dirname, "..");
@@ -113,6 +114,26 @@ function runTool(toolPath: string, args: string[], cwd?: string, timeout = 5000)
     encoding: "utf8",
     timeout,
   });
+}
+
+async function waitForPort(port: number, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const reachable = await new Promise<boolean>((resolve) => {
+      const socket = connect({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (reachable) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Port ${port} did not open within ${timeoutMs}ms`);
 }
 
 function runToolWithEnv(
@@ -1076,6 +1097,61 @@ exit 1
 
   it("db-tool opens a tunnel to the default PostgreSQL service", () => {
     runDbTunnelTest(undefined, "postgresql");
+  });
+
+  it("reports mutation rowCount and command decoded from the wire protocol", async () => {
+    const dbDir = join(tmpdir(), `agent-tools-db-mutation-${Date.now()}`);
+    const fakePostgresPath = join(TOOLS_ROOT, "tests/fixtures/fake-postgres.ts");
+    mkdirSync(dbDir, { recursive: true });
+
+    writeFileSync(
+      join(dbDir, "agent-tools.json5"),
+      JSON.stringify({
+        database: {
+          default: {
+            environments: {
+              local: {
+                host: "127.0.0.1",
+                port: 25539,
+                user: "local-user",
+                database: "local-db",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const server = spawn(
+      "bun",
+      [fakePostgresPath, "25539", join(dbDir, "startup-params.txt"), join(dbDir, "attempts")],
+      { stdio: "ignore" },
+    );
+
+    let result;
+    try {
+      await waitForPort(25539);
+      result = runToolWithEnv(
+        "src/db-tool/index.ts",
+        ["sql", "--env", "local", "--sql", "insert into probe values (1)", "--format", "json"],
+        dbDir,
+        { AGENT_TOOLS_RUNTIME_DIR: join(dbDir, "runtime") },
+      );
+    } finally {
+      server.kill();
+    }
+
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      success: boolean;
+      message?: string;
+      rowCount?: number;
+    };
+
+    rmSync(dbDir, { recursive: true, force: true });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.rowCount).toBe(2);
+    expect(parsed.message).toBe("INSERT 2");
   });
 
   it("db-tool opens a tunnel to a configured service", () => {

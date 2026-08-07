@@ -63,7 +63,7 @@ const dataRow = (value: string) => {
   return frame("D", payload);
 };
 
-const commandComplete = () => frame("C", cString("SELECT 1"));
+const commandComplete = (tag: string) => frame("C", cString(tag));
 
 const bumpAttempts = async () => {
   const file = Bun.file(attemptsPath);
@@ -133,13 +133,18 @@ Bun.listen({
         }
 
         if (type === "Q") {
+          if (/^\s*insert/i.test(body)) {
+            socket.write(concat([commandComplete("INSERT 0 2"), readyForQuery()]));
+            continue;
+          }
+
           const response = body.includes("transaction_read_only")
             ? concat([
                 rowDescription("transaction_read_only", 25),
                 dataRow(state.readOnly ? "on" : "off"),
               ])
             : concat([rowDescription("ok", 23), dataRow("1")]);
-          socket.write(concat([response, commandComplete(), readyForQuery()]));
+          socket.write(concat([response, commandComplete("SELECT 1"), readyForQuery()]));
         }
       }
     },
