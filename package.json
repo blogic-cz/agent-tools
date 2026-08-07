@@ -154,6 +154,6 @@
     "@effect/platform-node-shared": "4.0.0-beta.98"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.3.0"
   }
 }

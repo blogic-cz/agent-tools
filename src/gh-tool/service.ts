@@ -7,6 +7,7 @@ import type { RepoInfo } from "./types";
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
+import { missingBinary } from "#shared/binary-preflight";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
 const NETWORK_ERROR_RE =
@@ -149,6 +150,18 @@ export class GitHubService extends Context.Service<
         const executeGh = (args: string[]) =>
           Effect.scoped(
             Effect.gen(function* () {
+              const missing = yield* missingBinary(GH_BINARY);
+              if (missing) {
+                return yield* new GitHubCommandError({
+                  message: missing.message,
+                  command: `${GH_BINARY} ${args.join(" ")}`,
+                  exitCode: -1,
+                  stderr: missing.message,
+                  hint: missing.hint,
+                  nextCommand: `${GH_BINARY} --version`,
+                });
+              }
+
               const ghRepo = yield* RepoTarget;
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
