@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer, Sink, Stream } from "effect";
 import type { ChildProcess } from "effect/unstable/process";
@@ -13,7 +17,7 @@ import { DbConnectionError, DbMutationBlockedError, DbParseError, DbQueryError }
 import { getColumns, getRelationships, getTableNames } from "#db/schema";
 import { getAllowedMutationOperation, getMutationTarget, isValidTableName } from "#db/security";
 import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
-import { resolvePsqlSearchPath } from "#db/psql";
+import { isExecutableFile, PSQL_SILENT_FAILURE_HINT, resolvePsqlSearchPath } from "#db/psql";
 
 /**
  * Mock DbService layer factory for testing
@@ -521,6 +525,43 @@ describe("DbService", () => {
         ),
       ),
     );
+
+    it.effect("reports a silent non-zero psql exit as a tagged failure with a hint", () => {
+      const observedShellCommands: string[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+      const wrappedSql = "SELECT json_agg(t) FROM (SELECT 1) t;";
+      const psqlCommand = `psql -h db.internal -p 5432 -U readonly -d app -t -A -c ${wrappedSql}`;
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const outcome = yield* service.executeQuery("prod", "SELECT 1").pipe(Effect.result);
+
+        Result.match(outcome, {
+          onFailure: (error) => {
+            expect(error._tag).toBe("DbQueryError");
+            expect((error as DbQueryError).message).toBe(
+              "psql exited with code 2 without writing any error output.",
+            );
+            expect((error as DbQueryError).hint).toBe(PSQL_SILENT_FAILURE_HINT);
+            expect((error as DbQueryError).stderr).toBeUndefined();
+          },
+          onSuccess: () => expect.unreachable("expected a DbQueryError"),
+        });
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { [psqlCommand]: { stdout: "", stderr: "", exitCode: 2 } },
+            observedShellCommands,
+          ),
+        ),
+      );
+    });
 
     it.effect("uses direct access before environment-scoped VPN prerequisites", () => {
       const observedShellCommands: string[] = [];
@@ -1128,5 +1169,26 @@ describe("resolvePsqlSearchPath", () => {
   it("tolerates an unset PATH", () => {
     const exists = (candidate: string) => candidate === "/usr/local/opt/libpq/bin/psql";
     expect(resolvePsqlSearchPath(undefined, exists)).toBe("/usr/local/opt/libpq/bin");
+  });
+});
+
+describe("isExecutableFile", () => {
+  const directory = mkdtempSync(join(tmpdir(), "psql-lookup-"));
+
+  it("rejects a non-executable psql so the keg-only fallback still applies", () => {
+    const candidate = join(directory, "psql");
+    writeFileSync(candidate, "#!/bin/sh\nexit 2\n", { mode: 0o644 });
+    expect(isExecutableFile(candidate)).toBe(false);
+  });
+
+  it("accepts an executable psql", () => {
+    const candidate = join(directory, "psql-executable");
+    writeFileSync(candidate, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(isExecutableFile(candidate)).toBe(true);
+  });
+
+  it("rejects a directory and a missing entry", () => {
+    expect(isExecutableFile(directory)).toBe(false);
+    expect(isExecutableFile(join(directory, "absent"))).toBe(false);
   });
 });
