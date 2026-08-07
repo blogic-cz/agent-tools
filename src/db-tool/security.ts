@@ -28,11 +28,13 @@ const MUTATION_TARGET_PATTERNS: Array<[DbMutationOperation, RegExp]> = [
 const DOLLAR_QUOTE_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
 
 /**
- * Strip SQL comments (block and line) while preserving every quoted region verbatim.
+ * Strip SQL comments (block and line) and empty out every string literal, keeping only
+ * double-quoted identifiers verbatim because the mutation-target parser needs them.
  * Single quotes, double-quoted identifiers and dollar-quoted bodies must all be tracked:
- * a comment token recognised inside a region another check treats as quoted is a guard
- * bypass, e.g. `SELECT * FROM "weird--table"; DROP TABLE users` would otherwise lose its
- * statement separator and read as a single harmless SELECT.
+ * a quote or comment token surviving inside a region another check reads differently is a
+ * guard bypass. `SELECT * FROM "weird--table"; DROP TABLE users` would lose its statement
+ * separator to a phantom comment, and `SELECT $$O\'Brien$$ AS n; DROP TABLE users` would
+ * leave an unpaired apostrophe that swallows the separator instead.
  */
 export function stripSqlComments(sql: string): string {
   let result = "";
@@ -44,18 +46,19 @@ export function stripSqlComments(sql: string): string {
     const next = i + 1 < len ? sql[i + 1] : "";
 
     if (ch === "'" || ch === '"') {
+      const keepBody = ch === '"';
       result += ch;
       i++;
       while (i < len) {
         if (sql[i] === ch && sql[i + 1] === ch) {
-          result += ch + ch;
+          if (keepBody) result += ch + ch;
           i += 2;
         } else if (sql[i] === ch) {
           result += ch;
           i++;
           break;
         } else {
-          result += sql[i];
+          if (keepBody) result += sql[i];
           i++;
         }
       }
@@ -67,7 +70,7 @@ export function stripSqlComments(sql: string): string {
       if (tag) {
         const closing = sql.indexOf(tag, i + tag.length);
         const stop = closing === -1 ? len : closing + tag.length;
-        result += sql.slice(i, stop);
+        result += closing === -1 ? tag : tag + tag;
         i = stop;
         continue;
       }
