@@ -11,7 +11,6 @@ export const PSQL_SILENT_FAILURE_HINT =
   "psql exited with a non-zero code without writing any error output, so it is probably not a working client. Check `which psql`; on macOS prefer the keg-only libpq build in /opt/homebrew/opt/libpq/bin (Apple silicon) or /usr/local/opt/libpq/bin (Intel).";
 
 // Mere existence let a directory, a dangling symlink or a stub suppress the keg-only fallback.
-// ponytail: mode bits, not access(X_OK); swap if per-user permissions ever matter here.
 export const isExecutableFile = (candidate: string): boolean => {
   const stats = statSync(candidate, { throwIfNoEntry: false });
   return stats !== undefined && stats.isFile() && (stats.mode & 0o111) !== 0;
