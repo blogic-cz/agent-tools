@@ -9,6 +9,11 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "noEmit": true,
+    // Not redundant with the package "imports" map. These paths shadow it during
+    // our own build, so build:types resolves "#" specifiers to src while the
+    // "types" conditions in "imports" still point at a dist that does not exist
+    // yet. Delete this block and build:types stops resolving. Keep it in sync
+    // with "imports" in package.json.
     "paths": {
       "#shared": ["./src/shared/index.ts"],
       "#shared/*": ["./src/shared/*"],
