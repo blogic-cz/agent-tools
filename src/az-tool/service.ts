@@ -9,6 +9,7 @@ import { AzSecurityError, AzCommandError, AzTimeoutError, AzParseError } from ".
 import { isCommandAllowed, isInvokeAllowed } from "./security";
 import { transformCmdOutput } from "./transformers";
 import { ConfigService, getToolConfig } from "#config";
+import { renderCommandLine, tokenizeCommandLine } from "#shared/exec";
 
 export class AzService extends Context.Service<
   AzService,
@@ -43,10 +44,10 @@ export class AzService extends Context.Service<
 
       const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-      const runShellCommand = (fullCommand: string, timeoutMs: number) =>
+      const runAzCommand = (argv: readonly string[], timeoutMs: number) =>
         Effect.scoped(
           Effect.gen(function* () {
-            const command = ChildProcess.make("sh", ["-c", fullCommand], {
+            const command = ChildProcess.make("az", argv, {
               stdout: "pipe",
               stderr: "pipe",
             });
@@ -68,7 +69,7 @@ export class AzService extends Context.Service<
             (platformError) =>
               new AzCommandError({
                 message: `Command execution failed: ${platformError.message}`,
-                command: fullCommand,
+                command: renderCommandLine(["az", ...argv]),
                 exitCode: -1,
                 hint: "Check that the az CLI is installed and authenticated",
                 nextCommand: "az login",
@@ -112,17 +113,22 @@ export class AzService extends Context.Service<
           firstWord as (typeof STANDALONE_AZ_COMMANDS)[number],
         );
 
-        let fullCommand: string;
+        const cmdArgv = tokenizeCommandLine(cmd);
+        const scopeArgv = [
+          "--organization",
+          azConfig.organization,
+          "--project",
+          projectName,
+        ] as const;
 
-        if (isStandaloneCommand) {
-          fullCommand = `az ${cmd}`;
-        } else if (isDirectCommand) {
-          fullCommand = `az ${cmd} --organization "${azConfig.organization}" --project "${projectName}"`;
-        } else {
-          fullCommand = `az devops ${cmd} --organization "${azConfig.organization}" --project "${projectName}"`;
-        }
+        const argv = isStandaloneCommand
+          ? cmdArgv
+          : isDirectCommand
+            ? [...cmdArgv, ...scopeArgv]
+            : ["devops", ...cmdArgv, ...scopeArgv];
 
-        const resultOption = yield* runShellCommand(fullCommand, azConfig.timeoutMs ?? 60000);
+        const fullCommand = renderCommandLine(["az", ...argv]);
+        const resultOption = yield* runAzCommand(argv, azConfig.timeoutMs ?? 60000);
 
         if (Option.isNone(resultOption)) {
           return yield* new AzTimeoutError({
@@ -165,7 +171,7 @@ export class AzService extends Context.Service<
           });
         }
 
-        let fullCommand = `az devops invoke --area ${params.area} --resource ${params.resource}`;
+        const argv = ["devops", "invoke", "--area", params.area, "--resource", params.resource];
 
         const projectName = resolveProject(params.project);
 
@@ -175,22 +181,23 @@ export class AzService extends Context.Service<
         };
 
         if (Object.keys(routeParameters).length > 0) {
-          const routeParams = Object.entries(routeParameters)
-            .map(([k, v]) => `${k}=${v}`)
-            .join(" ");
-          fullCommand += ` --route-parameters ${routeParams}`;
+          argv.push(
+            "--route-parameters",
+            ...Object.entries(routeParameters).map(([k, v]) => `${k}=${v}`),
+          );
         }
 
         if (params.queryParameters) {
-          const queryParams = Object.entries(params.queryParameters)
-            .map(([k, v]) => `${k}=${v}`)
-            .join(" ");
-          fullCommand += ` --query-parameters ${queryParams}`;
+          argv.push(
+            "--query-parameters",
+            ...Object.entries(params.queryParameters).map(([k, v]) => `${k}=${v}`),
+          );
         }
 
-        fullCommand += ` --organization "${azConfig.organization}" --output json`;
+        argv.push("--organization", azConfig.organization, "--output", "json");
 
-        const resultOption = yield* runShellCommand(fullCommand, azConfig.timeoutMs ?? 60000);
+        const fullCommand = renderCommandLine(["az", ...argv]);
+        const resultOption = yield* runAzCommand(argv, azConfig.timeoutMs ?? 60000);
 
         if (Option.isNone(resultOption)) {
           return yield* new AzTimeoutError({

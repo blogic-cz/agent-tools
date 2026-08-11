@@ -36,7 +36,9 @@ describe("selectKubeContext", () => {
   it("falls back to a cluster whose server URL contains the id", () => {
     const serverOnly = {
       contexts: [{ name: "prod-ctx", context: { cluster: "renamed-cluster" } }],
-      clusters: [{ name: "renamed-cluster", cluster: { server: "https://prd-cluster.example:6443" } }],
+      clusters: [
+        { name: "renamed-cluster", cluster: { server: "https://prd-cluster.example:6443" } },
+      ],
     };
 
     expect(selectKubeContext(serverOnly, "prd-cluster")).toBe("prod-ctx");

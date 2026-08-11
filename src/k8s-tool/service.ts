@@ -102,9 +102,7 @@ export class K8sService extends Context.Service<
         const renderArg = (arg: string) =>
           /^[A-Za-z0-9_./:=,@+-]+$/.test(arg) ? arg : quoteShellArg(arg);
         const renderKubectlCommand = (context: string | undefined, argv: readonly string[]) =>
-          ["kubectl", ...(context ? ["--context", context] : []), ...argv]
-            .map(renderArg)
-            .join(" ");
+          ["kubectl", ...(context ? ["--context", context] : []), ...argv].map(renderArg).join(" ");
 
         // Cache context by selected profile/cluster instead of a single default profile.
         const contextRef = yield* Ref.make<Record<string, string>>({});

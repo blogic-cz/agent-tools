@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { connect } from "node:net";
 import { Readable } from "node:stream";
@@ -152,6 +152,34 @@ function runToolWithEnv(
       ...envOverrides,
     },
   });
+}
+
+/**
+ * Windows resolves an executable by PATHEXT, so a bare shebang script is never runnable there
+ * and only worked while the tool shelled out through sh. A .cmd is what Windows can spawn.
+ */
+function writeFakeKubectl(binDir: string, configView: string) {
+  if (process.platform === "win32") {
+    const batch = [
+      "@echo off",
+      'if "%1"=="config" if "%2"=="view" (',
+      `  echo ${configView.replaceAll("^", "^^").replaceAll("&", "^&").replaceAll("<", "^<").replaceAll(">", "^>").replaceAll("|", "^|")}`,
+      "  exit /b 0",
+      ")",
+      "echo kubectl-mock",
+      "",
+    ].join("\r\n");
+
+    writeFileSync(join(binDir, "kubectl.cmd"), batch);
+    return;
+  }
+
+  const kubectlPath = join(binDir, "kubectl");
+  writeFileSync(
+    kubectlPath,
+    `#!/bin/sh\nif [ "$1" = "config" ] && [ "$2" = "view" ]; then\n  echo '${configView}'\n  exit 0\nfi\necho "kubectl-mock"\n`,
+  );
+  chmodSync(kubectlPath, 0o755);
 }
 
 function readAuditRows(dbPath: string, limit: number) {
@@ -869,22 +897,18 @@ describe("Integration: env safety + k8s namespace fallback", () => {
       }),
     );
 
-    const kubectlPath = join(binDir, "kubectl");
-    writeFileSync(
-      kubectlPath,
-      '#!/bin/sh\nif [ "$1" = "config" ] && [ "$2" = "view" ]; then\n  echo \'{"contexts":[{"name":"ctx-test","context":{"cluster":"test-cluster-id"}}],"clusters":[{"name":"test-cluster-id","cluster":{"server":"https://test"}}]}\'\n  exit 0\nfi\necho "kubectl-mock"\n',
-    );
-    chmodSync(kubectlPath, 0o755);
+    const configView = JSON.stringify({
+      contexts: [{ name: "ctx-test", context: { cluster: "test-cluster-id" } }],
+      clusters: [{ name: "test-cluster-id", cluster: { server: "https://test" } }],
+    });
 
-    const jqPath = join(binDir, "jq");
-    writeFileSync(jqPath, "#!/bin/sh\necho ctx-test\n");
-    chmodSync(jqPath, 0o755);
+    writeFakeKubectl(binDir, configView);
 
     const result = runToolWithEnv(
       "src/k8s-tool/index.ts",
       ["pods", "--env", "test", "--dry-run", "--format", "json"],
       k8sDir,
-      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` },
     );
 
     rmSync(k8sDir, { recursive: true, force: true });

@@ -50,10 +50,3 @@ export async function runCommand(
     executionTimeMs: Date.now() - startTime,
   };
 }
-
-export function runShellCommand(
-  command: string,
-  options: CommandOptions = {},
-): Promise<CommandResult> {
-  return runCommand(["sh", "-c", command], options);
-}
