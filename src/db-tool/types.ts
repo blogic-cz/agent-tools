@@ -16,6 +16,8 @@ export type DbConfig = ProfilePrerequisites & {
   database: string;
   password?: string;
   passwordEnvVar?: string;
+  hostEnvVar?: string;
+  portEnvVar?: string;
   port: number;
   needsTunnel: boolean;
   allowMutations: boolean;

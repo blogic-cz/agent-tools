@@ -51,6 +51,8 @@
           user: "my-app-user",
           database: "my-app",
           passwordEnvVar: "AGENT_TOOLS_DB_LOCAL_CRED", // Read from env for security
+          hostEnvVar: "AGENT_TOOLS_DB_LOCAL_HOST", // Optional override; unset or empty keeps host above
+          portEnvVar: "AGENT_TOOLS_DB_LOCAL_PORT", // Optional override (e.g. a per-worktree port); unset or empty keeps port above
           prerequisites: [], // Explicitly disables inherited database.default.vpn for local access
         },
         test: {

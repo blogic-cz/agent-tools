@@ -209,6 +209,14 @@
           "description": "Name of the environment variable holding the database password.",
           "type": "string"
         },
+        "hostEnvVar": {
+          "description": "Name of an environment variable that overrides host when it is set. Unset or empty keeps the literal host.",
+          "type": "string"
+        },
+        "portEnvVar": {
+          "description": "Name of an environment variable that overrides port when it is set. Unset or empty keeps the literal port; a value that is not an integer between 1 and 65535 is an error, never a silent fallback.",
+          "type": "string"
+        },
         "prerequisites": {
           "description": "Ordered prerequisite references for this database environment. Declaring this or vpn overrides profile-level database prerequisites; an empty array explicitly disables inherited prerequisites.",
           "type": "array",
