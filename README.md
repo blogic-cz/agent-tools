@@ -436,6 +436,47 @@ Secrets are **never** stored in the config file. The `db-tool` config references
 }
 ```
 
+#### Endpoint overrides: `hostEnvVar` and `portEnvVar`
+
+A database environment can also take its `host` and `port` from environment variables:
+
+| Field        | Effect                                                                     |
+| ------------ | -------------------------------------------------------------------------- |
+| `hostEnvVar` | Name of an environment variable that overrides the literal `host` when set |
+| `portEnvVar` | Name of an environment variable that overrides the literal `port` when set |
+
+These are **overrides with fallback**, not requirements — the opposite of `passwordEnvVar`, which fails when its variable is unset:
+
+- variable set to a value → that value wins over the literal in the config;
+- variable unset or empty → the literal `host` / `port` in the config is used, and no error is raised;
+- `portEnvVar` set to something that is not an integer between 1 and 65535 → the command **fails**. It never falls back to the literal, because that would query a different database while you believe the override applied.
+
+The variable is read from the process environment first (Bun loads `.env` files into it), then from `~/.zshrc` exports.
+
+The typical use is a repository where every git worktree runs its own database container on its own host port, published by that worktree's `.env`:
+
+```json5
+{
+  database: {
+    default: {
+      environments: {
+        local: {
+          host: "127.0.0.1",
+          port: 40543, // the main checkout's database
+          user: "app",
+          database: "app",
+          portEnvVar: "APP_POSTGRES_PORT", // a worktree's .env sets this to e.g. 40643
+          hostEnvVar: "APP_POSTGRES_HOST", // optional, same fallback rule
+          prerequisites: [],
+        },
+      },
+    },
+  },
+}
+```
+
+Run from the main checkout, where `APP_POSTGRES_PORT` is unset, `db-tool` connects to `127.0.0.1:40543`. Run from a worktree whose `.env` sets `APP_POSTGRES_PORT=40643`, the same config connects to `127.0.0.1:40643` — so `db-tool` and `job-tool` inspect that worktree's own database instead of the main checkout's.
+
 Database VPN prerequisites can be set at the database profile or environment level. If an environment declares `vpn` or `prerequisites`, that environment config replaces the profile prerequisites; `prerequisites: []` explicitly disables inherited VPN setup. DB commands try the query directly first and only connect VPN prerequisites if direct access fails. Package-managed VPNs remain reusable for `idleDisconnectMs` (default 30000) after the last lease; `0` restores immediate cleanup. Preconnected or `leave-running` connections are treated as external and never stopped automatically. If runtime state is corrupt, unknown, or contains legacy artifacts, first stop all agent-tools processes using the VPN, then remove that VPN state directory under `~/.agent-tools/runtime/vpn-prerequisites`.
 
 ```json5

@@ -38,6 +38,75 @@ import { transformQueryResult } from "./transformers";
 
 const LOCALHOST_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
+const MIN_TCP_PORT = 1;
+const MAX_TCP_PORT = 65535;
+const INTEGER_ONLY = /^\d+$/;
+
+// Bun.env is the primary source: it carries the values Bun loads from a .env file, which is where
+// a per-worktree host/port lives. It aliases process.env, which is also the only one that exists
+// when this module runs outside Bun (the vitest runner).
+const readProcessEnv = (envVar: string): string | undefined =>
+  (typeof Bun === "undefined" ? process.env : Bun.env)[envVar];
+
+export type ResolvedPortOverride =
+  | { readonly ok: true; readonly port: number }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Applies a `portEnvVar` override to the literal `port` of a database environment.
+ *
+ * Override with fallback: no variable name, or a variable that is unset or blank, keeps
+ * `literalPort`, because the variable exists only in environments that publish their own port
+ * (a per-repository worktree) while the main checkout runs from the literal. A variable that is
+ * set but does not hold an integer in 1..65535 fails instead of falling back, since falling back
+ * would silently query the main checkout's database while the caller believes the override applied.
+ */
+export function resolvePortOverride(
+  env: string,
+  literalPort: number,
+  portEnvVar: string | undefined,
+  value: string | undefined,
+): ResolvedPortOverride {
+  if (!portEnvVar) {
+    return { ok: true, port: literalPort };
+  }
+
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") {
+    return { ok: true, port: literalPort };
+  }
+
+  const parsed = Number(trimmed);
+  if (!INTEGER_ONLY.test(trimmed) || parsed < MIN_TCP_PORT || parsed > MAX_TCP_PORT) {
+    return {
+      ok: false,
+      message:
+        `Environment variable ${portEnvVar} (override for the 'port' config field) is set to ` +
+        `"${value}" in environment ${env}, which is not an integer port between ${MIN_TCP_PORT} and ${MAX_TCP_PORT}.`,
+    };
+  }
+
+  return { ok: true, port: parsed };
+}
+
+/**
+ * Applies a `hostEnvVar` override to the literal `host` of a database environment.
+ * Unset or blank keeps `literalHost`; every non-blank value is a usable host, so there is no
+ * failure case here, unlike {@link resolvePortOverride}.
+ */
+export function resolveHostOverride(
+  literalHost: string,
+  hostEnvVar: string | undefined,
+  value: string | undefined,
+): string {
+  if (!hostEnvVar) {
+    return literalHost;
+  }
+
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "" ? literalHost : trimmed;
+}
+
 export function resolveDbAccessMode(
   env: string,
   host: string,
@@ -204,15 +273,56 @@ export class DbService extends Context.Service<
           });
         });
 
+        const lookupEnvOverride = (envVar: string, zshrcEnv: Record<string, string>) =>
+          readProcessEnv(envVar) ?? zshrcEnv[envVar];
+
         const resolveDbConfig = Effect.fn("DbService.resolveDbConfig")(function* (
           config: DbConfig,
           env: string,
         ) {
           const needsEnvResolution =
-            envTemplateRegex.test(config.user) || envTemplateRegex.test(config.database);
+            envTemplateRegex.test(config.user) ||
+            envTemplateRegex.test(config.database) ||
+            config.hostEnvVar !== undefined ||
+            config.portEnvVar !== undefined;
           const zshrcEnv = needsEnvResolution ? yield* loadEnvFromZshrc() : {};
+
+          const host = resolveHostOverride(
+            config.host,
+            config.hostEnvVar,
+            config.hostEnvVar ? lookupEnvOverride(config.hostEnvVar, zshrcEnv) : undefined,
+          );
+          const portOverride = resolvePortOverride(
+            env,
+            config.port,
+            config.portEnvVar,
+            config.portEnvVar ? lookupEnvOverride(config.portEnvVar, zshrcEnv) : undefined,
+          );
+
+          if (!portOverride.ok) {
+            return yield* new DbConnectionError({
+              message: portOverride.message,
+              environment: env,
+            });
+          }
+
+          // A host override can flip the tunnel decision (a forwarded localhost port vs a directly
+          // reachable host), so re-derive the access mode whenever the override changed the host.
+          const needsTunnel =
+            host === config.host
+              ? config.needsTunnel
+              : resolveDbAccessMode(
+                  env,
+                  host,
+                  dbConfig.kubectl !== undefined,
+                  config.allowedMutations,
+                ).needsTunnel;
+
           return {
             ...config,
+            host,
+            port: portOverride.port,
+            needsTunnel,
             user: yield* resolveConfigString(config.user, env, "user", zshrcEnv),
             database: yield* resolveConfigString(config.database, env, "database", zshrcEnv),
           };
@@ -646,6 +756,8 @@ export class DbService extends Context.Service<
             database: envConfig.database,
             password: envConfig.password,
             passwordEnvVar: envConfig.passwordEnvVar,
+            hostEnvVar: envConfig.hostEnvVar,
+            portEnvVar: envConfig.portEnvVar,
             ...resolveEnvironmentScopedPrerequisites(dbConfig, envConfig),
             port: envConfig.port,
             needsTunnel: accessMode.needsTunnel,

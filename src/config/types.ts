@@ -91,6 +91,23 @@ export type DbEnvConfig = ProfilePrerequisites & {
   password?: string;
   /** Name of environment variable holding the password, e.g. "DB_TEST_PWD" */
   passwordEnvVar?: string;
+  /**
+   * Name of an environment variable that overrides `host`, e.g. "APP_POSTGRES_HOST".
+   *
+   * Override with fallback, deliberately unlike `passwordEnvVar`: an unset or empty variable is
+   * not an error, it keeps the literal `host` above. The variable usually exists only in a
+   * per-worktree environment, and the main checkout must keep working from the literal.
+   */
+  hostEnvVar?: string;
+  /**
+   * Name of an environment variable that overrides `port`, e.g. "APP_POSTGRES_PORT".
+   *
+   * Same override-with-fallback rule as `hostEnvVar`: unset or empty keeps the literal `port`,
+   * because only a worktree environment publishes its own port. A variable that *is* set but is
+   * not an integer in 1..65535 fails instead of falling back — a silent fallback would query the
+   * wrong database while the caller believes the override applied.
+   */
+  portEnvVar?: string;
 };
 
 /** SQL mutation operation that can be explicitly allowed for a database environment. */

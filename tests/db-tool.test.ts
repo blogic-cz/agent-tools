@@ -18,7 +18,14 @@ import {
   isValidTableName,
   stripSqlComments,
 } from "#db/security";
-import { buildApiProbeArgs, DbService, isFullyReadOnly, resolveDbAccessMode } from "#db/service";
+import {
+  buildApiProbeArgs,
+  DbService,
+  isFullyReadOnly,
+  resolveDbAccessMode,
+  resolveHostOverride,
+  resolvePortOverride,
+} from "#db/service";
 import { DbSqlClient, type DbConnection } from "#db/sql-client";
 
 /**
@@ -184,6 +191,36 @@ function createRealDbServiceLayer(
     Layer.provide(Layer.succeed(ConfigService, config)),
     Layer.provide(Layer.succeed(DbConfigService, databaseConfig)),
   );
+}
+
+function withEnvVars<A, E, R>(
+  vars: Record<string, string | undefined>,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
+  return Effect.gen(function* () {
+    const previous: Record<string, string | undefined> = {};
+
+    for (const [name, value] of Object.entries(vars)) {
+      previous[name] = process.env[name];
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+
+    try {
+      return yield* effect;
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
 }
 
 describe("db schema introspection SQL", () => {
@@ -380,6 +417,270 @@ describe("DbService", () => {
         "--raw=/version",
         "--request-timeout=1500ms",
       ]);
+    });
+  });
+
+  describe("resolvePortOverride", () => {
+    it("keeps the literal port when no portEnvVar is configured", () => {
+      expect(resolvePortOverride("local", 40543, undefined, "40544")).toEqual({
+        ok: true,
+        port: 40543,
+      });
+    });
+
+    it("prefers the variable value over the literal port", () => {
+      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", "40544")).toEqual({
+        ok: true,
+        port: 40544,
+      });
+    });
+
+    it("keeps the literal port when the variable is unset or blank", () => {
+      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", undefined)).toEqual({
+        ok: true,
+        port: 40543,
+      });
+      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", "")).toEqual({
+        ok: true,
+        port: 40543,
+      });
+      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", "   ")).toEqual({
+        ok: true,
+        port: 40543,
+      });
+    });
+
+    it("rejects a set variable that does not hold an integer port", () => {
+      for (const value of ["not-a-port", "0", "70000", "-1", "5432.0", "0x10", "1e3"]) {
+        const outcome = resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", value);
+
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) {
+          expect.fail(`Expected ${value} to be rejected`);
+        }
+        expect(outcome.message).toContain("NEXUS_POSTGRES_PORT");
+        expect(outcome.message).toContain(value);
+        expect(outcome.message).toContain("local");
+      }
+    });
+  });
+
+  describe("resolveHostOverride", () => {
+    it("keeps the literal host when no hostEnvVar is configured", () => {
+      expect(resolveHostOverride("127.0.0.1", undefined, "db.worktree")).toBe("127.0.0.1");
+    });
+
+    it("prefers the variable value over the literal host", () => {
+      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", "db.worktree")).toBe(
+        "db.worktree",
+      );
+    });
+
+    it("keeps the literal host when the variable is unset or blank", () => {
+      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", undefined)).toBe("127.0.0.1");
+      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", "")).toBe("127.0.0.1");
+      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", "  ")).toBe("127.0.0.1");
+    });
+  });
+
+  describe("host and port environment overrides", () => {
+    const PORT_VAR = "AGENT_TOOLS_TEST_PG_PORT";
+    const HOST_VAR = "AGENT_TOOLS_TEST_PG_HOST";
+
+    const overridableConfig = (): DatabaseConfig => ({
+      environments: {
+        local: {
+          host: "127.0.0.1",
+          port: 40543,
+          user: "app",
+          database: "app",
+          hostEnvVar: HOST_VAR,
+          portEnvVar: PORT_VAR,
+        },
+      },
+    });
+
+    it.effect("connects to the port published by the environment variable", () => {
+      const observedSql: ObservedSql[] = [];
+
+      return withEnvVars(
+        { [PORT_VAR]: "40544", [HOST_VAR]: undefined },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(observedSql[0].connection.port).toBe(40544);
+          expect(observedSql[0].connection.host).toBe("127.0.0.1");
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            overridableConfig(),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("keeps the configured port when the variable is not set", () => {
+      const observedSql: ObservedSql[] = [];
+
+      return withEnvVars(
+        { [PORT_VAR]: undefined, [HOST_VAR]: undefined },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(observedSql[0].connection.port).toBe(40543);
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            overridableConfig(),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("keeps the configured port when the variable is empty", () => {
+      const observedSql: ObservedSql[] = [];
+
+      return withEnvVars(
+        { [PORT_VAR]: "", [HOST_VAR]: undefined },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(observedSql[0].connection.port).toBe(40543);
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            overridableConfig(),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    for (const badPort of ["not-a-port", "0", "70000"]) {
+      it.effect(
+        `fails instead of querying the literal port when the variable is "${badPort}"`,
+        () => {
+          const observedSql: ObservedSql[] = [];
+
+          return withEnvVars(
+            { [PORT_VAR]: badPort, [HOST_VAR]: undefined },
+            Effect.gen(function* () {
+              const service = yield* DbService;
+              const result = yield* service.executeQuery("local", "SELECT 1").pipe(Effect.result);
+
+              Result.match(result, {
+                onFailure: (error) => {
+                  expect(error._tag).toBe("DbConnectionError");
+                  expect(error.message).toContain(PORT_VAR);
+                  expect(error.message).toContain(badPort);
+                  expect(error.message).toContain("local");
+                },
+                onSuccess: () => expect.fail(`Expected port "${badPort}" to be rejected`),
+              });
+              expect(observedSql).toEqual([]);
+            }),
+          ).pipe(
+            Effect.provide(
+              createRealDbServiceLayer(
+                {},
+                overridableConfig(),
+                { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+                observedSql,
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    it.effect("connects to the host published by the environment variable", () => {
+      const observedSql: ObservedSql[] = [];
+
+      return withEnvVars(
+        { [PORT_VAR]: undefined, [HOST_VAR]: "db.worktree" },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(observedSql[0].connection.host).toBe("db.worktree");
+          expect(observedSql[0].connection.port).toBe(40543);
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            overridableConfig(),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("keeps the configured host when the variable is not set", () => {
+      const observedSql: ObservedSql[] = [];
+
+      return withEnvVars(
+        { [PORT_VAR]: undefined, [HOST_VAR]: undefined },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(observedSql[0].connection.host).toBe("127.0.0.1");
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            overridableConfig(),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("leaves an environment without override fields untouched", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          local: { host: "127.0.0.1", port: 40543, user: "app", database: "app" },
+        },
+      };
+
+      return withEnvVars(
+        { [PORT_VAR]: "40544", [HOST_VAR]: "db.worktree" },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(observedSql[0].connection.host).toBe("127.0.0.1");
+          expect(observedSql[0].connection.port).toBe(40543);
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
     });
   });
 
