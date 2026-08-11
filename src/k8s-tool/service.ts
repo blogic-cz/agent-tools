@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Context, Effect, Layer, Option, Ref, Stream } from "effect";
+import { Context, Effect, Layer, Option, Ref } from "effect";
 
 import type { CommandResult, Environment } from "./types";
 
@@ -21,6 +21,7 @@ import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { isKubectlCommandAllowed, isSafeLogPath } from "./security";
+import { parseKubeConfigView, selectKubeContext } from "./context";
 
 export class K8sService extends Context.Service<
   K8sService,
@@ -98,41 +99,31 @@ export class K8sService extends Context.Service<
           );
         });
 
-        const withKubeconfig = (command: string, kubeconfig: string | undefined) =>
-          kubeconfig ? `KUBECONFIG=${quoteShellArg(kubeconfig)} ${command}` : command;
         const renderArg = (arg: string) =>
           /^[A-Za-z0-9_./:=,@+-]+$/.test(arg) ? arg : quoteShellArg(arg);
-        const renderKubectlCommand = (context: string, argv: readonly string[]) =>
-          ["kubectl", "--context", context, ...argv].map(renderArg).join(" ");
+        const renderKubectlCommand = (context: string | undefined, argv: readonly string[]) =>
+          ["kubectl", ...(context ? ["--context", context] : []), ...argv].map(renderArg).join(" ");
 
         // Cache context by selected profile/cluster instead of a single default profile.
         const contextRef = yield* Ref.make<Record<string, string>>({});
 
         // Helper that uses executor.spawn() to avoid ChildProcessSpawner requirement in return type
-        const runShellCommand = (commandStr: string, timeoutMs: number) =>
+        const runKubectlCapture = (
+          argv: readonly string[],
+          kubeconfig: string | undefined,
+          timeoutMs: number,
+          renderedCommand: string,
+        ) =>
           Effect.scoped(
             Effect.gen(function* () {
-              const command = ChildProcess.make("sh", ["-c", commandStr], {
+              const command = ChildProcess.make("kubectl", argv, {
                 stdout: "pipe",
                 stderr: "pipe",
+                ...(kubeconfig ? { env: { KUBECONFIG: kubeconfig }, extendEnv: true } : {}),
               });
               const process = yield* executor.spawn(command);
 
-              const stdoutChunk = yield* process.stdout.pipe(
-                Stream.decodeText(),
-                Stream.runCollect,
-              );
-              const stdout = stdoutChunk.join("");
-
-              const stderrChunk = yield* process.stderr.pipe(
-                Stream.decodeText(),
-                Stream.runCollect,
-              );
-              const stderr = stderrChunk.join("");
-
-              const exitCode = yield* process.exitCode;
-
-              return { stdout, stderr, exitCode };
+              return yield* collectProcessOutput(process);
             }),
           ).pipe(
             Effect.timeoutOption(timeoutMs),
@@ -140,7 +131,7 @@ export class K8sService extends Context.Service<
               const missing = missingBinaryFromSpawnFailure("kubectl", String(platformError));
               return new K8sCommandError({
                 message: `Command execution failed: ${String(platformError)}`,
-                command: commandStr,
+                command: renderedCommand,
                 exitCode: -1,
                 stderr: String(platformError),
                 ...(missing ? { hint: missing.hint } : {}),
@@ -214,56 +205,37 @@ export class K8sService extends Context.Service<
             return { context: cachedContext, kubeconfig };
           }
 
-          const jqCommand = withKubeconfig(
-            `kubectl config view -o json | jq -r '.contexts[] | select(.context.cluster == "${k8sConfig.clusterId}") | .name' | head -1`,
+          const viewCommand = renderKubectlCommand(undefined, ["config", "view", "-o", "json"]);
+          const viewResultOption = yield* runKubectlCapture(
+            ["config", "view", "-o", "json"],
             kubeconfig,
+            timeoutMs,
+            viewCommand,
           );
 
-          const contextResultOption = yield* runShellCommand(jqCommand, timeoutMs);
-
-          if (Option.isNone(contextResultOption)) {
+          if (Option.isNone(viewResultOption)) {
             return yield* new K8sTimeoutError({
               message: `Context resolution timed out after ${timeoutMs}ms`,
-              command: jqCommand,
+              command: viewCommand,
               timeoutMs,
             });
           }
 
-          const contextResult = contextResultOption.value;
+          const viewResult = viewResultOption.value;
 
-          if (contextResult.exitCode === 0 && contextResult.stdout.trim()) {
-            const resolvedContextValue = contextResult.stdout.trim();
-            yield* Ref.update(contextRef, (contexts) => ({
-              ...contexts,
-              [cacheKey]: resolvedContextValue,
-            }));
-            return { context: resolvedContextValue, kubeconfig };
-          }
+          if (viewResult.exitCode === 0) {
+            const resolvedContextValue = selectKubeContext(
+              parseKubeConfigView(viewResult.stdout),
+              k8sConfig.clusterId,
+            );
 
-          const fallbackCommand = withKubeconfig(
-            `kubectl config view -o json | jq -r '.contexts[] as $ctx | .clusters[] | select(.name == $ctx.context.cluster and (.cluster.server | contains("${k8sConfig.clusterId}"))) | $ctx.name' | head -1`,
-            kubeconfig,
-          );
-
-          const fallbackResultOption = yield* runShellCommand(fallbackCommand, timeoutMs);
-
-          if (Option.isNone(fallbackResultOption)) {
-            return yield* new K8sTimeoutError({
-              message: `Context resolution timed out after ${timeoutMs}ms`,
-              command: fallbackCommand,
-              timeoutMs,
-            });
-          }
-
-          const fallbackResult = fallbackResultOption.value;
-
-          if (fallbackResult.exitCode === 0 && fallbackResult.stdout.trim()) {
-            const resolvedContextValue = fallbackResult.stdout.trim();
-            yield* Ref.update(contextRef, (contexts) => ({
-              ...contexts,
-              [cacheKey]: resolvedContextValue,
-            }));
-            return { context: resolvedContextValue, kubeconfig };
+            if (resolvedContextValue !== undefined) {
+              yield* Ref.update(contextRef, (contexts) => ({
+                ...contexts,
+                [cacheKey]: resolvedContextValue,
+              }));
+              return { context: resolvedContextValue, kubeconfig };
+            }
           }
 
           return yield* new K8sContextError({

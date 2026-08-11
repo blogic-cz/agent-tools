@@ -23,18 +23,21 @@ export const collectProcessOutput = (process: ChildProcessSpawner.ChildProcessHa
   });
 
 export const execEffect = (
-  commandStr: string,
+  executable: string,
+  args: readonly string[] = [],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Effect.Effect<
   { stdout: string; stderr: string; exitCode: number },
   ExecError,
   ChildProcessSpawner.ChildProcessSpawner
-> =>
-  Effect.scoped(
+> => {
+  const commandStr = renderCommandLine([executable, ...args]);
+
+  return Effect.scoped(
     Effect.gen(function* () {
       const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-      const command = ChildProcess.make("sh", ["-c", commandStr], {
+      const command = ChildProcess.make(executable, args, {
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -67,5 +70,56 @@ export const execEffect = (
       ),
     ),
   );
+};
 
 export const quoteShellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+/**
+ * Split a command line the way a POSIX shell would word-split it, without running one.
+ * Quotes group a value into a single argument and are removed; nothing else is interpreted,
+ * so a metacharacter reaches the child as literal text instead of shell syntax.
+ */
+export const tokenizeCommandLine = (commandLine: string): string[] => {
+  const tokens: string[] = [];
+  let current = "";
+  let started = false;
+  let quote: '"' | "'" | undefined;
+
+  for (const character of commandLine) {
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      started = true;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      if (started) {
+        tokens.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+
+    current += character;
+    started = true;
+  }
+
+  if (started) {
+    tokens.push(current);
+  }
+
+  return tokens;
+};
+
+export const renderCommandLine = (argv: readonly string[]): string =>
+  argv.map((arg) => (/^[A-Za-z0-9_./:=,@+-]+$/.test(arg) ? arg : quoteShellArg(arg))).join(" ");

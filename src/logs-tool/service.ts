@@ -1,6 +1,6 @@
-import { isAbsolute, posix, relative, resolve } from "node:path";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, posix, relative, resolve } from "node:path";
 
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Context, Effect, Layer, Result } from "effect";
 
 import type { Environment, LogFile, ReadOptions } from "./types";
@@ -9,7 +9,6 @@ import { K8sService, K8sServiceLayer } from "#k8s/service";
 import { ConfigService, ConfigServiceLayer, getToolConfig } from "#config/loader";
 import type { LogsConfig } from "#config/types";
 import { LogsNotFoundError, LogsReadError, type LogsError } from "./errors";
-import { collectProcessOutput } from "#shared/exec";
 import { transformLogOutput } from "./transformers";
 
 export const parseLogFiles = (output: string): LogFile[] => {
@@ -41,11 +40,36 @@ export const formatPrettyOutput = (output: string): string => {
     .join("\n---\n");
 };
 
-/**
- * Sanitize a string for safe use in shell commands by escaping single quotes
- * and wrapping in single quotes. This prevents shell injection.
- */
-export const sanitizeShellArg = (input: string): string => `'${input.replace(/'/g, "'\\''")}'`;
+const errorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const takeLastLines = (contents: string, lines: number): string => {
+  const all = contents.split("\n");
+  const withoutTrailingBlank = all.at(-1) === "" ? all.slice(0, -1) : all;
+  return withoutTrailingBlank.slice(-lines).join("\n");
+};
+
+/** Newest first, so callers can take the head as the latest log the way `ls -t` did. */
+const readLocalLogDirectory = async (localDir: string): Promise<LogFile[]> => {
+  const entries = await readdir(localDir, { withFileTypes: true });
+  const logs = entries.filter((entry) => !entry.isDirectory() && entry.name.endsWith(".log"));
+
+  const described = await Promise.all(
+    logs.map(async (entry) => {
+      const stats = await stat(join(localDir, entry.name));
+      return {
+        name: entry.name,
+        size: String(stats.size),
+        date: stats.mtime.toISOString(),
+        modifiedAtMs: stats.mtimeMs,
+      };
+    }),
+  );
+
+  return described
+    .toSorted((left, right) => right.modifiedAtMs - left.modifiedAtMs)
+    .map(({ name, size, date }) => ({ name, size, date }));
+};
 
 const readCommandOutput = (output: unknown): string => (typeof output === "string" ? output : "");
 const filterLogLines = (output: string, grep: string | undefined): string => {
@@ -91,44 +115,7 @@ export class LogsService extends Context.Service<
     LogsService,
     Effect.gen(function* () {
       const k8s = yield* K8sService;
-      const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
       const config = yield* ConfigService;
-
-      const runShellCommand = (commandStr: string) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const command = ChildProcess.make("sh", ["-c", commandStr], {
-              stdout: "pipe",
-              stderr: "pipe",
-            });
-            const process = yield* executor.spawn(command);
-            return yield* collectProcessOutput(process);
-          }),
-        ).pipe(
-          Effect.catch((platformError) =>
-            Effect.succeed({
-              stdout: "",
-              stderr: String(platformError),
-              exitCode: -1,
-            }),
-          ),
-        );
-
-      const runDirectCommand = (executable: string, args: readonly string[]) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const command = ChildProcess.make(executable, args, {
-              stdout: "pipe",
-              stderr: "pipe",
-            });
-            const process = yield* executor.spawn(command);
-            return yield* collectProcessOutput(process);
-          }),
-        ).pipe(
-          Effect.catch((platformError) =>
-            Effect.succeed({ stdout: "", stderr: String(platformError), exitCode: -1 }),
-          ),
-        );
 
       const getLogsConfig = (profile?: string): LogsConfig | undefined =>
         getToolConfig<LogsConfig>(config, "logs", profile);
@@ -137,16 +124,16 @@ export class LogsService extends Context.Service<
         logsConfig: LogsConfig,
       ) {
         const localDir = logsConfig.localDir;
-        const result = yield* runShellCommand(`ls -la ${localDir}`);
+        const files = yield* Effect.tryPromise(() => readLocalLogDirectory(localDir)).pipe(
+          Effect.mapError(
+            (error) =>
+              new LogsReadError({
+                message: errorText(error) || "Failed to list local logs",
+                source: localDir,
+              }),
+          ),
+        );
 
-        if (result.exitCode !== 0) {
-          return yield* new LogsReadError({
-            message: result.stderr.trim() || "Failed to list local logs",
-            source: localDir,
-          });
-        }
-
-        const files = parseLogFiles(result.stdout);
         if (files.length === 0) {
           return yield* new LogsNotFoundError({
             message: "No log files found",
@@ -213,24 +200,25 @@ export class LogsService extends Context.Service<
         let logFile = options.file;
 
         if (!logFile) {
-          const latest = yield* runShellCommand(`ls -t ${localDir}/*.log 2>/dev/null | head -1`);
+          const files = yield* Effect.tryPromise(() => readLocalLogDirectory(localDir)).pipe(
+            Effect.mapError(
+              (error) =>
+                new LogsReadError({
+                  message: errorText(error) || "Failed to find latest log",
+                  source: localDir,
+                }),
+            ),
+          );
 
-          if (latest.exitCode !== 0) {
-            return yield* new LogsReadError({
-              message: latest.stderr.trim() || "Failed to find latest log",
-              source: localDir,
-            });
-          }
-
-          const latestPath = latest.stdout.trim();
-          if (!latestPath) {
+          const latest = files[0];
+          if (!latest) {
             return yield* new LogsNotFoundError({
               message: "No log files found",
               path: localDir,
             });
           }
 
-          logFile = latestPath.split("/").pop() ?? latestPath;
+          logFile = latest.name;
         }
 
         const lexicalPath = resolveLocalLogPath(localDir, logFile);
@@ -240,20 +228,22 @@ export class LogsService extends Context.Service<
             source: localDir,
           });
         }
-        const realpathResult = yield* runDirectCommand("realpath", [localDir, lexicalPath]);
-        if (realpathResult.exitCode !== 0) {
-          return yield* new LogsReadError({
-            message:
-              realpathResult.stderr.trim() ||
-              `realpath failed with exit code ${realpathResult.exitCode}`,
-            source: lexicalPath,
-          });
-        }
-        const [canonicalBase, canonicalPath] = realpathResult.stdout.trim().split("\n");
+        const canonical = yield* Effect.tryPromise(async () => ({
+          base: await realpath(localDir),
+          path: await realpath(lexicalPath),
+        })).pipe(
+          Effect.mapError(
+            (error) =>
+              new LogsReadError({
+                message: errorText(error) || "Failed to canonicalize the log path",
+                source: lexicalPath,
+              }),
+          ),
+        );
+
+        const canonicalPath = canonical.path;
         if (
-          canonicalBase === undefined ||
-          canonicalPath === undefined ||
-          resolveLocalLogPath(canonicalBase, canonicalPath) !== canonicalPath ||
+          resolveLocalLogPath(canonical.base, canonicalPath) !== canonicalPath ||
           !canonicalPath.endsWith(".log")
         ) {
           return yield* new LogsReadError({
@@ -261,17 +251,18 @@ export class LogsService extends Context.Service<
             source: localDir,
           });
         }
-        const command = `tail -${options.tail} ${sanitizeShellArg(canonicalPath)}`;
-        const result = yield* runShellCommand(command);
 
-        if (result.exitCode !== 0) {
-          return yield* new LogsReadError({
-            message: result.stderr.trim() || `Command failed with exit code ${result.exitCode}`,
-            source: canonicalPath,
-          });
-        }
+        const contents = yield* Effect.tryPromise(() => readFile(canonicalPath, "utf8")).pipe(
+          Effect.mapError(
+            (error) =>
+              new LogsReadError({
+                message: errorText(error) || "Failed to read the log file",
+                source: canonicalPath,
+              }),
+          ),
+        );
 
-        const output = filterLogLines(result.stdout, options.grep).trim();
+        const output = filterLogLines(takeLastLines(contents, options.tail), options.grep).trim();
         if (!output) {
           return "(no matching lines)";
         }

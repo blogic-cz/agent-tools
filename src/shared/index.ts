@@ -9,7 +9,7 @@ export type {
 
 export { formatAny, formatOption, formatOutput, logFormatted } from "./format";
 
-export { expandPath, runCommand, runShellCommand } from "./bun";
+export { expandPath, runCommand } from "./bun";
 
 export { commonArgOptions, parseCommonArgs } from "./cli";
 
@@ -21,7 +21,7 @@ export { dumpCommandSchema, makeSchemaCommand, type CommandSchema } from "./sche
 import pkg from "../../package.json" with { type: "json" };
 export const VERSION = pkg.version;
 
-export { execEffect, type ExecError } from "./exec";
+export { execEffect, renderCommandLine, tokenizeCommandLine, type ExecError } from "./exec";
 
 export { createThrottle, type ThrottleError } from "./throttle";
 
