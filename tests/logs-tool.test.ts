@@ -1,3 +1,7 @@
+import { mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -28,6 +32,38 @@ const defaultConfig: AgentToolsConfig = {
     default: defaultLogsConfig,
   },
 };
+
+type LocalLogFile = { name: string; contents: string; modifiedAt?: Date };
+
+async function makeLocalLogDir(files: LocalLogFile[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "agent-tools-logs-"));
+
+  for (const file of files) {
+    const path = join(dir, file.name);
+    await writeFile(path, file.contents);
+    if (file.modifiedAt) {
+      await utimes(path, file.modifiedAt, file.modifiedAt);
+    }
+  }
+
+  return dir;
+}
+
+function localConfig(localDir: string, overrides: Partial<LogsConfig> = {}): AgentToolsConfig {
+  return { logs: { default: { ...defaultLogsConfig, localDir, ...overrides } } };
+}
+
+async function withLocalLogDir<A>(
+  files: LocalLogFile[],
+  use: (dir: string) => Promise<A>,
+): Promise<A> {
+  const dir = await makeLocalLogDir(files);
+  try {
+    return await use(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 function commandToShellString(command: ChildProcess.Command): string {
   if (command._tag === "StandardCommand") {
@@ -155,40 +191,35 @@ function createLogsServiceLayer({
 
 describe("LogsService", () => {
   describe("listLogs", () => {
-    it.effect("parses local ls -la output into LogFile entries", () =>
-      Effect.gen(function* () {
-        const service = yield* LogsService;
-        const result = yield* service.listLogs("local");
+    it("lists local .log files newest first and ignores other files", async () =>
+      withLocalLogDir(
+        [
+          { name: "app.log", contents: "a", modifiedAt: new Date("2026-01-01T10:00:00Z") },
+          { name: "worker.log", contents: "bb", modifiedAt: new Date("2026-01-01T10:01:00Z") },
+          { name: "readme.txt", contents: "ccc" },
+        ],
+        async (dir) => {
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const service = yield* LogsService;
+              return yield* service.listLogs("local");
+            }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+          );
 
-        expect(result).toEqual([
-          { name: "app.log", size: "120", date: "Jan 1 10:00" },
-          { name: "worker.log", size: "88", date: "Jan 1 10:01" },
-        ]);
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            shellResponses: {
-              "ls -la /app/logs": {
-                stdout: [
-                  "total 12",
-                  "drwxr-xr-x 2 app app  64 Jan 1 09:59 .",
-                  "-rw-r--r-- 1 app app 120 Jan 1 10:00 app.log",
-                  "-rw-r--r-- 1 app app  88 Jan 1 10:01 worker.log",
-                  "-rw-r--r-- 1 app app  42 Jan 1 10:02 readme.txt",
-                ].join("\n"),
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-          }),
-        ),
-      ),
-    );
+          expect(result.map((file) => file.name)).toEqual(["worker.log", "app.log"]);
+          expect(result.map((file) => file.size)).toEqual(["2", "1"]);
+          expect(result[1]?.date).toBe(new Date("2026-01-01T10:00:00Z").toISOString());
+        },
+      ));
 
-    it.effect("fails with LogsNotFoundError for empty local output", () =>
-      Effect.gen(function* () {
-        const service = yield* LogsService;
-        const result = yield* service.listLogs("local").pipe(Effect.result);
+    it("fails with LogsNotFoundError when the local directory holds no logs", async () =>
+      withLocalLogDir([{ name: "readme.txt", contents: "nothing here" }], async (dir) => {
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const service = yield* LogsService;
+            return yield* service.listLogs("local").pipe(Effect.result);
+          }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+        );
 
         Result.match(result, {
           onFailure: (error) => {
@@ -199,22 +230,9 @@ describe("LogsService", () => {
             expect.fail("Expected Failure but got Success");
           },
         });
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            shellResponses: {
-              "ls -la /app/logs": {
-                stdout: "",
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-          }),
-        ),
-      ),
-    );
+      }));
 
-    it.effect("fails with LogsReadError when local list command fails", () =>
+    it.effect("fails with LogsReadError when the local directory cannot be read", () =>
       Effect.gen(function* () {
         const service = yield* LogsService;
         const result = yield* service.listLogs("local").pipe(Effect.result);
@@ -231,13 +249,7 @@ describe("LogsService", () => {
       }).pipe(
         Effect.provide(
           createLogsServiceLayer({
-            shellResponses: {
-              "ls -la /app/logs": {
-                stdout: "",
-                stderr: "permission denied",
-                exitCode: 2,
-              },
-            },
+            config: localConfig(join(tmpdir(), "agent-tools-logs-does-not-exist")),
           }),
         ),
       ),
@@ -354,74 +366,61 @@ describe("LogsService", () => {
   });
 
   describe("readLogs", () => {
-    it.effect("filters local logs literally without interpolating grep into the shell", () => {
+    it("filters local logs literally, treating the pattern as text", async () => {
       const observedShellCommands: Array<string> = [];
-      return Effect.gen(function* () {
-        const service = yield* LogsService;
-        const options: ReadOptions = {
-          tail: 100,
-          grep: "error'; rm -rf /; `whoami`",
-          pretty: false,
-        };
 
-        const result = yield* service.readLogs("local", options);
+      await withLocalLogDir(
+        [{ name: "app.log", contents: "other line\nerror'; rm -rf /; `whoami` line\n" }],
+        async (dir) => {
+          const options: ReadOptions = {
+            tail: 100,
+            grep: "error'; rm -rf /; `whoami`",
+            pretty: false,
+          };
 
-        expect(result).toBe("error'; rm -rf /; `whoami` line");
-        expect(observedShellCommands).toContain("tail -100 '/app/logs/app.log'");
-        expect(observedShellCommands.every((command) => !command.includes("grep"))).toBe(true);
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            observedShellCommands,
-            shellResponses: {
-              "ls -t /app/logs/*.log 2>/dev/null | head -1": {
-                stdout: "/app/logs/app.log\n",
-                stderr: "",
-                exitCode: 0,
-              },
-              "tail -100 '/app/logs/app.log'": {
-                stdout: "other line\nerror'; rm -rf /; `whoami` line\n",
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-          }),
-        ),
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const service = yield* LogsService;
+              return yield* service.readLogs("local", options);
+            }).pipe(
+              Effect.provide(
+                createLogsServiceLayer({ config: localConfig(dir), observedShellCommands }),
+              ),
+            ),
+          );
+
+          expect(result).toBe("error'; rm -rf /; `whoami` line");
+          expect(observedShellCommands).toEqual([]);
+        },
       );
     });
 
-    it.effect("transforms local JSON lines and keeps malformed lines", () =>
-      Effect.gen(function* () {
-        const service = yield* LogsService;
-        const options: ReadOptions = {
-          tail: 3,
-          file: "app.log",
-          pretty: true,
-        };
+    it("transforms local JSON lines and keeps malformed lines", async () =>
+      withLocalLogDir(
+        [
+          {
+            name: "app.log",
+            contents: ['{"level":"info","msg":"ok"}', "plain line", '{"n":1}'].join("\n"),
+          },
+        ],
+        async (dir) => {
+          const options: ReadOptions = { tail: 3, file: "app.log", pretty: true };
 
-        const result = yield* service.readLogs("local", options);
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const service = yield* LogsService;
+              return yield* service.readLogs("local", options);
+            }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+          );
 
-        expect(result).toBe(
-          ["--- info (3) ---", "[INFO] ok", "[INFO] plain line", '[INFO] {"n":1}'].join("\n"),
-        );
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            shellResponses: {
-              "tail -3 '/app/logs/app.log'": {
-                stdout: ['{"level":"info","msg":"ok"}', "plain line", '{"n":1}'].join("\n"),
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-          }),
-        ),
-      ),
-    );
+          expect(result).toBe(
+            ["--- info (3) ---", "[INFO] ok", "[INFO] plain line", '[INFO] {"n":1}'].join("\n"),
+          );
+        },
+      ));
 
-    it.effect("returns no matching lines when local literal filter has no match", () =>
-      Effect.gen(function* () {
-        const service = yield* LogsService;
+    it("returns no matching lines when local literal filter has no match", async () =>
+      withLocalLogDir([{ name: "app.log", contents: "request completed\n" }], async (dir) => {
         const options: ReadOptions = {
           tail: 25,
           file: "app.log",
@@ -429,46 +428,29 @@ describe("LogsService", () => {
           pretty: false,
         };
 
-        const result = yield* service.readLogs("local", options);
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const service = yield* LogsService;
+            return yield* service.readLogs("local", options);
+          }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+        );
 
         expect(result).toBe("(no matching lines)");
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            shellResponses: {
-              "tail -25 '/app/logs/app.log'": {
-                stdout: "request completed\n",
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-          }),
-        ),
-      ),
-    );
+      }));
 
-    it.effect("uses the same case-insensitive literal filter locally and remotely", () =>
-      Effect.gen(function* () {
-        const service = yield* LogsService;
-        const options: ReadOptions = {
-          tail: 10,
-          file: "app.log",
-          grep: "error[42]",
-          pretty: false,
-        };
+    it("uses the same case-insensitive literal filter locally and remotely", async () =>
+      withLocalLogDir(
+        [{ name: "app.log", contents: "ERROR4 regex-only\nERROR[42] local\n" }],
+        async (dir) => {
+          const options: ReadOptions = {
+            tail: 10,
+            file: "app.log",
+            grep: "error[42]",
+            pretty: false,
+          };
 
-        expect(yield* service.readLogs("local", options)).toBe("ERROR[42] local");
-        expect(yield* service.readLogs("test", options)).toBe("error[42] remote");
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            shellResponses: {
-              "tail -10 '/app/logs/app.log'": {
-                stdout: "ERROR4 regex-only\nERROR[42] local\n",
-                stderr: "",
-                exitCode: 0,
-              },
-            },
+          const layer = createLogsServiceLayer({
+            config: localConfig(dir),
             k8sResponses: {
               "get pods --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'":
                 {
@@ -484,10 +466,21 @@ describe("LogsService", () => {
                 executionTimeMs: 1,
               },
             },
-          }),
-        ),
-      ),
-    );
+          });
+
+          const results = await Effect.runPromise(
+            Effect.gen(function* () {
+              const service = yield* LogsService;
+              return [
+                yield* service.readLogs("local", options),
+                yield* service.readLogs("test", options),
+              ];
+            }).pipe(Effect.provide(layer)),
+          );
+
+          expect(results).toEqual(["ERROR[42] local", "error[42] remote"]);
+        },
+      ));
 
     it.effect("rejects local and remote log path traversal before any command", () => {
       const observedShellCommands: string[] = [];
@@ -516,45 +509,42 @@ describe("LogsService", () => {
       );
     });
 
-    it.effect("rejects a local log symlink that resolves outside the configured directory", () => {
-      const observedShellCommands: string[] = [];
-      return Effect.gen(function* () {
-        const service = yield* LogsService;
-        const result = yield* service
-          .readLogs("local", { tail: 20, file: "debug.log", pretty: false })
-          .pipe(Effect.result);
+    it("rejects a local log path that canonicalizes outside the configured directory", async () => {
+      const outside = await makeLocalLogDir([{ name: "debug.log", contents: "secret" }]);
+
+      await withLocalLogDir([], async (dir) => {
+        // A directory junction is the one link type Windows creates without elevation, so the
+        // escape is exercised on every platform rather than skipped on win32.
+        await symlink(outside, join(dir, "linked"), "junction");
+
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const service = yield* LogsService;
+            return yield* service
+              .readLogs("local", { tail: 20, file: "linked/debug.log", pretty: false })
+              .pipe(Effect.result);
+          }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+        );
 
         Result.match(result, {
           onFailure: (error) => expect(error).toBeInstanceOf(LogsReadError),
           onSuccess: () => expect.fail("Expected symlink escape rejection"),
         });
-        expect(observedShellCommands).toEqual(["realpath /app/logs /app/logs/debug.log"]);
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            observedShellCommands,
-            shellResponses: {
-              "realpath /app/logs /app/logs/debug.log": {
-                stdout: "/app/logs\n/var/run/secrets/debug.log\n",
-                stderr: "",
-                exitCode: 0,
-              },
-            },
-          }),
-        ),
-      );
+      });
+
+      await rm(outside, { recursive: true, force: true });
     });
 
-    it.effect("fails local read when command exits non-zero and not grep-empty", () =>
-      Effect.gen(function* () {
-        const service = yield* LogsService;
-        const options: ReadOptions = {
-          tail: 25,
-          file: "app.log",
-          pretty: false,
-        };
+    it("fails local read when the requested log file is missing", async () =>
+      withLocalLogDir([{ name: "other.log", contents: "x" }], async (dir) => {
+        const options: ReadOptions = { tail: 25, file: "app.log", pretty: false };
 
-        const result = yield* service.readLogs("local", options).pipe(Effect.result);
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const service = yield* LogsService;
+            return yield* service.readLogs("local", options).pipe(Effect.result);
+          }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+        );
 
         Result.match(result, {
           onFailure: (error) => {
@@ -565,20 +555,7 @@ describe("LogsService", () => {
             expect.fail("Expected Failure but got Success");
           },
         });
-      }).pipe(
-        Effect.provide(
-          createLogsServiceLayer({
-            shellResponses: {
-              "tail -25 '/app/logs/app.log'": {
-                stdout: "",
-                stderr: "tail failed",
-                exitCode: 2,
-              },
-            },
-          }),
-        ),
-      ),
-    );
+      }));
 
     it.effect("sanitizes grep argument in remote kubectl exec command", () => {
       const observedK8sCommands: Array<string> = [];
@@ -793,31 +770,18 @@ describe("LogsService", () => {
 });
 
 describe("env resolution with defaultEnvironment", () => {
-  it.effect("lists local logs successfully", () =>
-    Effect.gen(function* () {
-      const service = yield* LogsService;
-      const result = yield* service.listLogs("local");
+  it("lists local logs successfully", async () =>
+    withLocalLogDir([{ name: "app.log", contents: "hello" }], async (dir) => {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* LogsService;
+          return yield* service.listLogs("local");
+        }).pipe(Effect.provide(createLogsServiceLayer({ config: localConfig(dir) }))),
+      );
 
       expect(result).toBeDefined();
       expect(result.length).toBeGreaterThan(0);
-    }).pipe(
-      Effect.provide(
-        createLogsServiceLayer({
-          shellResponses: {
-            "ls -la /app/logs": {
-              stdout: [
-                "total 12",
-                "drwxr-xr-x 2 app app  64 Jan 1 09:59 .",
-                "-rw-r--r-- 1 app app 120 Jan 1 10:00 app.log",
-              ].join("\n"),
-              stderr: "",
-              exitCode: 0,
-            },
-          },
-        }),
-      ),
-    ),
-  );
+    }));
 
   it.effect("lists remote logs through kubectl", () =>
     Effect.gen(function* () {
