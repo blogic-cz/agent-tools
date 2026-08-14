@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import type { CommandResult } from "./types";
 
@@ -9,6 +9,7 @@ import {
   makeSchemaCommand,
   formatOption,
   formatOutput,
+  logText,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
@@ -172,7 +173,7 @@ const executeK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
 const runK8sCommand = (command: string, options: CommonK8sCommandOptions) =>
   Effect.gen(function* () {
     const result = yield* executeK8sCommand(command, options);
-    yield* Console.log(formatOutput(result, options.format));
+    yield* logText(formatOutput(result, options.format));
   });
 
 const logTransformedResult = (
@@ -183,7 +184,7 @@ const logTransformedResult = (
   Effect.gen(function* () {
     const transformedResult =
       typeof result.output === "string" ? { ...result, output: transform(result.output) } : result;
-    yield* Console.log(formatOutput(transformedResult, format));
+    yield* logText(formatOutput(transformedResult, format));
   });
 
 const commonFlags = {

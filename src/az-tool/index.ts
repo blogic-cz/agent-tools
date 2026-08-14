@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import {
   makeSchemaCommand,
   formatAny,
   formatOption,
   formatOutput,
+  logText,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
@@ -46,7 +47,7 @@ const buildTimelineCommand = Command.make(
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
       const result = yield* getBuildTimeline(buildId);
-      yield* Console.log(formatAny(result, format));
+      yield* logText(formatAny(result, format));
     }),
 ).pipe(Command.withDescription("Get build timeline with all records (jobs, stages, tasks)"));
 
@@ -59,7 +60,7 @@ const buildFailedJobsCommand = Command.make(
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
       const failedJobs = yield* findFailedJobs(buildId);
-      yield* Console.log(formatAny({ buildId, failedJobs }, format));
+      yield* logText(formatAny({ buildId, failedJobs }, format));
     }),
 ).pipe(Command.withDescription("Find failed or canceled jobs in a build"));
 
@@ -72,7 +73,7 @@ const buildLogsCommand = Command.make(
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
       const result = yield* getBuildLogs(buildId);
-      yield* Console.log(formatAny(result, format));
+      yield* logText(formatAny(result, format));
     }),
 ).pipe(Command.withDescription("Get list of build logs"));
 
@@ -86,7 +87,7 @@ const buildLogContentCommand = Command.make(
   ({ buildId, format, logId, profile: _profile }) =>
     Effect.gen(function* () {
       const content = yield* getBuildLogContent(buildId, logId);
-      yield* Console.log(formatAny({ buildId, logId, content }, format));
+      yield* logText(formatAny({ buildId, logId, content }, format));
     }),
 ).pipe(Command.withDescription("Get specific log content by log ID"));
 
@@ -99,7 +100,7 @@ const buildSummaryCommand = Command.make(
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
       const summary = yield* getBuildJobSummary(buildId);
-      yield* Console.log(formatAny({ buildId, summary }, format));
+      yield* logText(formatAny({ buildId, summary }, format));
     }),
 ).pipe(Command.withDescription("Get job summaries with duration and status information"));
 
@@ -144,7 +145,7 @@ const cmdCommand = Command.make(
 
       if (dryRun) {
         const fullCommand = `az ${cmd}`;
-        yield* Console.log(`[DRY-RUN] Would execute: ${fullCommand}`);
+        yield* logText(`[DRY-RUN] Would execute: ${fullCommand}`);
         return;
       }
 
@@ -154,7 +155,7 @@ const cmdCommand = Command.make(
       const output = yield* az.runCommand(cmd, projectName);
       const executionTimeMs = Date.now() - startTime;
 
-      yield* Console.log(
+      yield* logText(
         formatOutput(
           {
             success: true,

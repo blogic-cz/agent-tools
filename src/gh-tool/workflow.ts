@@ -1,7 +1,7 @@
 import { Command, Flag, Param } from "effect/unstable/cli";
-import { Console, Duration, Effect, Option } from "effect";
+import { Duration, Effect, Option } from "effect";
 
-import { formatOption, logFormatted } from "#shared";
+import { formatOption, logFormatted, logText } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./service";
@@ -780,7 +780,7 @@ export const workflowLogsCommand = Command.make(
       if (format === "toon" || format === "json") {
         yield* logFormatted(logs, format);
       } else {
-        yield* Console.log(logs.log);
+        yield* logText(logs.log);
       }
     }),
 ).pipe(Command.withDescription("Fetch logs for a workflow run (--failed-only by default)"));
@@ -930,7 +930,7 @@ export const workflowJobLogsCommand = Command.make(
       });
 
       if ("formatted" in result) {
-        yield* Console.log(result.formatted);
+        yield* logText(result.formatted ?? "");
       } else {
         yield* logFormatted(result, format);
       }

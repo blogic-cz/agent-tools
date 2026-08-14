@@ -44,6 +44,8 @@ export type ReviewThread = {
   isVisibleOpen: boolean;
   lastReplyAuthor: string | null;
   lastReplyAt: string | null;
+  reviewId: number | null;
+  updatedAt: string | null;
   /** Thread ids of exact duplicates collapsed into this representative (encounter order). */
   duplicateThreadIds: string[];
 };
@@ -58,6 +60,14 @@ export type ReviewComment = {
   path: string;
   line: number;
   createdAt: string;
+  reviewId: number | null;
+  /**
+   * Last change to the comment. A comment drafted inside a pending review keeps its draft time in
+   * `createdAt` and carries the submit time here until someone edits it, so this is a proxy for
+   * when the comment became visible. Join `reviewId` to the review's `submittedAt` for the exact
+   * time.
+   */
+  updatedAt: string;
 };
 
 export const IssueCommentId = Schema.Int.pipe(Schema.brand("IssueCommentId"));

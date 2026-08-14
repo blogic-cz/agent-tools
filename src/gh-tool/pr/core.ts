@@ -19,6 +19,7 @@ import type {
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import { logText } from "#shared";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
@@ -764,7 +765,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
           "(rolled back if the merge fails); branch deletion is skipped if any retarget fails. "
         : "";
 
-    yield* Console.log(
+    yield* logText(
       `DRY RUN: Would merge PR #${info.number} "${info.title}" via ${opts.strategy.toUpperCase()}. ` +
         `Branch \`${info.headRefName}\` → \`${info.baseRefName}\`. ` +
         (opts.deleteBranch && !headIsLongLived

@@ -16,7 +16,7 @@
 
 import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, Option, Result } from "effect";
+import { Effect, Layer, Option, Result } from "effect";
 
 import type { Environment, LogResult, ReadOptions } from "./types";
 
@@ -24,6 +24,7 @@ import {
   makeSchemaCommand,
   formatOption,
   formatOutput,
+  logText,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
@@ -140,7 +141,7 @@ const listCommand = Command.make(
         }),
       });
 
-      yield* Console.log(formatOutput(logResult, format));
+      yield* logText(formatOutput(logResult, format));
     }),
 ).pipe(Command.withDescription("List available log files"));
 
@@ -216,7 +217,7 @@ const readCommand = Command.make(
         }),
       });
 
-      yield* Console.log(formatOutput(logResult, format));
+      yield* logText(formatOutput(logResult, format));
     }),
 ).pipe(Command.withDescription("Read application logs"));
 

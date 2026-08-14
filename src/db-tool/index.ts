@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import type { SchemaMode } from "./types";
 
@@ -9,6 +9,7 @@ import {
   makeSchemaCommand,
   formatOption,
   formatOutput,
+  logText,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
@@ -80,7 +81,7 @@ const sqlCommand = Command.make(
       const resolvedEnv = yield* resolveEnv(env);
       const db = yield* DbService;
       const result = yield* db.executeQuery(resolvedEnv, sql, Option.getOrUndefined(limit));
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("Execute a SQL query"));
 
@@ -115,7 +116,7 @@ const schemaCommand = Command.make(
         mode as SchemaMode,
         Option.getOrUndefined(table),
       );
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("Introspect database schema (tables, columns, relationships)"));
 
@@ -139,7 +140,7 @@ const envsCommand = Command.make(
         message: `${environments.length} environment(s) configured`,
         executionTimeMs: 0,
       };
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }),
 ).pipe(
   Command.withDescription("List configured database environments and the default (no network)"),
@@ -198,7 +199,7 @@ const makeDiagnosticCommand = (name: string, description: string, sql: string) =
         const resolvedEnv = yield* resolveEnv(env);
         const db = yield* DbService;
         const result = yield* db.executeQuery(resolvedEnv, sql, Option.getOrUndefined(limit));
-        yield* Console.log(formatOutput(result, format));
+        yield* logText(formatOutput(result, format));
       }),
   ).pipe(Command.withDescription(description));
 

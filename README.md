@@ -290,6 +290,8 @@ Zero reported checks is a state, not an error: `gh pr checks` exits nonzero on a
 
 `pr feedback` returns the whole inventory by default. Narrow it with `--only visible-open|needs-human-reply|current-head` (narrowed filters drop issue comments), drop bots with `--exclude-authors github-actions,dependabot`, and read `omitted` for what each filter removed. Base64 report payloads in bodies are replaced with `[base64 payload omitted]`; pass `--raw-bodies` to keep them. `review-triage --omit reviews,inlineComments` trims a repeated snapshot to the verdict and check state, and lists what it left out in `omittedSections`.
 
+An empty thread list can mean the reviewer is still drafting: comments inside a pending review are invisible to the API until the reviewer submits, and they keep their draft time in `createdAt`. `pr threads` and `pr comments` therefore also report `reviewId` and `updatedAt`. Equal `reviewId` values mark one submitted batch; join that id to the matching `reviews[].submittedAt` from `pr feedback` for the exact time the batch became visible. `updatedAt` is a cheap proxy for the same moment, but it also moves when someone edits the comment. Never conclude from an older `createdAt` that an earlier scan missed anything.
+
 Call the wrappers through `bun run --silent <tool>` in repos that expose them as package scripts; without `--silent` every invocation echoes the resolved command line into the agent's context.
 
 `audit-tool` reads the same SQLite file the wrappers write to. By default that file lives at `~/.agent-tools/audit.sqlite`, and you can override both path and retention per repo with the global `audit` config section.

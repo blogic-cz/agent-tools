@@ -9,13 +9,13 @@
 
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, Result } from "effect";
+import { Effect, Layer, Result } from "effect";
 
 import type { MessageSummary, SessionResult, SessionSource } from "./types";
 
 import { ALL_SESSION_SOURCES } from "./types";
 
-import { makeSchemaCommand, formatOption, formatOutput, VERSION } from "#shared";
+import { makeSchemaCommand, formatOption, formatOutput, logText, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
@@ -171,7 +171,7 @@ const listCommand = Command.make(
         onSuccess: (okResult) => okResult,
       });
 
-      yield* Console.log(formatOutput(output, format));
+      yield* logText(formatOutput(output, format));
     }),
 ).pipe(Command.withDescription("List OpenCode session summaries"));
 
@@ -252,7 +252,7 @@ const searchCommand = Command.make(
         onSuccess: (okResult) => okResult,
       });
 
-      yield* Console.log(formatOutput(output, format));
+      yield* logText(formatOutput(output, format));
     }),
 ).pipe(Command.withDescription("Search message history"));
 
@@ -309,7 +309,7 @@ const readCommand = Command.make(
         },
       });
 
-      yield* Console.log(formatOutput(output, format));
+      yield* logText(formatOutput(output, format));
     }),
 ).pipe(Command.withDescription("Read all messages from a session"));
 

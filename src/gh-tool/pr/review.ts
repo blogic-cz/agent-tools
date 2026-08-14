@@ -228,6 +228,8 @@ type RawReviewComment = {
   path: string;
   line: number;
   created_at: string;
+  updated_at: string;
+  pull_request_review_id?: number | null;
   commit_id?: string | null;
 };
 
@@ -353,6 +355,7 @@ const enrichThreads = (
   currentHeadSha: string | null,
 ): ReviewThread[] => {
   const repliesByRootCommentId = new Map<number, ReviewComment[]>();
+  const commentsById = new Map(reviewComments.map((comment) => [comment.id, comment]));
 
   for (const comment of reviewComments) {
     if (comment.inReplyToId === null) {
@@ -371,6 +374,7 @@ const enrichThreads = (
         return null;
       }
 
+      const root = commentsById.get(comment.databaseId);
       const replies = repliesByRootCommentId.get(comment.databaseId) ?? [];
       const lastReply = replies.reduce<ReviewComment | null>((latest, current) => {
         if (latest === null) {
@@ -399,6 +403,8 @@ const enrichThreads = (
         isVisibleOpen: !node.isResolved || needsHumanReply,
         lastReplyAuthor: lastReply?.author ?? null,
         lastReplyAt: lastReply?.createdAt ?? null,
+        reviewId: root?.reviewId ?? null,
+        updatedAt: root?.updatedAt ?? null,
         duplicateThreadIds: [] as string[],
       };
     })
@@ -505,6 +511,8 @@ export const fetchComments = Effect.fn("pr.fetchComments")(function* (
     path: c.path,
     line: c.line,
     createdAt: c.created_at,
+    reviewId: c.pull_request_review_id ?? null,
+    updatedAt: c.updated_at,
   }));
 
   if (since !== null) {

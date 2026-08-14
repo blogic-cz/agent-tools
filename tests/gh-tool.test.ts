@@ -1842,6 +1842,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             isVisibleOpen: true,
             lastReplyAuthor: null,
             lastReplyAt: null,
+            reviewId: null,
+            updatedAt: null,
             duplicateThreadIds: [],
           };
         })
@@ -2098,6 +2100,8 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
         path: c.path,
         line: c.line,
         createdAt: c.created_at,
+        reviewId: null,
+        updatedAt: c.created_at,
       }));
 
       if (since !== null) {
@@ -2225,6 +2229,8 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
         path: "src/file.ts",
         line: index + 1,
         created_at: "2025-01-15T10:00:00Z",
+        updated_at: "2025-01-16T09:00:00Z",
+        pull_request_review_id: 555,
       }));
       const secondPage = [
         {
@@ -2235,6 +2241,8 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
           path: "src/file.ts",
           line: 1,
           created_at: "2025-01-15T11:00:00Z",
+          updated_at: "2025-01-15T11:00:00Z",
+          pull_request_review_id: null,
         },
       ];
 
@@ -2275,6 +2283,11 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
       expect(comments).toHaveLength(101);
       expect(comments[100]?.id).toBe(101);
       expect(comments[100]?.inReplyToId).toBe(1);
+      expect(comments[0]?.createdAt).toBe("2025-01-15T10:00:00Z");
+      expect(comments[0]?.updatedAt).toBe("2025-01-16T09:00:00Z");
+      expect(comments[0]?.reviewId).toBe(555);
+      expect(comments[100]?.updatedAt).toBe("2025-01-15T11:00:00Z");
+      expect(comments[100]?.reviewId).toBeNull();
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
