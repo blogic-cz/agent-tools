@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import { Command, Flag } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import {
   makeSchemaCommand,
   formatOption,
   formatOutput,
+  logText,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
@@ -58,7 +59,7 @@ const listCommand = Command.make(
         data: filteredEntries,
       };
 
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("List recent audit log entries"));
 
@@ -83,7 +84,7 @@ const purgeCommand = Command.make(
         data: { deleted, days },
       };
 
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("Delete old audit log entries"));
 

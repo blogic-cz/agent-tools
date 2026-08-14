@@ -3,7 +3,7 @@ import { Console, Effect, Option } from "effect";
 
 import type { CheckResult, PRStatusResult } from "#gh/types";
 
-import { formatOption, logFormatted } from "#shared";
+import { formatOption, logFormatted, logText } from "#shared";
 import { GitHubService } from "#gh/service";
 import { GitHubCommandError } from "#gh/errors";
 
@@ -887,7 +887,7 @@ export const prWatchCommand = Command.make(
         yield* watchPRs(
           numbers,
           { intervalSeconds: interval, timeoutSeconds: timeout, until },
-          (event) => Console.log(JSON.stringify(event)),
+          (event) => logText(JSON.stringify(event)),
         );
       }),
     ),

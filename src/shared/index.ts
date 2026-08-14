@@ -7,7 +7,7 @@ export type {
   ToolResult,
 } from "./types";
 
-export { formatAny, formatOption, formatOutput, logFormatted } from "./format";
+export { formatAny, formatOption, formatOutput, logFormatted, logText } from "./format";
 
 export { expandPath, runCommand } from "./bun";
 

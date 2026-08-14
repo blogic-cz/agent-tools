@@ -1,7 +1,7 @@
-import { Console, Effect, type Option } from "effect";
+import { Effect, type Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
-import { formatOption, formatOutput } from "#shared";
+import { formatOption, formatOutput, logText } from "#shared";
 import type { OutputFormat } from "#shared";
 
 import { ObservabilityToolError } from "./errors";
@@ -396,7 +396,7 @@ function handleTraceGet(
       executionTimeMs: Date.now() - startedAt,
     };
 
-    yield* Console.log(formatOutput(result, format));
+    yield* logText(formatOutput(result, format));
   }).pipe(
     Effect.catch((error) =>
       Effect.gen(function* () {
@@ -407,7 +407,7 @@ function handleTraceGet(
           hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Tempo connectivity",
           executionTimeMs: Date.now() - startedAt,
         };
-        yield* Console.log(formatOutput(result, format));
+        yield* logText(formatOutput(result, format));
       }),
     ),
   );
@@ -497,7 +497,7 @@ const logsCommand = Command.make(
         executionTimeMs: Date.now() - startedAt,
       };
 
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }).pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
@@ -508,7 +508,7 @@ const logsCommand = Command.make(
             hint: "Accepts 32-char trace ID or 16-char span ID. Check format and Grafana/Loki connectivity",
             executionTimeMs: Date.now() - startedAt,
           };
-          yield* Console.log(formatOutput(result, format));
+          yield* logText(formatOutput(result, format));
         }),
       ),
     );

@@ -1,7 +1,7 @@
-import { Console, Effect } from "effect";
+import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
-import { formatOption, formatOutput } from "#shared";
+import { formatOption, formatOutput, logText } from "#shared";
 
 import { ObservabilityToolError } from "./errors";
 import {
@@ -105,7 +105,7 @@ const queryCommand = Command.make(
         executionTimeMs: Date.now() - startedAt,
       };
 
-      yield* Console.log(formatOutput(result, format));
+      yield* logText(formatOutput(result, format));
     }).pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
@@ -116,7 +116,7 @@ const queryCommand = Command.make(
             hint: "Check PromQL syntax and Grafana/Prometheus connectivity",
             executionTimeMs: Date.now() - startedAt,
           };
-          yield* Console.log(formatOutput(result, format));
+          yield* logText(formatOutput(result, format));
         }),
       ),
     );
