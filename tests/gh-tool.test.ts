@@ -1842,6 +1842,8 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             isVisibleOpen: true,
             lastReplyAuthor: null,
             lastReplyAt: null,
+            reviewId: null,
+            publishedAt: null,
             duplicateThreadIds: [],
           };
         })
@@ -2098,6 +2100,8 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
         path: c.path,
         line: c.line,
         createdAt: c.created_at,
+        reviewId: null,
+        publishedAt: c.created_at,
       }));
 
       if (since !== null) {
