@@ -26,9 +26,17 @@ export function formatAny<T>(data: T, format: OutputFormat): string {
 // `Console.log` drops bytes on a non-blocking pipe: a payload over the pipe buffer arrives
 // truncated at a page boundary, reaching the caller as invalid JSON. Awaiting the write callback
 // makes the stream retry the short write. Never replace this with `Console.log`.
+// EPIPE is the expected end of `<tool> | head`, so only other write failures become defects
+// instead of a silent exit 0 with partial output.
 export const logText = (text: string) =>
   Effect.callback<undefined>((resume) => {
-    process.stdout.write(`${text}\n`, () => resume(Effect.succeed(undefined)));
+    process.stdout.write(`${text}\n`, (error) =>
+      resume(
+        error && (error as NodeJS.ErrnoException).code !== "EPIPE"
+          ? Effect.die(error)
+          : Effect.succeed(undefined),
+      ),
+    );
   });
 
 export const logFormatted = <T>(data: T, format: OutputFormat) => logText(formatAny(data, format));
