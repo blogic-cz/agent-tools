@@ -63,7 +63,7 @@ bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # Zero
 bun gh-tool pr feedback --pr 123 --only visible-open --exclude-authors github-actions # Narrowed inventory; `omitted` says what was dropped
 ```
 
-Zero threads can mean the reviewer is still drafting. A pending review is invisible to the API until submit, and its comments keep their draft time in `createdAt`. Read `publishedAt` for when a batch became visible and `reviewId` for which comments arrived together; never conclude from `createdAt` that an earlier scan missed something.
+Zero threads can mean the reviewer is still drafting. A pending review is invisible to the API until submit, and its comments keep their draft time in `createdAt`. `reviewId` says which comments arrived together; join it to `reviews[].submittedAt` from `pr feedback` for the exact time that batch became visible, or read `updatedAt` as a proxy that also moves on edits. Never conclude from `createdAt` that an earlier scan missed something.
 
 ## Workflow Commands
 

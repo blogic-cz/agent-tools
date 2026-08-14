@@ -45,7 +45,7 @@ export type ReviewThread = {
   lastReplyAuthor: string | null;
   lastReplyAt: string | null;
   reviewId: number | null;
-  publishedAt: string | null;
+  updatedAt: string | null;
   /** Thread ids of exact duplicates collapsed into this representative (encounter order). */
   duplicateThreadIds: string[];
 };
@@ -62,10 +62,12 @@ export type ReviewComment = {
   createdAt: string;
   reviewId: number | null;
   /**
-   * When the comment became visible to other users. A comment drafted inside a pending review
-   * keeps its draft time in `createdAt`, so only this field reports when the batch landed.
+   * Last change to the comment. A comment drafted inside a pending review keeps its draft time in
+   * `createdAt` and carries the submit time here until someone edits it, so this is a proxy for
+   * when the comment became visible. Join `reviewId` to the review's `submittedAt` for the exact
+   * time.
    */
-  publishedAt: string;
+  updatedAt: string;
 };
 
 export const IssueCommentId = Schema.Int.pipe(Schema.brand("IssueCommentId"));

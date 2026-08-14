@@ -404,7 +404,7 @@ const enrichThreads = (
         lastReplyAuthor: lastReply?.author ?? null,
         lastReplyAt: lastReply?.createdAt ?? null,
         reviewId: root?.reviewId ?? null,
-        publishedAt: root?.publishedAt ?? null,
+        updatedAt: root?.updatedAt ?? null,
         duplicateThreadIds: [] as string[],
       };
     })
@@ -512,7 +512,7 @@ export const fetchComments = Effect.fn("pr.fetchComments")(function* (
     line: c.line,
     createdAt: c.created_at,
     reviewId: c.pull_request_review_id ?? null,
-    publishedAt: c.updated_at,
+    updatedAt: c.updated_at,
   }));
 
   if (since !== null) {
