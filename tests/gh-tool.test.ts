@@ -1179,6 +1179,120 @@ describe("PR merge logic", () => {
     }),
   );
 
+  it.effect("stacked PR falls back to the asynchronous REST merge and keeps retargets", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const jsonCalls: string[][] = [];
+
+      const result = yield* mergePR({
+        pr: 350,
+        strategy: "squash",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              jsonCalls.push(args);
+              if (args[1] === "view") {
+                return Effect.succeed({ ...mockPRInfo, number: 350 });
+              }
+              if (args[1] === "list") {
+                return Effect.succeed([
+                  { number: 352, headRefName: "feat/child", baseRefName: "feat/test" },
+                ]);
+              }
+              return Effect.succeed({
+                status: "merged",
+                details: { message: "merged", sha: "abcdef1234567890" },
+              });
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              if (args[1] === "merge") {
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh pr merge",
+                    exitCode: 1,
+                    stderr:
+                      "GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API (mergePullRequest)",
+                    message: "merge failed",
+                  }),
+                );
+              }
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(result.merged).toBe(true);
+      expect(result.sha).toBe("abcdef1234567890");
+      expect(result.branchDeleted).toBe(true);
+      expect(result.retargetedChildren).toEqual([352]);
+      expect(jsonCalls.some((args) => args.includes("PUT"))).toBe(true);
+      const patchBases = ghCalls
+        .filter((args) => args.includes("PATCH"))
+        .map((args) => args[args.length - 1]);
+      expect(patchBases).toEqual(["base=main"]);
+    }),
+  );
+
+  it.effect("asynchronous merge failure rolls retargets back and reports the merge error", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+
+      const result = yield* mergePR({
+        pr: 350,
+        strategy: "squash",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "view") {
+                return Effect.succeed({ ...mockPRInfo, number: 350 });
+              }
+              if (args[1] === "list") {
+                return Effect.succeed([
+                  { number: 352, headRefName: "feat/child", baseRefName: "feat/test" },
+                ]);
+              }
+              return Effect.succeed({
+                status: "failed",
+                details: { message: "head branch was modified" },
+              });
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              if (args[1] === "merge") {
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh pr merge",
+                    exitCode: 1,
+                    stderr: "GraphQL: must be merged using the asynchronous merge REST API",
+                    message: "merge failed",
+                  }),
+                );
+              }
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(result).toBeInstanceOf(GitHubMergeError);
+      expect((result as GitHubMergeError).message).toContain("head branch was modified");
+      expect(ghCalls.some((args) => args.includes("DELETE"))).toBe(false);
+      const patchBases = ghCalls
+        .filter((args) => args.includes("PATCH"))
+        .map((args) => args[args.length - 1]);
+      expect(patchBases).toEqual(["base=main", "base=feat/test"]);
+    }),
+  );
+
   it.effect("failed merge rolls dependent PR retargets back to the head branch", () =>
     Effect.gen(function* () {
       const ghCalls: string[][] = [];

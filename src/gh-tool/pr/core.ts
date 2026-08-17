@@ -702,6 +702,93 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
   );
 });
 
+// GitHub rejects GraphQL `mergePullRequest` for a PR that belongs to a native stack and points at
+// the asynchronous REST merge instead. `gh pr merge` only speaks GraphQL.
+const ASYNC_MERGE_REQUIRED_RE = /asynchronous merge/i;
+const ASYNC_MERGE_POLL_INTERVAL_MS = 2000;
+const MAX_ASYNC_MERGE_WAIT_SECONDS = 120;
+
+type AsyncMergeResult = {
+  status: "pending" | "merged" | "enqueued" | "failed";
+  details?: { message?: string; uuid?: string; sha?: string };
+};
+
+const asyncMergeFailure = (pr: number, message: string, hint: string) =>
+  new GitHubMergeError({
+    message: `Failed to merge PR #${pr} asynchronously: ${message}`,
+    reason: "unknown",
+    hint,
+    nextCommand: `agent-tools-gh pr view --pr ${pr}`,
+  });
+
+const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
+  pr: number;
+  strategy: MergeStrategy;
+}) {
+  const gh = yield* GitHubService;
+  const repo = yield* gh.getRepoInfo();
+  const asyncPath = `repos/${repo.owner}/${repo.name}/pulls/${opts.pr}/merge-async`;
+
+  let latest = yield* gh.runGhJson<AsyncMergeResult>([
+    "api",
+    "--method",
+    "PUT",
+    asyncPath,
+    "-f",
+    `merge_method=${opts.strategy}`,
+  ]);
+
+  const uuid = latest.details?.uuid;
+  if (latest.status === "pending" && uuid !== undefined) {
+    const start = yield* Clock.currentTimeMillis;
+    const deadlineMs = Number(start) + MAX_ASYNC_MERGE_WAIT_SECONDS * 1000;
+    let timedOut = false;
+
+    // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
+    yield* Effect.whileLoop({
+      while: () => latest.status === "pending" && !timedOut,
+      body: () =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          if (Number(now) >= deadlineMs) {
+            timedOut = true;
+            return;
+          }
+          const remaining = deadlineMs - Number(now);
+          yield* Effect.sleep(Duration.millis(Math.min(ASYNC_MERGE_POLL_INTERVAL_MS, remaining)));
+          latest = yield* gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]);
+        }),
+      step: () => undefined,
+    });
+  }
+
+  if (latest.status === "merged") {
+    return latest.details?.sha ?? null;
+  }
+
+  if (latest.status === "enqueued") {
+    return yield* asyncMergeFailure(
+      opts.pr,
+      latest.details?.message ?? "the pull request entered a merge queue",
+      "The merge queue owns the merge from here; it is not merged yet. Watch the PR until the queue drains.",
+    );
+  }
+
+  if (latest.status === "pending") {
+    return yield* asyncMergeFailure(
+      opts.pr,
+      `still pending after ${MAX_ASYNC_MERGE_WAIT_SECONDS}s`,
+      "The asynchronous merge is still running. Re-check the PR state before retrying so the merge is not requested twice.",
+    );
+  }
+
+  return yield* asyncMergeFailure(
+    opts.pr,
+    latest.details?.message ?? "the merge request failed",
+    "Inspect the PR state and branch protections, then retry.",
+  );
+});
+
 export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   pr: number;
   strategy: MergeStrategy;
@@ -847,77 +934,85 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
 
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
 
-  const mergeResult = yield* gh.runGh(mergeArgs).pipe(
-    Effect.catch((error) =>
-      rollbackRetargets.pipe(
-        Effect.andThen(
-          (
-            rollbackFailed,
-          ): Effect.Effect<never, GitHubNotFoundError | GitHubAuthError | GitHubMergeError> => {
-            const rollbackNote =
-              rollbackFailed.length > 0
-                ? ` ROLLBACK INCOMPLETE: dependent PR(s) ${rollbackFailed
-                    .map((child) => `#${child}`)
-                    .join(", ")} are still retargeted to \`${info.baseRefName}\`; ` +
-                  `manually restore their base to \`${info.headRefName}\`.`
-                : "";
+  const mergedSha = yield* gh
+    .runGh(mergeArgs)
+    .pipe(
+      Effect.map((result) => result.stdout.match(/([0-9a-f]{7,40})/)?.[1] ?? null),
+      Effect.catchTag("GitHubCommandError", (error) =>
+        ASYNC_MERGE_REQUIRED_RE.test(error.stderr)
+          ? mergeViaAsyncApi({ pr: opts.pr, strategy: opts.strategy })
+          : Effect.fail(error),
+      ),
+    )
+    .pipe(
+      Effect.catch((error) =>
+        rollbackRetargets.pipe(
+          Effect.andThen(
+            (
+              rollbackFailed,
+            ): Effect.Effect<never, GitHubNotFoundError | GitHubAuthError | GitHubMergeError> => {
+              const rollbackNote =
+                rollbackFailed.length > 0
+                  ? ` ROLLBACK INCOMPLETE: dependent PR(s) ${rollbackFailed
+                      .map((child) => `#${child}`)
+                      .join(", ")} are still retargeted to \`${info.baseRefName}\`; ` +
+                    `manually restore their base to \`${info.headRefName}\`.`
+                  : "";
 
-            if (error._tag !== "GitHubCommandError") {
-              return rollbackNote === ""
-                ? Effect.fail(error)
-                : Console.error(rollbackNote.trim()).pipe(Effect.andThen(Effect.fail(error)));
-            }
+              if (error._tag !== "GitHubCommandError") {
+                return rollbackNote === ""
+                  ? Effect.fail(error)
+                  : Console.error(rollbackNote.trim()).pipe(Effect.andThen(Effect.fail(error)));
+              }
 
-            const stderr = error.stderr.toLowerCase();
+              const stderr = error.stderr.toLowerCase();
 
-            if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
+              if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
+                return Effect.fail(
+                  new GitHubMergeError({
+                    message: `PR #${opts.pr} has merge conflicts`,
+                    reason: "conflicts",
+                    hint: `Resolve merge conflicts locally, push the fix, then retry the merge.${rollbackNote}`,
+                    nextCommand: `gh pr diff ${opts.pr}`,
+                  }),
+                );
+              }
+
+              if (stderr.includes("required status check") || stderr.includes("checks")) {
+                return Effect.fail(
+                  new GitHubMergeError({
+                    message: `PR #${opts.pr} has failing required checks`,
+                    reason: "checks_failing",
+                    hint: `Wait for CI checks to pass or investigate failures before merging.${rollbackNote}`,
+                    nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
+                    retryable: true,
+                  }),
+                );
+              }
+
+              if (stderr.includes("protected branch")) {
+                return Effect.fail(
+                  new GitHubMergeError({
+                    message: `PR #${opts.pr} targets a protected branch`,
+                    reason: "branch_protected",
+                    hint: `This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.${rollbackNote}`,
+                  }),
+                );
+              }
+
               return Effect.fail(
                 new GitHubMergeError({
-                  message: `PR #${opts.pr} has merge conflicts`,
-                  reason: "conflicts",
-                  hint: `Resolve merge conflicts locally, push the fix, then retry the merge.${rollbackNote}`,
-                  nextCommand: `gh pr diff ${opts.pr}`,
+                  message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
+                  reason: "unknown",
+                  hint: `Check the PR state and branch protections. The PR may already be merged or closed.${rollbackNote}`,
+                  nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
                 }),
               );
-            }
-
-            if (stderr.includes("required status check") || stderr.includes("checks")) {
-              return Effect.fail(
-                new GitHubMergeError({
-                  message: `PR #${opts.pr} has failing required checks`,
-                  reason: "checks_failing",
-                  hint: `Wait for CI checks to pass or investigate failures before merging.${rollbackNote}`,
-                  nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
-                  retryable: true,
-                }),
-              );
-            }
-
-            if (stderr.includes("protected branch")) {
-              return Effect.fail(
-                new GitHubMergeError({
-                  message: `PR #${opts.pr} targets a protected branch`,
-                  reason: "branch_protected",
-                  hint: `This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.${rollbackNote}`,
-                }),
-              );
-            }
-
-            return Effect.fail(
-              new GitHubMergeError({
-                message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
-                reason: "unknown",
-                hint: `Check the PR state and branch protections. The PR may already be merged or closed.${rollbackNote}`,
-                nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
-              }),
-            );
-          },
+            },
+          ),
         ),
       ),
-    ),
-  );
-
-  const shaMatch = mergeResult.stdout.match(/([0-9a-f]{7,40})/);
+    );
 
   // `gh pr merge --delete-branch` aborts its remote delete when the head branch is checked out in a
   // worktree; deleting the remote ref explicitly is worktree-independent. Local cleanup is separate.
@@ -944,7 +1039,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     merged: true,
     strategy: opts.strategy,
     branchDeleted: willDeleteBranch,
-    sha: shaMatch?.[1] ?? null,
+    sha: mergedSha,
     retargetedChildren: retargetedChildren.length > 0 ? retargetedChildren : undefined,
     branchDeleteSkipped: branchDeleteSkipped ? true : undefined,
   };
