@@ -34,7 +34,13 @@ export class GitHubAuthError extends Schema.TaggedError<GitHubAuthError>()("GitH
 
 export class GitHubMergeError extends Schema.TaggedError<GitHubMergeError>()("GitHubMergeError", {
   message: Schema.String,
-  reason: Schema.Literals(["conflicts", "checks_failing", "branch_protected", "unknown"]),
+  reason: Schema.Literals([
+    "conflicts",
+    "checks_failing",
+    "branch_protected",
+    "merge_queue",
+    "unknown",
+  ]),
   hint: Schema.optionalKey(Schema.String),
   nextCommand: Schema.optionalKey(Schema.String),
   retryable: Schema.optionalKey(Schema.Boolean),

@@ -713,10 +713,15 @@ type AsyncMergeResult = {
   details?: { message?: string; uuid?: string; sha?: string };
 };
 
-const asyncMergeFailure = (pr: number, message: string, hint: string) =>
+const asyncMergeFailure = (
+  pr: number,
+  message: string,
+  hint: string,
+  reason: "merge_queue" | "unknown" = "unknown",
+) =>
   new GitHubMergeError({
     message: `Failed to merge PR #${pr} asynchronously: ${message}`,
-    reason: "unknown",
+    reason,
     hint,
     nextCommand: `agent-tools-gh pr view --pr ${pr}`,
   });
@@ -771,6 +776,7 @@ const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
       opts.pr,
       latest.details?.message ?? "the pull request entered a merge queue",
       "The merge queue owns the merge from here; it is not merged yet. Watch the PR until the queue drains.",
+      "merge_queue",
     );
   }
 
@@ -946,71 +952,78 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     )
     .pipe(
       Effect.catch((error) =>
-        rollbackRetargets.pipe(
-          Effect.andThen(
-            (
-              rollbackFailed,
-            ): Effect.Effect<never, GitHubNotFoundError | GitHubAuthError | GitHubMergeError> => {
-              const rollbackNote =
-                rollbackFailed.length > 0
-                  ? ` ROLLBACK INCOMPLETE: dependent PR(s) ${rollbackFailed
-                      .map((child) => `#${child}`)
-                      .join(", ")} are still retargeted to \`${info.baseRefName}\`; ` +
-                    `manually restore their base to \`${info.headRefName}\`.`
-                  : "";
+        // A queued merge still lands, and its head branch disappears with it. Rolling the
+        // dependents back onto that branch would close them (cli/cli#1168), so keep the retargets.
+        error._tag === "GitHubMergeError" && error.reason === "merge_queue"
+          ? Effect.fail(error)
+          : rollbackRetargets.pipe(
+              Effect.andThen(
+                (
+                  rollbackFailed,
+                ): Effect.Effect<
+                  never,
+                  GitHubNotFoundError | GitHubAuthError | GitHubMergeError
+                > => {
+                  const rollbackNote =
+                    rollbackFailed.length > 0
+                      ? ` ROLLBACK INCOMPLETE: dependent PR(s) ${rollbackFailed
+                          .map((child) => `#${child}`)
+                          .join(", ")} are still retargeted to \`${info.baseRefName}\`; ` +
+                        `manually restore their base to \`${info.headRefName}\`.`
+                      : "";
 
-              if (error._tag !== "GitHubCommandError") {
-                return rollbackNote === ""
-                  ? Effect.fail(error)
-                  : Console.error(rollbackNote.trim()).pipe(Effect.andThen(Effect.fail(error)));
-              }
+                  if (error._tag !== "GitHubCommandError") {
+                    return rollbackNote === ""
+                      ? Effect.fail(error)
+                      : Console.error(rollbackNote.trim()).pipe(Effect.andThen(Effect.fail(error)));
+                  }
 
-              const stderr = error.stderr.toLowerCase();
+                  const stderr = error.stderr.toLowerCase();
 
-              if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
-                return Effect.fail(
-                  new GitHubMergeError({
-                    message: `PR #${opts.pr} has merge conflicts`,
-                    reason: "conflicts",
-                    hint: `Resolve merge conflicts locally, push the fix, then retry the merge.${rollbackNote}`,
-                    nextCommand: `gh pr diff ${opts.pr}`,
-                  }),
-                );
-              }
+                  if (stderr.includes("merge conflict") || stderr.includes("conflicts")) {
+                    return Effect.fail(
+                      new GitHubMergeError({
+                        message: `PR #${opts.pr} has merge conflicts`,
+                        reason: "conflicts",
+                        hint: `Resolve merge conflicts locally, push the fix, then retry the merge.${rollbackNote}`,
+                        nextCommand: `gh pr diff ${opts.pr}`,
+                      }),
+                    );
+                  }
 
-              if (stderr.includes("required status check") || stderr.includes("checks")) {
-                return Effect.fail(
-                  new GitHubMergeError({
-                    message: `PR #${opts.pr} has failing required checks`,
-                    reason: "checks_failing",
-                    hint: `Wait for CI checks to pass or investigate failures before merging.${rollbackNote}`,
-                    nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
-                    retryable: true,
-                  }),
-                );
-              }
+                  if (stderr.includes("required status check") || stderr.includes("checks")) {
+                    return Effect.fail(
+                      new GitHubMergeError({
+                        message: `PR #${opts.pr} has failing required checks`,
+                        reason: "checks_failing",
+                        hint: `Wait for CI checks to pass or investigate failures before merging.${rollbackNote}`,
+                        nextCommand: `agent-tools-gh pr checks --pr ${opts.pr}`,
+                        retryable: true,
+                      }),
+                    );
+                  }
 
-              if (stderr.includes("protected branch")) {
-                return Effect.fail(
-                  new GitHubMergeError({
-                    message: `PR #${opts.pr} targets a protected branch`,
-                    reason: "branch_protected",
-                    hint: `This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.${rollbackNote}`,
-                  }),
-                );
-              }
+                  if (stderr.includes("protected branch")) {
+                    return Effect.fail(
+                      new GitHubMergeError({
+                        message: `PR #${opts.pr} targets a protected branch`,
+                        reason: "branch_protected",
+                        hint: `This branch has protection rules. Ensure required reviews and checks are satisfied, or ask a repo admin.${rollbackNote}`,
+                      }),
+                    );
+                  }
 
-              return Effect.fail(
-                new GitHubMergeError({
-                  message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
-                  reason: "unknown",
-                  hint: `Check the PR state and branch protections. The PR may already be merged or closed.${rollbackNote}`,
-                  nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
-                }),
-              );
-            },
-          ),
-        ),
+                  return Effect.fail(
+                    new GitHubMergeError({
+                      message: `Failed to merge PR #${opts.pr}: ${error.stderr}`,
+                      reason: "unknown",
+                      hint: `Check the PR state and branch protections. The PR may already be merged or closed.${rollbackNote}`,
+                      nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+                    }),
+                  );
+                },
+              ),
+            ),
       ),
     );
 

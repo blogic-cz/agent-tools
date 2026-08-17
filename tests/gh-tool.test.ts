@@ -1238,6 +1238,61 @@ describe("PR merge logic", () => {
     }),
   );
 
+  it.effect("merge queue keeps dependent retargets in place instead of rolling them back", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+
+      const result = yield* mergePR({
+        pr: 350,
+        strategy: "squash",
+        deleteBranch: true,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "view") {
+                return Effect.succeed({ ...mockPRInfo, number: 350 });
+              }
+              if (args[1] === "list") {
+                return Effect.succeed([
+                  { number: 352, headRefName: "feat/child", baseRefName: "feat/test" },
+                ]);
+              }
+              return Effect.succeed({
+                status: "enqueued",
+                details: { message: "added to the merge queue", uuid: "queued-uuid" },
+              });
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              if (args[1] === "merge") {
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh pr merge",
+                    exitCode: 1,
+                    stderr: "GraphQL: must be merged using the asynchronous merge REST API",
+                    message: "merge failed",
+                  }),
+                );
+              }
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(result).toBeInstanceOf(GitHubMergeError);
+      expect((result as GitHubMergeError).reason).toBe("merge_queue");
+      const patchBases = ghCalls
+        .filter((args) => args.includes("PATCH"))
+        .map((args) => args[args.length - 1]);
+      expect(patchBases).toEqual(["base=main"]);
+      expect(ghCalls.some((args) => args.includes("DELETE"))).toBe(false);
+    }),
+  );
+
   it.effect("asynchronous merge failure rolls retargets back and reports the merge error", () =>
     Effect.gen(function* () {
       const ghCalls: string[][] = [];
