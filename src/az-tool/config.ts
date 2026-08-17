@@ -85,47 +85,16 @@ export const BLOCKED_VERBS = [
 ] as const;
 
 /**
- * Read-shaped verbs that return credential material. Blocked in every group,
- * because the read-only verb families above would otherwise admit them.
- */
-export const CREDENTIAL_BLOCKED_VERBS = [
-  "get-access-token",
-  "get-credentials",
-  "get-secrets",
-  "list-account-keys",
-  "list-connection-strings",
-  "list-keys",
-  "list-publishing-credentials",
-  "list-publishing-profiles",
-  "list-secrets",
-  "show-connection-string",
-  "show-secret",
-] as const;
-
-/**
- * Group-path segments that carry credential material. A command whose group
- * path contains one is blocked regardless of verb, because for these the
- * listing itself returns values — `az storage account keys list` and
- * `az webapp config appsettings list` both print secrets.
+ * Credential-bearing verbs and group segments live in `#shared` because
+ * azdo-tool's `acr`/`account` passthrough must refuse exactly the same
+ * commands. Re-exported here so this file stays the single place az-tool's
+ * security config is read from.
  *
  * Segment matching keeps neighbouring groups reachable: `keyvault list` works
  * because the blocked segment is `secret`, not `keyvault`. Key Vault gets a
  * further carve-out below.
  */
-export const CREDENTIAL_BLOCKED_SEGMENTS = [
-  "admin-key",
-  "appsettings",
-  "connection-string",
-  "credential",
-  "credentials",
-  "key",
-  "keys",
-  "password",
-  "query-key",
-  "sas",
-  "secret",
-  "secrets",
-] as const;
+export { CREDENTIAL_BLOCKED_SEGMENTS, CREDENTIAL_BLOCKED_VERBS } from "#shared/azure-credentials";
 
 /** The Key Vault command group, which needs finer treatment than segment matching. */
 export const KEYVAULT_GROUP = "keyvault";

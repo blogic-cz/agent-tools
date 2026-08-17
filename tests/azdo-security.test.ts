@@ -31,6 +31,28 @@ describe("azdo-tool security", () => {
       );
     });
 
+    it("blocks credential reads through the acr/account passthrough", () => {
+      const result = isCommandAllowed("acr credential show --name reg");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("credential");
+
+      expect(isCommandAllowed("acr token credential show --name t").allowed).toBe(false);
+      expect(isCommandAllowed("account get-access-token").allowed).toBe(false);
+      expect(isCommandAllowed("acr credential show --name reg --query passwords").allowed).toBe(
+        false,
+      );
+    });
+
+    it("leaves non-credential acr and account reads working", () => {
+      expect(isCommandAllowed("acr repository list --name reg").allowed).toBe(true);
+      expect(isCommandAllowed("acr list").allowed).toBe(true);
+      expect(isCommandAllowed("account show").allowed).toBe(true);
+    });
+
+    it("does not apply the credential rules to Azure DevOps groups", () => {
+      expect(isCommandAllowed("pipelines list --name secret-rotation").allowed).toBe(true);
+    });
+
     it("allows run only in the pipelines group", () => {
       expect(isCommandAllowed("pipelines run --id 5").allowed).toBe(true);
 

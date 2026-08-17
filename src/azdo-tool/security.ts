@@ -7,8 +7,10 @@ import {
   ALLOWED_INVOKE_RESOURCES,
   BLOCKED_INVOKE_AREAS,
   BLOCKED_INVOKE_RESOURCES,
+  STANDALONE_AZ_COMMANDS,
 } from "./config";
 import { extractOptionValue } from "./extract-option-value";
+import { isCredentialBlockedSegment, isCredentialBlockedVerb } from "#shared/azure-credentials";
 
 export function isCommandAllowed(cmd: string): SecurityCheckResult {
   const rawCommandWords = cmd.trim().split(/\s+/);
@@ -54,6 +56,30 @@ export function isCommandAllowed(cmd: string): SecurityCheckResult {
     }
 
     return { allowed: true, command: cmd };
+  }
+
+  // The acr/account groups run against the Azure platform rather than Azure
+  // DevOps, so the platform credential rules apply to them here too. Without
+  // this, `acr credential show` passes the DevOps verb check and prints the
+  // registry's admin password. Matched across every word rather than
+  // positionally: stricter than az-tool's parse, which suits a legacy
+  // passthrough.
+  const standaloneGroup = commandWords[0];
+  if (
+    standaloneGroup &&
+    STANDALONE_AZ_COMMANDS.includes(standaloneGroup as (typeof STANDALONE_AZ_COMMANDS)[number])
+  ) {
+    const credentialWord = commandWords.find(
+      (word) => isCredentialBlockedVerb(word) || isCredentialBlockedSegment(word),
+    );
+
+    if (credentialWord) {
+      return {
+        allowed: false,
+        command: cmd,
+        reason: `'${credentialWord}' addresses credential material and is blocked.`,
+      };
+    }
   }
 
   const blockedWord = commandWords.find((word) =>

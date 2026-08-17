@@ -36,6 +36,7 @@ Use `--profile <name>` to select a named profile when multiple Azure DevOps orga
 - Write verbs anywhere in the command: `create`, `delete`, `update`, `cancel`, `queue`.
 - `run` outside the pipelines group. `pipelines run` is allowed; `acr run` and `acr task run` are not, because they execute commands in Azure.
 - `devops invoke` outside the `build` area, its write resources (`definitions`, `folders`, `tags`, `retention`), and any HTTP method other than GET.
+- Credential reads through the `acr`/`account` passthrough — `acr credential show`, `account get-access-token`, and anything naming `secret`, `key`, `keys`, `credential`, `password`, `sas`, or `connection-string`. Those two groups address the Azure platform, so `az-tool`'s credential rules apply to them here too.
 
 Commands are scoped to the configured organization and project, and spawned as an argument vector — never through a shell.
 
