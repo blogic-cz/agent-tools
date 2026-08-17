@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 
-/** Azure DevOps profile configuration */
 /** Azure DevOps profile, consumed by azdo-tool. */
 export type AzureConfig = {
   organization: string;
