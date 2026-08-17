@@ -25,6 +25,22 @@
     },
   },
 
+  // Azure platform (PaaS) profiles — az-tool pins every command to one subscription
+  azurePlatform: {
+    default: {
+      subscription: "00000000-0000-0000-0000-000000000000",
+      timeoutMs: 60000,
+      // Optional. Empty or absent means every resource group is allowed.
+      allowedResourceGroups: ["rg-web", "rg-data"],
+    },
+    prod: {
+      subscription: "11111111-1111-1111-1111-111111111111",
+      // Requires --profile prod to be passed explicitly. Implied by the "prod"
+      // key; set production: false to opt out.
+      production: true,
+    },
+  },
+
   // Kubernetes cluster profiles
   kubernetes: {
     default: {

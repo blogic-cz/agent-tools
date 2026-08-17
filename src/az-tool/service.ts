@@ -1,50 +1,112 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Context, Effect, Layer, Option, Stream } from "effect";
 
-import type { InvokeParams } from "./types";
-import type { AzureConfig } from "#config/types";
+import type { AzurePlatformConfig } from "#config/types";
 
-import { DIRECT_AZ_COMMANDS, STANDALONE_AZ_COMMANDS } from "./config";
-import { AzSecurityError, AzCommandError, AzTimeoutError, AzParseError } from "./errors";
-import { isCommandAllowed, isInvokeAllowed } from "./security";
-import { transformCmdOutput } from "./transformers";
+import type { AzParseError } from "./errors";
+
+import { AzCommandError, AzProfileError, AzSecurityError, AzTimeoutError } from "./errors";
+import { isProductionProfile, selectAzProfileName } from "./profile";
+import { isAzCommandAllowed } from "./security";
 import { ConfigService, getToolConfig } from "#config";
-import { renderCommandLine, tokenizeCommandLine } from "#shared/exec";
+import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
+import { renderCommandLine } from "#shared/exec";
+
+const DEFAULT_TIMEOUT_MS = 60000;
+
+const hasOutputFlag = (argv: readonly string[]): boolean =>
+  argv.some((arg) => arg === "-o" || arg === "--output" || arg.startsWith("--output="));
+
+export type AzCommandResult = {
+  readonly command: string;
+  readonly subscription: string | undefined;
+  readonly data: unknown;
+};
 
 export class AzService extends Context.Service<
   AzService,
   {
     readonly runCommand: (
       cmd: string,
-      project?: string,
-    ) => Effect.Effect<string, AzSecurityError | AzCommandError | AzTimeoutError | AzParseError>;
-    readonly runInvoke: (
-      params: InvokeParams,
-    ) => Effect.Effect<unknown, AzSecurityError | AzCommandError | AzTimeoutError | AzParseError>;
+      profile?: string,
+    ) => Effect.Effect<
+      AzCommandResult,
+      AzSecurityError | AzCommandError | AzTimeoutError | AzParseError | AzProfileError
+    >;
+    readonly renderCommand: (
+      cmd: string,
+      profile?: string,
+    ) => Effect.Effect<string, AzSecurityError | AzCommandError | AzProfileError>;
   }
 >()("@agent-tools/AzService") {
   static readonly layer = Layer.effect(
     AzService,
     Effect.gen(function* () {
       const config = yield* ConfigService;
-      const azConfig = getToolConfig<AzureConfig>(config, "azure");
-
-      if (!azConfig) {
-        const noConfigError = new AzCommandError({
-          message: "No Azure configuration found. Add an 'azure' section to agent-tools.json5.",
-          command: "unknown",
-          exitCode: -1,
-          hint: "Create or update agent-tools.json5 with an 'azure' section containing organization and defaultProject",
-        });
-        return {
-          runCommand: (_cmd: string, _project?: string) => Effect.fail(noConfigError),
-          runInvoke: (_params: InvokeParams) => Effect.fail(noConfigError),
-        };
-      }
-
       const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-      const runAzCommand = (argv: readonly string[], timeoutMs: number) =>
+      const resolveConfig = (profile?: string) =>
+        Effect.gen(function* () {
+          const azConfig = getToolConfig<AzurePlatformConfig>(config, "azurePlatform", profile);
+
+          if (!azConfig) {
+            return yield* new AzCommandError({
+              message:
+                "No Azure platform configuration found. Add an 'azurePlatform' section to agent-tools.json5.",
+              command: "unknown",
+              exitCode: -1,
+              hint: "azurePlatform pins the subscription every command runs against, so it is required.",
+              nextCommand:
+                "echo '{ azurePlatform: { default: { subscription: \"<subscription-id>\" } } }' > agent-tools.json5",
+            });
+          }
+
+          // A production subscription must be named, never inherited from
+          // auto-selection or the "default" key.
+          const profileName = selectAzProfileName(config?.azurePlatform, profile);
+          if (!profile && isProductionProfile(profileName, azConfig)) {
+            const label = profileName ?? "default";
+            return yield* new AzProfileError({
+              message: `Implicit production access blocked. Profile '${label}' is a production profile but --profile was not passed explicitly.`,
+              profile: label,
+              hint: `Pass --profile ${label} explicitly to confirm production access, or set production: false on that profile.`,
+              nextCommand: `agent-tools-az cmd --profile ${label} --cmd "group list"`,
+            });
+          }
+
+          return azConfig;
+        });
+
+      /** Security gate plus profile scoping. Shared by dry-run rendering and execution. */
+      const buildArgv = (cmd: string, profile?: string) =>
+        Effect.gen(function* () {
+          const azConfig = yield* resolveConfig(profile);
+          const securityCheck = isAzCommandAllowed(cmd, {
+            allowedResourceGroups: azConfig.allowedResourceGroups,
+          });
+
+          if (!securityCheck.allowed || !securityCheck.argv) {
+            return yield* new AzSecurityError({
+              message: securityCheck.reason ?? "Command not allowed",
+              command: cmd,
+              hint:
+                securityCheck.hint ??
+                "Only read-only Azure platform commands are allowed. Use azdo-tool for Azure DevOps.",
+            });
+          }
+
+          const argv = [...securityCheck.argv, "--only-show-errors"];
+
+          if (!hasOutputFlag(securityCheck.argv)) {
+            argv.push("--output", "json");
+          }
+
+          argv.push("--subscription", azConfig.subscription);
+
+          return { argv, azConfig };
+        });
+
+      const spawnAz = (argv: readonly string[], timeoutMs: number, renderedCommand: string) =>
         Effect.scoped(
           Effect.gen(function* () {
             const command = ChildProcess.make("az", argv, {
@@ -54,89 +116,52 @@ export class AzService extends Context.Service<
             const process = yield* executor.spawn(command);
 
             const stdoutChunk = yield* process.stdout.pipe(Stream.decodeText(), Stream.runCollect);
-            const stdout = stdoutChunk.join("");
-
             const stderrChunk = yield* process.stderr.pipe(Stream.decodeText(), Stream.runCollect);
-            const stderr = stderrChunk.join("");
-
             const exitCode = yield* process.exitCode;
 
-            return { stdout, stderr, exitCode };
+            return { stdout: stdoutChunk.join(""), stderr: stderrChunk.join(""), exitCode };
           }),
         ).pipe(
           Effect.timeoutOption(timeoutMs),
-          Effect.mapError(
-            (platformError) =>
-              new AzCommandError({
-                message: `Command execution failed: ${platformError.message}`,
-                command: renderCommandLine(["az", ...argv]),
-                exitCode: -1,
-                hint: "Check that the az CLI is installed and authenticated",
-                nextCommand: "az login",
-                retryable: true,
-              }),
-          ),
+          Effect.mapError((platformError) => {
+            const missing = missingBinaryFromSpawnFailure("az", String(platformError));
+            return new AzCommandError({
+              message: `Command execution failed: ${String(platformError)}`,
+              command: renderedCommand,
+              exitCode: -1,
+              stderr: String(platformError),
+              hint: missing?.hint ?? "Check that the az CLI is installed and authenticated",
+              nextCommand: "az login",
+              retryable: true,
+            });
+          }),
         );
 
-      const resolveProject = (project?: string) => project ?? azConfig.defaultProject;
+      const renderCommand = Effect.fn("AzService.renderCommand")(function* (
+        cmd: string,
+        profile?: string,
+      ) {
+        const { argv } = yield* buildArgv(cmd, profile);
+        return renderCommandLine(["az", ...argv]);
+      });
 
       const runCommand = Effect.fn("AzService.runCommand")(function* (
         cmd: string,
-        project?: string,
+        profile?: string,
       ) {
-        const projectName = resolveProject(project);
-
-        const securityCheck = isCommandAllowed(cmd);
-        if (!securityCheck.allowed) {
-          return yield* new AzSecurityError({
-            message: securityCheck.reason ?? "Command not allowed",
-            command: cmd,
-            hint: "Only read-only az devops commands are allowed. Use build helpers for common operations.",
-          });
-        }
-
-        const invokeParams = parseInvokeFromCommand(cmd);
-        if (invokeParams) {
-          const invokeResult = yield* runInvoke({
-            ...invokeParams,
-            project: projectName,
-          });
-          return JSON.stringify(invokeResult);
-        }
-
-        const cmdWords = cmd.trim().split(/\s+/);
-        const firstWord = cmdWords[0]?.toLowerCase() ?? "";
-        const isDirectCommand = DIRECT_AZ_COMMANDS.includes(
-          firstWord as (typeof DIRECT_AZ_COMMANDS)[number],
-        );
-        const isStandaloneCommand = STANDALONE_AZ_COMMANDS.includes(
-          firstWord as (typeof STANDALONE_AZ_COMMANDS)[number],
-        );
-
-        const cmdArgv = tokenizeCommandLine(cmd);
-        const scopeArgv = [
-          "--organization",
-          azConfig.organization,
-          "--project",
-          projectName,
-        ] as const;
-
-        const argv = isStandaloneCommand
-          ? cmdArgv
-          : isDirectCommand
-            ? [...cmdArgv, ...scopeArgv]
-            : ["devops", ...cmdArgv, ...scopeArgv];
-
+        const { argv, azConfig } = yield* buildArgv(cmd, profile);
+        const timeoutMs = azConfig.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const fullCommand = renderCommandLine(["az", ...argv]);
-        const resultOption = yield* runAzCommand(argv, azConfig.timeoutMs ?? 60000);
+
+        const resultOption = yield* spawnAz(argv, timeoutMs, fullCommand);
 
         if (Option.isNone(resultOption)) {
           return yield* new AzTimeoutError({
-            message: `Command timed out after ${azConfig.timeoutMs ?? 60000}ms`,
+            message: `Command timed out after ${timeoutMs}ms`,
             command: fullCommand,
-            timeoutMs: azConfig.timeoutMs ?? 60000,
+            timeoutMs,
             retryable: true,
-            hint: "The command took too long. Retry or increase timeoutMs in azure config.",
+            hint: "The command took too long. Retry or increase timeoutMs in azurePlatform config.",
           });
         }
 
@@ -152,165 +177,35 @@ export class AzService extends Context.Service<
         }
 
         const output = result.stdout.trim();
-        const transformed = transformCmdOutput(output);
 
-        if (typeof transformed === "string") {
-          return transformed;
+        if (output.length === 0) {
+          return {
+            command: fullCommand,
+            subscription: azConfig.subscription,
+            data: null,
+          } satisfies AzCommandResult;
         }
 
-        return JSON.stringify(transformed);
+        // --output json is injected unless the caller picked a format, so non-JSON
+        // output here is a deliberate table/tsv request and is passed through as text.
+        const parsed = ((): unknown => {
+          try {
+            return JSON.parse(output) as unknown;
+          } catch {
+            return output;
+          }
+        })();
+
+        return {
+          command: fullCommand,
+          subscription: azConfig.subscription,
+          data: parsed,
+        } satisfies AzCommandResult;
       });
 
-      const runInvoke = Effect.fn("AzService.runInvoke")(function* (params: InvokeParams) {
-        const securityCheck = isInvokeAllowed(params);
-        if (!securityCheck.allowed) {
-          return yield* new AzSecurityError({
-            message: securityCheck.reason ?? "Invoke not allowed",
-            command: `invoke --area ${params.area} --resource ${params.resource}`,
-            hint: "Only allowed invoke areas/resources can be used. Check az-tool security config.",
-          });
-        }
-
-        const argv = ["devops", "invoke", "--area", params.area, "--resource", params.resource];
-
-        const projectName = resolveProject(params.project);
-
-        const routeParameters = {
-          project: projectName,
-          ...params.routeParameters,
-        };
-
-        if (Object.keys(routeParameters).length > 0) {
-          argv.push(
-            "--route-parameters",
-            ...Object.entries(routeParameters).map(([k, v]) => `${k}=${v}`),
-          );
-        }
-
-        if (params.queryParameters) {
-          argv.push(
-            "--query-parameters",
-            ...Object.entries(params.queryParameters).map(([k, v]) => `${k}=${v}`),
-          );
-        }
-
-        argv.push("--organization", azConfig.organization, "--output", "json");
-
-        const fullCommand = renderCommandLine(["az", ...argv]);
-        const resultOption = yield* runAzCommand(argv, azConfig.timeoutMs ?? 60000);
-
-        if (Option.isNone(resultOption)) {
-          return yield* new AzTimeoutError({
-            message: `Invoke timed out after ${azConfig.timeoutMs ?? 60000}ms`,
-            command: fullCommand,
-            timeoutMs: azConfig.timeoutMs ?? 60000,
-            retryable: true,
-            hint: "The invoke took too long. Retry or increase timeoutMs in azure config.",
-          });
-        }
-
-        const result = resultOption.value;
-
-        if (result.exitCode !== 0) {
-          return yield* new AzCommandError({
-            message: result.stderr || `Invoke failed with exit code ${result.exitCode}`,
-            command: fullCommand,
-            exitCode: result.exitCode,
-            ...(result.stderr ? { stderr: result.stderr } : {}),
-          });
-        }
-
-        const jsonData = yield* Effect.try({
-          try: () => JSON.parse(result.stdout) as unknown,
-          catch: () =>
-            new AzParseError({
-              message: `Failed to parse JSON response from invoke`,
-              rawOutput: result.stdout.slice(0, 500),
-              hint: "The az CLI returned non-JSON output. Ensure --output json is used.",
-            }),
-        });
-        return jsonData;
-      });
-
-      return { runCommand, runInvoke };
+      return { runCommand, renderCommand };
     }),
   );
 }
 
 export const AzServiceLayer = AzService.layer;
-
-function parseInvokeFromCommand(cmd: string): InvokeParams | undefined {
-  const words = cmd.trim().split(/\s+/);
-  const loweredWords = words.map((word) => word.toLowerCase());
-
-  if (!loweredWords.includes("invoke")) {
-    return undefined;
-  }
-
-  const area = extractOptionValue(words, "--area");
-  const resource = extractOptionValue(words, "--resource");
-
-  if (!area || !resource) {
-    return undefined;
-  }
-
-  const routeParameters = extractParametersOption(words, "--route-parameters");
-  const queryParameters = extractParametersOption(words, "--query-parameters");
-  const apiVersion = extractOptionValue(words, "--api-version");
-
-  const mergedQueryParameters = apiVersion
-    ? {
-        ...queryParameters,
-        "api-version": apiVersion,
-      }
-    : queryParameters;
-
-  return {
-    area,
-    resource,
-    ...(routeParameters ? { routeParameters } : {}),
-    ...(mergedQueryParameters ? { queryParameters: mergedQueryParameters } : {}),
-  };
-}
-
-function extractOptionValue(args: readonly string[], optionName: string): string | undefined {
-  const optionIndex = args.findIndex((arg) => arg.toLowerCase() === optionName.toLowerCase());
-
-  if (optionIndex === -1) {
-    return undefined;
-  }
-
-  return args[optionIndex + 1];
-}
-
-function extractParametersOption(
-  args: readonly string[],
-  optionName: string,
-): Record<string, string | number> | undefined {
-  const optionIndex = args.findIndex((arg) => arg.toLowerCase() === optionName.toLowerCase());
-
-  if (optionIndex === -1) {
-    return undefined;
-  }
-
-  const result: Record<string, string | number> = {};
-
-  for (let i = optionIndex + 1; i < args.length; i++) {
-    const token = args[i];
-    if (!token || token.startsWith("--")) {
-      break;
-    }
-
-    const equalsIndex = token.indexOf("=");
-    if (equalsIndex === -1) {
-      continue;
-    }
-
-    const key = token.slice(0, equalsIndex);
-    const rawValue = token.slice(equalsIndex + 1);
-    const parsedNumber = Number(rawValue);
-    result[key] = Number.isNaN(parsedNumber) ? rawValue : parsedNumber;
-  }
-
-  return Object.keys(result).length > 0 ? result : undefined;
-}

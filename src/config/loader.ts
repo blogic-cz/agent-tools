@@ -88,6 +88,13 @@ const AzureConfigSchema = Schema.Struct({
   timeoutMs: Schema.optionalKey(Schema.Number),
 });
 
+const AzurePlatformConfigSchema = Schema.Struct({
+  subscription: Schema.String,
+  timeoutMs: Schema.optionalKey(Schema.Number),
+  production: Schema.optionalKey(Schema.Boolean),
+  allowedResourceGroups: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const K8sConfigSchema = Schema.Struct({
   kubeconfig: Schema.optionalKey(Schema.String),
   clusterId: Schema.String,
@@ -178,6 +185,7 @@ const GitHubRepoConfigSchema = Schema.Struct({
 const KNOWN_TOP_LEVEL_KEYS = new Set([
   "$schema",
   "azure",
+  "azurePlatform",
   "vpns",
   "kubernetes",
   "database",
@@ -193,6 +201,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
 const AgentToolsConfigSchema = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String),
   azure: Schema.optionalKey(Schema.Record(Schema.String, AzureConfigSchema)),
+  azurePlatform: Schema.optionalKey(Schema.Record(Schema.String, AzurePlatformConfigSchema)),
   vpns: Schema.optionalKey(Schema.Record(Schema.String, VpnConfigSchema)),
   kubernetes: Schema.optionalKey(Schema.Record(Schema.String, K8sConfigSchema)),
   database: Schema.optionalKey(Schema.Record(Schema.String, DatabaseConfigSchema)),
@@ -378,7 +387,7 @@ export const ConfigServiceLayer = Layer.effect(
 
 type ProfiledSection = keyof Pick<
   AgentToolsConfig,
-  "azure" | "kubernetes" | "database" | "observability" | "logs"
+  "azure" | "azurePlatform" | "kubernetes" | "database" | "observability" | "logs"
 >;
 
 export function getToolConfig<T>(

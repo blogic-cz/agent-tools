@@ -86,6 +86,11 @@ beforeAll(() => {
           defaultProject: "test-project",
         },
       },
+      azurePlatform: {
+        default: {
+          subscription: "00000000-0000-0000-0000-000000000000",
+        },
+      },
       database: {
         default: {
           environments: {
@@ -257,7 +262,13 @@ describe("Integration: tools --help with config file", () => {
   it("az-tool --help exits 0 with config", () => {
     const result = runTool("src/az-tool/index.ts", ["--help"], configDir);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("Azure");
+    expect(result.stdout).toContain("Azure Platform");
+  });
+
+  it("azdo-tool --help exits 0 with config", () => {
+    const result = runTool("src/azdo-tool/index.ts", ["--help"], configDir);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Azure DevOps");
   });
 
   it("db-tool --help exits 0 with config", () => {

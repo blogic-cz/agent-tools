@@ -27,6 +27,14 @@ export class AzTimeoutError extends Schema.TaggedError<AzTimeoutError>()("AzTime
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
+export class AzProfileError extends Schema.TaggedError<AzProfileError>()("AzProfileError", {
+  message: Schema.String,
+  profile: Schema.String,
+  hint: Schema.optionalKey(Schema.String),
+  nextCommand: Schema.optionalKey(Schema.String),
+  retryable: Schema.optionalKey(Schema.Boolean),
+}) {}
+
 export class AzParseError extends Schema.TaggedError<AzParseError>()("AzParseError", {
   message: Schema.String,
   rawOutput: Schema.String,
@@ -35,4 +43,9 @@ export class AzParseError extends Schema.TaggedError<AzParseError>()("AzParseErr
   retryable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
-export type AzError = AzSecurityError | AzCommandError | AzTimeoutError | AzParseError;
+export type AzError =
+  | AzSecurityError
+  | AzCommandError
+  | AzTimeoutError
+  | AzParseError
+  | AzProfileError;
