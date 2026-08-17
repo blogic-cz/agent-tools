@@ -174,6 +174,11 @@ const DEFAULT_BLOCKED_CLI_TOOLS: BlockedCliTool[] = [
     wrapper: "agent-tools-db",
   },
   {
+    pattern: /(?:^|[;&|]\s*)az\s+(?:devops|pipelines|repos|boards|artifacts)\b/,
+    name: "az (Azure DevOps)",
+    wrapper: "agent-tools-azdo",
+  },
+  {
     pattern: /(?:^|[;&|]\s*)az\s/,
     name: "az",
     wrapper: "agent-tools-az",
@@ -181,7 +186,7 @@ const DEFAULT_BLOCKED_CLI_TOOLS: BlockedCliTool[] = [
   {
     pattern: /(?:^|[;&|]\s*)curl\s.*dev\.azure\.com/,
     name: "curl (Azure DevOps)",
-    wrapper: "agent-tools-az",
+    wrapper: "agent-tools-azdo",
   },
 ];
 
@@ -209,7 +214,7 @@ const DEFAULT_POLLING_DETECTION_RULES: PollingDetectionRule[] = [
   },
   {
     pattern: /\bpipelines?\s+runs?\b/,
-    suggestion: "bun agent-tools-az build summary --build-id <ID>",
+    suggestion: "bun agent-tools-azdo build summary --build-id <ID>",
   },
 ];
 

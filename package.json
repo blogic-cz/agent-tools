@@ -1,7 +1,7 @@
 {
   "name": "@blogic-cz/agent-tools",
   "version": "0.18.1",
-  "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure DevOps, logs, sessions, and audit",
+  "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure platform, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
     "ai",
@@ -22,6 +22,7 @@
   "bin": {
     "agent-tools-audit": "./src/audit-tool/index.ts",
     "agent-tools-az": "./src/az-tool/index.ts",
+    "agent-tools-azdo": "./src/azdo-tool/index.ts",
     "agent-tools-db": "./src/db-tool/index.ts",
     "agent-tools-gh": "./src/gh-tool/index.ts",
     "agent-tools-k8s": "./src/k8s-tool/index.ts",
@@ -30,6 +31,7 @@
     "agent-tools-session": "./src/session-tool/index.ts",
     "audit-tool": "./src/audit-tool/index.ts",
     "az-tool": "./src/az-tool/index.ts",
+    "azdo-tool": "./src/azdo-tool/index.ts",
     "db-tool": "./src/db-tool/index.ts",
     "gh-tool": "./src/gh-tool/index.ts",
     "k8s-tool": "./src/k8s-tool/index.ts",
@@ -86,6 +88,10 @@
     "#az/*": {
       "types": "./dist/az-tool/*.d.ts",
       "default": "./src/az-tool/*.ts"
+    },
+    "#azdo/*": {
+      "types": "./dist/azdo-tool/*.d.ts",
+      "default": "./src/azdo-tool/*.ts"
     },
     "#guard": {
       "types": "./dist/credential-guard/index.d.ts",
