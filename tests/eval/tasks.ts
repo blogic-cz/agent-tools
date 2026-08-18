@@ -213,8 +213,8 @@ export const evalTasks: EvalTask[] = [
     expectedPattern: "sha256|checksum|runtime.json",
   },
   {
-    id: "az-build-failed-jobs",
-    tool: "az-tool",
+    id: "azdo-build-failed-jobs",
+    tool: "azdo-tool",
     description:
       "Find failed jobs for build 44192 and report which stage blocked release promotion.",
     input: {
@@ -225,8 +225,8 @@ export const evalTasks: EvalTask[] = [
     expectedPattern: "failed|canceled|stage",
   },
   {
-    id: "az-build-summary-duration",
-    tool: "az-tool",
+    id: "azdo-build-summary-duration",
+    tool: "azdo-tool",
     description: "Summarize build 44192 job durations and call out the top 2 longest jobs.",
     input: {
       command: "build summary",
@@ -236,8 +236,8 @@ export const evalTasks: EvalTask[] = [
     expectedPattern: "duration|longest|job",
   },
   {
-    id: "az-build-log-content",
-    tool: "az-tool",
+    id: "azdo-build-log-content",
+    tool: "azdo-tool",
     description:
       "Read build log content for build 44192 log 12 and extract the first test failure.",
     input: {
@@ -249,8 +249,8 @@ export const evalTasks: EvalTask[] = [
     expectedPattern: "test|failure|assert",
   },
   {
-    id: "az-pipeline-list-cmd",
-    tool: "az-tool",
+    id: "azdo-pipeline-list-cmd",
+    tool: "azdo-tool",
     description: "Run raw az pipelines list command and identify pipelines matching 'deploy-api'.",
     input: {
       command: "cmd",

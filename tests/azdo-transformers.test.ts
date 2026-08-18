@@ -1,8 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type { BuildJob } from "#az/types";
+import type { BuildJob } from "#azdo/types";
 
-import { transformBuildLogContent, transformCmdOutput, transformTimeline } from "#az/transformers";
+import {
+  transformBuildLogContent,
+  transformCmdOutput,
+  transformTimeline,
+} from "#azdo/transformers";
 
 function createBuildJob(overrides?: Partial<BuildJob>): BuildJob {
   return {

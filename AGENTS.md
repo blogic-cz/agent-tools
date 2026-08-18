@@ -1,6 +1,6 @@
 # agent-tools
 
-This project contains safe CLI wrappers for AI coding agents. The tools provide controlled access to GitHub, databases, Kubernetes, Azure DevOps, application logs, and OpenCode sessions — with project-specific configuration via JSON5.
+This project contains safe CLI wrappers for AI coding agents. The tools provide controlled access to GitHub, databases, Kubernetes, Azure platform resources, Azure DevOps, application logs, and OpenCode sessions — with project-specific configuration via JSON5.
 
 ## KISS
 

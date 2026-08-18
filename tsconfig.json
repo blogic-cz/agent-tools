@@ -25,6 +25,7 @@
       "#observability/*": ["./src/observability-tool/*"],
       "#logs/*": ["./src/logs-tool/*"],
       "#az/*": ["./src/az-tool/*"],
+      "#azdo/*": ["./src/azdo-tool/*"],
       "#guard": ["./src/credential-guard/index.ts"],
       "#session/*": ["./src/session-tool/*"]
     }

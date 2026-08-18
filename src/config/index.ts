@@ -1,6 +1,7 @@
 export type {
   AgentToolsConfig,
   AzureConfig,
+  AzurePlatformConfig,
   K8sConfig,
   DbEnvConfig,
   DbAllowedMutationTargets,

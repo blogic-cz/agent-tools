@@ -1,6 +1,6 @@
 export const REQUIRED_BINARIES = {
   az: {
-    tools: "az-tool",
+    tools: "az-tool and azdo-tool",
     install:
       "Install it with `brew install azure-cli` (macOS) or see https://learn.microsoft.com/cli/azure/install-azure-cli.",
   },

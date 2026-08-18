@@ -1,10 +1,26 @@
 import { Schema } from "effect";
 
-/** Azure DevOps profile configuration */
+/** Azure DevOps profile, consumed by azdo-tool. */
 export type AzureConfig = {
   organization: string;
   defaultProject: string;
   timeoutMs?: number;
+};
+
+/** Azure platform (PaaS) profile, consumed by az-tool. */
+export type AzurePlatformConfig = {
+  subscription: string;
+  timeoutMs?: number;
+  /**
+   * Require --profile to be passed explicitly before this subscription is
+   * touched. Defaults to true for profiles keyed "prod" or "production".
+   */
+  production?: boolean;
+  /**
+   * Resource groups this profile may address. Empty or absent means every
+   * resource group in the subscription is allowed.
+   */
+  allowedResourceGroups?: string[];
 };
 
 export type CleanupPolicy = "leave-running" | "stop-if-started";
@@ -206,6 +222,8 @@ export type AgentToolsConfig = {
   $schema?: string;
   /** Named Azure DevOps profiles. e.g. { default: { organization: "...", defaultProject: "..." } } */
   azure?: Record<string, AzureConfig>;
+  /** Named Azure platform profiles. e.g. { default: { subscription: "..." } } */
+  azurePlatform?: Record<string, AzurePlatformConfig>;
   /** Named VPN definitions referenced by profile prerequisites. */
   vpns?: Record<string, VpnConfig>;
   /** Named Kubernetes cluster profiles. e.g. { default: {...}, staging: {...} } */

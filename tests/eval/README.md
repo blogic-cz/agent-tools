@@ -52,7 +52,7 @@ A task **passes** only at score 1.0.
 | gh-tool      | 7     | 7      | 7.0/7.0 |
 | db-tool      | 4     | 4      | 4.0/4.0 |
 | k8s-tool     | 5     | 4      | 4.5/5.0 |
-| az-tool      | 4     | 4      | 4.0/4.0 |
+| azdo-tool    | 4     | 4      | 4.0/4.0 |
 | logs-tool    | 2     | 2      | 2.0/2.0 |
 | session-tool | 1     | 0      | 0.0/1.0 |
 

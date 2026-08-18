@@ -2,15 +2,15 @@ import { Effect, Schema } from "effect";
 
 import type { BuildJob, BuildLogs, BuildTimeline, JobSummary, PipelineRun } from "./types";
 
-import { AzParseError } from "./errors";
-import { AzService } from "./service";
+import { AzdoParseError } from "./errors";
+import { AzdoService } from "./service";
 import { transformBuildLogContent, transformTimeline } from "./transformers";
 
 /**
  * Get build timeline with all records (jobs, stages, tasks, etc.)
  */
 export const getBuildTimeline = Effect.fn("Build.getBuildTimeline")(function* (buildId: number) {
-  const az = yield* AzService;
+  const az = yield* AzdoService;
 
   const result = yield* az.runInvoke({
     area: "build",
@@ -52,7 +52,7 @@ export const getBuildTimeline = Effect.fn("Build.getBuildTimeline")(function* (b
   )(result).pipe(
     Effect.mapError(
       (e) =>
-        new AzParseError({
+        new AzdoParseError({
           message: `Failed to parse build timeline: ${String(e)}`,
           rawOutput: JSON.stringify(result).slice(0, 500),
           hint: "The Azure DevOps API returned an unexpected response format for build timeline",
@@ -85,7 +85,7 @@ export const getBuildJobs = Effect.fn("Build.getBuildJobs")(function* (buildId: 
  * Get list of build logs
  */
 export const getBuildLogs = Effect.fn("Build.getBuildLogs")(function* (buildId: number) {
-  const az = yield* AzService;
+  const az = yield* AzdoService;
 
   const result = yield* az.runInvoke({
     area: "build",
@@ -109,7 +109,7 @@ export const getBuildLogs = Effect.fn("Build.getBuildLogs")(function* (buildId: 
   )(result).pipe(
     Effect.mapError(
       (e) =>
-        new AzParseError({
+        new AzdoParseError({
           message: `Failed to parse build logs: ${String(e)}`,
           rawOutput: JSON.stringify(result).slice(0, 500),
           hint: "The Azure DevOps API returned an unexpected response format for build logs",
@@ -127,7 +127,7 @@ export const getBuildLogContent = Effect.fn("Build.getBuildLogContent")(function
   buildId: number,
   logId: number,
 ) {
-  const az = yield* AzService;
+  const az = yield* AzdoService;
 
   const result = yield* az.runInvoke({
     area: "build",
@@ -146,7 +146,7 @@ export const getBuildLogContent = Effect.fn("Build.getBuildLogContent")(function
   )(result).pipe(
     Effect.mapError(
       (e) =>
-        new AzParseError({
+        new AzdoParseError({
           message: `Failed to parse log content: ${String(e)}`,
           rawOutput: String(result).slice(0, 500),
           hint: "The Azure DevOps API returned an unexpected format for log content",
@@ -228,7 +228,7 @@ export const listPipelineRuns = Effect.fn("Build.listPipelineRuns")(function* (o
   pipelineId?: number;
   top?: number;
 }) {
-  const az = yield* AzService;
+  const az = yield* AzdoService;
 
   const parts = ["pipelines", "runs", "list", "--output", "json"];
 
@@ -249,7 +249,7 @@ export const listPipelineRuns = Effect.fn("Build.listPipelineRuns")(function* (o
   const jsonData = yield* Effect.try({
     try: () => JSON.parse(rawResult) as unknown,
     catch: () =>
-      new AzParseError({
+      new AzdoParseError({
         message: "Failed to parse JSON from pipeline runs output",
         rawOutput: rawResult.slice(0, 500),
         hint: "The az CLI returned non-JSON output. Check that the command ran successfully.",
@@ -273,7 +273,7 @@ export const listPipelineRuns = Effect.fn("Build.listPipelineRuns")(function* (o
   )(jsonData).pipe(
     Effect.mapError(
       (e) =>
-        new AzParseError({
+        new AzdoParseError({
           message: `Failed to parse pipeline runs: ${String(e)}`,
           rawOutput: rawResult.slice(0, 500),
           hint: "The Azure DevOps API returned an unexpected response format for pipeline runs",

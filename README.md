@@ -1,6 +1,6 @@
 # @blogic-cz/agent-tools
 
-Safe CLI wrappers for AI coding agents. 8 tools for GitHub, observability, databases, Kubernetes, Azure DevOps, logs, OpenCode sessions, and audit history — with JSON5 config and a credential guard that blocks agents from touching secrets.
+Safe CLI wrappers for AI coding agents. 9 tools for GitHub, observability, databases, Kubernetes, Azure platform, Azure DevOps, logs, OpenCode sessions, and audit history — with JSON5 config and a credential guard that blocks agents from touching secrets.
 
 ## Why
 
@@ -42,6 +42,7 @@ npx skills add blogic-cz/agent-tools --path skills/observability-tool
 npx skills add blogic-cz/agent-tools --path skills/db-tool
 npx skills add blogic-cz/agent-tools --path skills/k8s-tool
 npx skills add blogic-cz/agent-tools --path skills/az-tool
+npx skills add blogic-cz/agent-tools --path skills/azdo-tool
 npx skills add blogic-cz/agent-tools --path skills/logs-tool
 npx skills add blogic-cz/agent-tools --path skills/session-tool
 ```
@@ -109,6 +110,7 @@ npx skills add blogic-cz/agent-tools --path skills/observability-tool
 npx skills add blogic-cz/agent-tools --path skills/db-tool
 npx skills add blogic-cz/agent-tools --path skills/k8s-tool
 npx skills add blogic-cz/agent-tools --path skills/az-tool
+npx skills add blogic-cz/agent-tools --path skills/azdo-tool
 npx skills add blogic-cz/agent-tools --path skills/logs-tool
 npx skills add blogic-cz/agent-tools --path skills/session-tool
 
@@ -126,7 +128,8 @@ Available per-tool skills:
 | `observability-tool` | Tempo traces, Loki logs, Prometheus metrics |
 | `db-tool`            | SQL queries, schema introspection           |
 | `k8s-tool`           | Kubernetes pods, logs, deployments          |
-| `az-tool`            | Azure DevOps pipelines, builds              |
+| `az-tool`            | Azure VMs, web apps, storage, AKS, ACR      |
+| `azdo-tool`          | Azure DevOps pipelines, builds              |
 | `logs-tool`          | Application log reading (local and remote)  |
 | `session-tool`       | OpenCode session history browsing           |
 | `agent-tools`        | All of the above in a single skill          |
@@ -254,7 +257,8 @@ export default { handleToolExecuteBefore };
 | `audit-tool`         | Audit trail browser — inspect recent tool invocations and purge old entries                                      |
 | `db-tool`            | Database query tool — SQL execution, schema introspection                                                        |
 | `k8s-tool`           | Kubernetes tool — kubectl wrapper + structured commands (`pods`, `logs`, `describe`, `exec`, `top`)              |
-| `az-tool`            | Azure DevOps tool — pipelines, builds, repos                                                                     |
+| `az-tool`            | Azure platform tool — read-only inspection of VMs, web apps, storage, AKS, ACR                                   |
+| `azdo-tool`          | Azure DevOps tool — pipelines, builds, repos                                                                     |
 | `logs-tool`          | Application logs — read local and remote (k8s pod) logs                                                          |
 | `session-tool`       | OpenCode session browser — list, read, search sessions                                                           |
 
@@ -265,6 +269,18 @@ All tools support `--help` for full usage documentation. Legacy `agent-tools-*` 
 `k8s-tool` parses generic kubectl commands into arguments and invokes `kubectl` directly. Shell pipelines, chaining, substitution, user overrides of the configured cluster or credentials, mutating `config`/`auth` subcommands, and `cluster-info dump` are rejected. Direct Secret reads, raw kubeconfig output, filename/kustomize reads, and `kubectl diff` are also blocked.
 
 Pod `exec` is limited to direct `redis-cli PING/INFO` and `ls` diagnostics. Generic exec cannot read file contents; use `logs-tool`, which confines files to the configured log directory, tails them through an internal structured operation, and applies the same case-insensitive literal substring filter locally and remotely. Configured log directories are a trusted boundary and must not permit adversarial symlink replacement during reads.
+
+### Azure command safety
+
+Azure is split across two binaries. `azdo-tool` covers Azure DevOps (`pipelines`, `repos`, `devops invoke`); `az-tool` covers the Azure platform (`vm`, `webapp`, `storage`, `aks`, `acr`, `monitor`, …). Sending a DevOps group to `az-tool` fails with a pointer to `azdo-tool` rather than running.
+
+`az-tool` resolves the verb **positionally** — the last word before the first flag — so a flag value can never be read as a command. Only read-only verbs are allowed (`list`, `show`, `describe`, `exists`, `search`, `history`, `version`, `validate`, `wait`, plus the `list-`, `show-`, `check-`, and `get-` families); mutating verbs and unknown verbs are both rejected. Credential reads are blocked regardless of verb: the `get-access-token`/`get-credentials`/`list-keys`/`list-connection-strings`/`list-publishing-profiles` family, and any command whose group path contains `secret`, `secrets`, `key`, `keys`, `credential`, `credentials`, `appsettings`, `admin-key`, `query-key`, `sas`, `password`, or `connection-string` — for those the listing itself returns values (`storage account keys list`, `webapp config appsettings list`). Key Vault is narrower: `keyvault secret list`/`list-versions` return names and attributes and are allowed, `keyvault secret show` is not, and the `key`/`certificate` subgroups are allowed because they expose only public material. Shell syntax is rejected and commands are spawned as an argument vector, never through a shell.
+
+The subscription comes from the `azurePlatform` config profile and is appended to every command; a user-supplied `--subscription` is rejected, and with no `azurePlatform` section the tool refuses to run rather than falling back to whatever `az login` last selected. The set of configured profiles is therefore the allowlist of reachable subscriptions.
+
+Two optional scope guards sit on top. A profile keyed `prod`/`production`, or carrying `production: true`, cannot be reached through auto-selection or the `default` key — `--profile` must name it explicitly, mirroring `k8s-tool`'s refusal of implicit prod. And `allowedResourceGroups` rejects any command naming a group outside the list; an empty or absent list allows every group in the subscription. A group is recognised both from `-g`/`--resource-group` — every occurrence, since the Azure CLI is argparse-based and a repeated flag takes the last value — and from the `/resourceGroups/<name>` segment of a full ARM resource ID passed to a flag such as `--scope` or `--resource`. `--ids` is rejected outright because it carries its own subscription as well as its own resource group, side-stepping both guards. The resource-group check only fires when a command names a group, so subscription-wide reads such as `vm list` remain unrestricted — it guards against touching the wrong group, it does not partition the subscription.
+
+`azdo-tool` keeps its allowlist of read-only operations (`list`, `run`, `show`, `show-tags`) and rejects `create`/`delete`/`update`/`cancel`/`queue` anywhere in the command. `run` is accepted only in the `pipelines` group — `acr run` and `acr task run` execute arbitrary commands in Azure and are blocked. The `acr` and `account` groups remain reachable from `azdo-tool` for backwards compatibility; new work should use `az-tool` for them. Because those two groups address the Azure platform rather than Azure DevOps, the platform credential rules apply to them here as well — `acr credential show` is refused by both tools. The verb and segment lists behind that live in `src/shared/azure-credentials.ts` so the two tools cannot drift apart.
 
 ### gh-tool machine contracts
 
@@ -403,8 +419,8 @@ Each tool section supports multiple named profiles. Select with `--profile <name
 ```
 
 ```bash
-bun az-tool cmd --cmd "pipelines list"                    # uses "default" profile
-bun az-tool cmd --cmd "pipelines list" --profile legacy   # uses "legacy" profile
+bun azdo-tool cmd --cmd "pipelines list"                    # uses "default" profile
+bun azdo-tool cmd --cmd "pipelines list" --profile legacy   # uses "legacy" profile
 ```
 
 **Profile resolution:** `--profile` flag > auto-select (single profile) > `"default"` key > error.
@@ -422,7 +438,8 @@ Each tool uses its own auth method — no unified token store:
 | `gh-tool`            | `gh` CLI session (`gh auth login`) or `GITHUB_TOKEN` env var                                 |
 | `observability-tool` | Grafana URL from config plus optional token from `tokenEnvVar`                               |
 | `k8s-tool`           | Existing kubectl context (kubeconfig). Cluster ID from config resolves context automatically |
-| `az-tool`            | `az` CLI session (`az login`)                                                                |
+| `az-tool`            | `az` CLI session (`az login`). Subscription pinned by the `azurePlatform` config profile     |
+| `azdo-tool`          | `az` CLI session (`az login`)                                                                |
 | `db-tool`            | Password from env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWORD`) |
 | `logs-tool`          | No auth — reads local files or uses k8s-tool for remote access                               |
 

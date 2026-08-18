@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer } from "effect";
 
-import type { BuildJob, BuildTimeline, BuildLogs, JobSummary, PipelineRun } from "#az/types";
+import type { BuildJob, BuildTimeline, BuildLogs, JobSummary, PipelineRun } from "#azdo/types";
 
 import {
   getBuildTimeline,
@@ -11,9 +11,9 @@ import {
   getBuildJobSummary,
   findFailedJobs,
   listPipelineRuns,
-} from "#az/build";
-import { AzCommandError, AzParseError, AzTimeoutError } from "#az/errors";
-import { AzService } from "#az/service";
+} from "#azdo/build";
+import { AzdoCommandError, AzdoParseError, AzdoTimeoutError } from "#azdo/errors";
+import { AzdoService } from "#azdo/service";
 import { formatAny } from "#shared";
 function createMockBuildJob(overrides?: Partial<BuildJob>): BuildJob {
   return {
@@ -105,7 +105,7 @@ function createMockPipelineRun(overrides?: Partial<PipelineRun>): PipelineRun {
 }
 
 function createMockAzServiceLayer(mockResponses: Record<string, unknown>) {
-  return Layer.succeed(AzService, {
+  return Layer.succeed(AzdoService, {
     runCommand: (cmd: string) => Effect.succeed(JSON.stringify(mockResponses[`cmd:${cmd}`] ?? {})),
     runInvoke: (params) => {
       const key = `invoke:${params.area}:${params.resource}`;
@@ -169,7 +169,7 @@ describe("getBuildTimeline", () => {
     }),
   );
 
-  it.effect("fails with AzParseError on invalid data", () =>
+  it.effect("fails with AzdoParseError on invalid data", () =>
     Effect.gen(function* () {
       const layer = createMockAzServiceLayer({
         "invoke:build:timeline": { invalid: "data" },
@@ -278,7 +278,7 @@ describe("getBuildLogs", () => {
     }),
   );
 
-  it.effect("fails with AzParseError on invalid logs data", () =>
+  it.effect("fails with AzdoParseError on invalid logs data", () =>
     Effect.gen(function* () {
       const layer = createMockAzServiceLayer({
         "invoke:build:logs": { invalid: "data" },
@@ -310,7 +310,7 @@ describe("getBuildLogContent", () => {
     expect(result).toBe(logContent);
   });
 
-  it("fails with AzParseError on non-string response", async () => {
+  it("fails with AzdoParseError on non-string response", async () => {
     const layer = createMockAzServiceLayer({
       "invoke:build:logs": { notAString: true },
     });
@@ -321,7 +321,7 @@ describe("getBuildLogContent", () => {
 
     Result.match(result, {
       onFailure: (left) => {
-        expect(left._tag).toBe("AzParseError");
+        expect(left._tag).toBe("AzdoParseError");
       },
       onSuccess: () => {
         expect.fail("Expected Left but got Right");
@@ -759,7 +759,7 @@ describe("listPipelineRuns", () => {
     }),
   );
 
-  it.effect("fails with AzParseError on invalid response", () =>
+  it.effect("fails with AzdoParseError on invalid response", () =>
     Effect.gen(function* () {
       const layer = createMockAzServiceLayer({
         "cmd:pipelines runs list --output json": {
@@ -771,7 +771,7 @@ describe("listPipelineRuns", () => {
 
       Result.match(result, {
         onFailure: (left) => {
-          expect(left._tag).toBe("AzParseError");
+          expect(left._tag).toBe("AzdoParseError");
         },
         onSuccess: () => {
           expect.fail("Expected Left but got Right");
@@ -1071,22 +1071,22 @@ describe("output format wrappers – JSON and TOON", () => {
 });
 
 describe("az error recovery hints in build context", () => {
-  it("AzParseError carries optional hint fields", () => {
-    const error = new AzParseError({
+  it("AzdoParseError carries optional hint fields", () => {
+    const error = new AzdoParseError({
       message: "Failed to parse build timeline",
       rawOutput: '{"bad":"data"}',
       hint: "The Azure DevOps API returned an unexpected response format",
-      nextCommand: "agent-tools-az build timeline --build-id 123",
+      nextCommand: "agent-tools-azdo build timeline --build-id 123",
       retryable: true,
     });
-    expect(error._tag).toBe("AzParseError");
+    expect(error._tag).toBe("AzdoParseError");
     expect(error.hint).toContain("unexpected response format");
     expect(error.nextCommand).toContain("--build-id");
     expect(error.retryable).toBe(true);
   });
 
-  it("AzCommandError carries optional hint fields", () => {
-    const error = new AzCommandError({
+  it("AzdoCommandError carries optional hint fields", () => {
+    const error = new AzdoCommandError({
       message: "az pipeline failed",
       command: "az pipelines runs list",
       exitCode: 1,
@@ -1101,8 +1101,8 @@ describe("az error recovery hints in build context", () => {
     expect(error.exitCode).toBe(1);
   });
 
-  it("AzTimeoutError carries retryable hint", () => {
-    const error = new AzTimeoutError({
+  it("AzdoTimeoutError carries retryable hint", () => {
+    const error = new AzdoTimeoutError({
       message: "Command timed out",
       command: "az devops invoke",
       timeoutMs: 30000,
@@ -1115,7 +1115,7 @@ describe("az error recovery hints in build context", () => {
   });
 
   it("errors without hints have undefined optional fields", () => {
-    const error = new AzParseError({
+    const error = new AzdoParseError({
       message: "Parse failed",
       rawOutput: "bad",
     });
@@ -1124,7 +1124,7 @@ describe("az error recovery hints in build context", () => {
     expect(error.retryable).toBeUndefined();
   });
 
-  it.effect("AzParseError propagates through build function on bad data", () =>
+  it.effect("AzdoParseError propagates through build function on bad data", () =>
     Effect.gen(function* () {
       const layer = createMockAzServiceLayer({
         "invoke:build:timeline": { totally: "wrong" },
@@ -1134,8 +1134,8 @@ describe("az error recovery hints in build context", () => {
 
       Result.match(result, {
         onFailure: (err) => {
-          expect(err._tag).toBe("AzParseError");
-          expect((err as AzParseError).hint).toContain("unexpected response format");
+          expect(err._tag).toBe("AzdoParseError");
+          expect((err as AzdoParseError).hint).toContain("unexpected response format");
         },
         onSuccess: () => {
           expect.fail("Expected failure but got success");
@@ -1146,62 +1146,62 @@ describe("az error recovery hints in build context", () => {
 });
 
 describe("error recovery hints - unit tests", () => {
-  it("AzCommandError with hint and nextCommand", () => {
-    const error = new AzCommandError({
+  it("AzdoCommandError with hint and nextCommand", () => {
+    const error = new AzdoCommandError({
       message: "Build not found",
       command: "az pipelines runs show --id 999",
       exitCode: 1,
       hint: "Check the build ID. Use 'az pipelines runs list' to see available builds.",
-      nextCommand: "agent-tools-az pipeline list",
+      nextCommand: "agent-tools-azdo pipeline list",
       retryable: true,
     });
 
-    expect(error._tag).toBe("AzCommandError");
+    expect(error._tag).toBe("AzdoCommandError");
     expect(error.hint).toBe(
       "Check the build ID. Use 'az pipelines runs list' to see available builds.",
     );
-    expect(error.nextCommand).toBe("agent-tools-az pipeline list");
+    expect(error.nextCommand).toBe("agent-tools-azdo pipeline list");
     expect(error.retryable).toBe(true);
   });
 
-  it("AzParseError with hint", () => {
-    const error = new AzParseError({
+  it("AzdoParseError with hint", () => {
+    const error = new AzdoParseError({
       message: "Failed to parse build timeline",
       rawOutput: "invalid json",
       hint: "The Azure DevOps API returned an unexpected response format. Check your configuration.",
     });
 
-    expect(error._tag).toBe("AzParseError");
+    expect(error._tag).toBe("AzdoParseError");
     expect(error.hint).toBe(
       "The Azure DevOps API returned an unexpected response format. Check your configuration.",
     );
     expect(error.nextCommand).toBeUndefined();
   });
 
-  it("AzTimeoutError with hint and retryable", () => {
-    const error = new AzTimeoutError({
+  it("AzdoTimeoutError with hint and retryable", () => {
+    const error = new AzdoTimeoutError({
       message: "Request timed out after 30000ms",
       command: "az pipelines runs show --id 123",
       timeoutMs: 30000,
       hint: "Azure DevOps API is slow to respond. Try again in a moment.",
-      nextCommand: "agent-tools-az pipeline show --id 123",
+      nextCommand: "agent-tools-azdo pipeline show --id 123",
       retryable: true,
     });
 
-    expect(error._tag).toBe("AzTimeoutError");
+    expect(error._tag).toBe("AzdoTimeoutError");
     expect(error.hint).toBe("Azure DevOps API is slow to respond. Try again in a moment.");
-    expect(error.nextCommand).toBe("agent-tools-az pipeline show --id 123");
+    expect(error.nextCommand).toBe("agent-tools-azdo pipeline show --id 123");
     expect(error.retryable).toBe(true);
   });
 
   it("hint fields are optional in Azure errors", () => {
-    const error = new AzCommandError({
+    const error = new AzdoCommandError({
       message: "Command failed",
       command: "az pipelines runs show --id 123",
       exitCode: 1,
     });
 
-    expect(error._tag).toBe("AzCommandError");
+    expect(error._tag).toBe("AzdoCommandError");
     expect(error.message).toBe("Command failed");
     expect(error.hint).toBeUndefined();
     expect(error.nextCommand).toBeUndefined();

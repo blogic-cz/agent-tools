@@ -7,197 +7,130 @@ import {
   makeSchemaCommand,
   formatAny,
   formatOption,
-  formatOutput,
   logText,
   renderCauseToStderr,
   VERSION,
 } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
-import {
-  findFailedJobs,
-  getBuildJobSummary,
-  getBuildLogContent,
-  getBuildLogs,
-  getBuildTimeline,
-} from "./build";
 import { AzService, AzServiceLayer } from "./service";
 import { ConfigServiceLayer } from "#config";
 
-// ---------------------------------------------------------------------------
-// Common flags shared across build subcommands
-// ---------------------------------------------------------------------------
-
-const commonBuildFlags = {
-  format: formatOption,
-  profile: Flag.optional(Flag.string("profile")).pipe(
-    Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
-  ),
-};
-
-// ---------------------------------------------------------------------------
-// Build subcommands
-// ---------------------------------------------------------------------------
-
-const buildTimelineCommand = Command.make(
-  "timeline",
-  {
-    ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
-  },
-  ({ buildId, format, profile: _profile }) =>
-    Effect.gen(function* () {
-      const result = yield* getBuildTimeline(buildId);
-      yield* logText(formatAny(result, format));
-    }),
-).pipe(Command.withDescription("Get build timeline with all records (jobs, stages, tasks)"));
-
-const buildFailedJobsCommand = Command.make(
-  "failed-jobs",
-  {
-    ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
-  },
-  ({ buildId, format, profile: _profile }) =>
-    Effect.gen(function* () {
-      const failedJobs = yield* findFailedJobs(buildId);
-      yield* logText(formatAny({ buildId, failedJobs }, format));
-    }),
-).pipe(Command.withDescription("Find failed or canceled jobs in a build"));
-
-const buildLogsCommand = Command.make(
-  "logs",
-  {
-    ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
-  },
-  ({ buildId, format, profile: _profile }) =>
-    Effect.gen(function* () {
-      const result = yield* getBuildLogs(buildId);
-      yield* logText(formatAny(result, format));
-    }),
-).pipe(Command.withDescription("Get list of build logs"));
-
-const buildLogContentCommand = Command.make(
-  "log-content",
-  {
-    ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
-    logId: Flag.integer("log-id").pipe(Flag.withDescription("Log ID")),
-  },
-  ({ buildId, format, logId, profile: _profile }) =>
-    Effect.gen(function* () {
-      const content = yield* getBuildLogContent(buildId, logId);
-      yield* logText(formatAny({ buildId, logId, content }, format));
-    }),
-).pipe(Command.withDescription("Get specific log content by log ID"));
-
-const buildSummaryCommand = Command.make(
-  "summary",
-  {
-    ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
-  },
-  ({ buildId, format, profile: _profile }) =>
-    Effect.gen(function* () {
-      const summary = yield* getBuildJobSummary(buildId);
-      yield* logText(formatAny({ buildId, summary }, format));
-    }),
-).pipe(Command.withDescription("Get job summaries with duration and status information"));
-
-// ---------------------------------------------------------------------------
-// Build parent command
-// ---------------------------------------------------------------------------
-
-const buildCommand = Command.make("build", {}).pipe(
-  Command.withDescription("Build helpers for Azure DevOps pipelines"),
-  Command.withSubcommands([
-    buildTimelineCommand,
-    buildFailedJobsCommand,
-    buildLogsCommand,
-    buildLogContentCommand,
-    buildSummaryCommand,
-  ]),
+const profileFlag = Flag.optional(Flag.string("profile")).pipe(
+  Flag.withDescription("Azure platform profile name (from agent-tools config)"),
 );
 
+const commonFlags = {
+  format: formatOption,
+  profile: profileFlag,
+};
+
+/** Run a fixed read-only command through the same security gate as `cmd`. */
+const runFixed = (cmd: string, profile: Option.Option<string>, format: "toon" | "json") =>
+  Effect.gen(function* () {
+    const az = yield* AzService;
+    const result = yield* az.runCommand(cmd, Option.getOrUndefined(profile));
+    yield* logText(formatAny(result.data, format));
+  });
+
 // ---------------------------------------------------------------------------
-// Raw command subcommand (preserves existing --cmd behavior)
+// Typed subcommands
+// ---------------------------------------------------------------------------
+
+const subscriptionCommand = Command.make("subscription", commonFlags, ({ format, profile }) =>
+  runFixed("account show", profile, format),
+).pipe(Command.withDescription("Show the subscription every command in this profile is pinned to"));
+
+const groupsCommand = Command.make("groups", commonFlags, ({ format, profile }) =>
+  runFixed("group list", profile, format),
+).pipe(Command.withDescription("List resource groups in the pinned subscription"));
+
+const resourcesCommand = Command.make(
+  "resources",
+  {
+    ...commonFlags,
+    group: Flag.optional(Flag.string("group")).pipe(
+      Flag.withDescription("Limit the listing to one resource group"),
+    ),
+  },
+  ({ format, group, profile }) =>
+    Effect.gen(function* () {
+      const groupName = Option.getOrUndefined(group);
+      const cmd = groupName ? `resource list --resource-group ${groupName}` : "resource list";
+      yield* runFixed(cmd, profile, format);
+    }),
+).pipe(Command.withDescription("List resources, optionally scoped to one resource group"));
+
+// ---------------------------------------------------------------------------
+// Raw command passthrough
 // ---------------------------------------------------------------------------
 
 const cmdCommand = Command.make(
   "cmd",
   {
-    profile: Flag.optional(Flag.string("profile")).pipe(
-      Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
-    ),
-    project: Flag.optional(Flag.string("project")).pipe(
-      Flag.withDescription("Azure DevOps project name (overrides config default)"),
-    ),
-    cmd: Flag.string("cmd").pipe(Flag.withDescription("az command (without 'az' prefix)")),
+    ...commonFlags,
+    cmd: Flag.string("cmd").pipe(Flag.withDescription("az command (without the 'az' prefix)")),
     dryRun: Flag.boolean("dry-run").pipe(
-      Flag.withDescription("Show command without executing"),
+      Flag.withDescription("Show the command that would run, after security checks"),
       Flag.withDefault(false),
     ),
-    format: formatOption,
   },
-  ({ profile: _profile, project, cmd, dryRun, format }) =>
+  ({ cmd, dryRun, format, profile }) =>
     Effect.gen(function* () {
-      const projectName = project ? Option.getOrUndefined(project) : undefined;
+      const az = yield* AzService;
+      const profileName = Option.getOrUndefined(profile);
 
       if (dryRun) {
-        const fullCommand = `az ${cmd}`;
-        yield* logText(`[DRY-RUN] Would execute: ${fullCommand}`);
+        const rendered = yield* az.renderCommand(cmd, profileName);
+        yield* logText(`[DRY-RUN] Would execute: ${rendered}`);
         return;
       }
 
-      const az = yield* AzService;
-
-      const startTime = Date.now();
-      const output = yield* az.runCommand(cmd, projectName);
-      const executionTimeMs = Date.now() - startTime;
-
-      yield* logText(
-        formatOutput(
-          {
-            success: true,
-            data: output,
-            executionTimeMs,
-          },
-          format,
-        ),
-      );
+      const result = yield* az.runCommand(cmd, profileName);
+      yield* logText(formatAny(result.data, format));
     }),
 ).pipe(
   Command.withDescription(
-    `Execute raw az CLI commands directly.
+    `Execute a read-only Azure platform command.
+
+The subscription is pinned by the selected profile — passing --subscription is rejected.
+Mutating verbs, unknown verbs, credential reads, and shell syntax are all blocked.
 
 EXAMPLES:
-  agent-tools-az cmd --cmd "pipelines list"
-  agent-tools-az cmd --cmd "repos list" --project my-project
-  agent-tools-az cmd --cmd "pipelines runs list --output json"`,
+  az-tool cmd --cmd "vm list"
+  az-tool cmd --cmd "webapp show --name my-app --resource-group my-rg"
+  az-tool cmd --cmd "aks list --query \\"[].{name:name,version:kubernetesVersion}\\""
+  az-tool cmd --cmd "storage account list" --profile prod --dry-run`,
   ),
 );
 
 // ---------------------------------------------------------------------------
-// Main command with subcommands
+// Main command
 // ---------------------------------------------------------------------------
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
 const mainCommand = Command.make("az-tool", {}).pipe(
   Command.withDescription(
-    `Azure CLI Tool for Coding Agents (READ-ONLY)
+    `Azure Platform Tool for Coding Agents (READ-ONLY)
 
-Typed build subcommands:
-  az-tool build timeline --build-id 123
-  az-tool build failed-jobs --build-id 123
-  az-tool build logs --build-id 123
-  az-tool build log-content --build-id 123 --log-id 45
-  az-tool build summary --build-id 123
+Inspects Azure PaaS resources — vm, webapp, storage, aks, acr, monitor, and the rest.
+For Azure DevOps pipelines, builds, and repos use azdo-tool instead.
+
+Typed subcommands:
+  az-tool subscription
+  az-tool groups
+  az-tool resources --group my-rg
 
 Raw az wrapper:
-  az-tool cmd --cmd "pipelines list"`,
+  az-tool cmd --cmd "webapp list"`,
   ),
-  Command.withSubcommands([buildCommand, cmdCommand, commandsCommand]),
+  Command.withSubcommands([
+    subscriptionCommand,
+    groupsCommand,
+    resourcesCommand,
+    cmdCommand,
+    commandsCommand,
+  ]),
 );
 
 const cli = Command.run(mainCommand, {

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/blogic-cz/agent-tools/main/schemas/agent-tools.schema.json",
   "title": "Agent Tools Configuration",
-  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, kubernetes, database, observability, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session, audit, and credentialGuard are global sections.",
+  "description": "Root configuration for the agent-tools package. Tool-specific sections (azure, azurePlatform, kubernetes, database, observability, logs) are maps of named profiles keyed by profile name. Tools choose a profile via --profile <name> (default key is 'default', single-entry maps can be auto-selected). session, audit, and credentialGuard are global sections.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -16,6 +16,14 @@
       "additionalProperties": {
         "description": "Azure DevOps profile configuration for a specific environment or project.",
         "$ref": "#/definitions/AzureConfig"
+      }
+    },
+    "azurePlatform": {
+      "description": "Named Azure platform (PaaS) profiles as Record<string, AzurePlatformConfig>.",
+      "type": "object",
+      "additionalProperties": {
+        "description": "Azure platform profile pinning az-tool to one subscription.",
+        "$ref": "#/definitions/AzurePlatformConfig"
       }
     },
     "kubernetes": {
@@ -140,6 +148,33 @@
         }
       },
       "required": ["organization", "defaultProject"]
+    },
+    "AzurePlatformConfig": {
+      "description": "Azure platform (PaaS) profile configuration. Pins every az-tool command to one subscription.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subscription": {
+          "description": "Azure subscription ID or name appended to every command as --subscription.",
+          "type": "string"
+        },
+        "timeoutMs": {
+          "description": "Optional command timeout in milliseconds.",
+          "type": "number"
+        },
+        "production": {
+          "description": "Require --profile to be passed explicitly before this subscription is touched. Defaults to true for profiles keyed 'prod' or 'production'.",
+          "type": "boolean"
+        },
+        "allowedResourceGroups": {
+          "description": "Resource groups this profile may address via -g/--resource-group. Empty or absent allows every resource group in the subscription.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["subscription"]
     },
     "K8sConfig": {
       "description": "Kubernetes cluster profile configuration.",
@@ -648,6 +683,12 @@
         "default": {
           "organization": "https://dev.azure.com/example-org",
           "defaultProject": "platform",
+          "timeoutMs": 60000
+        }
+      },
+      "azurePlatform": {
+        "default": {
+          "subscription": "00000000-0000-0000-0000-000000000000",
           "timeoutMs": 60000
         }
       },

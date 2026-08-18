@@ -249,14 +249,14 @@ describe("getBlockedCliTool", () => {
     expect(result).not.toBeNull();
   });
 
-  it("blocks curl to dev.azure.com and suggests agent-tools-az", () => {
+  it("blocks curl to dev.azure.com and suggests agent-tools-azdo", () => {
     const bearerHeader = "Authorization: Bearer xxx";
     const result = getBlockedCliTool(
       `curl -s -H "${bearerHeader}" "https://dev.azure.com/my-org/my-project/_apis/build/builds"`,
     );
     expect(result).toEqual({
       name: "curl (Azure DevOps)",
-      wrapper: "agent-tools-az",
+      wrapper: "agent-tools-azdo",
     });
   });
 
@@ -266,7 +266,7 @@ describe("getBlockedCliTool", () => {
     );
     expect(result).toEqual({
       name: "curl (Azure DevOps)",
-      wrapper: "agent-tools-az",
+      wrapper: "agent-tools-azdo",
     });
   });
 
@@ -276,7 +276,7 @@ describe("getBlockedCliTool", () => {
     );
     expect(result).toEqual({
       name: "curl (Azure DevOps)",
-      wrapper: "agent-tools-az",
+      wrapper: "agent-tools-azdo",
     });
   });
 
@@ -453,9 +453,18 @@ describe("CLI tool blocking edge cases", () => {
     expect(getBlockedCliTool("psql -h localhost mydb")?.wrapper).toBe("agent-tools-db");
   });
 
-  it("blocks az", () => {
+  it("blocks az and routes platform commands to agent-tools-az", () => {
     expect(getBlockedCliTool("az login")).not.toBeNull();
     expect(getBlockedCliTool("az login")?.wrapper).toBe("agent-tools-az");
+    expect(getBlockedCliTool("az vm list")?.wrapper).toBe("agent-tools-az");
+    expect(getBlockedCliTool("az keyvault secret show --name pw")?.wrapper).toBe("agent-tools-az");
+  });
+
+  it("routes az Azure DevOps commands to agent-tools-azdo", () => {
+    expect(getBlockedCliTool("az pipelines list")?.wrapper).toBe("agent-tools-azdo");
+    expect(getBlockedCliTool("az repos show --id 1")?.wrapper).toBe("agent-tools-azdo");
+    expect(getBlockedCliTool("az boards work-item show --id 1")?.wrapper).toBe("agent-tools-azdo");
+    expect(getBlockedCliTool("az devops invoke --area build")?.wrapper).toBe("agent-tools-azdo");
   });
 
   it("blocks chained CLI tools after ;", () => {
@@ -521,9 +530,9 @@ describe("detectSleepPolling", () => {
 
   it("detects sleep + az pipeline run polling", () => {
     const result = detectSleepPolling(
-      "sleep 60 && bun agent-tools-az cmd --cmd 'pipelines runs list'",
+      "sleep 60 && bun agent-tools-azdo cmd --cmd 'pipelines runs list'",
     );
-    expect(result).toContain("agent-tools-az");
+    expect(result).toContain("agent-tools-azdo");
   });
 
   it("allows plain sleep without agent-tools", () => {
@@ -568,7 +577,7 @@ describe("detectSleepPolling", () => {
 
   it("detects az pipeline singular form", () => {
     const result = detectSleepPolling("sleep 60 && az pipeline run show --id 123");
-    expect(result).toContain("agent-tools-az");
+    expect(result).toContain("agent-tools-azdo");
   });
 
   it("allows sleep + workflow watch (not polling)", () => {

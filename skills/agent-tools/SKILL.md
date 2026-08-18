@@ -1,11 +1,11 @@
 ---
 name: agent-tools
-description: "LOAD THIS SKILL when: using CLI wrapper tools (gh-tool, observability-tool, db-tool, k8s-tool, az-tool, logs-tool, session-tool), working with observability, databases, GitHub PRs, Kubernetes, Azure DevOps, or application logs. Contains tool overview, usage patterns, and project-specific aliases."
+description: "LOAD THIS SKILL when: using CLI wrapper tools (gh-tool, observability-tool, db-tool, k8s-tool, az-tool, azdo-tool, logs-tool, session-tool), working with observability, databases, GitHub PRs, Kubernetes, Azure platform resources, Azure DevOps, or application logs. Contains tool overview, usage patterns, and project-specific aliases."
 ---
 
 # Agent Tools
 
-Safe CLI wrappers for AI coding agents — GitHub, observability, databases, Kubernetes, Azure DevOps, logs, and OpenCode sessions.
+Safe CLI wrappers for AI coding agents — GitHub, observability, databases, Kubernetes, Azure platform, Azure DevOps, logs, and OpenCode sessions.
 
 **Full documentation**: Read the [README](https://github.com/blogic-cz/agent-tools) for complete API reference, configuration, and credential setup.
 
@@ -32,7 +32,8 @@ Legacy `agent-tools-*` binary names (e.g. `bun gh-tool`) still work but prefer t
 | **observability-tool** | LGTM wrapper — Tempo traces, Loki logs, Prometheus metrics          | `bun observability-tool --help` |
 | **db-tool**            | Database query tool — SQL execution, schema introspection           | `bun db-tool --help`            |
 | **k8s-tool**           | Kubernetes tool — kubectl with config-driven context resolution     | `bun k8s-tool --help`           |
-| **az-tool**            | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun az-tool --help`            |
+| **az-tool**            | Azure platform tool — vm, webapp, storage, aks, acr (read-only)     | `bun az-tool --help`            |
+| **azdo-tool**          | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun azdo-tool --help`          |
 | **logs-tool**          | Application logs — read local and remote (k8s pod) logs             | `bun logs-tool --help`          |
 | **session-tool**       | OpenCode session browser — list, read, search session history       | `bun session-tool --help`       |
 
@@ -120,18 +121,36 @@ bun k8s-tool exec --pod <pod> --exec-cmd "ls -la" --env test
 bun k8s-tool top --env test                      # Show resource usage
 ```
 
-### az-tool (Azure DevOps)
+### az-tool (Azure Platform)
 
 ```bash
-bun az-tool cmd --cmd "pipelines list"
-bun az-tool cmd --cmd "pipelines show --id 123"
-bun az-tool cmd --cmd "pipelines runs list --top 5"
-bun az-tool cmd --cmd "pipelines runs show --id 456"
-bun az-tool build summary --build-id 456      # Job status & duration
-bun az-tool build timeline --build-id 456     # Full event timeline
-bun az-tool build failed-jobs --build-id 456   # Just failures
-bun az-tool build logs --build-id 456          # List available logs
-bun az-tool build log-content --build-id 456 --log-id 78
+bun az-tool subscription                       # Which subscription am I pinned to?
+bun az-tool groups                             # List resource groups
+bun az-tool resources --group my-rg            # List resources in a group
+bun az-tool cmd --cmd "vm list"
+bun az-tool cmd --cmd "webapp show --name my-app --resource-group my-rg"
+bun az-tool cmd --cmd "acr repository list --name my-registry"
+```
+
+Read-only. The subscription is pinned by the `azurePlatform` config profile —
+`--subscription` is rejected. Mutating verbs, unknown verbs, credential reads
+(`keyvault secret show`, `storage account keys list`, `get-access-token`), and
+shell syntax are all blocked; metadata reads such as `keyvault secret list` stay
+allowed. Profiles keyed `prod`/`production` require `--profile` to be passed
+explicitly. Load the `az-tool` skill for the full safety model.
+
+### azdo-tool (Azure DevOps)
+
+```bash
+bun azdo-tool cmd --cmd "pipelines list"
+bun azdo-tool cmd --cmd "pipelines show --id 123"
+bun azdo-tool cmd --cmd "pipelines runs list --top 5"
+bun azdo-tool cmd --cmd "pipelines runs show --id 456"
+bun azdo-tool build summary --build-id 456      # Job status & duration
+bun azdo-tool build timeline --build-id 456     # Full event timeline
+bun azdo-tool build failed-jobs --build-id 456   # Just failures
+bun azdo-tool build logs --build-id 456          # List available logs
+bun azdo-tool build log-content --build-id 456 --log-id 78
 ```
 
 ### logs-tool (Application Logs)
@@ -181,5 +200,6 @@ Each tool uses its own auth — no unified token store:
 | `observability-tool` | Grafana URL from config plus optional token from `tokenEnvVar` |
 | `k8s-tool`           | Existing kubectl context (kubeconfig)                          |
 | `az-tool`            | `az login` session                                             |
+| `azdo-tool`          | `az login` session                                             |
 | `db-tool`            | Env var defined by `passwordEnvVar` in config                  |
 | `logs-tool`          | No auth — local files or via k8s-tool for remote access        |
