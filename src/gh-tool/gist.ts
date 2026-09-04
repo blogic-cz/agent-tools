@@ -287,7 +287,7 @@ const viewGist = Effect.fn("gist.viewGist")(function* (opts: {
   return toGistDetail(gist, { filename: opts.filename, withContent: opts.withContent });
 });
 
-const createGist = Effect.fn("gist.createGist")(function* (opts: {
+export const createGist = Effect.fn("gist.createGist")(function* (opts: {
   paths: string[];
   description: string | null;
   public: boolean;
@@ -311,6 +311,12 @@ const createGist = Effect.fn("gist.createGist")(function* (opts: {
       .split("\n")
       .map((line) => line.trim())
       .findLast((line) => line.startsWith("https://")) ?? "";
+
+  if (url === "") {
+    return yield* Effect.fail(
+      inputError("gh gist create did not return a gist URL", "gh-tool gist create"),
+    );
+  }
 
   const created: GistCreateResult = {
     created: true,

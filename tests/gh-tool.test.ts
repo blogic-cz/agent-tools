@@ -51,7 +51,7 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
-import { toGistDetail, validateBodyFilename, validateEditInput } from "#gh/gist";
+import { createGist, toGistDetail, validateBodyFilename, validateEditInput } from "#gh/gist";
 import {
   buildWatchResult,
   diagnoseLogEntries,
@@ -322,6 +322,31 @@ describe("gist helpers", () => {
       message: "--filename is required with --body/--body-file",
     });
   });
+
+  it.effect("rejects gist creation when gh returns no URL", () =>
+    Effect.gen(function* () {
+      const result = yield* createGist({
+        paths: ["snippet.txt"],
+        description: null,
+        public: false,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () => Effect.succeed({ stdout: "created", stderr: "", exitCode: 0 }),
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: "GitHubCommandError",
+          message: "gh gist create did not return a gist URL",
+        });
+      }
+    }),
+  );
 
   it("maps the REST gist response to detail output", () => {
     const detail = toGistDetail(
