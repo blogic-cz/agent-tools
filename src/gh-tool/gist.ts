@@ -1,11 +1,9 @@
 import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { formatOption, logFormatted } from "#shared";
-import { resolveOptionalTextInput } from "#gh/text-input";
+import { isSensitivePath, resolveOptionalTextInput } from "#gh/text-input";
 import { GitHubCommandError } from "./errors";
 import { GitHubService } from "./service";
 
@@ -105,8 +103,17 @@ const parsePaths = (value: string, command: string) => {
     );
   }
 
+  const sensitivePath = paths.find((path) => validateFilePath(path, command) !== null);
+  if (sensitivePath !== undefined) {
+    const validation = validateFilePath(sensitivePath, command);
+    if (validation !== null) return Effect.fail(validation);
+  }
+
   return Effect.succeed(paths);
 };
+
+const validateFilePath = (path: string, command: string) =>
+  isSensitivePath(path) ? inputError(`Refusing to read sensitive file: ${path}`, command) : null;
 
 // `gh gist create/edit` read content from files only; inline --body is staged in a temp file
 // whose basename becomes the gist filename.
@@ -116,7 +123,23 @@ const stageBody = Effect.fn("gist.stageBody")(function* (opts: {
   command: string;
 }) {
   const directory = yield* Effect.tryPromise({
-    try: () => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "gh-tool-gist-")),
+    try: async () => {
+      const proc = Bun.spawn(
+        ["mktemp", "-d", join(process.env.TMPDIR ?? "/tmp", "gh-tool-gist-XXXXXX")],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [exitCode, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+
+      if (exitCode !== 0) {
+        throw new Error(stderr.trim() || `mktemp exited with code ${exitCode}`);
+      }
+
+      return stdout.trim();
+    },
     catch: (error) =>
       inputError(
         `Failed to stage gist content: ${error instanceof Error ? error.message : String(error)}`,
@@ -364,7 +387,7 @@ export const gistListCommand = Command.make(
       Flag.withDescription("Maximum number of gists to return"),
       Flag.withDefault(10),
     ),
-    visibility: Flag.string("visibility").pipe(
+    visibility: Flag.choice("visibility", ["public", "secret"]).pipe(
       Flag.withDescription("Filter by visibility: public or secret"),
       Flag.optional,
     ),
@@ -372,12 +395,6 @@ export const gistListCommand = Command.make(
   ({ format, limit, visibility }) =>
     Effect.gen(function* () {
       const requested = Option.getOrNull(visibility);
-
-      if (requested !== null && requested !== "public" && requested !== "secret") {
-        return yield* Effect.fail(
-          inputError("--visibility must be 'public' or 'secret'", "gh-tool gist list"),
-        );
-      }
 
       const gists = yield* listGists({ limit, visibility: requested });
 
@@ -541,6 +558,13 @@ export const gistEditCommand = Command.make(
 
       if (validation !== null) {
         return yield* Effect.fail(validation);
+      }
+
+      if (addPath !== null) {
+        const pathValidation = validateFilePath(addPath, command);
+        if (pathValidation !== null) {
+          return yield* Effect.fail(pathValidation);
+        }
       }
 
       const sourcePath =

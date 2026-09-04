@@ -3,13 +3,21 @@ import { Effect, Schema } from "effect";
 import { GitHubCommandError } from "#gh/errors";
 
 const STDIN_SENTINEL = "-";
-const SENSITIVE_PATH_PATTERNS = [/\.env(\..+)?$/, /\.envrc$/, /\.(pem|key|p12|pfx|cer|crt)$/i];
+const SENSITIVE_PATH_PATTERNS = [
+  /\.env(\..+)?$/,
+  /\.envrc$/,
+  /\.(pem|key|p12|pfx|cer|crt)$/i,
+  /(?:^|[\\/])(credentials?|passwd|shadow)$/i,
+];
 const MissingMode = Schema.Literals(["error", "null", "default"]);
 
 const readTextFromStdin = () => Bun.stdin.text();
 
+export const isSensitivePath = (filePath: string) =>
+  SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
+
 const readTextFile = (filePath: string) => {
-  if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath))) {
+  if (isSensitivePath(filePath)) {
     return Promise.reject(new Error(`Refusing to read sensitive file: ${filePath}`));
   }
 
