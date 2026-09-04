@@ -122,30 +122,43 @@ const stageBody = Effect.fn("gist.stageBody")(function* (opts: {
   filename: string;
   command: string;
 }) {
-  const directory = yield* Effect.tryPromise({
-    try: async () => {
-      const proc = Bun.spawn(
-        ["mktemp", "-d", join(process.env.TMPDIR ?? "/tmp", "gh-tool-gist-XXXXXX")],
-        { stdout: "pipe", stderr: "pipe" },
-      );
-      const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
+  const directory = yield* Effect.acquireRelease(
+    Effect.tryPromise({
+      try: async () => {
+        const proc = Bun.spawn(
+          ["mktemp", "-d", join(process.env.TMPDIR ?? "/tmp", "gh-tool-gist-XXXXXX")],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+        const [exitCode, stdout, stderr] = await Promise.all([
+          proc.exited,
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
 
-      if (exitCode !== 0) {
-        throw new Error(stderr.trim() || `mktemp exited with code ${exitCode}`);
-      }
+        if (exitCode !== 0) {
+          throw new Error(stderr.trim() || `mktemp exited with code ${exitCode}`);
+        }
 
-      return stdout.trim();
-    },
-    catch: (error) =>
-      inputError(
-        `Failed to stage gist content: ${error instanceof Error ? error.message : String(error)}`,
-        opts.command,
-      ),
-  });
+        return stdout.trim();
+      },
+      catch: (error) =>
+        inputError(
+          `Failed to stage gist content: ${error instanceof Error ? error.message : String(error)}`,
+          opts.command,
+        ),
+    }),
+    (tempDirectory) =>
+      Effect.tryPromise({
+        try: async () => {
+          const proc = Bun.spawn(["rm", "-rf", tempDirectory], {
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+          await proc.exited;
+        },
+        catch: () => undefined,
+      }).pipe(Effect.ignore),
+  );
   const path = join(directory, opts.filename);
 
   yield* Effect.tryPromise({
@@ -457,51 +470,53 @@ export const gistCreateCommand = Command.make(
     ),
   },
   ({ body, bodyFile, desc, filename, files, format, public: isPublic }) =>
-    Effect.gen(function* () {
-      const command = "gh-tool gist create";
-      const filesValue = Option.getOrNull(files);
-      const resolvedBody = yield* resolveOptionalTextInput({
-        command,
-        value: Option.getOrNull(body),
-        fileValue: Option.getOrNull(bodyFile),
-        valueFlag: "--body",
-        fileFlag: "--body-file",
-        label: "body",
-      });
+    Effect.scoped(
+      Effect.gen(function* () {
+        const command = "gh-tool gist create";
+        const filesValue = Option.getOrNull(files);
+        const resolvedBody = yield* resolveOptionalTextInput({
+          command,
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
 
-      if (filesValue === null && resolvedBody === null) {
-        return yield* Effect.fail(
-          inputError("Provide --files, or --body/--body-file with --filename", command),
-        );
-      }
-
-      const paths: string[] = [];
-
-      if (filesValue !== null) {
-        paths.push(...(yield* parsePaths(filesValue, command)));
-      }
-
-      if (resolvedBody !== null) {
-        const name = Option.getOrNull(filename);
-
-        if (name === null) {
+        if (filesValue === null && resolvedBody === null) {
           return yield* Effect.fail(
-            validateBodyFilename(resolvedBody, name, command) ??
-              inputError("--filename is required with --body/--body-file", command),
+            inputError("Provide --files, or --body/--body-file with --filename", command),
           );
         }
 
-        paths.push(yield* stageBody({ body: resolvedBody, filename: name, command }));
-      }
+        const paths: string[] = [];
 
-      const created = yield* createGist({
-        paths,
-        description: Option.getOrNull(desc),
-        public: isPublic,
-      });
+        if (filesValue !== null) {
+          paths.push(...(yield* parsePaths(filesValue, command)));
+        }
 
-      yield* logFormatted(created, format);
-    }),
+        if (resolvedBody !== null) {
+          const name = Option.getOrNull(filename);
+
+          if (name === null) {
+            return yield* Effect.fail(
+              validateBodyFilename(resolvedBody, name, command) ??
+                inputError("--filename is required with --body/--body-file", command),
+            );
+          }
+
+          paths.push(yield* stageBody({ body: resolvedBody, filename: name, command }));
+        }
+
+        const created = yield* createGist({
+          paths,
+          description: Option.getOrNull(desc),
+          public: isPublic,
+        });
+
+        yield* logFormatted(created, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Create a gist from files or inline content (secret by default)"));
 
 export const gistEditCommand = Command.make(
@@ -532,57 +547,59 @@ export const gistEditCommand = Command.make(
     ),
   },
   ({ add, body, bodyFile, desc, filename, format, id, remove }) =>
-    Effect.gen(function* () {
-      const command = "gh-tool gist edit";
-      const resolvedBody = yield* resolveOptionalTextInput({
-        command,
-        value: Option.getOrNull(body),
-        fileValue: Option.getOrNull(bodyFile),
-        valueFlag: "--body",
-        fileFlag: "--body-file",
-        label: "body",
-      });
+    Effect.scoped(
+      Effect.gen(function* () {
+        const command = "gh-tool gist edit";
+        const resolvedBody = yield* resolveOptionalTextInput({
+          command,
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
 
-      const description = Option.getOrNull(desc);
-      const addPath = Option.getOrNull(add);
-      const removeName = Option.getOrNull(remove);
-      const name = Option.getOrNull(filename);
+        const description = Option.getOrNull(desc);
+        const addPath = Option.getOrNull(add);
+        const removeName = Option.getOrNull(remove);
+        const name = Option.getOrNull(filename);
 
-      const validation = validateEditInput({
-        body: resolvedBody,
-        filename: name,
-        description,
-        add: addPath,
-        remove: removeName,
-      });
+        const validation = validateEditInput({
+          body: resolvedBody,
+          filename: name,
+          description,
+          add: addPath,
+          remove: removeName,
+        });
 
-      if (validation !== null) {
-        return yield* Effect.fail(validation);
-      }
-
-      if (addPath !== null) {
-        const pathValidation = validateFilePath(addPath, command);
-        if (pathValidation !== null) {
-          return yield* Effect.fail(pathValidation);
+        if (validation !== null) {
+          return yield* Effect.fail(validation);
         }
-      }
 
-      const sourcePath =
-        resolvedBody === null || name === null
-          ? null
-          : yield* stageBody({ body: resolvedBody, filename: name, command });
+        if (addPath !== null) {
+          const pathValidation = validateFilePath(addPath, command);
+          if (pathValidation !== null) {
+            return yield* Effect.fail(pathValidation);
+          }
+        }
 
-      const edited = yield* editGist({
-        id: id.split("/").at(-1) ?? id,
-        description,
-        add: addPath,
-        remove: removeName,
-        filename: name,
-        sourcePath,
-      });
+        const sourcePath =
+          resolvedBody === null || name === null
+            ? null
+            : yield* stageBody({ body: resolvedBody, filename: name, command });
 
-      yield* logFormatted(edited, format);
-    }),
+        const edited = yield* editGist({
+          id: id.split("/").at(-1) ?? id,
+          description,
+          add: addPath,
+          remove: removeName,
+          filename: name,
+          sourcePath,
+        });
+
+        yield* logFormatted(edited, format);
+      }),
+    ),
 ).pipe(Command.withDescription("Edit a gist (never opens an editor — content flags required)"));
 
 export const gistDeleteCommand = Command.make(
