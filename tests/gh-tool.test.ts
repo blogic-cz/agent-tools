@@ -51,6 +51,7 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
+import { createGist, toGistDetail, validateBodyFilename, validateEditInput } from "#gh/gist";
 import {
   buildWatchResult,
   diagnoseLogEntries,
@@ -292,6 +293,104 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
     }),
   );
 }
+
+describe("gist helpers", () => {
+  it("rejects edits without a content or mutation flag", () => {
+    const error = validateEditInput({
+      body: null,
+      filename: null,
+      description: null,
+      add: null,
+      remove: null,
+    });
+
+    expect(error).toBeInstanceOf(GitHubCommandError);
+    expect(error).toMatchObject({
+      _tag: "GitHubCommandError",
+      message:
+        "Provide at least one of --body/--body-file (with --filename), --desc, --add, or --remove",
+      command: "gh-tool gist edit",
+    });
+  });
+
+  it("requires --filename for inline gist content", () => {
+    const error = validateBodyFilename("updated content", null, "gh-tool gist edit");
+
+    expect(error).toBeInstanceOf(GitHubCommandError);
+    expect(error).toMatchObject({
+      _tag: "GitHubCommandError",
+      message: "--filename is required with --body/--body-file",
+    });
+  });
+
+  it.effect("rejects gist creation when gh returns no URL", () =>
+    Effect.gen(function* () {
+      const result = yield* createGist({
+        paths: ["snippet.txt"],
+        description: null,
+        public: false,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () => Effect.succeed({ stdout: "created", stderr: "", exitCode: 0 }),
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: "GitHubCommandError",
+          message: "gh gist create did not return a gist URL",
+        });
+      }
+    }),
+  );
+
+  it("maps the REST gist response to detail output", () => {
+    const detail = toGistDetail(
+      {
+        id: "abc123",
+        description: "Example gist",
+        public: false,
+        html_url: "https://gist.github.com/me/abc123",
+        created_at: "2026-09-04T10:00:00Z",
+        updated_at: "2026-09-04T11:00:00Z",
+        owner: { login: "me" },
+        files: {
+          "example.ts": {
+            filename: "example.ts",
+            language: "TypeScript",
+            type: "text/plain",
+            size: 14,
+            content: "const x = 1;",
+          },
+        },
+      },
+      { filename: null, withContent: true },
+    );
+
+    expect(detail).toEqual({
+      id: "abc123",
+      description: "Example gist",
+      public: false,
+      url: "https://gist.github.com/me/abc123",
+      createdAt: "2026-09-04T10:00:00Z",
+      updatedAt: "2026-09-04T11:00:00Z",
+      owner: "me",
+      files: [
+        {
+          filename: "example.ts",
+          language: "TypeScript",
+          size: 14,
+          truncated: false,
+          content: "const x = 1;",
+        },
+      ],
+    });
+  });
+});
 
 describe("workflow dispatch", () => {
   it.effect("runs workflow_dispatch with repo, ref, and fields", () => {

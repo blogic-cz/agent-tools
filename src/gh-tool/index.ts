@@ -52,6 +52,13 @@ import {
 } from "./pr/index";
 import { branchRenameCommand } from "./branch";
 import {
+  gistCreateCommand,
+  gistDeleteCommand,
+  gistEditCommand,
+  gistListCommand,
+  gistViewCommand,
+} from "./gist";
+import {
   releaseCreateCommand,
   releaseDeleteCommand,
   releaseEditCommand,
@@ -168,6 +175,17 @@ const releaseCommand = Command.make("release", {}).pipe(
   ]),
 );
 
+const gistCommand = Command.make("gist", {}).pipe(
+  Command.withDescription("Gist operations (list, view, create, edit, delete)"),
+  Command.withSubcommands([
+    gistListCommand,
+    gistViewCommand,
+    gistCreateCommand,
+    gistEditCommand,
+    gistDeleteCommand,
+  ]),
+);
+
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
 const mainCommand = Command.make("gh-tool", {}).pipe(
@@ -200,7 +218,8 @@ WORKFLOW FOR AI AGENTS:
   20. Use 'release status' to inspect latest release + repository context
   21. Use 'release create --tag vX.Y.Z --generate-notes' to publish a release
   22. Use 'release edit/view/list/delete' to maintain existing releases
-  23. Use 'branch rename --old-name X --new-name Y --confirm' to rename a branch`,
+  23. Use 'branch rename --old-name X --new-name Y --confirm' to rename a branch
+  24. Use 'gist list/view' to read gists and 'gist create --files a.ts --desc "..."' to share snippets`,
   ),
   Command.withSubcommands([
     prCommand,
@@ -209,6 +228,7 @@ WORKFLOW FOR AI AGENTS:
     branchCommand,
     workflowCommand,
     releaseCommand,
+    gistCommand,
     commandsCommand,
   ]),
 );
