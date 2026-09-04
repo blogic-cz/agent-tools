@@ -225,7 +225,7 @@ export const validateBodyFilename = (
   if (filename === null) {
     return inputError("--filename is required with --body/--body-file", command);
   }
-  if (filename === "." || filename === ".." || /[\\/]/.test(filename)) {
+  if (filename.length === 0 || filename === "." || filename === ".." || /[\\/]/.test(filename)) {
     return inputError("--filename must be a file name without path separators", command);
   }
   return null;
@@ -497,15 +497,13 @@ export const gistCreateCommand = Command.make(
 
         if (resolvedBody !== null) {
           const name = Option.getOrNull(filename);
+          const filenameValidation = validateBodyFilename(resolvedBody, name, command);
 
-          if (name === null) {
-            return yield* Effect.fail(
-              validateBodyFilename(resolvedBody, name, command) ??
-                inputError("--filename is required with --body/--body-file", command),
-            );
+          if (filenameValidation !== null) {
+            return yield* Effect.fail(filenameValidation);
           }
 
-          paths.push(yield* stageBody({ body: resolvedBody, filename: name, command }));
+          paths.push(yield* stageBody({ body: resolvedBody, filename: name ?? "", command }));
         }
 
         const created = yield* createGist({
