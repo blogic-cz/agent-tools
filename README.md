@@ -282,6 +282,18 @@ Two optional scope guards sit on top. A profile keyed `prod`/`production`, or ca
 
 `azdo-tool` keeps its allowlist of read-only operations (`list`, `run`, `show`, `show-tags`) and rejects `create`/`delete`/`update`/`cancel`/`queue` anywhere in the command. `run` is accepted only in the `pipelines` group — `acr run` and `acr task run` execute arbitrary commands in Azure and are blocked. The `acr` and `account` groups remain reachable from `azdo-tool` for backwards compatibility; new work should use `az-tool` for them. Because those two groups address the Azure platform rather than Azure DevOps, the platform credential rules apply to them here as well — `acr credential show` is refused by both tools. The verb and segment lists behind that live in `src/shared/azure-credentials.ts` so the two tools cannot drift apart.
 
+### Gist commands
+
+```bash
+bun gh-tool gist list
+bun gh-tool gist view --id <gist-id>
+bun gh-tool gist create --body "snippet" --filename example.txt
+bun gh-tool gist edit --id <gist-id> --body "updated" --filename example.txt
+bun gh-tool gist delete --id <gist-id> --confirm
+```
+
+Gists are secret by default. `gist delete` prints a dry run unless `--confirm` is passed. `gist edit` requires a content or mutation flag and never opens an editor.
+
 ### gh-tool machine contracts
 
 `pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR. `pr request-review --reviewers alice,bob` emits sorted `submittedReviewers` (normalized input), `newlyRequested` and `alreadyPending` (the submitted logins split by whether a pending request already existed, so a fresh re-request is distinguishable from a no-op), and `requestedReviewers` (GitHub-confirmed result). `pr last-human-reviewer` derives `currentRequestedReviewers` from live `reviewRequests` only; timeline events are not replayed because GitHub clears a pending request on review submit without emitting `ReviewRequestRemovedEvent`.

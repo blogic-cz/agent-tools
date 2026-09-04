@@ -65,6 +65,18 @@ bun gh-tool pr feedback --pr 123 --only visible-open --exclude-authors github-ac
 
 Zero threads can mean the reviewer is still drafting. A pending review is invisible to the API until submit, and its comments keep their draft time in `createdAt`. `reviewId` says which comments arrived together; join it to `reviews[].submittedAt` from `pr feedback` for the exact time that batch became visible, or read `updatedAt` as a proxy that also moves on edits. Never conclude from `createdAt` that an earlier scan missed something.
 
+## Gist commands
+
+```bash
+bun gh-tool gist list                         # List your gists
+bun gh-tool gist view --id <gist-id>          # View files and content
+bun gh-tool gist create --files a.ts          # Create a secret gist
+bun gh-tool gist edit --id <gist-id> --desc X # Edit without opening $EDITOR
+bun gh-tool gist delete --id <gist-id>        # Dry-run; add --confirm to delete
+```
+
+Use `--body` or `--body-file` with `--filename` for inline content. Add `--public` to create a public gist. `gist list/view` use the GitHub API and return structured output.
+
 ## Workflow Commands
 
 ```bash
