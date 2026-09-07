@@ -33,14 +33,6 @@ export const formatDate = (timestamp: number): string => {
   });
 };
 
-export const truncate = (value: string, maxLen: number): string => {
-  if (value.length <= maxLen) {
-    return value;
-  }
-
-  return `${value.slice(0, maxLen - 3)}...`;
-};
-
 type FileEntry = { filePath: string; content: string };
 
 type SourceFilter = ReadonlySet<SessionSource>;

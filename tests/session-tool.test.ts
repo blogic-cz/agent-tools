@@ -24,6 +24,7 @@ import {
 import {
   projectSessionFilter,
   sessionSummariesFromMessages,
+  shapeBody,
   sortSessionSummaries,
 } from "#session/summaries";
 
@@ -454,3 +455,27 @@ function parsePiRecords(records: unknown[]) {
     .map((record) => parsePiLine(JSON.stringify(record)))
     .filter((record): record is NonNullable<typeof record> => record !== null);
 }
+
+describe("session-tool body shaping", () => {
+  it("returns the full body when under the cap", () => {
+    expect(shapeBody("short", 500)).toEqual({ body: "short" });
+  });
+
+  it("reports the cut and the real length when over the cap", () => {
+    const body = "x".repeat(1200);
+    expect(shapeBody(body, 500)).toEqual({
+      body: `${"x".repeat(497)}...`,
+      bodyLength: 1200,
+      truncated: true,
+    });
+  });
+
+  it("keeps the cut near the start for caps below the ellipsis width", () => {
+    expect(shapeBody("abcdef", 2)).toEqual({ body: "...", bodyLength: 6, truncated: true });
+  });
+
+  it("returns full bodies when the cap is disabled", () => {
+    const body = "x".repeat(1200);
+    expect(shapeBody(body, 0)).toEqual({ body });
+  });
+});
