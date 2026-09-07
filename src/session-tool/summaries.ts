@@ -15,11 +15,8 @@ export const shapeBody = (
     return { body };
   }
 
-  return {
-    body: `${body.slice(0, maxBodyChars - 3)}...`,
-    bodyLength: body.length,
-    truncated: true,
-  };
+  const kept = body.slice(0, Math.max(0, maxBodyChars - 3));
+  return { body: `${kept}...`, bodyLength: body.length, truncated: true };
 };
 
 export const sessionSummariesFromMessages = (summaries: MessageSummary[]): SessionSummary[] => {

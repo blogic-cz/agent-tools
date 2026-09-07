@@ -470,6 +470,10 @@ describe("session-tool body shaping", () => {
     });
   });
 
+  it("keeps the cut near the start for caps below the ellipsis width", () => {
+    expect(shapeBody("abcdef", 2)).toEqual({ body: "...", bodyLength: 6, truncated: true });
+  });
+
   it("returns full bodies when the cap is disabled", () => {
     const body = "x".repeat(1200);
     expect(shapeBody(body, 0)).toEqual({ body });
