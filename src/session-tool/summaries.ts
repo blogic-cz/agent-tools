@@ -1,5 +1,27 @@
 import type { MessageSummary, SessionSummary } from "./types";
 
+/**
+ * Shapes a message body for output. A body silently cut to 500 chars was
+ * indistinguishable from a short one, so callers read "no match in this snippet" as
+ * "not in this session". When the body is cut, say so and report its real length.
+ *
+ * maxBodyChars <= 0 returns the full body.
+ */
+export const shapeBody = (
+  body: string,
+  maxBodyChars: number,
+): { body: string; bodyLength?: number; truncated?: true } => {
+  if (maxBodyChars <= 0 || body.length <= maxBodyChars) {
+    return { body };
+  }
+
+  return {
+    body: `${body.slice(0, maxBodyChars - 3)}...`,
+    bodyLength: body.length,
+    truncated: true,
+  };
+};
+
 export const sessionSummariesFromMessages = (summaries: MessageSummary[]): SessionSummary[] => {
   const bySession = new Map<string, SessionSummary>();
 

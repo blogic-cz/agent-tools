@@ -18,6 +18,7 @@ Auth: no auth needed — reads local session storage.
 bun session-tool list                   # List recent sessions
 bun session-tool read --session <session-id> # Read session messages
 bun session-tool search "query"         # Search across sessions
+bun session-tool search "query" --body-chars 0 # Search with full message bodies
 ```
 
 Session ID routing:
@@ -30,4 +31,5 @@ Session ID routing:
 
 - Use `bun session-tool commands` for the full machine-readable command/flag tree; `--help` for one subcommand.
 - Output defaults to **TOON** (token-efficient) — leave it as-is to save tokens. Add `--format json` only when you'll machine-parse the result.
+- `search` caps each message body at 500 characters; a cut result carries `truncated: true` and `bodyLength`. Absence of a term in a cut body proves nothing — re-run with `--body-chars 0`, or `read --session <id>` (never truncates), before concluding a session lacks something.
 - Error responses include `hint`, `nextCommand`, and `retryable` fields — always check them on failure.

@@ -19,9 +19,10 @@ import { makeSchemaCommand, formatOption, formatOutput, logText, VERSION } from 
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
-import { formatDate, SessionService, SessionServiceLayer, truncate } from "./service";
+import { formatDate, SessionService, SessionServiceLayer } from "./service";
 import {
   projectSessionFilter,
+  shapeBody,
   sessionSummariesFromMessages,
   sortSessionSummaries,
 } from "./summaries";
@@ -50,14 +51,14 @@ const buildScopeLabel = (searchAll: boolean, currentDir: string) => {
   return `current project (${projectName})`;
 };
 
-const mapSummary = (summary: MessageSummary) => {
+const mapSummary = (maxBodyChars: number) => (summary: MessageSummary) => {
   return Effect.gen(function* () {
     const paths = yield* ResolvedPaths;
     return {
       sessionID: summary.sessionID,
       messageID: summary.id,
       title: summary.title,
-      body: truncate(summary.body, 500),
+      ...shapeBody(summary.body, maxBodyChars),
       created: formatDate(summary.created),
       ...(summary.source === "opencode"
         ? {
@@ -184,13 +185,17 @@ const searchCommand = Command.make(
       Flag.withDefault(false),
     ),
     format: formatOption,
+    bodyChars: Flag.integer("body-chars").pipe(
+      Flag.withDescription("Max message body characters per result (0 = full bodies)"),
+      Flag.withDefault(500),
+    ),
     limit: Flag.integer("limit").pipe(
       Flag.withDescription("Limit result count"),
       Flag.withDefault(10),
     ),
     source: sourceOption,
   },
-  ({ all, format, limit, query, source }) =>
+  ({ all, bodyChars, format, limit, query, source }) =>
     Effect.gen(function* () {
       const sessionService = yield* SessionService;
       const startTime = Date.now();
@@ -218,7 +223,7 @@ const searchCommand = Command.make(
         const allSummaries = yield* sessionService.getMessageSummaries(sessionFilter);
         const summaries = filterBySource(allSummaries, source);
         const matched = sessionService.searchSummaries(summaries, query);
-        const mappedResults = yield* Effect.all(matched.slice(0, limit).map(mapSummary));
+        const mappedResults = yield* Effect.all(matched.slice(0, limit).map(mapSummary(bodyChars)));
 
         return {
           success: true,
@@ -287,7 +292,7 @@ const readCommand = Command.make(
         onSuccess: (summaries) => {
           const filtered = filterBySource(summaries, source);
           const sessionResults = filtered.filter((summary) => summary.sessionID === session);
-          return Effect.all(sessionResults.map(mapSummary)).pipe(
+          return Effect.all(sessionResults.map(mapSummary(0))).pipe(
             Effect.map(
               (mapped) =>
                 ({
