@@ -359,7 +359,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   };
 });
 
-const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: number | null) {
+export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: number | null) {
   const gh = yield* GitHubService;
 
   const args = ["pr", "view"];
