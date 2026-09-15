@@ -359,7 +359,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   };
 });
 
-export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null) {
+export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: number | null) {
   const gh = yield* GitHubService;
 
   const args = ["pr", "view"];
@@ -368,14 +368,31 @@ export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null)
   }
   args.push(
     "--json",
-    "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+    "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
   );
 
-  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string; baseRefOid?: string }>(args);
+  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string }>(args);
   return {
     ...info,
     headSha: info.headRefOid ?? info.headSha ?? null,
-    baseSha: info.baseRefOid ?? info.baseSha ?? null,
+    baseSha: info.baseSha ?? null,
+  };
+});
+
+export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null) {
+  const gh = yield* GitHubService;
+
+  const info = yield* fetchPRView(prNumber);
+  const repo = yield* gh.getRepoInfo();
+  const baseSha = yield* gh.runGh([
+    "api",
+    `repos/${repo.owner}/${repo.name}/pulls/${info.number}`,
+    "--jq",
+    ".base.sha",
+  ]);
+  return {
+    ...info,
+    baseSha: baseSha.stdout.trim() || null,
   };
 });
 
@@ -593,7 +610,9 @@ export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
         // Cap the sleep to the remaining budget so the total wait doesn't overshoot the deadline.
         const remaining = deadlineMs - Number(now);
         yield* Effect.sleep(Duration.millis(Math.min(MERGEABLE_POLL_INTERVAL_MS, remaining)));
-        latest = yield* viewPR(pr);
+        latest = yield* fetchPRView(pr).pipe(
+          Effect.map((info) => ({ ...info, baseSha: latest.baseSha })),
+        );
       }),
     step: () => undefined,
   });
@@ -1283,7 +1302,10 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   const snapshot = yield* collectWithStableState(
     initial,
     (info) => fetchCheckResults(info.number),
-    (info) => viewPR(info.number),
+    (info) =>
+      fetchPRView(info.number).pipe(
+        Effect.map((refreshed) => ({ ...refreshed, baseSha: initial.baseSha })),
+      ),
     (before, after) => after.headSha === before.headSha,
   );
   if (snapshot !== null) {

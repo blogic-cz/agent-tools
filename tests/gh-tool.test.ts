@@ -36,6 +36,7 @@ import {
   readyPR,
   rerunChecks,
   triggerChecks,
+  waitForMergeable,
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
@@ -953,35 +954,83 @@ describe("GitHubService.runGraphQL() response handling", () => {
 describe("PR view", () => {
   it.effect("requests and returns the PR body", () =>
     Effect.gen(function* () {
-      let capturedArgs: string[] = [];
+      const calls: Array<{ kind: "json" | "raw"; args: string[] }> = [];
       const body = "## Why\nPrivate PR description";
 
       const result = yield* viewPR(123).pipe(
         Effect.provide(
           createMockGhLayer({
             runGhJson: (args) => {
-              capturedArgs = args;
+              calls.push({ kind: "json", args });
               return Effect.succeed({
                 ...mockPRInfo,
                 body,
                 headRefOid: "head-sha",
-                baseRefOid: "base-sha",
               });
+            },
+            runGh: (args) => {
+              calls.push({ kind: "raw", args });
+              return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
             },
           }),
         ),
       );
 
-      expect(capturedArgs).toEqual([
-        "pr",
-        "view",
-        "123",
-        "--json",
-        "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+      expect(calls).toEqual([
+        {
+          kind: "json",
+          args: [
+            "pr",
+            "view",
+            "123",
+            "--json",
+            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+          ],
+        },
+        {
+          kind: "raw",
+          args: ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
+        },
       ]);
       expect(result.body).toBe(body);
       expect(result.headSha).toBe("head-sha");
       expect(result.baseSha).toBe("base-sha");
+    }),
+  );
+
+  it.effect("wait-mergeable fetches base SHA once while polling", () =>
+    Effect.gen(function* () {
+      let views = 0;
+      const apiCalls: string[][] = [];
+      const fiber = yield* Effect.forkChild(
+        waitForMergeable(123, 10).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () => {
+                views += 1;
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: views === 1 ? "UNKNOWN" : "MERGEABLE",
+                  headRefOid: `head-${views}`,
+                });
+              },
+              runGh: (args) => {
+                apiCalls.push(args);
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        ),
+      );
+
+      yield* TestClock.adjust("3000 millis");
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.mergeable).toBe("MERGEABLE");
+      expect(result.baseSha).toBe("base-sha");
+      expect(apiCalls).toEqual([
+        ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
+      ]);
     }),
   );
 });
@@ -1180,8 +1229,9 @@ describe("PR edit", () => {
           "view",
           "123",
           "--json",
-          "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
         ],
+        ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
       expect(result.body).toBe(body);
     }),
@@ -1197,6 +1247,9 @@ describe("PR ready", () => {
         Effect.provide(
           createMockGhLayer({
             runGh: (args) => {
+              if (args[0] === "api") {
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              }
               ghCalls.push(args);
               return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
             },
@@ -1222,6 +1275,9 @@ describe("PR ready", () => {
         Effect.provide(
           createMockGhLayer({
             runGh: (args) => {
+              if (args[0] === "api") {
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              }
               ghCalls.push(args);
               return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
             },
@@ -3941,7 +3997,6 @@ describe("PR checks", () => {
                 return Effect.succeed({
                   ...mockPRInfo,
                   headRefOid: views === 1 ? "head-a" : "head-b",
-                  baseRefOid: "base",
                 });
               }
               snapshots += 1;
@@ -3954,6 +4009,10 @@ describe("PR checks", () => {
                 },
               ]);
             },
+            runGh: (args) =>
+              args[0] === "api"
+                ? Effect.succeed({ stdout: "base\n", stderr: "", exitCode: 0 })
+                : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
           }),
         ),
       );
@@ -5620,9 +5679,10 @@ describe("PR composite commands", () => {
           return Effect.succeed({});
         },
         runGh: (args) => {
-          forwardedArgs = args;
+          if (args[0] === "pr") forwardedArgs = args;
           return Effect.succeed({
-            stdout: "https://github.com/test-owner/test-repo/pull/123",
+            stdout:
+              args[0] === "pr" ? "https://github.com/test-owner/test-repo/pull/123" : "base-sha\n",
             stderr: "",
             exitCode: 0,
           });
@@ -5706,7 +5766,7 @@ describe("PR composite commands", () => {
 
       const layer = createMockGhLayer({
         runGh: (args) => {
-          forwardedArgs = args;
+          if (args[1] === "--method") forwardedArgs = args;
           return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
         },
         runGhJson: (args) => {
@@ -5743,8 +5803,12 @@ describe("PR composite commands", () => {
 
       const layer = createMockGhLayer({
         runGh: (args) => {
-          forwardedArgs = args;
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+          if (args[1] === "--method") forwardedArgs = args;
+          return Effect.succeed({
+            stdout: args[1] === "--method" ? "" : "base-sha\n",
+            stderr: "",
+            exitCode: 0,
+          });
         },
         runGhJson: (args) => {
           if (args[0] === "pr" && args[1] === "view") {
@@ -6472,6 +6536,9 @@ describe("pr trigger-checks", () => {
         Effect.provide(
           createMockGhLayer({
             runGh: (args) => {
+              if (args[0] === "api") {
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              }
               dispatched.push(args);
               return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
             },
@@ -6529,7 +6596,10 @@ describe("pr trigger-checks", () => {
       const result = yield* triggerChecks(123, "dotnet-pull-request.yml", []).pipe(
         Effect.provide(
           createMockGhLayer({
-            runGh: () => {
+            runGh: (args) => {
+              if (args[0] === "api") {
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              }
               dispatchedOnce = true;
               return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
             },

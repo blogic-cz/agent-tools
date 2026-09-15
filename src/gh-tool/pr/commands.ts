@@ -33,6 +33,7 @@ import {
   createPR,
   detectPRStatus,
   editPR,
+  fetchPRView,
   fetchChecks,
   fetchChecksForCommand,
   fetchFailedChecks,
@@ -223,7 +224,10 @@ const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
   const snapshot = yield* collectWithStableState(
     initial,
     (info) => collect(info.number, info.headSha),
-    (info) => viewPR(info.number),
+    (info) =>
+      fetchPRView(info.number).pipe(
+        Effect.map((refreshed) => ({ ...refreshed, baseSha: initial.baseSha })),
+      ),
     (before, after) => after.headSha === before.headSha,
   );
   if (snapshot !== null) return { info: snapshot.state, value: snapshot.value };
