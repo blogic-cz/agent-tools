@@ -368,14 +368,21 @@ export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null)
   }
   args.push(
     "--json",
-    "number,url,title,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+    "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
   );
 
-  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string; baseRefOid?: string }>(args);
+  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string }>(args);
+  const repo = yield* gh.getRepoInfo();
+  const baseSha = yield* gh.runGh([
+    "api",
+    `repos/${repo.owner}/${repo.name}/pulls/${info.number}`,
+    "--jq",
+    ".base.sha",
+  ]);
   return {
     ...info,
     headSha: info.headRefOid ?? info.headSha ?? null,
-    baseSha: info.baseRefOid ?? info.baseSha ?? null,
+    baseSha: baseSha.stdout.trim() || null,
   };
 });
 
