@@ -36,6 +36,7 @@ import {
   readyPR,
   rerunChecks,
   triggerChecks,
+  waitForMergeable,
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
@@ -994,6 +995,42 @@ describe("PR view", () => {
       expect(result.body).toBe(body);
       expect(result.headSha).toBe("head-sha");
       expect(result.baseSha).toBe("base-sha");
+    }),
+  );
+
+  it.effect("wait-mergeable fetches base SHA once while polling", () =>
+    Effect.gen(function* () {
+      let views = 0;
+      const apiCalls: string[][] = [];
+      const fiber = yield* Effect.forkChild(
+        waitForMergeable(123, 10).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () => {
+                views += 1;
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: views === 1 ? "UNKNOWN" : "MERGEABLE",
+                  headRefOid: `head-${views}`,
+                });
+              },
+              runGh: (args) => {
+                apiCalls.push(args);
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        ),
+      );
+
+      yield* TestClock.adjust("3000 millis");
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.mergeable).toBe("MERGEABLE");
+      expect(result.baseSha).toBe("base-sha");
+      expect(apiCalls).toEqual([
+        ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
+      ]);
     }),
   );
 });
