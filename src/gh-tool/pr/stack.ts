@@ -237,3 +237,48 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
     hint: "Inspect the stack state and branch protections, then retry.",
   });
 });
+
+export const unstackStack = Effect.fn("pr.unstackStack")(function* (opts: {
+  pr: number;
+  confirm: boolean;
+}) {
+  const gh = yield* GitHubService;
+  const repo = yield* gh.getRepoInfo();
+  const view = yield* readStack({ pr: opts.pr });
+
+  if (!view.isStacked || view.stackNumber === null) {
+    return yield* new GitHubMergeError({
+      message: `PR #${opts.pr} is not part of a GitHub stack`,
+      reason: "unknown",
+      hint: "There is no stack to dissolve.",
+      nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
+    });
+  }
+
+  const unmerged = view.members.filter((member) => member.state === "open");
+
+  const plan = {
+    stackNumber: view.stackNumber,
+    pr: opts.pr,
+    removes: unmerged.map((member) => member.number),
+  };
+
+  if (!opts.confirm) {
+    return { ...plan, dissolved: false, unstacked: false, dryRun: true };
+  }
+
+  // The endpoint removes every unmerged member at once; it has no per-PR form. A 204 means
+  // nothing was left and the stack is gone, a 200 means some members could not be removed.
+  const result = yield* gh.apiRequest<unknown>({
+    path: `repos/${repo.owner}/${repo.name}/stacks/${view.stackNumber}/unstack`,
+    method: "POST",
+    alsoAcceptStatus: [204],
+  });
+
+  return {
+    ...plan,
+    dissolved: result.status === 204,
+    unstacked: true,
+    dryRun: false,
+  };
+});

@@ -313,6 +313,11 @@ its own dry-run never disclosed. The bottom member still merges normally.
 member first and refuses the whole operation if any is a draft, conflicting, or has failing or
 pending checks — a partial stack merge leaves a parent on the trunk and a broken child.
 
+`pr stack unstack` dissolves a stack. GitHub owns the base of every stacked PR, so `pr edit
+--base` on a member refuses and names that command rather than letting GitHub's bare 422
+through; merging the stack needs no retarget at all. `pr review-triage` counts open members
+below the PR as blocking, because a member cannot land on its own while they are open.
+
 Membership comes from GitHub's stacks API, never from chaining `baseRefName` to `headRefName`.
 That chain both over-reports (a promotion PR whose head is `main` adopts every ordinary PR as a
 child) and under-reports (a PR based on a stack member's branch need not be in the stack).

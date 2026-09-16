@@ -1181,6 +1181,24 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
 
   const repo = yield* gh.getRepoInfo();
 
+  // GitHub rejects a base change on a stacked PR with a bare 422. Say what the state is and
+  // which operation changes it, rather than letting the validation error through.
+  if (opts.base !== null) {
+    const stackView = yield* readStack({ pr: opts.pr }).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (stackView?.isStacked === true) {
+      return yield* new GitHubCommandError({
+        command: "pr edit --base",
+        exitCode: 1,
+        stderr: `PR #${opts.pr} belongs to GitHub stack #${stackView.stackNumber}`,
+        message: `Cannot retarget PR #${opts.pr}: it belongs to GitHub stack #${stackView.stackNumber}, whose members' bases GitHub owns`,
+        hint: "Dissolve the stack first with 'pr stack unstack', which removes every unmerged member, then retarget. Merging the stack instead needs no retarget at all.",
+        nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
+      });
+    }
+  }
+
   const editArgs = [
     "api",
     "--method",
