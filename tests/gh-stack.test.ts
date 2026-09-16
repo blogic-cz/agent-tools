@@ -700,4 +700,38 @@ describe("pr checks --watch registration window", () => {
       expect(error.message).toContain("could not resolve");
     }),
   );
+
+  it.live(
+    "gives up on the registration window instead of holding the whole timeout",
+    () =>
+      Effect.gen(function* () {
+        let watchAttempts = 0;
+
+        const results = yield* fetchChecks(123, true, false, 1, true).pipe(
+          Effect.provide(
+            ghLayerWith({
+              runGh: (args) => {
+                if (!args.includes("--watch")) {
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                }
+                watchAttempts += 1;
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh pr checks --watch",
+                    exitCode: 1,
+                    stderr: "no checks reported on the 'feat/x' branch",
+                    message: "no checks reported on the 'feat/x' branch",
+                  }),
+                );
+              },
+              runGhJson: () => Effect.succeed([]),
+            }),
+          ),
+        );
+
+        expect(results).toEqual([]);
+        expect(watchAttempts).toBeGreaterThan(0);
+      }),
+    15000,
+  );
 });

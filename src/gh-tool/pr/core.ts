@@ -201,7 +201,13 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 // `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
 // is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+// `gh` reports "no checks reported" both for the seconds after a push, before its checks
+// register, and forever for a PR that has none — the message cannot tell them apart. So the
+// wait for registration gets its own short budget: long enough to cover the race (measured
+// at roughly 40s on blogic-cz/agent-tools#134), short enough that a check-less PR is not held
+// for the caller's whole --timeout.
 const CHECK_REGISTRATION_POLL_SECONDS = 5;
+const CHECK_REGISTRATION_GRACE_SECONDS = 60;
 
 export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
   const gh = yield* GitHubService;
@@ -1251,9 +1257,13 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     // snapshot at that deadline rather than an error.
     let watchResult: { stdout: string; stderr: string; exitCode: number } | null = null;
     let registered = false;
+    let graceExpired = false;
     const watchThroughRegistration = Effect.gen(function* () {
+      const graceStart = yield* Clock.currentTimeMillis;
+      const graceDeadlineMs =
+        Number(graceStart) + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
       yield* Effect.whileLoop({
-        while: () => !registered,
+        while: () => !registered && !graceExpired,
         body: () =>
           gh.runGh(watchArgs).pipe(
             Effect.flatMap((result) => {
@@ -1263,7 +1273,14 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
             }),
             Effect.catchTag("GitHubCommandError", (error) =>
               NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
-                ? Effect.sleep(Duration.seconds(CHECK_REGISTRATION_POLL_SECONDS))
+                ? Effect.gen(function* () {
+                    const now = yield* Clock.currentTimeMillis;
+                    if (Number(now) >= graceDeadlineMs) {
+                      graceExpired = true;
+                      return;
+                    }
+                    yield* Effect.sleep(Duration.seconds(CHECK_REGISTRATION_POLL_SECONDS));
+                  })
                 : Effect.fail(error),
             ),
           ),
