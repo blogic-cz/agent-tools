@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
@@ -638,13 +639,22 @@ describe("pr stack unstack", () => {
 });
 
 describe("pr checks --watch registration window", () => {
-  it.live(
-    "keeps waiting while gh reports no checks yet, then returns the snapshot",
-    () =>
-      Effect.gen(function* () {
-        let watchAttempts = 0;
+  const noChecksYet = () =>
+    Effect.fail(
+      new GitHubCommandError({
+        command: "gh pr checks --watch",
+        exitCode: 1,
+        stderr: "no checks reported on the 'feat/x' branch",
+        message: "no checks reported on the 'feat/x' branch",
+      }),
+    );
 
-        const results = yield* fetchChecks(123, true, false, 30, true).pipe(
+  it.effect("keeps waiting while gh reports no checks yet, then returns the snapshot", () =>
+    Effect.gen(function* () {
+      let watchAttempts = 0;
+
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 300, true).pipe(
           Effect.provide(
             ghLayerWith({
               runGh: (args) => {
@@ -653,31 +663,58 @@ describe("pr checks --watch registration window", () => {
                 }
                 watchAttempts += 1;
                 return watchAttempts === 1
-                  ? Effect.fail(
-                      new GitHubCommandError({
-                        command: "gh pr checks --watch",
-                        exitCode: 1,
-                        stderr: "no checks reported on the 'feat/x' branch",
-                        message: "no checks reported on the 'feat/x' branch",
-                      }),
-                    )
+                  ? noChecksYet()
                   : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
               },
               runGhJson: () =>
                 Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]),
             }),
           ),
-        );
+        ),
+      );
 
-        expect(watchAttempts).toBeGreaterThan(1);
-        expect(results.map((check) => check.bucket)).toEqual(["pass"]);
-      }),
-    15000,
+      yield* TestClock.adjust("6 seconds");
+      const results = yield* Fiber.join(fiber);
+
+      expect(watchAttempts).toBe(2);
+      expect(results.map((check) => check.bucket)).toEqual(["pass"]);
+    }),
   );
 
-  it.live("still fails a watch on an error that is not the registration window", () =>
+  it.effect("stops at the grace window instead of holding the caller's whole timeout", () =>
     Effect.gen(function* () {
-      const error = yield* fetchChecks(123, true, false, 30, true).pipe(
+      let watchAttempts = 0;
+
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 300, true).pipe(
+          Effect.provide(
+            ghLayerWith({
+              runGh: (args) => {
+                if (!args.includes("--watch")) {
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                }
+                watchAttempts += 1;
+                return noChecksYet();
+              },
+              runGhJson: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+      );
+
+      // Past the 60s grace window but far short of the 300s the caller asked for.
+      yield* TestClock.adjust("70 seconds");
+      const results = yield* Fiber.join(fiber);
+
+      expect(results).toEqual([]);
+      expect(watchAttempts).toBeGreaterThan(1);
+      expect(watchAttempts).toBeLessThan(20);
+    }),
+  );
+
+  it.effect("still fails a watch on an error that is not the registration window", () =>
+    Effect.gen(function* () {
+      const error = yield* fetchChecks(123, true, false, 300, true).pipe(
         Effect.provide(
           ghLayerWith({
             runGh: (args) =>
@@ -699,39 +736,5 @@ describe("pr checks --watch registration window", () => {
 
       expect(error.message).toContain("could not resolve");
     }),
-  );
-
-  it.live(
-    "gives up on the registration window instead of holding the whole timeout",
-    () =>
-      Effect.gen(function* () {
-        let watchAttempts = 0;
-
-        const results = yield* fetchChecks(123, true, false, 1, true).pipe(
-          Effect.provide(
-            ghLayerWith({
-              runGh: (args) => {
-                if (!args.includes("--watch")) {
-                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
-                }
-                watchAttempts += 1;
-                return Effect.fail(
-                  new GitHubCommandError({
-                    command: "gh pr checks --watch",
-                    exitCode: 1,
-                    stderr: "no checks reported on the 'feat/x' branch",
-                    message: "no checks reported on the 'feat/x' branch",
-                  }),
-                );
-              },
-              runGhJson: () => Effect.succeed([]),
-            }),
-          ),
-        );
-
-        expect(results).toEqual([]);
-        expect(watchAttempts).toBeGreaterThan(0);
-      }),
-    15000,
   );
 });
