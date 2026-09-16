@@ -4,6 +4,7 @@ import { TestClock, TestConsole } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
+import type { GhError, GhResult } from "#gh/service";
 import { GitHubCommandError } from "#gh/errors";
 import { githubApi } from "#gh/api";
 import { mergeStack, unstackStack } from "#gh/pr/stack";
@@ -36,16 +37,14 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
 const ghLayer = ghServiceLayer;
 
 const ghLayerWith = (overrides: {
-  runGh: (
-    args: string[],
-  ) => Effect.Effect<{ stdout: string; stderr: string; exitCode: number }, GitHubCommandError>;
-  runGhJson: (args: string[]) => Effect.Effect<unknown, never>;
+  runGh: (args: string[]) => Effect.Effect<GhResult, GhError>;
+  runGhJson: (args: string[]) => Effect.Effect<unknown, GhError>;
 }) =>
   Layer.succeed(
     GitHubService,
     GitHubService.of({
-      runGh: overrides.runGh as never,
-      runGhJson: overrides.runGhJson as never,
+      runGh: overrides.runGh,
+      runGhJson: overrides.runGhJson as <T>(args: string[]) => Effect.Effect<T, GhError>,
       runGraphQL: () => Effect.succeed({}),
       apiRequest: githubApi,
       getRepoConfig: () => Effect.succeed(undefined),

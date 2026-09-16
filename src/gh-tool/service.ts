@@ -74,7 +74,7 @@ export type GhResult = {
   exitCode: number;
 };
 
-type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
+export type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
 export class GitHubService extends Context.Service<
   GitHubService,
