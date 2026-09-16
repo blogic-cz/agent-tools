@@ -68,13 +68,13 @@ const isSafeRetryRead = (args: readonly string[]): boolean => {
   return args.some((a) => READ_VERBS.has(a));
 };
 
-type GhResult = {
+export type GhResult = {
   stdout: string;
   stderr: string;
   exitCode: number;
 };
 
-type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
+export type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
 export class GitHubService extends Context.Service<
   GitHubService,

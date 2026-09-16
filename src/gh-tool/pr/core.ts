@@ -19,6 +19,7 @@ import type {
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import type { GhResult } from "#gh/service";
 import { logText } from "#shared";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
@@ -201,6 +202,13 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 // `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
 // is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+// `gh` reports "no checks reported" both for the seconds after a push, before its checks
+// register, and forever for a PR that has none — the message cannot tell them apart. So the
+// wait for registration gets its own short budget: long enough to cover the race (measured
+// at roughly 40s on blogic-cz/agent-tools#134), short enough that a check-less PR is not held
+// for the caller's whole --timeout.
+const CHECK_REGISTRATION_POLL_SECONDS = 5;
+const CHECK_REGISTRATION_GRACE_SECONDS = 60;
 
 export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
   const gh = yield* GitHubService;
@@ -1244,7 +1252,45 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     // Block for the caller's requested --timeout (no artificial cap — blocking isn't the problem;
     // --timeout is validated >= 1s at the CLI boundary). On timeout return a snapshot, never
     // nothing — that was the actual token-wasting bug.
-    const watchOutcome = yield* gh.runGh(watchArgs).pipe(
+    // A push registers its checks a moment after the ref lands, and `gh pr checks --watch`
+    // exits non-zero in that window. A watch was asked to wait, so keep waiting: the outer
+    // timeout still bounds it, and a PR that genuinely has no checks returns an empty
+    // snapshot at that deadline rather than an error.
+    let watchResult: GhResult | null = null;
+    let registered = false;
+    let graceExpired = false;
+    const watchThroughRegistration = Effect.gen(function* () {
+      const graceStart = yield* Clock.currentTimeMillis;
+      const graceDeadlineMs =
+        Number(graceStart) + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
+      yield* Effect.whileLoop({
+        while: () => !registered && !graceExpired,
+        body: () =>
+          gh.runGh(watchArgs).pipe(
+            Effect.flatMap((result) => {
+              watchResult = result;
+              registered = true;
+              return Effect.void;
+            }),
+            Effect.catchTag("GitHubCommandError", (error) =>
+              NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
+                ? Effect.gen(function* () {
+                    const now = yield* Clock.currentTimeMillis;
+                    if (Number(now) >= graceDeadlineMs) {
+                      graceExpired = true;
+                      return;
+                    }
+                    yield* Effect.sleep(Duration.seconds(CHECK_REGISTRATION_POLL_SECONDS));
+                  })
+                : Effect.fail(error),
+            ),
+          ),
+        step: () => undefined,
+      });
+      return watchResult;
+    });
+
+    const watchOutcome = yield* watchThroughRegistration.pipe(
       Effect.timeoutOrElse({
         duration: timeoutSeconds * 1000,
         orElse: () => Effect.succeed(null),
@@ -1252,7 +1298,15 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     );
 
     const results = yield* fetchCheckResults(pr);
-    if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
+    if (!quiet && graceExpired) {
+      const prRef = pr === null ? "<number>" : String(pr);
+      yield* Console.warn(
+        `ℹ️  No checks registered within ${CHECK_REGISTRATION_GRACE_SECONDS}s of watching; ` +
+          `returning the current snapshot. If this PR should have checks, the push event was ` +
+          `likely dropped, and re-watching will find nothing again — dispatch them on the PR ` +
+          `head instead:\n   agent-tools-gh pr trigger-checks --pr ${prRef} --workflow <file.yml>`,
+      );
+    } else if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
       const pending = results.filter((c) => c.bucket === "pending").length;
       yield* Console.warn(
         `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +

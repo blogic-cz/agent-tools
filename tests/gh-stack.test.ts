@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Console, Effect, Fiber, Layer } from "effect";
+import { TestClock, TestConsole } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
+import type { GhError, GhResult } from "#gh/service";
+import { GitHubCommandError } from "#gh/errors";
 import { githubApi } from "#gh/api";
 import { mergeStack, unstackStack } from "#gh/pr/stack";
-import { mergePR } from "#gh/pr/core";
+import { fetchChecks, mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
 
 const mockRepoInfo = {
@@ -32,6 +35,23 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
   );
 
 const ghLayer = ghServiceLayer;
+
+const ghLayerWith = (overrides: {
+  runGh: (args: string[]) => Effect.Effect<GhResult, GhError>;
+  runGhJson: (args: string[]) => Effect.Effect<unknown, GhError>;
+}) =>
+  Layer.succeed(
+    GitHubService,
+    GitHubService.of({
+      runGh: overrides.runGh,
+      runGhJson: overrides.runGhJson as <T>(args: string[]) => Effect.Effect<T, GhError>,
+      runGraphQL: () => Effect.succeed({}),
+      apiRequest: githubApi,
+      getRepoConfig: () => Effect.succeed(undefined),
+      getRepoInfo: () => Effect.succeed(mockRepoInfo),
+      withRepoTarget: (_target, effect) => effect,
+    }),
+  );
 
 const stackMember = (
   number: number,
@@ -613,6 +633,119 @@ describe("pr stack unstack", () => {
       );
 
       expect(error.message).toContain("is not part of a GitHub stack");
+    }),
+  );
+});
+
+describe("pr checks --watch registration window", () => {
+  const noChecksYet = () =>
+    Effect.fail(
+      new GitHubCommandError({
+        command: "gh pr checks --watch",
+        exitCode: 1,
+        stderr: "no checks reported on the 'feat/x' branch",
+        message: "no checks reported on the 'feat/x' branch",
+      }),
+    );
+
+  it.effect("keeps waiting while gh reports no checks yet, then returns the snapshot", () =>
+    Effect.gen(function* () {
+      let watchAttempts = 0;
+
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 300, true).pipe(
+          Effect.provide(
+            ghLayerWith({
+              runGh: (args) => {
+                if (!args.includes("--watch")) {
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                }
+                watchAttempts += 1;
+                return watchAttempts === 1
+                  ? noChecksYet()
+                  : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+              runGhJson: () =>
+                Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]),
+            }),
+          ),
+        ),
+      );
+
+      yield* TestClock.adjust("6 seconds");
+      const results = yield* Fiber.join(fiber);
+
+      expect(watchAttempts).toBe(2);
+      expect(results.map((check) => check.bucket)).toEqual(["pass"]);
+    }),
+  );
+
+  it.effect("stops at the grace window instead of holding the caller's whole timeout", () =>
+    Effect.gen(function* () {
+      let watchAttempts = 0;
+      const warnings: unknown[][] = [];
+      const testConsole = yield* TestConsole.make;
+      const consoleLayer = Layer.succeed(Console.Console, {
+        ...testConsole,
+        warn: (...args: unknown[]) => warnings.push(args),
+      });
+
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 300, false).pipe(
+          Effect.provide(consoleLayer),
+          Effect.provide(
+            ghLayerWith({
+              runGh: (args) => {
+                if (!args.includes("--watch")) {
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                }
+                watchAttempts += 1;
+                return noChecksYet();
+              },
+              runGhJson: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+      );
+
+      // Past the 60s grace window but far short of the 300s the caller asked for.
+      yield* TestClock.adjust("70 seconds");
+      const results = yield* Fiber.join(fiber);
+
+      expect(results).toEqual([]);
+      expect(watchAttempts).toBeGreaterThan(1);
+      expect(watchAttempts).toBeLessThan(20);
+
+      const text = warnings.flat().join("\n");
+      expect(text).toContain("No checks registered within 60s");
+      expect(text).toContain("pr trigger-checks --pr 123");
+      expect(text).not.toContain("timed out after 300s");
+    }),
+  );
+
+  it.effect("still fails a watch on an error that is not the registration window", () =>
+    Effect.gen(function* () {
+      const error = yield* fetchChecks(123, true, false, 300, true).pipe(
+        Effect.provide(
+          ghLayerWith({
+            runGh: (args) =>
+              args.includes("--watch")
+                ? Effect.fail(
+                    new GitHubCommandError({
+                      command: "gh pr checks --watch",
+                      exitCode: 1,
+                      stderr: "could not resolve to a PullRequest",
+                      message: "could not resolve to a PullRequest",
+                    }),
+                  )
+                : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            runGhJson: () => Effect.succeed([]),
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(error.message).toContain("could not resolve");
     }),
   );
 });
