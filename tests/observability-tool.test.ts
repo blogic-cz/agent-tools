@@ -79,7 +79,22 @@ describe("searchTempoByQuery", () => {
       );
 
       expect(error).toBeInstanceOf(ObservabilityToolError);
-      expect(JSON.stringify(error.cause)).toContain("exceeds the 168h Tempo limit");
+      expect(formatObservabilityError(error)).toContain("exceeds the 168h Tempo limit");
+    }),
+  );
+
+  it.effect("refuses an unparseable start instead of searching a zero-width window", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        searchTempoByQuery(
+          config("tempo"),
+          "{ status = error }",
+          { start: "2026-09-09T00:00:00Z", end: "now" },
+          20,
+        ),
+      );
+
+      expect(formatObservabilityError(error)).toContain('Unparseable time "2026-09-09T00:00:00Z"');
     }),
   );
 

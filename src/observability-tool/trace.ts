@@ -356,6 +356,17 @@ function resolveTraceFromId(
   });
 }
 
+/**
+ * Strict counterpart of relativeToEpoch for user-supplied windows: an unparseable bound is
+ * refused rather than silently collapsed to "now", which would report a zero-width window as
+ * "no traces found".
+ */
+function strictRelativeToEpoch(value: string, nowEpoch: number): number | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "now") return nowEpoch;
+  return /^now-\d+[smhd]$/.test(trimmed) ? relativeToEpoch(trimmed, nowEpoch) : undefined;
+}
+
 /** Tempo rejects a search window wider than this, so the CLI says so before the API does. */
 const MAX_SEARCH_RANGE_SECONDS = 168 * 3600;
 
@@ -392,8 +403,19 @@ export function searchTempoByQuery(
   return Effect.gen(function* () {
     const tempoUid = yield* requireTempoUid(config);
     const now = Math.floor(Date.now() / 1000);
-    const startEpoch = relativeToEpoch(window.start, now);
-    const endEpoch = relativeToEpoch(window.end, now);
+    const startEpoch = strictRelativeToEpoch(window.start, now);
+    const endEpoch = strictRelativeToEpoch(window.end, now);
+
+    if (startEpoch === undefined || endEpoch === undefined) {
+      const rejected = startEpoch === undefined ? window.start : window.end;
+      return yield* new ObservabilityToolError({
+        cause: {
+          message: `Unparseable time "${rejected}" — use "now" or "now-<number><s|m|h|d>", e.g. now-6h`,
+          code: "INVALID_TIME_RANGE",
+          retryable: false,
+        },
+      });
+    }
 
     if (endEpoch - startEpoch > MAX_SEARCH_RANGE_SECONDS) {
       return yield* new ObservabilityToolError({
