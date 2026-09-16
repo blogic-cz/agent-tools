@@ -18,7 +18,7 @@ if (token === undefined || token.length === 0) {
 
 const REPO_NAME = process.env["AGENT_TOOLS_E2E_REPO"] ?? "agent-tools-stack-e2e";
 
-// eslint-disable-next-line typescript-eslint/no-explicit-any -- GitHub payloads are read ad hoc here; typing them adds no safety to a throwaway live script
+// eslint-disable-next-line typescript/no-explicit-any -- GitHub payloads are read ad hoc here; typing them adds no safety to a throwaway live script
 type Json = Record<string, any>;
 type ApiResult = { status: number; body: Json };
 
