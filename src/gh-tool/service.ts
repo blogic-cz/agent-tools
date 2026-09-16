@@ -1,11 +1,14 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Context, Duration, Effect, Layer, Stream } from "effect";
+import { Context, Effect, Layer, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "./types";
 
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
+import { retryTransient } from "#shared/retry-transient";
+import { githubApi } from "./api";
+import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
@@ -82,6 +85,9 @@ export class GitHubService extends Context.Service<
       query: string,
       variables: Record<string, string | number | null>,
     ) => Effect.Effect<unknown, GhError>;
+    readonly apiRequest: <T>(
+      opts: GitHubApiRequest,
+    ) => Effect.Effect<GitHubApiResponse<T>, GhError>;
     readonly getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
     readonly withRepoTarget: <A, E, R>(
@@ -261,20 +267,12 @@ export class GitHubService extends Context.Service<
         // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
         const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
           const canRetry = isSafeRetryRead(args);
-          const loop = (attempt: number): Effect.Effect<GhResult, GhError> =>
-            runGhAttempt(args).pipe(
-              Effect.catch((err) => {
-                const retryable =
-                  err instanceof GitHubCommandError && err.retryable === true && canRetry;
-                if (retryable && attempt < MAX_GH_RETRIES) {
-                  return Effect.sleep(Duration.millis(500 * 2 ** attempt)).pipe(
-                    Effect.flatMap(() => loop(attempt + 1)),
-                  );
-                }
-                return Effect.fail(err);
-              }),
-            );
-          return loop(0);
+          return retryTransient({
+            attempt: () => runGhAttempt(args),
+            isTransient: (err) =>
+              err instanceof GitHubCommandError && err.retryable === true && canRetry,
+            maxRetries: MAX_GH_RETRIES,
+          });
         };
 
         const runGhJson = <T>(args: string[]) =>
@@ -365,7 +363,15 @@ export class GitHubService extends Context.Service<
           return repoInfo;
         });
 
-        return { runGh, runGhJson, runGraphQL, getRepoConfig, getRepoInfo, withRepoTarget };
+        return {
+          runGh,
+          runGhJson,
+          runGraphQL,
+          apiRequest: githubApi,
+          getRepoConfig,
+          getRepoInfo,
+          withRepoTarget,
+        };
       }),
     ),
   );

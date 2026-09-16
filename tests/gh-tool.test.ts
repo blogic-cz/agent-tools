@@ -265,6 +265,7 @@ type MockGhOverrides = Partial<{
     query: string,
     variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
+  apiRequest: (opts: { path: string }) => Effect.Effect<{ status: number; body: unknown }, GhError>;
   getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
   withRepoTarget: <A, E, R>(
@@ -289,6 +290,15 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
         args: string[],
       ) => Effect.Effect<T, GhError>,
       runGraphQL: overrides.runGraphQL ?? (() => Effect.succeed({})),
+      apiRequest: (overrides.apiRequest ??
+        ((opts: { path: string }) =>
+          Effect.fail(
+            new GitHubNotFoundError({
+              message: `no stub for ${opts.path}`,
+              identifier: opts.path,
+              resource: "github-api",
+            }),
+          ))) as <T>(opts: { path: string }) => Effect.Effect<{ status: number; body: T }, GhError>,
       getRepoConfig: overrides.getRepoConfig ?? (() => Effect.succeed(undefined)),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),

@@ -63,3 +63,5 @@ export type GitHubServiceError =
   | GitHubAuthError
   | GitHubMergeError
   | GitHubTimeoutError;
+
+export type GitHubApiError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;

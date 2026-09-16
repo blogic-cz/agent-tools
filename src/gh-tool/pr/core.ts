@@ -22,7 +22,9 @@ import { GitHubService } from "#gh/service";
 import { logText } from "#shared";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
+import { pollUntilResolved } from "#shared/poll-until-resolved";
 import { runLocalCommand } from "./helpers";
+import { readStack } from "./stack-read";
 import {
   diagnoseLogEntries,
   discoverDispatchedRun,
@@ -200,7 +202,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 // is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 
-const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
+export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
   const gh = yield* GitHubService;
 
   const args = ["pr", "checks"];
@@ -763,26 +765,13 @@ const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
   ]);
 
   const uuid = latest.details?.uuid;
-  if (latest.status === "pending" && uuid !== undefined) {
-    const start = yield* Clock.currentTimeMillis;
-    const deadlineMs = Number(start) + MAX_ASYNC_MERGE_WAIT_SECONDS * 1000;
-    let timedOut = false;
-
-    // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
-    yield* Effect.whileLoop({
-      while: () => latest.status === "pending" && !timedOut,
-      body: () =>
-        Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
-          if (Number(now) >= deadlineMs) {
-            timedOut = true;
-            return;
-          }
-          const remaining = deadlineMs - Number(now);
-          yield* Effect.sleep(Duration.millis(Math.min(ASYNC_MERGE_POLL_INTERVAL_MS, remaining)));
-          latest = yield* gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]);
-        }),
-      step: () => undefined,
+  if (uuid !== undefined) {
+    latest = yield* pollUntilResolved({
+      initial: latest,
+      isPending: (value) => value.status === "pending",
+      fetchLatest: () => gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]),
+      intervalMs: ASYNC_MERGE_POLL_INTERVAL_MS,
+      budgetSeconds: MAX_ASYNC_MERGE_WAIT_SECONDS,
     });
   }
 
@@ -831,6 +820,57 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   ]);
 
   const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
+
+  // merge-async lands the requested PR AND every unmerged PR below it in its stack, and
+  // `gh pr merge` falls back to that endpoint for a stacked PR. Merging one member can
+  // therefore land members this command never named. Refuse instead of merging silently.
+  // Fail closed: readStack already reports a repository without a stacks surface as
+  // unstacked, so a failure here leaves membership genuinely unknown, and proceeding
+  // would land whatever sits below this PR without naming it.
+  const stackView = yield* readStack({ pr: opts.pr }).pipe(
+    Effect.catch((error) =>
+      Effect.fail(
+        new GitHubMergeError({
+          message: `Could not determine whether PR #${opts.pr} belongs to a stack: ${error.message}`,
+          reason: "unknown",
+          hint: "Merging a stack member lands every open PR below it, so the merge is refused while membership is unknown. Retry, or read the stack with 'pr stack view'.",
+          nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
+        }),
+      ),
+    ),
+  );
+  const ownPosition = stackView.members.find((entry) => entry.number === opts.pr)?.position;
+
+  // The stack was fetched by querying this PR, so it must be among its own members. If it
+  // is not, the PR left the stack between the list call and the detail call and membership
+  // is unknown again — the same reason the lookup failure above refuses.
+  if (stackView.isStacked && ownPosition === undefined) {
+    return yield* new GitHubMergeError({
+      message: `PR #${opts.pr} is missing from stack #${stackView.stackNumber}, which was read for that PR`,
+      reason: "unknown",
+      hint: "The stack changed while it was being read. Re-read it with 'pr stack view' before merging.",
+      nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
+    });
+  }
+
+  const openBelow =
+    !stackView.isStacked || ownPosition === undefined
+      ? []
+      : stackView.members.filter(
+          (member) => member.state === "open" && member.position < ownPosition,
+        );
+
+  if (openBelow.length > 0) {
+    return yield* new GitHubMergeError({
+      message:
+        `PR #${opts.pr} sits above ${openBelow.length} open PR(s) in stack #${stackView.stackNumber}: ` +
+        openBelow.map((member) => `#${member.number}`).join(", ") +
+        ". Merging it would land them too.",
+      reason: "unknown",
+      hint: "Use 'pr stack merge' to merge a stack: it checks every member first and reports the whole plan.",
+      nextCommand: `agent-tools-gh pr stack merge --pr ${opts.pr}`,
+    });
+  }
 
   // A long-lived branch (default/env branch) as PR head means a promotion PR
   // (e.g. main -> staging). PRs based on it are unrelated work, not a stack —

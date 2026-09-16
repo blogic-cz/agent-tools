@@ -29,6 +29,7 @@ import {
   REVIEW_EVENTS,
 } from "#gh/config";
 
+import { mergeStack, readStack } from "./stack";
 import {
   closePR,
   collectWithStableState,
@@ -1608,4 +1609,55 @@ export const prReplyAndResolveCommand = Command.make(
   Command.withDescription(
     "Composite: reply to a review comment and resolve its thread (PR/thread inferred from comment)",
   ),
+);
+
+const prStackViewCommand = Command.make(
+  "view",
+  {
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to read the stack of")),
+    repo: repoOption,
+  },
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* readStack({ pr });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(Command.withDescription("Show every PR in the stack containing this PR, bottom-up"));
+
+const prStackMergeCommand = Command.make(
+  "merge",
+  {
+    confirm: Flag.boolean("confirm").pipe(
+      Flag.withDescription("Actually merge (without this flag, only shows the ordered plan)"),
+      Flag.withDefault(false),
+    ),
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(Flag.withDescription("Any PR in the stack to merge")),
+    repo: repoOption,
+    strategy: Flag.choice("strategy", MERGE_STRATEGIES).pipe(
+      Flag.withDescription("Merge strategy: squash, merge, or rebase"),
+      Flag.withDefault(DEFAULT_MERGE_STRATEGY),
+    ),
+  },
+  ({ confirm, format, pr, repo, strategy }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* mergeStack({ confirm, pr, strategy });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Merge every open PR in the stack in one request (dry-run by default, use --confirm)",
+  ),
+);
+
+export const prStackCommand = Command.make("stack", {}).pipe(
+  Command.withSubcommands([prStackViewCommand, prStackMergeCommand]),
+  Command.withDescription("Stacked pull request operations"),
 );

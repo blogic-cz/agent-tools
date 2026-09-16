@@ -35,3 +35,5 @@ export {
 } from "./transform";
 
 export { transformLogOutput } from "./log-transform";
+export { retryTransient } from "./retry-transient";
+export { pollUntilResolved } from "./poll-until-resolved";
