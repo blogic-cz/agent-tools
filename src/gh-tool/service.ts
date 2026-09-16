@@ -6,6 +6,8 @@ import type { RepoInfo } from "./types";
 
 import { GH_BINARY } from "./config";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
+import { githubApi } from "./api";
+import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
@@ -82,6 +84,9 @@ export class GitHubService extends Context.Service<
       query: string,
       variables: Record<string, string | number | null>,
     ) => Effect.Effect<unknown, GhError>;
+    readonly apiRequest: <T>(
+      opts: GitHubApiRequest,
+    ) => Effect.Effect<GitHubApiResponse<T>, GhError>;
     readonly getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
     readonly withRepoTarget: <A, E, R>(
@@ -365,7 +370,15 @@ export class GitHubService extends Context.Service<
           return repoInfo;
         });
 
-        return { runGh, runGhJson, runGraphQL, getRepoConfig, getRepoInfo, withRepoTarget };
+        return {
+          runGh,
+          runGhJson,
+          runGraphQL,
+          apiRequest: githubApi,
+          getRepoConfig,
+          getRepoInfo,
+          withRepoTarget,
+        };
       }),
     ),
   );

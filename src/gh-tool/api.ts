@@ -54,12 +54,14 @@ export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* (
   return token;
 });
 
-export const githubApi = Effect.fn("gh.githubApi")(function* <T>(opts: {
+export type GitHubApiRequest = {
   path: string;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   alsoAcceptStatus?: number[];
-}) {
+};
+
+export const githubApi = Effect.fn("gh.githubApi")(function* <T>(opts: GitHubApiRequest) {
   const token = yield* resolveGitHubToken();
   const method = opts.method ?? "GET";
   const url = `${GITHUB_API_ROOT}/${opts.path.replace(/^\//, "")}`;

@@ -1,6 +1,5 @@
 import { Clock, Duration, Effect } from "effect";
 
-import { githubApi } from "#gh/api";
 import { GitHubService } from "#gh/service";
 import { GitHubMergeError } from "#gh/errors";
 
@@ -162,7 +161,7 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
 
   const asyncPath = `repos/${repo.owner}/${repo.name}/pulls/${target.number}/merge-async`;
 
-  const requested = yield* githubApi<AsyncMergeResult>({
+  const requested = yield* gh.apiRequest<AsyncMergeResult>({
     path: asyncPath,
     method: "PUT",
     body: { merge_method: opts.strategy, merge_action: "direct_merge" },
@@ -201,7 +200,7 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
           }
           const remaining = deadlineMs - Number(now);
           yield* Effect.sleep(Duration.millis(Math.min(POLL_INTERVAL_MS, remaining)));
-          const polled = yield* githubApi<AsyncMergeResult>({ path: `${asyncPath}/${uuid}` });
+          const polled = yield* gh.apiRequest<AsyncMergeResult>({ path: `${asyncPath}/${uuid}` });
           latest = polled.body;
         }),
       step: () => undefined,

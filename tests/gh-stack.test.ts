@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
+import { githubApi } from "#gh/api";
 import { mergeStack } from "#gh/pr/stack";
 import { mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
@@ -23,6 +24,7 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
       runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
       runGhJson: runGhJson as <T>(args: string[]) => Effect.Effect<T, never>,
       runGraphQL: () => Effect.succeed({}),
+      apiRequest: githubApi,
       getRepoConfig: () => Effect.succeed(undefined as GitHubRepoConfig | undefined),
       getRepoInfo: () => Effect.succeed(mockRepoInfo),
       withRepoTarget: (_target, effect) => effect,

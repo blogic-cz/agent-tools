@@ -1,6 +1,5 @@
 import { Effect } from "effect";
 
-import { githubApi } from "#gh/api";
 import { GitHubService } from "#gh/service";
 
 import type { StackMember, StackView } from "#gh/types";
@@ -28,7 +27,7 @@ export const readStack = Effect.fn("pr.readStack")(function* (opts: { pr: number
   const repo = yield* gh.getRepoInfo();
   const base = `repos/${repo.owner}/${repo.name}`;
 
-  const stacks = yield* githubApi<StacksListResponse>({
+  const stacks = yield* gh.apiRequest<StacksListResponse>({
     path: `${base}/stacks?pull_request=${opts.pr}`,
   });
 
@@ -43,7 +42,7 @@ export const readStack = Effect.fn("pr.readStack")(function* (opts: { pr: number
     } satisfies StackView;
   }
 
-  const stack = yield* githubApi<StackResponse>({ path: `${base}/stacks/${stackNumber}` });
+  const stack = yield* gh.apiRequest<StackResponse>({ path: `${base}/stacks/${stackNumber}` });
 
   const members: StackMember[] = stack.body.pull_requests.map((member, index) => ({
     position: index + 1,
