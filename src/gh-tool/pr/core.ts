@@ -1298,10 +1298,12 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
 
     const results = yield* fetchCheckResults(pr);
     if (!quiet && graceExpired) {
+      const prRef = pr === null ? "<number>" : String(pr);
       yield* Console.warn(
         `ℹ️  No checks registered within ${CHECK_REGISTRATION_GRACE_SECONDS}s of watching; ` +
           `returning the current snapshot. If this PR should have checks, the push event was ` +
-          `likely dropped — dispatch them:\n   ${buildChecksCommand(pr, true)}`,
+          `likely dropped, and re-watching will find nothing again — dispatch them on the PR ` +
+          `head instead:\n   agent-tools-gh pr trigger-checks --pr ${prRef} --workflow <file.yml>`,
       );
     } else if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
       const pending = results.filter((c) => c.bucket === "pending").length;

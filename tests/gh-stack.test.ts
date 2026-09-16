@@ -719,6 +719,7 @@ describe("pr checks --watch registration window", () => {
 
       const text = warnings.flat().join("\n");
       expect(text).toContain("No checks registered within 60s");
+      expect(text).toContain("pr trigger-checks --pr 123");
       expect(text).not.toContain("timed out after 300s");
     }),
   );
