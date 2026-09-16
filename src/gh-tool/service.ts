@@ -68,7 +68,7 @@ const isSafeRetryRead = (args: readonly string[]): boolean => {
   return args.some((a) => READ_VERBS.has(a));
 };
 
-type GhResult = {
+export type GhResult = {
   stdout: string;
   stderr: string;
   exitCode: number;

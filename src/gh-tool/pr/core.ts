@@ -19,6 +19,7 @@ import type {
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import type { GhResult } from "#gh/service";
 import { logText } from "#shared";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
@@ -1255,7 +1256,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     // exits non-zero in that window. A watch was asked to wait, so keep waiting: the outer
     // timeout still bounds it, and a PR that genuinely has no checks returns an empty
     // snapshot at that deadline rather than an error.
-    let watchResult: { stdout: string; stderr: string; exitCode: number } | null = null;
+    let watchResult: GhResult | null = null;
     let registered = false;
     let graceExpired = false;
     const watchThroughRegistration = Effect.gen(function* () {
