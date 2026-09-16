@@ -143,8 +143,6 @@ const SECRET_PATTERNS = [
  * Dangerous bash patterns that might expose secrets.
  */
 const DEFAULT_DANGEROUS_BASH_PATTERNS: RegExp[] = [
-  /printenv/i,
-  /(?:^|&&|\||;)\s*env(?:\s|$)/i,
   /\bcat\s+\S*\.env/i,
   /\bcat\s+\S*\.pem/i,
   /\bcat\s+\S*\.key/i,
@@ -245,6 +243,134 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Static shell words only. Never expand variables or execute a command. */
+function parseStaticShellCommands(command: string): string[][] | undefined {
+  const commands: string[][] = [];
+  let argv: string[] = [];
+  let word = "";
+  let started = false;
+  let quote: "'" | '"' | undefined;
+
+  const finishWord = () => {
+    if (started) argv.push(word);
+    word = "";
+    started = false;
+  };
+  const finishCommand = () => {
+    finishWord();
+    if (argv.length) commands.push(argv);
+    argv = [];
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command.charAt(i);
+    if (quote === "'") {
+      if (char === quote) quote = undefined;
+      else word += char;
+    } else if (char === "\\") {
+      const next = command[++i];
+      if (next === undefined || next === "\n" || next === "\r") return undefined;
+      if (quote === '"' && !/[\\$`"]/.test(next)) word += "\\";
+      word += next;
+      started = true;
+    } else if (char === "$" || char === "`") {
+      return undefined;
+    } else if (quote === '"') {
+      if (char === quote) quote = undefined;
+      else word += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (char === "<" || char === ">" || (char === "#" && !started)) {
+      return undefined;
+    } else if (/[;&|()\r\n]/.test(char)) {
+      finishCommand();
+    } else if (/\s/.test(char)) {
+      finishWord();
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+
+  if (quote) return undefined;
+  finishCommand();
+  return commands;
+}
+
+function mentionsEnvironmentRead(text: string): boolean {
+  return /printenv|\benv\b/i.test(text.replace(/['"\\]/g, ""));
+}
+
+function unwrapStaticCommand(words: string[]): string[] {
+  const argv = [...words];
+  const executable = () => argv[0]?.split("/").at(-1);
+  while (executable() === "rtk" || executable() === "command") {
+    const wrapper = executable();
+    argv.shift();
+    if (wrapper === "rtk" && argv[0] === "proxy") argv.shift();
+    if (wrapper === "command" && argv[0] === "--") argv.shift();
+  }
+  return argv;
+}
+
+function isSafeMetadataRead(argv: string[]): boolean {
+  if (argv[0]?.split("/").at(-1) !== "printenv") return false;
+  const args = argv.slice(1);
+  if (args[0] === "--") args.shift();
+  // HERDR_ENV is Herdr's presence flag, not a credential.
+  return args.length === 1 && args[0] === "HERDR_ENV";
+}
+
+function hasExecutionOption(args: string[], longOptions: string[], shortOption?: string): boolean {
+  return args.some((arg) => {
+    const flag = arg.split("=", 1)[0] ?? "";
+    if (flag.startsWith("--") && flag.length > 2) {
+      // Git supports long-option abbreviations. Refuse ambiguous prefixes too.
+      return longOptions.some((option) => option.startsWith(flag.slice(2)));
+    }
+    return shortOption !== undefined && /^-[^-]/.test(flag) && flag.includes(shortOption);
+  });
+}
+
+function isPassiveTextCommand(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  const args = argv.slice(1);
+  // These commands consume literal text. Execution options are not exceptions.
+  if (["echo", "printf", "grep", "head"].includes(name)) {
+    return true;
+  }
+  if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
+  return (
+    name === "git" &&
+    args[0] === "grep" &&
+    !hasExecutionOption(args, ["open-files-in-pager", "textconv"], "O")
+  );
+}
+
+function hasStaticEnvironmentRead(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1);
+  if (name === "printenv") return !isSafeMetadataRead(argv);
+  if (name === "env") return true;
+  if (isPassiveTextCommand(argv)) return false;
+  return mentionsEnvironmentRead(argv.join(" "));
+}
+
+function hasEnvironmentRead(command: string): boolean {
+  // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
+  const commands = parseStaticShellCommands(command);
+  if (!commands) return mentionsEnvironmentRead(command);
+  const unwrapped = commands.map(unwrapStaticCommand);
+  if (unwrapped.some(hasStaticEnvironmentRead)) return true;
+
+  // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
+  return (
+    unwrapped.some(
+      (argv) => isPassiveTextCommand(argv) && mentionsEnvironmentRead(argv.join(" ")),
+    ) && unwrapped.some((argv) => !isPassiveTextCommand(argv) && !isSafeMetadataRead(argv))
+  );
+}
+
 /** Extract file path from hook arguments. */
 export function extractFilePath(args: Record<string, unknown>): string {
   return (args.filePath as string) || (args.file_path as string) || (args.path as string) || "";
@@ -332,7 +458,9 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function isDangerousBashCommand(command: string): boolean {
-    return dangerousBashPatterns.some((pattern) => pattern.test(command));
+    return (
+      dangerousBashPatterns.some((pattern) => pattern.test(command)) || hasEnvironmentRead(command)
+    );
   }
 
   function isGhCommandAllowed(command: string): boolean {

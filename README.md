@@ -634,6 +634,11 @@ Claude Code uses shell command hooks. The package ships a ready-made wrapper scr
 
 That's it. The hook reads tool input from stdin, runs the guard, and exits with code 2 (blocked + reason on stderr) or 0 (allowed).
 
+The guard permits `printenv HERDR_ENV` because `HERDR_ENV` is Herdr's presence flag.
+It recognizes `rtk` and `rtk proxy` prefixes and checks each command in a pipeline or chain.
+Literal environment-command text in `rg`, `grep`, `git grep`, `echo`, and `printf` is allowed when every other command in the input is a known passive text command or a static metadata read.
+Execution options, other environment reads, and environment reads in dynamic or unsupported shell syntax stay blocked. Custom dangerous-command patterns still apply to the complete input.
+
 ### Setup for OpenCode
 
 OpenCode loads plugins automatically from `.opencode/plugins/`. Create a plugin file:

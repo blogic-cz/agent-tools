@@ -382,6 +382,81 @@ describe("path traversal and evasion", () => {
 });
 
 describe("dangerous bash command evasion", () => {
+  it.each([
+    "printenv HERDR_ENV",
+    "printenv -- HERDR_ENV",
+    "rtk printenv HERDR_ENV",
+    "rtk proxy printenv HERDR_ENV",
+    "/usr/bin/printenv 'HERDR_ENV'",
+    "command printenv HERDR_ENV",
+    "rtk printenv HERDR_ENV && git diff --name-only",
+    "printenv HERDR_ENV; printenv HERDR_ENV",
+    "rg -n 'printenv|HERDR_ENV' src",
+    "rtk proxy rg -n 'printenv|HERDR_ENV' src | head",
+    "git grep -n printenv -- src",
+    "grep 'printenv' README.md",
+    "echo 'printenv TOKEN; env'",
+    'printf "%s\\n" "printenv"',
+    "rg -n 'process.env' src",
+  ])("allows static metadata reads and literal search text: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "rtk printenv",
+    "rtk proxy printenv TOKEN",
+    "printenv HERDR_ENV TOKEN",
+    "printenv HERDR_ENV --null",
+    "printenv HERDR_ENV_TOKEN",
+    "printenv herdr_env",
+    "printenv $NAME",
+    "rtk printenv HERDR_ENV && printenv TOKEN",
+    "printenv HERDR_ENV\nprintenv",
+    "echo hi | /usr/bin/printenv TOKEN",
+    "'printenv' TOKEN",
+    "pr'int'env TOKEN",
+    "print\\env TOKEN",
+    "rtk env",
+    "/usr/bin/env",
+    "echo hi\nenv",
+    "echo $(printenv TOKEN)",
+    'echo "$(printenv TOKEN)"',
+    'echo "`printenv TOKEN`"',
+    'sh -c "printenv TOKEN"',
+    'bash -c "env"',
+    "eval 'printenv HERDR_ENV'",
+    "rg --pre printenv pattern src",
+    "rg --pre=printenv pattern src",
+    "git grep --open-files-in-pager=printenv pattern",
+    "git grep -O printenv pattern",
+    "git grep -Oprintenv pattern",
+    "git grep -nOprintenv pattern",
+    "git grep --open-files='printenv; echo' pattern",
+    "git grep --open-files-in-page='printenv; echo' pattern",
+    "rg --hostname-bin=printenv --hyperlink-format=default --color=always -H pattern README.md",
+    "rg --hostname-bin printenv pattern src",
+    "echo 'printenv' | sh",
+    "printf '%s\\n' 'printenv' | bash",
+    "echo 'printenv' | xargs",
+    "echo 'printenv' | unknown-runner",
+    "sort --compress-program=printenv input.txt",
+    "printenv HERDR_ENV > output.txt",
+    "printenv 'HERDR_ENV",
+  ])("blocks secret reads and unverified shell syntax: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).toThrow("might expose secrets");
+  });
+
+  it("keeps configured dangerous patterns active for otherwise safe commands", () => {
+    const guard = createCredentialGuard({ additionalDangerousBashPatterns: ["HERDR_ENV"] });
+    expect(guard.isDangerousBashCommand("rtk printenv HERDR_ENV")).toBe(true);
+  });
+
   it("blocks printenv", () => {
     expect(isDangerousBashCommand("printenv")).toBe(true);
   });
