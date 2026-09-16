@@ -851,20 +851,19 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
       ),
     ),
   );
-  const openBelow =
-    stackView === null || !stackView.isStacked
-      ? []
-      : stackView.members.filter(
-          (member) =>
-            member.state === "open" &&
-            member.position <
-              (stackView.members.find((entry) => entry.number === opts.pr)?.position ?? 0),
-        );
+  const openBelow = !stackView.isStacked
+    ? []
+    : stackView.members.filter(
+        (member) =>
+          member.state === "open" &&
+          member.position <
+            (stackView.members.find((entry) => entry.number === opts.pr)?.position ?? 0),
+      );
 
   if (openBelow.length > 0) {
     return yield* new GitHubMergeError({
       message:
-        `PR #${opts.pr} sits above ${openBelow.length} open PR(s) in stack #${stackView?.stackNumber}: ` +
+        `PR #${opts.pr} sits above ${openBelow.length} open PR(s) in stack #${stackView.stackNumber}: ` +
         openBelow.map((member) => `#${member.number}`).join(", ") +
         ". Merging it would land them too.",
       reason: "unknown",

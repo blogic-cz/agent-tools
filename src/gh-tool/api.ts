@@ -1,4 +1,6 @@
-import { Duration, Effect } from "effect";
+import { Effect } from "effect";
+
+import { retryTransient } from "#shared/retry-transient";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 
@@ -53,6 +55,8 @@ export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* (
 
   return token;
 });
+
+export type GitHubApiError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
 export type GitHubApiRequest = {
   path: string;
@@ -134,31 +138,15 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(opts: Gi
 // Mirrors GitHubService.runGh: replay a transient failure, and only for an idempotent read.
 export const githubApi = <T>(
   opts: GitHubApiRequest,
-): Effect.Effect<
-  GitHubApiResponse<T>,
-  GitHubCommandError | GitHubAuthError | GitHubNotFoundError
-> => {
-  const canRetry = (opts.method ?? "GET") === "GET";
-  const loop = (
-    attempt: number,
-  ): Effect.Effect<
-    GitHubApiResponse<T>,
-    GitHubCommandError | GitHubAuthError | GitHubNotFoundError
-  > =>
-    githubApiAttempt<T>(opts).pipe(
-      Effect.catch((error) =>
-        error._tag === "GitHubCommandError" &&
-        error.retryable === true &&
-        canRetry &&
-        attempt < MAX_API_RETRIES
-          ? Effect.sleep(Duration.millis(500 * 2 ** attempt)).pipe(
-              Effect.flatMap(() => loop(attempt + 1)),
-            )
-          : Effect.fail(error),
-      ),
-    );
-  return loop(0);
-};
+): Effect.Effect<GitHubApiResponse<T>, GitHubApiError> =>
+  retryTransient({
+    attempt: () => githubApiAttempt<T>(opts),
+    isTransient: (error) =>
+      error._tag === "GitHubCommandError" &&
+      error.retryable === true &&
+      (opts.method ?? "GET") === "GET",
+    maxRetries: MAX_API_RETRIES,
+  });
 
 const safeJsonParse = (text: string): unknown => {
   try {
