@@ -26,6 +26,11 @@ export function formatObservabilityError(error: unknown): string {
     return error.message;
   }
 
+  // Structured causes carry their text in `message`; String() would render "[object Object]".
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+
   return String(error);
 }
 
