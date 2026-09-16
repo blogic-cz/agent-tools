@@ -127,6 +127,15 @@ export type TempoSearchResponse = {
   readonly metrics?: Record<string, unknown>;
 };
 
+export type TraceSearchHit = {
+  readonly traceId: string;
+  readonly startedAt?: string;
+  readonly rootServiceName?: string;
+  readonly rootTraceName?: string;
+  readonly durationMs?: number;
+  readonly matchedSpans?: number;
+};
+
 export const IdKind = Schema.Literals(["trace_id", "span_id"]);
 export type IdKind = typeof IdKind.Type;
 

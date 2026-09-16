@@ -229,6 +229,7 @@ bun run agent-tools/example-tool/index.ts ping
 ```bash
 bun gh-tool pr status
 bun observability-tool trace get 0b7bdf0dde1c55458364ba5588a8075e --env local
+bun observability-tool trace search '{ status = error }' --env local --start now-6h
 bun k8s-tool kubectl --env test --cmd "get pods"
 bun logs-tool list --env local
 bun audit-tool list --limit 20

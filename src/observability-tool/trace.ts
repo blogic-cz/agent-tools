@@ -25,6 +25,7 @@ import type {
   SpanResolution,
   TempoSearchResponse,
   TempoTraceResponse,
+  TraceSearchHit,
   TraceSummary,
 } from "./types";
 
@@ -355,6 +356,63 @@ function resolveTraceFromId(
   });
 }
 
+/** Tempo rejects a search window wider than this, so the CLI says so before the API does. */
+const MAX_SEARCH_RANGE_SECONDS = 168 * 3600;
+
+export function summarizeSearchHits(response: TempoSearchResponse): TraceSearchHit[] {
+  return (response.traces ?? [])
+    .filter((trace) => trace.traceID !== undefined)
+    .map((trace) => {
+      const startedNano = nanoToBigInt(trace.startTimeUnixNano);
+
+      return {
+        traceId: trace.traceID as string,
+        startedAt:
+          startedNano === undefined
+            ? undefined
+            : new Date(Number(startedNano / 1_000_000n)).toISOString(),
+        rootServiceName: trace.rootServiceName,
+        rootTraceName: trace.rootTraceName,
+        durationMs: trace.durationMs,
+        matchedSpans: trace.spanSets?.reduce(
+          (total, spanSet) => total + (spanSet.matched ?? spanSet.spans?.length ?? 0),
+          0,
+        ),
+      };
+    })
+    .toSorted((left, right) => (right.startedAt ?? "").localeCompare(left.startedAt ?? ""));
+}
+
+export function searchTempoByQuery(
+  config: ObservabilityEnvConfig,
+  query: string,
+  window: SearchWindow,
+  limit: number,
+): Effect.Effect<TempoSearchResponse, ObservabilityToolError> {
+  return Effect.gen(function* () {
+    const tempoUid = yield* requireTempoUid(config);
+    const now = Math.floor(Date.now() / 1000);
+    const startEpoch = relativeToEpoch(window.start, now);
+    const endEpoch = relativeToEpoch(window.end, now);
+
+    if (endEpoch - startEpoch > MAX_SEARCH_RANGE_SECONDS) {
+      return yield* new ObservabilityToolError({
+        cause: {
+          message: `Search window ${window.start} → ${window.end} exceeds the 168h Tempo limit — query a narrower range`,
+          code: "SEARCH_RANGE_TOO_WIDE",
+          retryable: false,
+        },
+      });
+    }
+
+    const searchUrl =
+      `/api/datasources/proxy/uid/${tempoUid}/api/search` +
+      `?q=${encodeURIComponent(query)}&start=${startEpoch}&end=${endEpoch}&limit=${limit}`;
+
+    return yield* observabilityFetch<TempoSearchResponse>(config, searchUrl);
+  });
+}
+
 function handleTraceGet(
   id: string,
   format: OutputFormat,
@@ -526,7 +584,74 @@ const findCommand = Command.make(
   ({ id, format, env, profile }) => handleTraceGet(id, format, env, profile),
 ).pipe(Command.withDescription("Alias for 'trace get' — resolve a trace by trace ID or span ID"));
 
+const searchCommand = Command.make(
+  "search",
+  {
+    query: Argument.string("query"),
+    format: formatOption,
+    env: envOption,
+    profile: profileOption,
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Max traces to return (default: 20)"),
+      Flag.withDefault(20),
+    ),
+    start: Flag.string("start").pipe(
+      Flag.withDescription("Start time (default: now-1h, max span now-168h)"),
+      Flag.withDefault("now-1h"),
+    ),
+    end: Flag.string("end").pipe(
+      Flag.withDescription("End time (default: now)"),
+      Flag.withDefault("now"),
+    ),
+  },
+  ({ query, format, env, profile, limit, start, end }) => {
+    const startedAt = Date.now();
+
+    return Effect.gen(function* () {
+      const config = yield* resolveConfig(env, profile);
+      const response = yield* searchTempoByQuery(config, query, { start, end }, limit);
+      const traces = summarizeSearchHits(response);
+
+      const result = {
+        success: true,
+        message: `Found ${traces.length} trace(s) matching the TraceQL query`,
+        data: {
+          environment: env,
+          grafanaUrl: config.url,
+          tempoDatasourceUid: config.tempoUid ?? null,
+          query,
+          start,
+          end,
+          limit,
+          traceCount: traces.length,
+          traces,
+        },
+        executionTimeMs: Date.now() - startedAt,
+      };
+
+      yield* logText(formatOutput(result, format));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          const result = {
+            success: false,
+            message: "Failed to search Tempo",
+            error: formatObservabilityError(error),
+            hint: 'Query is TraceQL, e.g. { name = "GraphQL Document Validation" && status = error }. The window may not exceed 168h',
+            executionTimeMs: Date.now() - startedAt,
+          };
+          yield* logText(formatOutput(result, format));
+        }),
+      ),
+    );
+  },
+).pipe(
+  Command.withDescription(
+    "Search Tempo with a TraceQL query — find traces when no trace or span ID is known yet",
+  ),
+);
+
 export const traceCommand = Command.make("trace", {}).pipe(
   Command.withDescription("Tempo trace operations"),
-  Command.withSubcommands([getCommand, logsCommand, findCommand]),
+  Command.withSubcommands([getCommand, searchCommand, logsCommand, findCommand]),
 );
