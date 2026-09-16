@@ -4,7 +4,7 @@ import { Effect, Layer } from "effect";
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
-import { mergeStack } from "#gh/pr/stack";
+import { mergeStack, unstackStack } from "#gh/pr/stack";
 import { mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
 
@@ -73,8 +73,10 @@ const installFetch = () => {
     );
     const result = route?.respond() ?? { status: 404, body: { message: "no route" } };
 
+    // 204 forbids a body, so the stub must send none rather than the string "null".
+    const hasBody = result.status !== 204 && result.status !== 304;
     return Promise.resolve(
-      new Response(JSON.stringify(result.body), {
+      new Response(hasBody ? JSON.stringify(result.body) : null, {
         status: result.status,
         headers: { "Content-Type": "application/json" },
       }),
@@ -526,6 +528,91 @@ describe("pr merge stack guard", () => {
       }).pipe(Effect.provide(mergeGhLayer(() => Effect.succeed([]))));
 
       expect(result.merged).toBe(false);
+    }),
+  );
+});
+
+describe("pr stack unstack", () => {
+  it.effect("reports what it would remove without --confirm", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/stacks\?pull_request=693$/,
+        respond: () => ({ status: 200, body: [{ number: 717 }] }),
+      });
+      routes.push({
+        match: /\/stacks\/717$/,
+        respond: () => ({
+          status: 200,
+          body: {
+            number: 717,
+            base: { ref: "main" },
+            open: true,
+            pull_requests: [
+              stackMember(690, { merged_at: "2026-09-01T00:00:00Z", state: "closed" }),
+              stackMember(693),
+              stackMember(694, { base: "feat/693" }),
+            ],
+          },
+        }),
+      });
+
+      const result = yield* unstackStack({ pr: 693, confirm: false }).pipe(
+        Effect.provide(ghLayer(() => Effect.succeed({}))),
+      );
+
+      expect(result.dryRun).toBe(true);
+      expect(result.unstacked).toBe(false);
+      expect(result.removes).toEqual([693, 694]);
+      expect(fetchCalls.some((call) => call.method === "POST")).toBe(false);
+    }),
+  );
+
+  it.effect("reads a 204 as the stack being dissolved", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/stacks\?pull_request=693$/,
+        respond: () => ({ status: 200, body: [{ number: 717 }] }),
+      });
+      routes.push({
+        match: /\/stacks\/717$/,
+        respond: () => ({
+          status: 200,
+          body: {
+            number: 717,
+            base: { ref: "main" },
+            open: true,
+            pull_requests: [stackMember(693), stackMember(694, { base: "feat/693" })],
+          },
+        }),
+      });
+      routes.push({
+        match: /\/stacks\/717\/unstack$/,
+        method: "POST",
+        respond: () => ({ status: 204, body: null }),
+      });
+
+      const result = yield* unstackStack({ pr: 693, confirm: true }).pipe(
+        Effect.provide(ghLayer(() => Effect.succeed({}))),
+      );
+
+      expect(result.dissolved).toBe(true);
+      expect(result.unstacked).toBe(true);
+    }),
+  );
+
+  it.effect("refuses a PR that belongs to no stack", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/stacks\?pull_request=42$/,
+        respond: () => ({ status: 200, body: [] }),
+      });
+
+      const error = yield* unstackStack({ pr: 42, confirm: true }).pipe(
+        Effect.provide(ghLayer(() => Effect.succeed({}))),
+        Effect.flip,
+      );
+
+      expect(error.message).toContain("is not part of a GitHub stack");
     }),
   );
 });

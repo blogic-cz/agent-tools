@@ -29,7 +29,7 @@ import {
   REVIEW_EVENTS,
 } from "#gh/config";
 
-import { mergeStack, readStack } from "./stack";
+import { mergeStack, readStack, unstackStack } from "./stack";
 import {
   closePR,
   collectWithStableState,
@@ -414,6 +414,23 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   if (info.reviewDecision !== "" && info.reviewDecision !== "APPROVED") {
     blocking.push(`review=${info.reviewDecision}`);
   }
+
+  // A member of a GitHub stack cannot merge on its own while open members sit below it, so a
+  // verdict that reads only this PR would report ready for a PR nothing can land.
+  const stackView = yield* readStack({ pr: info.number }).pipe(
+    Effect.catch(() => Effect.succeed(null)),
+  );
+  const ownPosition = stackView?.members.find((member) => member.number === info.number)?.position;
+  const openBelow =
+    stackView?.isStacked === true && ownPosition !== undefined
+      ? stackView.members.filter(
+          (member) => member.state === "open" && member.position < ownPosition,
+        )
+      : [];
+  if (openBelow.length > 0) {
+    blocking.push(`stack_members_below=${openBelow.map((member) => member.number).join(",")}`);
+  }
+
   const ready = {
     ready: blocking.length === 0,
     mergeable: info.mergeable,
@@ -1657,7 +1674,34 @@ const prStackMergeCommand = Command.make(
   ),
 );
 
+const prStackUnstackCommand = Command.make(
+  "unstack",
+  {
+    confirm: Flag.boolean("confirm").pipe(
+      Flag.withDescription(
+        "Actually unstack (without this flag, only shows what would be removed)",
+      ),
+      Flag.withDefault(false),
+    ),
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(Flag.withDescription("Any PR in the stack to dissolve")),
+    repo: repoOption,
+  },
+  ({ confirm, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* unstackStack({ confirm, pr });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Remove every unmerged PR from the stack, dissolving it (dry-run by default)",
+  ),
+);
+
 export const prStackCommand = Command.make("stack", {}).pipe(
-  Command.withSubcommands([prStackViewCommand, prStackMergeCommand]),
+  Command.withSubcommands([prStackViewCommand, prStackMergeCommand, prStackUnstackCommand]),
   Command.withDescription("Stacked pull request operations"),
 );

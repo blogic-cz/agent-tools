@@ -35,6 +35,7 @@ bun gh-tool pr close --pr 123 --comment "Closing, no longer needed" --delete-bra
 bun gh-tool pr merge --pr 123 --strategy squash --delete-branch --confirm
 bun gh-tool pr stack view --pr 123    # Every PR in the GitHub stack containing this one, bottom-up
 bun gh-tool pr stack merge --pr 123 --strategy squash --confirm # Merge the whole stack in one request
+bun gh-tool pr stack unstack --pr 123 --confirm # Dissolve the stack, removing every unmerged member
 bun gh-tool pr threads --pr 123 --unresolved-only  # Review comments
 bun gh-tool pr request-review --repo be --pr 123 --reviewers alice,bob # Request/re-request review; newlyRequested vs alreadyPending tells whether a fresh request was created
 bun gh-tool pr reply --pr 123 --comment-id 456 --body "Fixed"
