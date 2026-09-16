@@ -4,6 +4,7 @@ import { Effect, Layer } from "effect";
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
 import { mergeStack } from "#gh/pr/stack";
+import { mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
 
 const mockRepoInfo = {
@@ -409,6 +410,62 @@ describe("pr stack merge", () => {
 
       expect(error.message).toContain("without a request id");
       expect(error.message).not.toContain("300s");
+    }),
+  );
+});
+
+describe("pr merge stack guard", () => {
+  const mergeGhLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, never>) =>
+    ghLayer((args) => {
+      if (args[1] === "view") {
+        return Effect.succeed({
+          number: 694,
+          url: "u",
+          title: "t",
+          headRefName: "feat/694",
+          baseRefName: "feat/693",
+          state: "OPEN",
+          isDraft: false,
+          mergeable: "MERGEABLE",
+        });
+      }
+      return runGhJson(args);
+    });
+
+  it.effect("refuses the merge when stack membership cannot be read", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/stacks\?pull_request=694$/,
+        respond: () => ({ status: 502, body: { message: "bad gateway" } }),
+      });
+
+      const error = yield* mergePR({
+        pr: 694,
+        strategy: "squash",
+        deleteBranch: false,
+        confirm: true,
+      }).pipe(Effect.provide(mergeGhLayer(() => Effect.succeed([]))), Effect.flip);
+
+      expect(error.message).toContain("Could not determine whether PR #694 belongs to a stack");
+      expect(fetchCalls.some((call) => call.method === "PUT")).toBe(false);
+    }),
+  );
+
+  it.effect("proceeds when the repository exposes no stacks surface", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/stacks\?pull_request=694$/,
+        respond: () => ({ status: 404, body: { message: "Not Found" } }),
+      });
+
+      const result = yield* mergePR({
+        pr: 694,
+        strategy: "squash",
+        deleteBranch: false,
+        confirm: false,
+      }).pipe(Effect.provide(mergeGhLayer(() => Effect.succeed([]))));
+
+      expect(result.merged).toBe(false);
     }),
   );
 });

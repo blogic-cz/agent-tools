@@ -836,7 +836,22 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // merge-async lands the requested PR AND every unmerged PR below it in its stack, and
   // `gh pr merge` falls back to that endpoint for a stacked PR. Merging one member can
   // therefore land members this command never named. Refuse instead of merging silently.
-  const stackView = yield* readStack({ pr: opts.pr }).pipe(Effect.orElseSucceed(() => null));
+  // Fail closed: only a 404 means this repository exposes no stacks surface. Any other
+  // lookup failure leaves membership unknown, and proceeding would land whatever sits
+  // below this PR without naming it.
+  const stackView = yield* readStack({ pr: opts.pr }).pipe(
+    Effect.catchTag("GitHubNotFoundError", () => Effect.succeed(null)),
+    Effect.catch((error) =>
+      Effect.fail(
+        new GitHubMergeError({
+          message: `Could not determine whether PR #${opts.pr} belongs to a stack: ${error.message}`,
+          reason: "unknown",
+          hint: "Merging a stack member lands every open PR below it, so the merge is refused while membership is unknown. Retry, or read the stack with 'pr stack view'.",
+          nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
+        }),
+      ),
+    ),
+  );
   const openBelow =
     stackView === null || !stackView.isStacked
       ? []
