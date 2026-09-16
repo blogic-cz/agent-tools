@@ -839,14 +839,26 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
       ),
     ),
   );
-  const openBelow = !stackView.isStacked
-    ? []
-    : stackView.members.filter(
-        (member) =>
-          member.state === "open" &&
-          member.position <
-            (stackView.members.find((entry) => entry.number === opts.pr)?.position ?? 0),
-      );
+  const ownPosition = stackView.members.find((entry) => entry.number === opts.pr)?.position;
+
+  // The stack was fetched by querying this PR, so it must be among its own members. If it
+  // is not, the PR left the stack between the list call and the detail call and membership
+  // is unknown again — the same reason the lookup failure above refuses.
+  if (stackView.isStacked && ownPosition === undefined) {
+    return yield* new GitHubMergeError({
+      message: `PR #${opts.pr} is missing from stack #${stackView.stackNumber}, which was read for that PR`,
+      reason: "unknown",
+      hint: "The stack changed while it was being read. Re-read it with 'pr stack view' before merging.",
+      nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
+    });
+  }
+
+  const openBelow =
+    !stackView.isStacked || ownPosition === undefined
+      ? []
+      : stackView.members.filter(
+          (member) => member.state === "open" && member.position < ownPosition,
+        );
 
   if (openBelow.length > 0) {
     return yield* new GitHubMergeError({

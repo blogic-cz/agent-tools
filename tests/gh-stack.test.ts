@@ -480,6 +480,37 @@ describe("pr merge stack guard", () => {
     }),
   );
 
+  it.effect("refuses when the PR is missing from the stack read for it", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/stacks\?pull_request=694$/,
+        respond: () => ({ status: 200, body: [{ number: 717 }] }),
+      });
+      routes.push({
+        match: /\/stacks\/717$/,
+        respond: () => ({
+          status: 200,
+          body: {
+            number: 717,
+            base: { ref: "main" },
+            open: true,
+            pull_requests: [stackMember(693)],
+          },
+        }),
+      });
+
+      const error = yield* mergePR({
+        pr: 694,
+        strategy: "squash",
+        deleteBranch: false,
+        confirm: true,
+      }).pipe(Effect.provide(mergeGhLayer(() => Effect.succeed([]))), Effect.flip);
+
+      expect(error.message).toContain("is missing from stack #717");
+      expect(fetchCalls.some((call) => call.method === "PUT")).toBe(false);
+    }),
+  );
+
   it.effect("proceeds when the repository exposes no stacks surface", () =>
     Effect.gen(function* () {
       routes.push({
