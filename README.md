@@ -309,8 +309,15 @@ bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # only
 bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # infers PR and thread
 bun gh-tool pr request-review --repo be --pr 123 --reviewers alice,bob
+bun gh-tool pr review --pr 123 --event comment --body "Notes, no verdict"
+bun gh-tool pr review --pr 123 --event request-changes --body-stdin --confirm <<'EOF'
+Rebase breaks two call sites; the Interop spec belongs in the domain module.
+EOF
+bun gh-tool pr review --pr 123 --event approve --confirm
 # Optional --pr/--thread-id retain legacy flow and are validated before either mutation.
 ```
+
+`pr review` creates and submits a review in one call, for a verdict reached from a diff with no pending review to submit. `pr submit-review` takes the same `--event` for a review that is already pending. `--event approve` and `--event request-changes` change whether the PR can merge, so both require `--confirm`, the same gate `pr merge` uses; `--event comment` carries no verdict and needs none. `--event comment` and `--event request-changes` require a non-empty body — GitHub rejects a bodyless one. GitHub also refuses a verdict on your own PR; that failure returns a hint pointing at `--event comment` instead of the raw API error.
 
 Reruns preflight every target before mutation and fail closed with `evidence_unavailable` when attempt jobs or logs cannot be read. Failed jobs use one `gh run rerun RUN --failed` mutation per workflow run. Without `--watch`, output returns current attempt metadata immediately; with `--watch`, discovery and watching share one absolute `--timeout` deadline and report `discovery_timeout` or `watch_timeout` with latest attempt state. Repeated matching pre-test infrastructure failures return `escalation_required` without mutation. See [`skills/gh-tool/SKILL.md`](skills/gh-tool/SKILL.md) for operating guidance; this section is canonical for added output fields.
 

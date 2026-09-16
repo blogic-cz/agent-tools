@@ -35,6 +35,11 @@ const KNOWN_STDERR_HINTS: ReadonlyArray<{
     hint: "The resource already exists. Fetch the existing one and update it instead of creating another.",
   },
   {
+    re: /Can not (?:approve|request changes on) your own pull request/i,
+    hint: "GitHub refuses a verdict review on your own PR. Post the findings with --event comment, or have the reviewing account submit the verdict.",
+    nextCommand: "agent-tools-gh pr review --pr <number> --event comment --body <text>",
+  },
+  {
     re: /pending review/i,
     hint: "A pending (unsubmitted) review blocks this mutation. Inspect its contents and submit or discard it before retrying.",
     nextCommand: "agent-tools-gh pr reviews --pr <number>",

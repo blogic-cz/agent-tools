@@ -41,6 +41,7 @@ import {
   watchPRs,
 } from "#gh/pr/core";
 import {
+  createReview,
   fetchComments,
   fetchFeedback,
   fetchLastHumanReviewer,
@@ -5838,6 +5839,141 @@ describe("PR composite commands", () => {
     }),
   );
 
+  it.effect("createReview posts a REQUEST_CHANGES review when confirmed", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({
+            id: 555,
+            state: "CHANGES_REQUESTED",
+            html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-555",
+          });
+        },
+      });
+
+      const result = yield* createReview({
+        pr: 123,
+        event: "request-changes",
+        body: inventedShellSensitiveText,
+        confirm: true,
+      }).pipe(Effect.provide(layer));
+
+      expect(result.state).toBe("CHANGES_REQUESTED");
+      expect(result.reviewId).toBe(555);
+      expect(forwardedArgs).toEqual([
+        "api",
+        "--method",
+        "POST",
+        "repos/test-owner/test-repo/pulls/123/reviews",
+        "-f",
+        "event=REQUEST_CHANGES",
+        "-f",
+        `body=${inventedShellSensitiveText}`,
+      ]);
+    }),
+  );
+
+  it.effect("createReview refuses a verdict without --confirm", () =>
+    Effect.gen(function* () {
+      let called = false;
+
+      const error = yield* createReview({
+        pr: 123,
+        event: "approve",
+        body: "",
+        confirm: false,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () => {
+              called = true;
+              return Effect.succeed({});
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(error).toBeInstanceOf(GitHubCommandError);
+      expect((error as GitHubCommandError).message).toContain("--confirm");
+      expect(called).toBe(false);
+    }),
+  );
+
+  it.effect("createReview approves without a body but rejects a bodyless comment", () =>
+    Effect.gen(function* () {
+      let forwardedArgs: string[] | undefined;
+
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          forwardedArgs = args;
+          return Effect.succeed({
+            id: 556,
+            state: "APPROVED",
+            html_url: "https://github.com/test-owner/test-repo/pull/123#pullrequestreview-556",
+          });
+        },
+      });
+
+      const approved = yield* createReview({
+        pr: 123,
+        event: "approve",
+        body: "",
+        confirm: true,
+      }).pipe(Effect.provide(layer));
+
+      expect(approved.state).toBe("APPROVED");
+      expect(forwardedArgs?.at(-1)).toBe("event=APPROVE");
+
+      const error = yield* createReview({
+        pr: 123,
+        event: "comment",
+        body: "   ",
+        confirm: false,
+      }).pipe(Effect.provide(layer), Effect.flip);
+
+      expect((error as GitHubCommandError).message).toContain("non-empty body");
+    }),
+  );
+
+  it.effect("submitPendingReview submits a confirmed REQUEST_CHANGES verdict", () =>
+    Effect.gen(function* () {
+      let forwardedVariables: Record<string, string | number | null> | undefined;
+
+      const layer = createMockGhLayer({
+        runGraphQL: (_query, variables) => {
+          forwardedVariables = variables;
+          return Effect.succeed({
+            submitPullRequestReview: {
+              pullRequestReview: { id: "review-1", state: "CHANGES_REQUESTED" },
+            },
+          });
+        },
+      });
+
+      const result = yield* submitPendingReview(
+        123,
+        "review-1",
+        "Please split the Interop spec out.",
+        "request-changes",
+        true,
+      ).pipe(Effect.provide(layer));
+
+      expect(result.state).toBe("CHANGES_REQUESTED");
+      expect(forwardedVariables?.event).toBe("REQUEST_CHANGES");
+
+      const error = yield* submitPendingReview(123, "review-1", "no", "request-changes").pipe(
+        Effect.provide(layer),
+        Effect.flip,
+      );
+
+      expect((error as GitHubCommandError).message).toContain("--confirm");
+    }),
+  );
+
   it.effect("submitPendingReview forwards shell-sensitive body unchanged", () =>
     Effect.gen(function* () {
       let forwardedVariables: Record<string, string | number | null> | undefined;
@@ -5859,6 +5995,8 @@ describe("PR composite commands", () => {
 
       expect(result.submitted).toBe(true);
       expect(forwardedVariables?.body).toBe(inventedShellSensitiveText);
+      // Pins the backward-compatible default: a pending submit must never become a verdict.
+      expect(forwardedVariables?.event).toBe("COMMENT");
     }),
   );
 

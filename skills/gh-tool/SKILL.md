@@ -61,7 +61,13 @@ bun gh-tool pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --bod
 bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600 # Attempt-aware rerun
 bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # Zero checks reported: dispatch on the PR head branch and verify the run matches it
 bun gh-tool pr feedback --pr 123 --only visible-open --exclude-authors github-actions # Narrowed inventory; `omitted` says what was dropped
+bun gh-tool pr review --pr 123 --event comment --body "Notes, no verdict" # Create + submit a review in one call
+bun gh-tool pr review --pr 123 --event request-changes --body-stdin --confirm # Blocking verdict; body required
+bun gh-tool pr review --pr 123 --event approve --confirm # Body optional
+bun gh-tool pr submit-review --pr 123 --event request-changes --confirm # Same verdict on an already-pending review
 ```
+
+`--event approve` and `--event request-changes` require `--confirm`, the same gate as `pr merge`, because both change whether the PR can merge. `--event comment` needs no gate but does need a body. GitHub refuses a verdict on your own PR; use `--event comment` there.
 
 Zero threads can mean the reviewer is still drafting. A pending review is invisible to the API until submit, and its comments keep their draft time in `createdAt`. `reviewId` says which comments arrived together; join it to `reviews[].submittedAt` from `pr feedback` for the exact time that batch became visible, or read `updatedAt` as a proxy that also moves on edits. Never conclude from `createdAt` that an earlier scan missed something.
 

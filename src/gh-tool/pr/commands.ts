@@ -24,7 +24,9 @@ import {
   CI_CHECK_WATCH_TIMEOUT_MS,
   DEFAULT_DELETE_BRANCH,
   DEFAULT_MERGE_STRATEGY,
+  DEFAULT_REVIEW_EVENT,
   MERGE_STRATEGIES,
+  REVIEW_EVENTS,
 } from "#gh/config";
 
 import {
@@ -47,6 +49,7 @@ import {
   waitForMergeable,
 } from "./core";
 import {
+  createReview,
   fetchComments,
   fetchDiscussionSummary,
   fetchFeedback,
@@ -1336,6 +1339,68 @@ export const prResolveCommand = Command.make(
     ),
 ).pipe(Command.withDescription("Resolve a review thread via GraphQL"));
 
+const reviewEventOption = Flag.choice("event", REVIEW_EVENTS).pipe(
+  Flag.withDescription("Review verdict: comment, approve, or request-changes"),
+  Flag.withDefault(DEFAULT_REVIEW_EVENT),
+);
+
+const reviewConfirmOption = Flag.boolean("confirm").pipe(
+  Flag.withDescription("Required for --event approve and --event request-changes"),
+  Flag.withDefault(false),
+);
+
+export const prReviewCommand = Command.make(
+  "review",
+  {
+    body: Flag.string("body").pipe(Flag.withDescription("Review body text"), Flag.optional),
+    bodyFile: Flag.string("body-file").pipe(
+      Flag.withDescription("Read review body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
+    bodyStdin: Flag.boolean("body-stdin").pipe(
+      Flag.withDescription("Read review body from stdin"),
+      Flag.withDefault(false),
+    ),
+    confirm: reviewConfirmOption,
+    event: reviewEventOption,
+    format: formatOption,
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+  },
+  ({ body, bodyFile, bodyStdin, confirm, event, format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const resolvedBody = yield* resolveDefaultTextInput({
+          command: "gh-tool pr review",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          stdin: bodyStdin,
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          stdinFlag: "--body-stdin",
+          label: "body",
+          defaultValue: "",
+        });
+
+        const result = yield* createReview({
+          pr: Option.getOrNull(pr),
+          event,
+          body: resolvedBody,
+          confirm,
+        });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Create and submit a review (--event comment, approve, or request-changes; verdicts need --confirm)",
+  ),
+);
+
 export const prSubmitReviewCommand = Command.make(
   "submit-review",
   {
@@ -1347,6 +1412,8 @@ export const prSubmitReviewCommand = Command.make(
       Flag.withDescription("Read review body from a file path or '-' for stdin"),
       Flag.optional,
     ),
+    confirm: reviewConfirmOption,
+    event: reviewEventOption,
     format: formatOption,
     pr: Flag.integer("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
@@ -1360,7 +1427,7 @@ export const prSubmitReviewCommand = Command.make(
       Flag.optional,
     ),
   },
-  ({ body, bodyFile, format, pr, repo, reviewId }) =>
+  ({ body, bodyFile, confirm, event, format, pr, repo, reviewId }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
@@ -1374,13 +1441,19 @@ export const prSubmitReviewCommand = Command.make(
           fileFlag: "--body-file",
           label: "body",
         });
-        const result = yield* submitPendingReview(prNumber, reviewIdValue, bodyValue);
+        const result = yield* submitPendingReview(
+          prNumber,
+          reviewIdValue,
+          bodyValue,
+          event,
+          confirm,
+        );
         yield* logFormatted(result, format);
       }),
     ),
 ).pipe(
   Command.withDescription(
-    "Submit a pending review as COMMENT (auto-detects your pending review if --review-id is omitted)",
+    "Submit a pending review (--event comment by default; verdicts need --confirm; auto-detects your pending review if --review-id is omitted)",
   ),
 );
 
