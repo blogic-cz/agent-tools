@@ -83,6 +83,21 @@ describe("searchTempoByQuery", () => {
     }),
   );
 
+  it.effect("refuses a reversed window", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        searchTempoByQuery(
+          config("tempo"),
+          "{ status = error }",
+          { start: "now", end: "now-6h" },
+          20,
+        ),
+      );
+
+      expect(formatObservabilityError(error)).toContain("ends at or before it starts");
+    }),
+  );
+
   it.effect("refuses an unparseable start instead of searching a zero-width window", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(

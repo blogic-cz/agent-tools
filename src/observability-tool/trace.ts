@@ -417,6 +417,16 @@ export function searchTempoByQuery(
       });
     }
 
+    if (startEpoch >= endEpoch) {
+      return yield* new ObservabilityToolError({
+        cause: {
+          message: `Search window ${window.start} → ${window.end} ends at or before it starts`,
+          code: "INVALID_TIME_RANGE",
+          retryable: false,
+        },
+      });
+    }
+
     if (endEpoch - startEpoch > MAX_SEARCH_RANGE_SECONDS) {
       return yield* new ObservabilityToolError({
         cause: {
