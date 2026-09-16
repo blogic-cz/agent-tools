@@ -313,6 +313,17 @@ Membership comes from GitHub's stacks API, never from chaining `baseRefName` to 
 That chain both over-reports (a promotion PR whose head is `main` adopts every ordinary PR as a
 child) and under-reports (a PR based on a stack member's branch need not be in the stack).
 
+A live end-to-end proof lives in `tests/e2e/stack-merge.e2e.ts`. It is excluded from
+`bun run check` because it creates and mutates a throwaway GitHub repository:
+
+```bash
+AGENT_TOOLS_E2E=1 bun tests/e2e/stack-merge.e2e.ts
+```
+
+It builds a real three-deep stack and asserts the thing no mock can prove — that each
+squash commit on the trunk adds only its own PR's changes, so a squashed parent is not
+replayed inside its child.
+
 ### gh-tool machine contracts
 
 `pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR. `pr request-review --reviewers alice,bob` emits sorted `submittedReviewers` (normalized input), `newlyRequested` and `alreadyPending` (the submitted logins split by whether a pending request already existed, so a fresh re-request is distinguishable from a no-op), and `requestedReviewers` (GitHub-confirmed result). `pr last-human-reviewer` derives `currentRequestedReviewers` from live `reviewRequests` only; timeline events are not replayed because GitHub clears a pending request on review submit without emitting `ReviewRequestRemovedEvent`.
