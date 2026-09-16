@@ -27,19 +27,27 @@ export const readStack = Effect.fn("pr.readStack")(function* (opts: { pr: number
   const repo = yield* gh.getRepoInfo();
   const base = `repos/${repo.owner}/${repo.name}`;
 
-  const stacks = yield* gh.apiRequest<StacksListResponse>({
-    path: `${base}/stacks?pull_request=${opts.pr}`,
-  });
+  const unstacked: StackView = {
+    pr: opts.pr,
+    isStacked: false,
+    stackNumber: null,
+    baseRef: null,
+    members: [],
+  };
+
+  // A 404 is the repository having no stacks surface at all, which reads the same as a PR
+  // that belongs to no stack. Every caller gets that reading from here, not its own.
+  const stacks = yield* gh
+    .apiRequest<StacksListResponse>({ path: `${base}/stacks?pull_request=${opts.pr}` })
+    .pipe(Effect.catchTag("GitHubNotFoundError", () => Effect.succeed(null)));
+
+  if (stacks === null) {
+    return unstacked;
+  }
 
   const stackNumber = stacks.body?.[0]?.number;
   if (stackNumber === undefined) {
-    return {
-      pr: opts.pr,
-      isStacked: false,
-      stackNumber: null,
-      baseRef: null,
-      members: [],
-    } satisfies StackView;
+    return unstacked;
   }
 
   const stack = yield* gh.apiRequest<StackResponse>({ path: `${base}/stacks/${stackNumber}` });

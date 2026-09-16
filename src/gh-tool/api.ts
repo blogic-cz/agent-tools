@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Duration, Effect } from "effect";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 
@@ -61,7 +61,9 @@ export type GitHubApiRequest = {
   alsoAcceptStatus?: number[];
 };
 
-export const githubApi = Effect.fn("gh.githubApi")(function* <T>(opts: GitHubApiRequest) {
+const MAX_API_RETRIES = 2;
+
+const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(opts: GitHubApiRequest) {
   const token = yield* resolveGitHubToken();
   const method = opts.method ?? "GET";
   const url = `${GITHUB_API_ROOT}/${opts.path.replace(/^\//, "")}`;
@@ -84,6 +86,7 @@ export const githubApi = Effect.fn("gh.githubApi")(function* <T>(opts: GitHubApi
         command: `${method} ${opts.path}`,
         exitCode: -1,
         stderr: String(cause),
+        retryable: true,
         hint: "Check network connectivity and VPN state, then retry.",
       }),
   });
@@ -124,8 +127,38 @@ export const githubApi = Effect.fn("gh.githubApi")(function* <T>(opts: GitHubApi
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,
+    ...(response.status >= 500 ? { retryable: true } : {}),
   });
 });
+
+// Mirrors GitHubService.runGh: replay a transient failure, and only for an idempotent read.
+export const githubApi = <T>(
+  opts: GitHubApiRequest,
+): Effect.Effect<
+  GitHubApiResponse<T>,
+  GitHubCommandError | GitHubAuthError | GitHubNotFoundError
+> => {
+  const canRetry = (opts.method ?? "GET") === "GET";
+  const loop = (
+    attempt: number,
+  ): Effect.Effect<
+    GitHubApiResponse<T>,
+    GitHubCommandError | GitHubAuthError | GitHubNotFoundError
+  > =>
+    githubApiAttempt<T>(opts).pipe(
+      Effect.catch((error) =>
+        error._tag === "GitHubCommandError" &&
+        error.retryable === true &&
+        canRetry &&
+        attempt < MAX_API_RETRIES
+          ? Effect.sleep(Duration.millis(500 * 2 ** attempt)).pipe(
+              Effect.flatMap(() => loop(attempt + 1)),
+            )
+          : Effect.fail(error),
+      ),
+    );
+  return loop(0);
+};
 
 const safeJsonParse = (text: string): unknown => {
   try {

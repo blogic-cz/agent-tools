@@ -836,11 +836,10 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // merge-async lands the requested PR AND every unmerged PR below it in its stack, and
   // `gh pr merge` falls back to that endpoint for a stacked PR. Merging one member can
   // therefore land members this command never named. Refuse instead of merging silently.
-  // Fail closed: only a 404 means this repository exposes no stacks surface. Any other
-  // lookup failure leaves membership unknown, and proceeding would land whatever sits
-  // below this PR without naming it.
+  // Fail closed: readStack already reports a repository without a stacks surface as
+  // unstacked, so a failure here leaves membership genuinely unknown, and proceeding
+  // would land whatever sits below this PR without naming it.
   const stackView = yield* readStack({ pr: opts.pr }).pipe(
-    Effect.catchTag("GitHubNotFoundError", () => Effect.succeed(null)),
     Effect.catch((error) =>
       Effect.fail(
         new GitHubMergeError({

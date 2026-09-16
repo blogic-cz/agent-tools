@@ -367,6 +367,26 @@ await api(`repos/${SLUG}/stacks`, {
   body: JSON.stringify({ pull_requests: [prB1, prB2] }),
 });
 
+const blockedPlan = await tool([
+  "pr",
+  "stack",
+  "merge",
+  "--pr",
+  String(prB1),
+  "--strategy",
+  "squash",
+]);
+check(
+  "the dry-run still prints a plan when a member blocks",
+  /dryRun: true/.test(blockedPlan.stdout),
+  blockedPlan.all.trim().split("\n")[0],
+);
+check(
+  "the dry-run names the blocker instead of refusing",
+  new RegExp(`${prB2},draft`).test(blockedPlan.stdout) || /draft/.test(blockedPlan.stdout),
+  blockedPlan.stdout.trim(),
+);
+
 const blocked = await tool([
   "pr",
   "stack",

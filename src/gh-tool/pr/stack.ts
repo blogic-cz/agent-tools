@@ -138,16 +138,6 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
     blockers,
   };
 
-  if (blockers.length > 0) {
-    return yield* new GitHubMergeError({
-      message:
-        `Stack #${view.stackNumber} is not ready: ` +
-        blockers.map((b) => `#${b.number} ${b.detail}`).join("; "),
-      reason: "unknown",
-      hint: "A partial stack merge leaves a parent on the trunk and a broken child, so nothing was attempted.",
-    });
-  }
-
   if (!opts.confirm) {
     return {
       ...base,
@@ -157,6 +147,16 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
       sha: null,
       adoptedExistingRequest: false,
     } satisfies StackMergeResult;
+  }
+
+  if (blockers.length > 0) {
+    return yield* new GitHubMergeError({
+      message:
+        `Stack #${view.stackNumber} is not ready: ` +
+        blockers.map((b) => `#${b.number} ${b.detail}`).join("; "),
+      reason: "unknown",
+      hint: "A partial stack merge leaves a parent on the trunk and a broken child, so nothing was attempted.",
+    });
   }
 
   const asyncPath = `repos/${repo.owner}/${repo.name}/pulls/${target.number}/merge-async`;

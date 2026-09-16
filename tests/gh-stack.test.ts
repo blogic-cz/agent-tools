@@ -222,6 +222,32 @@ describe("pr stack merge", () => {
     }),
   );
 
+  it.effect("reports blockers in the dry-run plan instead of refusing it", () =>
+    Effect.gen(function* () {
+      twoOpenAboveOneMerged();
+
+      const result = yield* mergeStack({ pr: 693, strategy: "squash", confirm: false }).pipe(
+        Effect.provide(
+          ghLayer((args) =>
+            args[1] === "view"
+              ? Effect.succeed({
+                  number: Number(args[2]),
+                  mergeable: args[2] === "694" ? "CONFLICTING" : "MERGEABLE",
+                  isDraft: false,
+                })
+              : Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]),
+          ),
+        ),
+      );
+
+      expect(result.dryRun).toBe(true);
+      expect(result.blockers).toEqual([
+        { number: 694, reason: "not_mergeable", detail: "PR has merge conflicts" },
+      ]);
+      expect(fetchCalls.some((call) => call.method === "PUT")).toBe(false);
+    }),
+  );
+
   it.effect("refuses the whole stack when any open member is not ready", () =>
     Effect.gen(function* () {
       twoOpenAboveOneMerged();
@@ -434,7 +460,7 @@ describe("pr merge stack guard", () => {
       return runGhJson(args);
     });
 
-  it.effect("refuses the merge when stack membership cannot be read", () =>
+  it.live("refuses the merge when stack membership cannot be read", () =>
     Effect.gen(function* () {
       routes.push({
         match: /\/stacks\?pull_request=694$/,
@@ -449,6 +475,7 @@ describe("pr merge stack guard", () => {
       }).pipe(Effect.provide(mergeGhLayer(() => Effect.succeed([]))), Effect.flip);
 
       expect(error.message).toContain("Could not determine whether PR #694 belongs to a stack");
+      expect(fetchCalls.filter((call) => call.url.includes("/stacks?"))).toHaveLength(3);
       expect(fetchCalls.some((call) => call.method === "PUT")).toBe(false);
     }),
   );
