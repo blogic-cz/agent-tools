@@ -1297,7 +1297,13 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     );
 
     const results = yield* fetchCheckResults(pr);
-    if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
+    if (!quiet && graceExpired) {
+      yield* Console.warn(
+        `ℹ️  No checks registered within ${CHECK_REGISTRATION_GRACE_SECONDS}s of watching; ` +
+          `returning the current snapshot. If this PR should have checks, the push event was ` +
+          `likely dropped — dispatch them:\n   ${buildChecksCommand(pr, true)}`,
+      );
+    } else if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
       const pending = results.filter((c) => c.bucket === "pending").length;
       yield* Console.warn(
         `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +

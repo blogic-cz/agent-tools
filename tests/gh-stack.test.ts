@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Layer } from "effect";
-import { TestClock } from "effect/testing";
+import { Console, Effect, Fiber, Layer } from "effect";
+import { TestClock, TestConsole } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
@@ -684,9 +684,16 @@ describe("pr checks --watch registration window", () => {
   it.effect("stops at the grace window instead of holding the caller's whole timeout", () =>
     Effect.gen(function* () {
       let watchAttempts = 0;
+      const warnings: unknown[][] = [];
+      const testConsole = yield* TestConsole.make;
+      const consoleLayer = Layer.succeed(Console.Console, {
+        ...testConsole,
+        warn: (...args: unknown[]) => warnings.push(args),
+      });
 
       const fiber = yield* Effect.forkChild(
-        fetchChecks(123, true, false, 300, true).pipe(
+        fetchChecks(123, true, false, 300, false).pipe(
+          Effect.provide(consoleLayer),
           Effect.provide(
             ghLayerWith({
               runGh: (args) => {
@@ -709,6 +716,10 @@ describe("pr checks --watch registration window", () => {
       expect(results).toEqual([]);
       expect(watchAttempts).toBeGreaterThan(1);
       expect(watchAttempts).toBeLessThan(20);
+
+      const text = warnings.flat().join("\n");
+      expect(text).toContain("No checks registered within 60s");
+      expect(text).not.toContain("timed out after 300s");
     }),
   );
 
