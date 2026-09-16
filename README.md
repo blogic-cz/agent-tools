@@ -305,6 +305,10 @@ bun gh-tool pr stack merge --pr 123 --strategy squash           # ordered plan, 
 bun gh-tool pr stack merge --pr 123 --strategy squash --confirm  # one request, whole stack
 ```
 
+Ordinary `pr merge` refuses a stack member that has open PRs below it, and names them.
+Merging such a member through the asynchronous endpoint would land those PRs too, which
+its own dry-run never disclosed. The bottom member still merges normally.
+
 `stack merge` targets the top open member, so one call lands the stack. It checks every open
 member first and refuses the whole operation if any is a draft, conflicting, or has failing or
 pending checks — a partial stack merge leaves a parent on the trunk and a broken child.

@@ -4,80 +4,18 @@ import { githubApi } from "#gh/api";
 import { GitHubService } from "#gh/service";
 import { GitHubMergeError } from "#gh/errors";
 
+import type { MergeStrategy, StackMember, StackMergeBlocker, StackMergeResult } from "#gh/types";
+
 import { fetchCheckResults, fetchPRView } from "./core";
+import { readStack } from "./stack-read";
 
-import type {
-  MergeStrategy,
-  StackMember,
-  StackMergeBlocker,
-  StackMergeResult,
-  StackView,
-} from "#gh/types";
-
-type StacksListResponse = Array<{ number: number }>;
-
-type StackResponse = {
-  number: number;
-  base: { ref: string };
-  open: boolean;
-  pull_requests: Array<{
-    number: number;
-    title: string;
-    state: "open" | "closed";
-    merged_at: string | null;
-    draft: boolean;
-    html_url: string;
-    head: { ref: string };
-    base: { ref: string };
-  }>;
-};
-
-export const readStack = Effect.fn("pr.readStack")(function* (opts: { pr: number }) {
-  const gh = yield* GitHubService;
-  const repo = yield* gh.getRepoInfo();
-  const base = `repos/${repo.owner}/${repo.name}`;
-
-  const stacks = yield* githubApi<StacksListResponse>({
-    path: `${base}/stacks?pull_request=${opts.pr}`,
-  });
-
-  const stackNumber = stacks.body?.[0]?.number;
-  if (stackNumber === undefined) {
-    return {
-      pr: opts.pr,
-      isStacked: false,
-      stackNumber: null,
-      baseRef: null,
-      members: [],
-    } satisfies StackView;
-  }
-
-  const stack = yield* githubApi<StackResponse>({ path: `${base}/stacks/${stackNumber}` });
-
-  const members: StackMember[] = stack.body.pull_requests.map((member, index) => ({
-    position: index + 1,
-    number: member.number,
-    title: member.title,
-    headRefName: member.head.ref,
-    baseRefName: member.base.ref,
-    state: member.merged_at === null ? member.state : "merged",
-    isDraft: member.draft,
-    url: member.html_url,
-  }));
-
-  return {
-    pr: opts.pr,
-    isStacked: true,
-    stackNumber: stack.body.number,
-    baseRef: stack.body.base.ref,
-    members,
-  } satisfies StackView;
-});
+export { readStack };
 
 type AsyncMergeDetails = {
   message?: string;
   uuid?: string;
   sha?: string;
+  merge_method?: MergeStrategy;
 };
 
 type AsyncMergeResult = {
@@ -88,12 +26,18 @@ type AsyncMergeResult = {
 const POLL_INTERVAL_MS = 2000;
 const MAX_WAIT_SECONDS = 300;
 
-const stackMergeFailure = (stackNumber: number, message: string, hint: string) =>
+const stackMergeFailure = (opts: {
+  stackNumber: number;
+  pr: number;
+  message: string;
+  hint: string;
+  reason?: GitHubMergeError["reason"];
+}) =>
   new GitHubMergeError({
-    message: `Failed to merge stack #${stackNumber}: ${message}`,
-    reason: "unknown",
-    hint,
-    nextCommand: `agent-tools-gh pr stack view --pr ${stackNumber}`,
+    message: `Failed to merge stack #${opts.stackNumber}: ${opts.message}`,
+    reason: opts.reason ?? "unknown",
+    hint: opts.hint,
+    nextCommand: `agent-tools-gh pr stack view --pr ${opts.pr}`,
   });
 
 const collectBlockers = Effect.fn("pr.collectStackBlockers")(function* (members: StackMember[]) {
@@ -111,6 +55,15 @@ const collectBlockers = Effect.fn("pr.collectStackBlockers")(function* (members:
         number: member.number,
         reason: "not_mergeable",
         detail: "PR has merge conflicts",
+      });
+      continue;
+    }
+
+    if (info.mergeable !== "MERGEABLE") {
+      blockers.push({
+        number: member.number,
+        reason: "mergeability_unknown",
+        detail: `GitHub has not settled mergeability yet (${info.mergeable})`,
       });
       continue;
     }
@@ -182,7 +135,6 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
     stackNumber: view.stackNumber,
     baseRef: view.baseRef,
     target: target.number,
-    strategy: opts.strategy,
     plan,
     blockers,
   };
@@ -200,6 +152,7 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
   if (!opts.confirm) {
     return {
       ...base,
+      strategy: opts.strategy,
       merged: false,
       dryRun: true,
       sha: null,
@@ -216,10 +169,22 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
     alsoAcceptStatus: [202, 409],
   });
 
+  // A 409 hands back an existing request whose options may differ from the ones asked
+  // for, so the result reports the strategy GitHub is actually applying.
   const adoptedExistingRequest = requested.status === 409;
   let latest = requested.body;
+  const effectiveStrategy = latest.details?.merge_method ?? opts.strategy;
 
   const uuid = latest.details?.uuid;
+  if (latest.status === "pending" && (uuid === undefined || uuid.length === 0)) {
+    return yield* stackMergeFailure({
+      stackNumber: view.stackNumber,
+      pr: target.number,
+      message: "GitHub reported a pending merge without a request id",
+      hint: "The merge may or may not be running. Re-read the stack before retrying so the merge is not requested twice.",
+    });
+  }
+
   if (latest.status === "pending" && uuid !== undefined) {
     const start = yield* Clock.currentTimeMillis;
     const deadlineMs = Number(start) + MAX_WAIT_SECONDS * 1000;
@@ -246,6 +211,7 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
   if (latest.status === "merged") {
     return {
       ...base,
+      strategy: effectiveStrategy,
       merged: true,
       dryRun: false,
       sha: latest.details?.sha ?? null,
@@ -254,24 +220,28 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
   }
 
   if (latest.status === "enqueued") {
-    return yield* stackMergeFailure(
-      view.stackNumber,
-      latest.details?.message ?? "the stack entered a merge queue",
-      "The merge queue owns the merge from here; it is not merged yet. Watch the PRs until the queue drains.",
-    );
+    return yield* stackMergeFailure({
+      stackNumber: view.stackNumber,
+      pr: target.number,
+      reason: "merge_queue",
+      message: latest.details?.message ?? "the stack entered a merge queue",
+      hint: "The merge queue owns the merge from here; it is not merged yet. Watch the PRs until the queue drains.",
+    });
   }
 
   if (latest.status === "pending") {
-    return yield* stackMergeFailure(
-      view.stackNumber,
-      `still pending after ${MAX_WAIT_SECONDS}s`,
-      "The asynchronous merge is still running. Re-check the stack before retrying so the merge is not requested twice.",
-    );
+    return yield* stackMergeFailure({
+      stackNumber: view.stackNumber,
+      pr: target.number,
+      message: `still pending after ${MAX_WAIT_SECONDS}s`,
+      hint: "The asynchronous merge is still running. Re-check the stack before retrying so the merge is not requested twice.",
+    });
   }
 
-  return yield* stackMergeFailure(
-    view.stackNumber,
-    latest.details?.message ?? "the merge request failed",
-    "Inspect the stack state and branch protections, then retry.",
-  );
+  return yield* stackMergeFailure({
+    stackNumber: view.stackNumber,
+    pr: target.number,
+    message: latest.details?.message ?? "the merge request failed",
+    hint: "Inspect the stack state and branch protections, then retry.",
+  });
 });

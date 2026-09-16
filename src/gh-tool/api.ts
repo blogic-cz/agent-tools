@@ -1,7 +1,6 @@
 import { Effect } from "effect";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
-import { runLocalCommand } from "./pr/helpers";
 
 // Direct HTTP, not `gh api`: the CLI collapses every failure into a non-zero exit and
 // loses the status code, but merge-async answers 202 (accepted), 200 (already merged or
@@ -22,19 +21,32 @@ const authFailure = (message: string) =>
     nextCommand: "gh auth login",
   });
 
-// Environment first: the active `gh` account is directory-scoped global state and the
-// shell exports the matching token. `gh auth token` only covers shells that export none.
+// Environment first, GH_TOKEN before GITHUB_TOKEN to match the gh CLI: the active gh
+// account is directory-scoped global state and the shell exports the matching token.
+// `gh auth token` only covers shells that export none.
 export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* () {
-  const fromEnv = process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"];
+  const fromEnv = [process.env["GH_TOKEN"], process.env["GITHUB_TOKEN"]].find(
+    (candidate) => candidate !== undefined && candidate.length > 0,
+  );
   if (fromEnv !== undefined && fromEnv.length > 0) {
     return fromEnv;
   }
 
-  const result = yield* runLocalCommand("gh", ["auth", "token"]).pipe(
-    Effect.orElseSucceed(() => null),
-  );
-
-  const token = result?.stdout.trim() ?? "";
+  // Bun.spawn rather than the ChildProcessSpawner service on purpose: routing it through
+  // the service would put that requirement in the error channel of every command that
+  // reads the API, and token resolution is not what those commands are testing.
+  const token = yield* Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(["gh", "auth", "token", "--hostname", "github.com"], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const exitCode = await proc.exited;
+      return exitCode === 0 ? stdout.trim() : "";
+    },
+    catch: () => authFailure("No GitHub token available."),
+  }).pipe(Effect.orElseSucceed(() => ""));
   if (token.length === 0) {
     return yield* authFailure("No GitHub token available.");
   }
@@ -74,7 +86,17 @@ export const githubApi = Effect.fn("gh.githubApi")(function* <T>(opts: {
       }),
   });
 
-  const text = yield* Effect.promise(() => response.text());
+  const text = yield* Effect.tryPromise({
+    try: () => response.text(),
+    catch: (cause) =>
+      new GitHubCommandError({
+        message: `GitHub API response could not be read: ${String(cause)}`,
+        command: `${method} ${opts.path}`,
+        exitCode: -1,
+        stderr: String(cause),
+        hint: "The connection dropped mid-response. Re-read the resource before retrying a mutation.",
+      }),
+  });
   const parsed: unknown = text.length === 0 ? null : safeJsonParse(text);
 
   const accepted = new Set([200, ...(opts.alsoAcceptStatus ?? [])]);

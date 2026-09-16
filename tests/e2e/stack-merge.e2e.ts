@@ -226,6 +226,38 @@ check(
   view.stdout.indexOf(`1,${pr1},`) < view.stdout.indexOf(`3,${pr3},`),
 );
 
+const ordinaryMerge = await tool([
+  "pr",
+  "merge",
+  "--pr",
+  String(pr2),
+  "--strategy",
+  "squash",
+  "--confirm",
+]);
+check(
+  "ordinary pr merge refuses a member with open PRs below it",
+  /sits above 1 open PR/.test(ordinaryMerge.all),
+  ordinaryMerge.all.trim().split("\n")[0],
+);
+check(
+  "the refusal names the member that would also land",
+  new RegExp(`#${pr1}`).test(ordinaryMerge.all),
+);
+const afterOrdinary = await commitsSince(rootSha);
+check(
+  "refused ordinary merge landed nothing",
+  afterOrdinary.length === 0,
+  `${afterOrdinary.length} commits`,
+);
+
+const bottomMerge = await tool(["pr", "merge", "--pr", String(pr1), "--strategy", "squash"]);
+check(
+  "ordinary pr merge still allows the bottom member",
+  !/sits above/.test(bottomMerge.all),
+  bottomMerge.all.trim().split("\n")[0],
+);
+
 const dry = await tool(["pr", "stack", "merge", "--pr", String(pr1), "--strategy", "squash"]);
 check("dry-run is the default", /dryRun: true/.test(dry.stdout));
 check("dry-run targets the top member", new RegExp(`target: ${pr3}`).test(dry.stdout));

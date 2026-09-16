@@ -23,6 +23,7 @@ import { logText } from "#shared";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { runLocalCommand } from "./helpers";
+import { readStack } from "./stack-read";
 import {
   diagnoseLogEntries,
   discoverDispatchedRun,
@@ -831,6 +832,32 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   ]);
 
   const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
+
+  // merge-async lands the requested PR AND every unmerged PR below it in its stack, and
+  // `gh pr merge` falls back to that endpoint for a stacked PR. Merging one member can
+  // therefore land members this command never named. Refuse instead of merging silently.
+  const stackView = yield* readStack({ pr: opts.pr }).pipe(Effect.orElseSucceed(() => null));
+  const openBelow =
+    stackView === null || !stackView.isStacked
+      ? []
+      : stackView.members.filter(
+          (member) =>
+            member.state === "open" &&
+            member.position <
+              (stackView.members.find((entry) => entry.number === opts.pr)?.position ?? 0),
+        );
+
+  if (openBelow.length > 0) {
+    return yield* new GitHubMergeError({
+      message:
+        `PR #${opts.pr} sits above ${openBelow.length} open PR(s) in stack #${stackView?.stackNumber}: ` +
+        openBelow.map((member) => `#${member.number}`).join(", ") +
+        ". Merging it would land them too.",
+      reason: "unknown",
+      hint: "Use 'pr stack merge' to merge a stack: it checks every member first and reports the whole plan.",
+      nextCommand: `agent-tools-gh pr stack merge --pr ${opts.pr}`,
+    });
+  }
 
   // A long-lived branch (default/env branch) as PR head means a promotion PR
   // (e.g. main -> staging). PRs based on it are unrelated work, not a stack —

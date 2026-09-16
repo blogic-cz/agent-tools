@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Sink, Stream } from "effect";
-import type { ChildProcess } from "effect/unstable/process";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { Effect, Layer } from "effect";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
-import { mergeStack, readStack } from "#gh/pr/stack";
+import { mergeStack } from "#gh/pr/stack";
+import { readStack } from "#gh/pr/stack-read";
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -15,29 +14,6 @@ const mockRepoInfo = {
 };
 
 type GhCall = { args: string[] };
-
-// GITHUB_TOKEN is set in every test, so the `gh auth token` fallback never runs; this
-// only satisfies its type requirement.
-const unusedSpawnerLayer = Layer.succeed(
-  ChildProcessSpawner.ChildProcessSpawner,
-  ChildProcessSpawner.make((_command: ChildProcess.Command) =>
-    Effect.succeed(
-      ChildProcessSpawner.makeHandle({
-        pid: ChildProcessSpawner.ProcessId(1),
-        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
-        isRunning: Effect.succeed(false),
-        kill: () => Effect.succeed(undefined),
-        stderr: Stream.empty,
-        stdin: Sink.drain,
-        stdout: Stream.empty,
-        all: Stream.empty,
-        getInputFd: () => Sink.drain,
-        getOutputFd: () => Stream.empty,
-        unref: Effect.succeed(Effect.void),
-      }),
-    ),
-  ),
-);
 
 const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, never>) =>
   Layer.succeed(
@@ -52,8 +28,7 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
     }),
   );
 
-const ghLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, never>) =>
-  Layer.merge(ghServiceLayer(runGhJson), unusedSpawnerLayer);
+const ghLayer = ghServiceLayer;
 
 const stackMember = (
   number: number,
@@ -162,7 +137,13 @@ describe("pr stack view", () => {
       );
 
       expect(view.stackNumber).toBe(717);
-      expect(view.members.map((m) => [m.position, m.number, m.state])).toEqual([
+      expect(
+        view.members.map((m: { position: number; number: number; state: string }) => [
+          m.position,
+          m.number,
+          m.state,
+        ]),
+      ).toEqual([
         [1, 690, "merged"],
         [2, 693, "open"],
         [3, 694, "open"],
@@ -333,6 +314,101 @@ describe("pr stack merge", () => {
 
       expect(error.message).toContain("queued behind 3 PRs");
       expect(error.hint).toContain("not merged yet");
+    }),
+  );
+  it.effect("treats unsettled mergeability as a blocker instead of merging", () =>
+    Effect.gen(function* () {
+      twoOpenAboveOneMerged();
+
+      const error = yield* mergeStack({ pr: 693, strategy: "squash", confirm: true }).pipe(
+        Effect.provide(
+          ghLayer((args) =>
+            args[1] === "view"
+              ? Effect.succeed({
+                  number: Number(args[2]),
+                  mergeable: args[2] === "694" ? "UNKNOWN" : "MERGEABLE",
+                  isDraft: false,
+                })
+              : Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]),
+          ),
+        ),
+        Effect.flip,
+      );
+
+      expect(error.message).toContain("#694");
+      expect(error.message).toContain("has not settled mergeability");
+      expect(fetchCalls.some((call) => call.method === "PUT")).toBe(false);
+    }),
+  );
+
+  it.effect("tags a queued stack merge with the merge_queue reason", () =>
+    Effect.gen(function* () {
+      twoOpenAboveOneMerged();
+      routes.push({
+        match: /\/pulls\/694\/merge-async$/,
+        method: "PUT",
+        respond: () => ({
+          status: 202,
+          body: { status: "enqueued", details: { message: "queued" } },
+        }),
+      });
+
+      const error = yield* mergeStack({ pr: 693, strategy: "squash", confirm: true }).pipe(
+        Effect.provide(ghLayer(healthyGh([]))),
+        Effect.flip,
+      );
+
+      expect(error).toMatchObject({
+        _tag: "GitHubMergeError",
+        reason: "merge_queue",
+        nextCommand: "agent-tools-gh pr stack view --pr 694",
+      });
+    }),
+  );
+
+  it.effect("reports the strategy GitHub adopted, not the one requested", () =>
+    Effect.gen(function* () {
+      twoOpenAboveOneMerged();
+      routes.push({
+        match: /\/pulls\/694\/merge-async$/,
+        method: "PUT",
+        respond: () => ({
+          status: 409,
+          body: {
+            status: "merged",
+            details: { message: "already requested", sha: "def5678", merge_method: "merge" },
+          },
+        }),
+      });
+
+      const result = yield* mergeStack({ pr: 693, strategy: "squash", confirm: true }).pipe(
+        Effect.provide(ghLayer(healthyGh([]))),
+      );
+
+      expect(result.adoptedExistingRequest).toBe(true);
+      expect(result.strategy).toBe("merge");
+    }),
+  );
+
+  it.effect("refuses a pending merge that carries no request id", () =>
+    Effect.gen(function* () {
+      twoOpenAboveOneMerged();
+      routes.push({
+        match: /\/pulls\/694\/merge-async$/,
+        method: "PUT",
+        respond: () => ({
+          status: 202,
+          body: { status: "pending", details: { message: "no id" } },
+        }),
+      });
+
+      const error = yield* mergeStack({ pr: 693, strategy: "squash", confirm: true }).pipe(
+        Effect.provide(ghLayer(healthyGh([]))),
+        Effect.flip,
+      );
+
+      expect(error.message).toContain("without a request id");
+      expect(error.message).not.toContain("300s");
     }),
   );
 });
