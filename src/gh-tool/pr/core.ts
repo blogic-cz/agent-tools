@@ -22,6 +22,7 @@ import { GitHubService } from "#gh/service";
 import { logText } from "#shared";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
+import { pollUntilResolved } from "#shared/poll-until-resolved";
 import { runLocalCommand } from "./helpers";
 import { readStack } from "./stack-read";
 import {
@@ -764,26 +765,13 @@ const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
   ]);
 
   const uuid = latest.details?.uuid;
-  if (latest.status === "pending" && uuid !== undefined) {
-    const start = yield* Clock.currentTimeMillis;
-    const deadlineMs = Number(start) + MAX_ASYNC_MERGE_WAIT_SECONDS * 1000;
-    let timedOut = false;
-
-    // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
-    yield* Effect.whileLoop({
-      while: () => latest.status === "pending" && !timedOut,
-      body: () =>
-        Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
-          if (Number(now) >= deadlineMs) {
-            timedOut = true;
-            return;
-          }
-          const remaining = deadlineMs - Number(now);
-          yield* Effect.sleep(Duration.millis(Math.min(ASYNC_MERGE_POLL_INTERVAL_MS, remaining)));
-          latest = yield* gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]);
-        }),
-      step: () => undefined,
+  if (uuid !== undefined) {
+    latest = yield* pollUntilResolved({
+      initial: latest,
+      isPending: (value) => value.status === "pending",
+      fetchLatest: () => gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]),
+      intervalMs: ASYNC_MERGE_POLL_INTERVAL_MS,
+      budgetSeconds: MAX_ASYNC_MERGE_WAIT_SECONDS,
     });
   }
 

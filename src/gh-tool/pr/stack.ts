@@ -1,5 +1,6 @@
-import { Clock, Duration, Effect } from "effect";
+import { Effect } from "effect";
 
+import { pollUntilResolved } from "#shared/poll-until-resolved";
 import { GitHubService } from "#gh/service";
 import { GitHubMergeError } from "#gh/errors";
 
@@ -22,6 +23,8 @@ type AsyncMergeResult = {
   details?: AsyncMergeDetails;
 };
 
+// One request merges every open member, so the server-side work scales with the stack;
+// the single-PR budget in core.ts is deliberately shorter.
 const POLL_INTERVAL_MS = 2000;
 const MAX_WAIT_SECONDS = 300;
 
@@ -184,26 +187,16 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
     });
   }
 
-  if (latest.status === "pending" && uuid !== undefined) {
-    const start = yield* Clock.currentTimeMillis;
-    const deadlineMs = Number(start) + MAX_WAIT_SECONDS * 1000;
-    let timedOut = false;
-
-    yield* Effect.whileLoop({
-      while: () => latest.status === "pending" && !timedOut,
-      body: () =>
-        Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
-          if (Number(now) >= deadlineMs) {
-            timedOut = true;
-            return;
-          }
-          const remaining = deadlineMs - Number(now);
-          yield* Effect.sleep(Duration.millis(Math.min(POLL_INTERVAL_MS, remaining)));
-          const polled = yield* gh.apiRequest<AsyncMergeResult>({ path: `${asyncPath}/${uuid}` });
-          latest = polled.body;
-        }),
-      step: () => undefined,
+  if (uuid !== undefined) {
+    latest = yield* pollUntilResolved({
+      initial: latest,
+      isPending: (value) => value.status === "pending",
+      fetchLatest: () =>
+        gh
+          .apiRequest<AsyncMergeResult>({ path: `${asyncPath}/${uuid}` })
+          .pipe(Effect.map((response) => response.body)),
+      intervalMs: POLL_INTERVAL_MS,
+      budgetSeconds: MAX_WAIT_SECONDS,
     });
   }
 

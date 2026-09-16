@@ -18,9 +18,18 @@ if (token === undefined || token.length === 0) {
 
 const REPO_NAME = process.env["AGENT_TOOLS_E2E_REPO"] ?? "agent-tools-stack-e2e";
 
-// eslint-disable-next-line typescript/no-explicit-any -- GitHub payloads are read ad hoc here; typing them adds no safety to a throwaway live script
-type Json = Record<string, any>;
+type Json = Record<string, unknown>;
 type ApiResult = { status: number; body: Json };
+type Commit = { sha: string; commit: { message: string }; parents: unknown[] };
+type Ref = { ref: string };
+
+const field = <T>(source: unknown, ...path: string[]): T => {
+  let value: unknown = source;
+  for (const key of path) {
+    value = (value as Json)[key];
+  }
+  return value as T;
+};
 
 const api = async (path: string, init?: RequestInit): Promise<ApiResult> => {
   const res = await fetch(`https://api.github.com/${path}`, {
@@ -50,7 +59,7 @@ const check = (name: string, ok: boolean, detail = "") => {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const me = await api("user");
-const OWNER: string = me.body.login;
+const OWNER: string = field<string>(me.body, "login");
 const SLUG = `${OWNER}/${REPO_NAME}`;
 
 const tool = async (args: string[]) => {
@@ -99,11 +108,11 @@ const resetRepo = async () => {
       }),
     });
     await sleep(2000);
-    return created.body["default_branch"] as string;
+    return field<string>(created.body, "default_branch");
   }
 
   const repo = await api(`repos/${SLUG}`);
-  const defaultBranch = repo.body["default_branch"] as string;
+  const defaultBranch = field<string>(repo.body, "default_branch");
 
   const openPrs = (await api(`repos/${SLUG}/pulls?state=open&per_page=100`))
     .body as unknown as Json[];
@@ -114,9 +123,9 @@ const resetRepo = async () => {
     });
   }
 
-  const refs = (await api(`repos/${SLUG}/git/matching-refs/heads/`)).body as unknown as Json[];
+  const refs = (await api(`repos/${SLUG}/git/matching-refs/heads/`)).body as unknown as Ref[];
   for (const ref of refs) {
-    const name = (ref["ref"] as string).replace("refs/heads/", "");
+    const name = ref.ref.replace("refs/heads/", "");
     if (name === defaultBranch) continue;
     await api(`repos/${SLUG}/git/refs/heads/${name}`, { method: "DELETE" });
   }
@@ -131,7 +140,7 @@ const resetRepo = async () => {
 };
 
 const headSha = async (branch: string) =>
-  (await api(`repos/${SLUG}/git/ref/heads/${branch}`)).body.object.sha as string;
+  field<string>((await api(`repos/${SLUG}/git/ref/heads/${branch}`)).body, "object", "sha");
 
 const branchFrom = async (name: string, sha: string) => {
   await api(`repos/${SLUG}/git/refs`, {
@@ -163,11 +172,11 @@ const openPr = async (opts: { title: string; head: string; base: string; draft?:
       method: "POST",
       body: JSON.stringify({ ...opts, body: opts.title, draft: opts.draft ?? false }),
     })
-  ).body.number as number;
+  ).body["number"] as number;
 
 const commitsSince = async (baseSha: string) => {
-  const all = (await api(`repos/${SLUG}/commits?sha=main&per_page=50`)).body as unknown as Json[];
-  const landed: Json[] = [];
+  const all = (await api(`repos/${SLUG}/commits?sha=main&per_page=50`)).body as unknown as Commit[];
+  const landed: Commit[] = [];
   for (const commit of all) {
     if (commit.sha === baseSha) break;
     landed.push(commit);
@@ -177,7 +186,9 @@ const commitsSince = async (baseSha: string) => {
 
 const patchOf = async (sha: string) => {
   const full = await api(`repos/${SLUG}/commits/${sha}`);
-  return ((full.body.files ?? []) as Json[]).map((file) => file["patch"] ?? "").join("\n");
+  return field<Json[]>(full.body, "files")
+    .map((file) => (file["patch"] ?? "") as string)
+    .join("\n");
 };
 
 console.log(`\n### Setting up ${SLUG}`);
@@ -200,7 +211,7 @@ const a2File = await writeFile({
   path: "shared.txt",
   content: "base\nA1\nA2\n",
   message: "feat: a2",
-  sha: a1File.body.content.sha,
+  sha: field<string>(a1File.body, "content", "sha"),
 });
 await branchFrom("a3", await headSha("a2"));
 await writeFile({
@@ -208,7 +219,7 @@ await writeFile({
   path: "shared.txt",
   content: "base\nA1\nA2\nA3\n",
   message: "feat: a3",
-  sha: a2File.body.content.sha,
+  sha: field<string>(a2File.body, "content", "sha"),
 });
 
 const pr1 = await openPr({ title: "a1", head: "a1", base: DEF });
@@ -306,7 +317,7 @@ for (const [index, commit] of landed.entries()) {
 }
 
 const finalFile = await api(`repos/${SLUG}/contents/shared.txt?ref=${DEF}`);
-const finalContent = Buffer.from(finalFile.body.content, "base64").toString();
+const finalContent = Buffer.from(field<string>(finalFile.body, "content"), "base64").toString();
 check(
   "trunk content has every line exactly once",
   finalContent === "base\nA1\nA2\nA3\n",
@@ -315,10 +326,10 @@ check(
 
 for (const number of [pr1, pr2, pr3]) {
   const pr = await api(`repos/${SLUG}/pulls/${number}`);
-  check(`PR #${number} is merged`, pr.body.merged === true, `state=${pr.body.state}`);
+  check(`PR #${number} is merged`, pr.body["merged"] === true, `state=${String(pr.body["state"])}`);
 }
 
-const refsAfter = (await api(`repos/${SLUG}/git/matching-refs/heads/`)).body as unknown as Json[];
+const refsAfter = (await api(`repos/${SLUG}/git/matching-refs/heads/`)).body as unknown as Ref[];
 const survivors = refsAfter.map((ref) => ref.ref.replace("refs/heads/", ""));
 check(
   "GitHub leaves the stack branches standing",
@@ -358,7 +369,7 @@ await writeFile({
   path: "b.txt",
   content: "B1\nB2\n",
   message: "feat: b2",
-  sha: b1File.body.content.sha,
+  sha: field<string>(b1File.body, "content", "sha"),
 });
 const prB1 = await openPr({ title: "b1", head: "b1", base: DEF });
 const prB2 = await openPr({ title: "b2", head: "b2", base: "b1", draft: true });
@@ -409,7 +420,7 @@ const afterBlocked = await commitsSince(trunkAfterA);
 check("blocked merge landed nothing", afterBlocked.length === 0, `${afterBlocked.length} commits`);
 
 const prB1State = await api(`repos/${SLUG}/pulls/${prB1}`);
-check("the ready parent was not merged on its own", prB1State.body.merged === false);
+check("the ready parent was not merged on its own", prB1State.body["merged"] === false);
 
 console.log("\n### Scenario C — an unstacked PR is refused, not merged");
 
@@ -439,7 +450,7 @@ check(
   unstacked.all.trim().split("\n")[0],
 );
 const prC1State = await api(`repos/${SLUG}/pulls/${prC1}`);
-check("the refused PR is still open", prC1State.body.state === "open");
+check("the refused PR is still open", prC1State.body["state"] === "open");
 
 console.log("\n### Cleanup");
 console.log(`  ${SLUG} is left in place (the token has no delete_repo scope).`);

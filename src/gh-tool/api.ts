@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { retryTransient } from "#shared/retry-transient";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
+import type { GitHubApiError } from "./errors";
 
 // Direct HTTP, not `gh api`: the CLI collapses every failure into a non-zero exit and
 // loses the status code, but merge-async answers 202 (accepted), 200 (already merged or
@@ -55,8 +56,6 @@ export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* (
 
   return token;
 });
-
-export type GitHubApiError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 
 export type GitHubApiRequest = {
   path: string;
