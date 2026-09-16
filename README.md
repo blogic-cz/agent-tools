@@ -294,6 +294,25 @@ bun gh-tool gist delete --id <gist-id> --confirm
 
 Gists are secret by default. `gist delete` prints a dry run unless `--confirm` is passed. `gist edit` requires a content or mutation flag and never opens an editor.
 
+### Stacked pull requests
+
+GitHub's native stacked PRs refuse the GraphQL merge and require the asynchronous REST
+merge, which lands every unmerged PR in the stack up to and including the requested one.
+
+```bash
+bun gh-tool pr stack view --pr 123                              # membership and order
+bun gh-tool pr stack merge --pr 123 --strategy squash           # ordered plan, merges nothing
+bun gh-tool pr stack merge --pr 123 --strategy squash --confirm  # one request, whole stack
+```
+
+`stack merge` targets the top open member, so one call lands the stack. It checks every open
+member first and refuses the whole operation if any is a draft, conflicting, or has failing or
+pending checks — a partial stack merge leaves a parent on the trunk and a broken child.
+
+Membership comes from GitHub's stacks API, never from chaining `baseRefName` to `headRefName`.
+That chain both over-reports (a promotion PR whose head is `main` adopts every ordinary PR as a
+child) and under-reports (a PR based on a stack member's branch need not be in the stack).
+
 ### gh-tool machine contracts
 
 `pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`; batch triage returns the same object per PR. `pr request-review --reviewers alice,bob` emits sorted `submittedReviewers` (normalized input), `newlyRequested` and `alreadyPending` (the submitted logins split by whether a pending request already existed, so a fresh re-request is distinguishable from a no-op), and `requestedReviewers` (GitHub-confirmed result). `pr last-human-reviewer` derives `currentRequestedReviewers` from live `reviewRequests` only; timeline events are not replayed because GitHub clears a pending request on review submit without emitting `ReviewRequestRemovedEvent`.

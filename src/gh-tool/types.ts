@@ -314,3 +314,41 @@ export type JobAnnotations = {
   jobName: string;
   annotations: CheckRunAnnotation[];
 };
+
+export type StackMember = {
+  position: number;
+  number: number;
+  title: string;
+  headRefName: string;
+  baseRefName: string;
+  state: "open" | "closed" | "merged";
+  isDraft: boolean;
+  url: string;
+};
+
+export type StackView = {
+  pr: number;
+  isStacked: boolean;
+  stackNumber: number | null;
+  baseRef: string | null;
+  members: StackMember[];
+};
+
+export type StackMergeBlocker = {
+  number: number;
+  reason: "draft" | "not_mergeable" | "checks_failing" | "checks_pending";
+  detail: string;
+};
+
+export type StackMergeResult = {
+  stackNumber: number;
+  baseRef: string;
+  target: number;
+  strategy: MergeStrategy;
+  plan: Array<{ position: number; number: number; headRefName: string }>;
+  merged: boolean;
+  dryRun: boolean;
+  blockers: StackMergeBlocker[];
+  sha: string | null;
+  adoptedExistingRequest: boolean;
+};

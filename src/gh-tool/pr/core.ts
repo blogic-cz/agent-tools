@@ -200,7 +200,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 // is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 
-const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
+export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
   const gh = yield* GitHubService;
 
   const args = ["pr", "checks"];

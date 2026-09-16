@@ -14,6 +14,7 @@ export {
   prListCommand,
   prMergeCommand,
   prReadyCommand,
+  prStackCommand,
   prRequestReviewCommand,
   prReplyCommand,
   prRerunChecksCommand,
