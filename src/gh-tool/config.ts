@@ -5,3 +5,6 @@ export const GRAPHQL_PAGE_SIZE = 100 as const;
 export const GH_BINARY = "gh" as const;
 
 export const MERGE_STRATEGIES = ["squash", "merge", "rebase"] as const;
+
+export const REVIEW_EVENTS = ["comment", "approve", "request-changes"] as const;
+export const DEFAULT_REVIEW_EVENT = "comment" as const;

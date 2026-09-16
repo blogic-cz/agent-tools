@@ -11,6 +11,8 @@ import type {
   FeedbackOrigin,
 } from "#gh/types";
 
+import type { REVIEW_EVENTS } from "#gh/config";
+
 import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 
@@ -967,12 +969,110 @@ export const resolveThread = Effect.fn("pr.resolveThread")(function* (threadId: 
   };
 });
 
+export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
+
+const REVIEW_EVENT_API = {
+  approve: "APPROVE",
+  comment: "COMMENT",
+  "request-changes": "REQUEST_CHANGES",
+} as const satisfies Record<ReviewEvent, string>;
+
+// APPROVE and REQUEST_CHANGES change whether the PR can merge, so they need the same explicit
+// opt-in as `pr merge`. COMMENT carries no verdict and stays free.
+const requireVerdictConfirm = Effect.fn("pr.requireVerdictConfirm")(function* (opts: {
+  command: string;
+  event: ReviewEvent;
+  confirm: boolean;
+}) {
+  if (opts.event === "comment" || opts.confirm) {
+    return;
+  }
+
+  const detail = `--event ${opts.event} posts a verdict review; pass --confirm to submit it`;
+
+  return yield* Effect.fail(
+    new GitHubCommandError({
+      command: opts.command,
+      exitCode: 1,
+      stderr: detail,
+      message: detail,
+      hint: "APPROVE and REQUEST_CHANGES change the merge state of the PR. Re-run with --confirm once the verdict is intended.",
+    }),
+  );
+});
+
+/**
+ * Create and submit a review in one call — the path for a verdict an agent reached from a diff
+ * it just read, with no pending review to submit.
+ */
+export const createReview = Effect.fn("pr.createReview")(function* (opts: {
+  pr: number | null;
+  event: ReviewEvent;
+  body: string;
+  confirm: boolean;
+}) {
+  const service = yield* GitHubService;
+  const command = "gh-tool pr review";
+
+  yield* requireVerdictConfirm({ command, event: opts.event, confirm: opts.confirm });
+
+  // GitHub rejects a bodyless COMMENT or REQUEST_CHANGES review; only APPROVE may be silent.
+  if (opts.event !== "approve" && opts.body.trim() === "") {
+    const detail = `--event ${opts.event} requires a non-empty body`;
+
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command,
+        exitCode: 1,
+        stderr: detail,
+        message: detail,
+        hint: "Pass --body, --body-file, or --body-stdin with what has to change.",
+      }),
+    );
+  }
+
+  const repoInfo = yield* service.getRepoInfo();
+  const resolvedPr = opts.pr ?? (yield* viewPR(null)).number;
+
+  const args = [
+    "api",
+    "--method",
+    "POST",
+    `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/reviews`,
+    "-f",
+    `event=${REVIEW_EVENT_API[opts.event]}`,
+  ];
+
+  if (opts.body !== "") {
+    args.push("-f", `body=${opts.body}`);
+  }
+
+  const result = yield* service.runGhJson<{
+    id: number;
+    state: string;
+    html_url: string;
+  }>(args);
+
+  return {
+    submitted: true as const,
+    pr: resolvedPr,
+    reviewId: result.id,
+    state: result.state,
+    url: result.html_url,
+  };
+});
+
 export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function* (
   pr: number | null,
   reviewId: string | null,
   body: string | null,
+  event: ReviewEvent = "comment",
+  confirm = false,
 ) {
   const service = yield* GitHubService;
+
+  yield* requireVerdictConfirm({ command: "gh-tool pr submit-review", event, confirm });
+
   const repoInfo = yield* service.getRepoInfo();
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
@@ -1007,7 +1107,7 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
 
   const result = (yield* service.runGraphQL(SUBMIT_REVIEW_MUTATION, {
     reviewId: targetReviewId,
-    event: "COMMENT",
+    event: REVIEW_EVENT_API[event],
     body: body ?? "",
   })) as SubmitReviewResult;
 

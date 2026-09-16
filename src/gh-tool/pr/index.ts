@@ -19,6 +19,7 @@ export {
   prRerunChecksCommand,
   prReplyAndResolveCommand,
   prResolveCommand,
+  prReviewCommand,
   prReviewsCommand,
   prStatusCommand,
   prSubmitReviewCommand,
