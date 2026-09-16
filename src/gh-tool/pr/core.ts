@@ -201,6 +201,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 // `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
 // is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+const CHECK_REGISTRATION_POLL_SECONDS = 5;
 
 export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
   const gh = yield* GitHubService;
@@ -1244,7 +1245,34 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     // Block for the caller's requested --timeout (no artificial cap — blocking isn't the problem;
     // --timeout is validated >= 1s at the CLI boundary). On timeout return a snapshot, never
     // nothing — that was the actual token-wasting bug.
-    const watchOutcome = yield* gh.runGh(watchArgs).pipe(
+    // A push registers its checks a moment after the ref lands, and `gh pr checks --watch`
+    // exits non-zero in that window. A watch was asked to wait, so keep waiting: the outer
+    // timeout still bounds it, and a PR that genuinely has no checks returns an empty
+    // snapshot at that deadline rather than an error.
+    let watchResult: { stdout: string; stderr: string; exitCode: number } | null = null;
+    let registered = false;
+    const watchThroughRegistration = Effect.gen(function* () {
+      yield* Effect.whileLoop({
+        while: () => !registered,
+        body: () =>
+          gh.runGh(watchArgs).pipe(
+            Effect.flatMap((result) => {
+              watchResult = result;
+              registered = true;
+              return Effect.void;
+            }),
+            Effect.catchTag("GitHubCommandError", (error) =>
+              NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
+                ? Effect.sleep(Duration.seconds(CHECK_REGISTRATION_POLL_SECONDS))
+                : Effect.fail(error),
+            ),
+          ),
+        step: () => undefined,
+      });
+      return watchResult;
+    });
+
+    const watchOutcome = yield* watchThroughRegistration.pipe(
       Effect.timeoutOrElse({
         duration: timeoutSeconds * 1000,
         orElse: () => Effect.succeed(null),

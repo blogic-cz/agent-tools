@@ -3,9 +3,10 @@ import { Effect, Layer } from "effect";
 
 import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/service";
+import { GitHubCommandError } from "#gh/errors";
 import { githubApi } from "#gh/api";
 import { mergeStack, unstackStack } from "#gh/pr/stack";
-import { mergePR } from "#gh/pr/core";
+import { fetchChecks, mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
 
 const mockRepoInfo = {
@@ -32,6 +33,25 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
   );
 
 const ghLayer = ghServiceLayer;
+
+const ghLayerWith = (overrides: {
+  runGh: (
+    args: string[],
+  ) => Effect.Effect<{ stdout: string; stderr: string; exitCode: number }, GitHubCommandError>;
+  runGhJson: (args: string[]) => Effect.Effect<unknown, never>;
+}) =>
+  Layer.succeed(
+    GitHubService,
+    GitHubService.of({
+      runGh: overrides.runGh as never,
+      runGhJson: overrides.runGhJson as never,
+      runGraphQL: () => Effect.succeed({}),
+      apiRequest: githubApi,
+      getRepoConfig: () => Effect.succeed(undefined),
+      getRepoInfo: () => Effect.succeed(mockRepoInfo),
+      withRepoTarget: (_target, effect) => effect,
+    }),
+  );
 
 const stackMember = (
   number: number,
@@ -613,6 +633,71 @@ describe("pr stack unstack", () => {
       );
 
       expect(error.message).toContain("is not part of a GitHub stack");
+    }),
+  );
+});
+
+describe("pr checks --watch registration window", () => {
+  it.live(
+    "keeps waiting while gh reports no checks yet, then returns the snapshot",
+    () =>
+      Effect.gen(function* () {
+        let watchAttempts = 0;
+
+        const results = yield* fetchChecks(123, true, false, 30, true).pipe(
+          Effect.provide(
+            ghLayerWith({
+              runGh: (args) => {
+                if (!args.includes("--watch")) {
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                }
+                watchAttempts += 1;
+                return watchAttempts === 1
+                  ? Effect.fail(
+                      new GitHubCommandError({
+                        command: "gh pr checks --watch",
+                        exitCode: 1,
+                        stderr: "no checks reported on the 'feat/x' branch",
+                        message: "no checks reported on the 'feat/x' branch",
+                      }),
+                    )
+                  : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+              runGhJson: () =>
+                Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]),
+            }),
+          ),
+        );
+
+        expect(watchAttempts).toBeGreaterThan(1);
+        expect(results.map((check) => check.bucket)).toEqual(["pass"]);
+      }),
+    15000,
+  );
+
+  it.live("still fails a watch on an error that is not the registration window", () =>
+    Effect.gen(function* () {
+      const error = yield* fetchChecks(123, true, false, 30, true).pipe(
+        Effect.provide(
+          ghLayerWith({
+            runGh: (args) =>
+              args.includes("--watch")
+                ? Effect.fail(
+                    new GitHubCommandError({
+                      command: "gh pr checks --watch",
+                      exitCode: 1,
+                      stderr: "could not resolve to a PullRequest",
+                      message: "could not resolve to a PullRequest",
+                    }),
+                  )
+                : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            runGhJson: () => Effect.succeed([]),
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(error.message).toContain("could not resolve");
     }),
   );
 });
