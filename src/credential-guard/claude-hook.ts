@@ -10,7 +10,9 @@
  *     "command": "bun node_modules/@blogic-cz/agent-tools/src/credential-guard/claude-hook.ts" }] }] } }
  */
 
-import { handleToolExecuteBefore } from "./index";
+import { loadConfig } from "#config/loader";
+
+import { createCredentialGuard } from "./index";
 
 const stdin = await Bun.stdin.text();
 
@@ -20,7 +22,11 @@ try {
     tool_input?: Record<string, unknown>;
   } = JSON.parse(stdin);
 
-  handleToolExecuteBefore({ tool: data.tool_name }, { args: data.tool_input ?? {} });
+  const config = await loadConfig();
+  createCredentialGuard(config?.credentialGuard).handleToolExecuteBefore(
+    { tool: data.tool_name },
+    { args: data.tool_input ?? {} },
+  );
 } catch (error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(message);

@@ -244,8 +244,11 @@ function escapeRegex(s: string): string {
 }
 
 /** Static shell words only. Never expand variables or execute a command. */
-function parseStaticShellCommands(command: string): string[][] | undefined {
+function parseStaticShellCommands(
+  command: string,
+): { commands: string[][]; hasPipe: boolean } | "brace-expansion" | undefined {
   const commands: string[][] = [];
+  let hasPipe = false;
   let argv: string[] = [];
   let word = "";
   let started = false;
@@ -281,9 +284,12 @@ function parseStaticShellCommands(command: string): string[][] | undefined {
     } else if (char === "'" || char === '"') {
       quote = char;
       started = true;
+    } else if (char === "{" && hasBraceExpansion(command.slice(i))) {
+      return "brace-expansion";
     } else if (char === "<" || char === ">" || (char === "#" && !started)) {
       return undefined;
     } else if (/[;&|()\r\n]/.test(char)) {
+      if (char === "|" && command[i - 1] !== "|" && command[i + 1] !== "|") hasPipe = true;
       finishCommand();
     } else if (/\s/.test(char)) {
       finishWord();
@@ -295,11 +301,15 @@ function parseStaticShellCommands(command: string): string[][] | undefined {
 
   if (quote) return undefined;
   finishCommand();
-  return commands;
+  return { commands, hasPipe };
 }
 
 function mentionsEnvironmentRead(text: string): boolean {
   return /printenv|\benv\b/i.test(text.replace(/['"\\]/g, ""));
+}
+
+function hasBraceExpansion(text: string): boolean {
+  return /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(text);
 }
 
 function unwrapStaticCommand(words: string[]): string[] {
@@ -314,12 +324,11 @@ function unwrapStaticCommand(words: string[]): string[] {
   return argv;
 }
 
-function isSafeMetadataRead(argv: string[]): boolean {
+function isAllowedEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
   if (argv[0]?.split("/").at(-1) !== "printenv") return false;
   const args = argv.slice(1);
   if (args[0] === "--") args.shift();
-  // HERDR_ENV is Herdr's presence flag, not a credential.
-  return args.length === 1 && args[0] === "HERDR_ENV";
+  return args.length > 0 && args.every((name) => allowedNames.has(name));
 }
 
 function hasExecutionOption(args: string[], longOptions: string[], shortOption?: string): boolean {
@@ -348,26 +357,44 @@ function isPassiveTextCommand(argv: string[]): boolean {
   );
 }
 
-function hasStaticEnvironmentRead(argv: string[]): boolean {
+function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
   const name = argv[0]?.split("/").at(-1);
-  if (name === "printenv") return !isSafeMetadataRead(argv);
+  if (name === "printenv") return !isAllowedEnvironmentRead(argv, allowedNames);
   if (name === "env") return true;
   if (isPassiveTextCommand(argv)) return false;
+  if (
+    argv.some((arg) =>
+      ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "eval"].includes(
+        arg.split("/").at(-1) ?? "",
+      ),
+    ) &&
+    hasBraceExpansion(argv.slice(1).join(" "))
+  ) {
+    return true;
+  }
   return mentionsEnvironmentRead(argv.join(" "));
 }
 
-function hasEnvironmentRead(command: string): boolean {
+function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
-  const commands = parseStaticShellCommands(command);
-  if (!commands) return mentionsEnvironmentRead(command);
-  const unwrapped = commands.map(unwrapStaticCommand);
-  if (unwrapped.some(hasStaticEnvironmentRead)) return true;
+  const parsed = parseStaticShellCommands(command);
+  if (parsed === "brace-expansion") return true;
+  if (!parsed) return mentionsEnvironmentRead(command) || hasBraceExpansion(command);
+  const unwrapped = parsed.commands.map(unwrapStaticCommand);
+  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
 
   // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
   return (
+    parsed.hasPipe &&
     unwrapped.some(
-      (argv) => isPassiveTextCommand(argv) && mentionsEnvironmentRead(argv.join(" ")),
-    ) && unwrapped.some((argv) => !isPassiveTextCommand(argv) && !isSafeMetadataRead(argv))
+      (argv) =>
+        isAllowedEnvironmentRead(argv, allowedNames) ||
+        (isPassiveTextCommand(argv) &&
+          (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
+    ) &&
+    unwrapped.some(
+      (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
+    )
   );
 }
 
@@ -397,6 +424,19 @@ export function extractCommand(args: Record<string, unknown>): string {
  * @returns Object with all guard functions bound to the merged pattern sets.
  */
 export function createCredentialGuard(config?: CredentialGuardConfig): CredentialGuard {
+  const names = config?.allowedEnvironmentVariables;
+  if (
+    names !== undefined &&
+    (!Array.isArray(names) || names.some((name) => typeof name !== "string"))
+  ) {
+    throw new Error("allowedEnvironmentVariables must be an array of strings");
+  }
+  const allowedEnvironmentVariables = new Set(names ?? []);
+  for (const name of allowedEnvironmentVariables) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`Invalid allowed environment variable name: ${JSON.stringify(name)}`);
+    }
+  }
   const blockedPathPatterns = [
     ...DEFAULT_BLOCKED_PATH_PATTERNS,
     ...(config?.additionalBlockedPaths ?? []).map((p) => new RegExp(p)),
@@ -459,7 +499,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
 
   function isDangerousBashCommand(command: string): boolean {
     return (
-      dangerousBashPatterns.some((pattern) => pattern.test(command)) || hasEnvironmentRead(command)
+      dangerousBashPatterns.some((pattern) => pattern.test(command)) ||
+      hasEnvironmentRead(command, allowedEnvironmentVariables)
     );
   }
 

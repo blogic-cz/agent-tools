@@ -463,6 +463,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "allowedEnvironmentVariables": {
+          "description": "Exact, case-sensitive environment names approved for static printenv reads. Empty by default.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
         "additionalBlockedPaths": {
           "description": "Additional blocked file path patterns.",
           "type": "array",

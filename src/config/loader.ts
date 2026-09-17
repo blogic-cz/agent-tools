@@ -11,6 +11,7 @@ const CliToolOverrideSchema = Schema.Struct({
 });
 
 const CredentialGuardConfigSchema = Schema.Struct({
+  allowedEnvironmentVariables: Schema.optionalKey(Schema.Array(Schema.String)),
   additionalBlockedPaths: Schema.optionalKey(Schema.Array(Schema.String)),
   additionalAllowedPaths: Schema.optionalKey(Schema.Array(Schema.String)),
   additionalBlockedCliTools: Schema.optionalKey(Schema.Array(CliToolOverrideSchema)),
