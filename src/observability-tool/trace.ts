@@ -614,7 +614,11 @@ const findCommand = Command.make(
     profile: profileOption,
   },
   ({ id, format, env, profile }) => handleTraceGet(id, format, env, profile),
-).pipe(Command.withDescription("Alias for 'trace get' — resolve a trace by trace ID or span ID"));
+).pipe(
+  Command.withDescription(
+    "Alias for 'trace get' — resolves an id, and is not the TraceQL search; that is 'trace search'",
+  ),
+);
 
 const searchCommand = Command.make(
   "search",
