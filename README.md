@@ -634,6 +634,14 @@ Claude Code uses shell command hooks. The package ships a ready-made wrapper scr
 
 That's it. The hook reads tool input from stdin, runs the guard, and exits with code 2 (blocked + reason on stderr) or 0 (allowed).
 
+The guard permits static `printenv` reads only for exact names in `credentialGuard.allowedEnvironmentVariables`. The default list is empty. Multiple names are allowed only when each name is approved.
+It recognizes `rtk` and `rtk proxy` prefixes and checks each command in a pipeline or chain.
+Literal environment-command text in `rg`, `grep`, `git grep`, `echo`, and `printf` is allowed. In pipelines, every other command must be a known passive text command or an approved static environment read.
+Each pipeline is checked separately from statements joined by `;`, `&&`, or `||`.
+Execution options, other environment reads, and environment reads in dynamic or unsupported shell syntax stay blocked. Custom dangerous-command patterns still apply to the complete input.
+Active brace expansion is refused, including path expansions such as `src/{a,b}`. Fully quoted literal brace text remains usable in static searches.
+Single literal `echo`/`printf` writes with output redirection and single `cat`/`tee` heredoc writes are allowed. Heredoc braces are data. Unquoted heredocs with `$`, backticks, or backslashes, interpreter heredocs, and writes followed by more commands do not receive this exception. Use a quoted delimiter for literal code.
+
 ### Setup for OpenCode
 
 OpenCode loads plugins automatically from `.opencode/plugins/`. Create a plugin file:
@@ -641,10 +649,12 @@ OpenCode loads plugins automatically from `.opencode/plugins/`. Create a plugin 
 **`.opencode/plugins/credential-guard.ts`**
 
 ```typescript
-import { handleToolExecuteBefore } from "@blogic-cz/agent-tools/credential-guard";
+import { createCredentialGuard } from "@blogic-cz/agent-tools/credential-guard";
+import { loadConfig } from "@blogic-cz/agent-tools/config";
 
 export const CredentialGuard = async () => ({
-  "tool.execute.before": handleToolExecuteBefore,
+  "tool.execute.before": createCredentialGuard((await loadConfig())?.credentialGuard)
+    .handleToolExecuteBefore,
 });
 ```
 
@@ -667,6 +677,8 @@ Use the `credentialGuard` config section to extend built-in defaults (arrays are
 ```json5
 {
   credentialGuard: {
+    // Approve names only after checking that their values cannot contain secrets.
+    allowedEnvironmentVariables: ["TEST_FLAG", "WORKSPACE_LABEL"],
     additionalBlockedPaths: ["private/secrets/"],
     additionalAllowedPaths: ["apps/web-app/.env.test"],
     additionalBlockedCliTools: [{ tool: "helm", suggestion: "Use agent-tools-k8s instead" }],
@@ -674,6 +686,8 @@ Use the `credentialGuard` config section to extend built-in defaults (arrays are
   },
 }
 ```
+
+The packaged Claude hook loads this configuration from the current directory and its parent directories. Custom adapters must load the configuration and pass `credentialGuard` to `createCredentialGuard`, as the OpenCode example does. Invalid configuration blocks the tool call.
 
 ### Extending the guard
 

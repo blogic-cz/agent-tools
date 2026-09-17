@@ -143,8 +143,6 @@ const SECRET_PATTERNS = [
  * Dangerous bash patterns that might expose secrets.
  */
 const DEFAULT_DANGEROUS_BASH_PATTERNS: RegExp[] = [
-  /printenv/i,
-  /(?:^|&&|\||;)\s*env(?:\s|$)/i,
   /\bcat\s+\S*\.env/i,
   /\bcat\s+\S*\.pem/i,
   /\bcat\s+\S*\.key/i,
@@ -245,6 +243,201 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Static shell words only. Never expand variables or execute a command. */
+function parseStaticShellCommands(
+  command: string,
+): { pipelines: string[][][] } | "brace-expansion" | undefined {
+  const pipelines: string[][][] = [];
+  let commands: string[][] = [];
+  let argv: string[] = [];
+  let word = "";
+  let started = false;
+  let quote: "'" | '"' | undefined;
+
+  const finishWord = () => {
+    if (started) argv.push(word);
+    word = "";
+    started = false;
+  };
+  const finishCommand = () => {
+    finishWord();
+    if (argv.length) commands.push(argv);
+    argv = [];
+  };
+  const finishPipeline = () => {
+    finishCommand();
+    if (commands.length) pipelines.push(commands);
+    commands = [];
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command.charAt(i);
+    if (quote === "'") {
+      if (char === quote) quote = undefined;
+      else word += char;
+    } else if (char === "\\") {
+      const next = command[++i];
+      if (next === undefined || next === "\n" || next === "\r") return undefined;
+      if (quote === '"' && !/[\\$`"]/.test(next)) word += "\\";
+      word += next;
+      started = true;
+    } else if (char === "$" || char === "`") {
+      return undefined;
+    } else if (quote === '"') {
+      if (char === quote) quote = undefined;
+      else word += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (char === "{" && /^\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(command.slice(i))) {
+      return "brace-expansion";
+    } else if (/[<>()]/.test(char) || (char === "#" && !started)) {
+      return undefined;
+    } else if (char === "|" && command[i - 1] !== "|" && command[i + 1] !== "|") {
+      finishCommand();
+      if (command[i + 1] === "&") i++;
+    } else if (/[;&|\r\n]/.test(char)) {
+      finishPipeline();
+    } else if (/\s/.test(char)) {
+      finishWord();
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+
+  if (quote) return undefined;
+  finishPipeline();
+  return { pipelines };
+}
+
+function mentionsEnvironmentRead(text: string): boolean {
+  return /printenv|\benv\b/i.test(text.replace(/['"\\]/g, ""));
+}
+
+function hasBraceExpansion(text: string): boolean {
+  return /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(text);
+}
+
+function unwrapStaticCommand(words: string[]): string[] {
+  const argv = [...words];
+  const executable = () => argv[0]?.split("/").at(-1);
+  while (executable() === "rtk" || executable() === "command") {
+    const wrapper = executable();
+    argv.shift();
+    if (wrapper === "rtk" && argv[0] === "proxy") argv.shift();
+    if (wrapper === "command" && argv[0] === "--") argv.shift();
+  }
+  return argv;
+}
+
+function isAllowedEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
+  if (argv[0]?.split("/").at(-1) !== "printenv") return false;
+  const args = argv.slice(1);
+  if (args[0] === "--") args.shift();
+  return args.length > 0 && args.every((name) => allowedNames.has(name));
+}
+
+function hasExecutionOption(args: string[], longOptions: string[], shortOption?: string): boolean {
+  return args.some((arg) => {
+    const flag = arg.split("=", 1)[0] ?? "";
+    if (flag.startsWith("--") && flag.length > 2) {
+      // Git supports long-option abbreviations. Refuse ambiguous prefixes too.
+      return longOptions.some((option) => option.startsWith(flag.slice(2)));
+    }
+    return shortOption !== undefined && /^-[^-]/.test(flag) && flag.includes(shortOption);
+  });
+}
+
+function isPassiveTextCommand(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  const args = argv.slice(1);
+  // These commands consume literal text. Execution options are not exceptions.
+  if (["echo", "printf", "grep", "head"].includes(name)) {
+    return true;
+  }
+  if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
+  return (
+    name === "git" &&
+    args[0] === "grep" &&
+    !hasExecutionOption(args, ["open-files-in-pager", "textconv"], "O")
+  );
+}
+
+function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
+  const name = argv[0]?.split("/").at(-1);
+  if (name === "printenv") return !isAllowedEnvironmentRead(argv, allowedNames);
+  if (name === "env") return true;
+  if (isPassiveTextCommand(argv)) return false;
+  if (
+    argv.some((arg) =>
+      ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "eval"].includes(
+        arg.split("/").at(-1) ?? "",
+      ),
+    ) &&
+    hasBraceExpansion(argv.slice(1).join(" "))
+  ) {
+    return true;
+  }
+  return mentionsEnvironmentRead(argv.join(" "));
+}
+
+function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
+  if (isLiteralTextWrite(command)) return false;
+  // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
+  const parsed = parseStaticShellCommands(command);
+  if (parsed === "brace-expansion") return true;
+  if (!parsed) return mentionsEnvironmentRead(command) || hasBraceExpansion(command);
+  const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
+  const unwrapped = pipelines.flat();
+  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
+
+  // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
+  return pipelines.some(
+    (pipeline) =>
+      pipeline.length > 1 &&
+      pipeline.some(
+        (argv) =>
+          isAllowedEnvironmentRead(argv, allowedNames) ||
+          (isPassiveTextCommand(argv) &&
+            (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
+      ) &&
+      pipeline.some(
+        (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
+      ),
+  );
+}
+
+/** A single literal writer cannot execute its body or feed another command. */
+function isLiteralTextWrite(command: string): boolean {
+  const lines = command.trimEnd().split(/\r?\n/);
+  const heredoc = /^(.*?)<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3[ \t]*$/.exec(lines[0] ?? "");
+  let header = command;
+  let writers = ["echo", "printf"];
+  if (heredoc) {
+    const [, prefix, stripTabs, quote, delimiter] = heredoc;
+    const end = lines.findIndex(
+      (line, index) => index > 0 && (stripTabs ? line.replace(/^\t+/, "") : line) === delimiter,
+    );
+    // Only the first delimiter closes the body. No following commands are exceptions.
+    if (end < 0 || end !== lines.length - 1) return false;
+    const body = lines.slice(1, end).join("\n");
+    if (!quote && /[$`\\]/.test(body)) return false;
+    header = prefix ?? "";
+    writers = ["cat", "tee"];
+  } else if (!command.includes(">")) {
+    return false;
+  }
+
+  // Output redirection does not execute text. Other unsupported syntax still fails parsing.
+  const parsed = parseStaticShellCommands(header.replace(/>/g, " "));
+  if (!parsed || parsed === "brace-expansion" || parsed.pipelines.length !== 1) return false;
+  const pipeline = parsed.pipelines[0];
+  if (pipeline?.length !== 1) return false;
+  const argv = unwrapStaticCommand(pipeline[0] ?? []);
+  return writers.includes(argv[0]?.split("/").at(-1) ?? "");
+}
+
 /** Extract file path from hook arguments. */
 export function extractFilePath(args: Record<string, unknown>): string {
   return (args.filePath as string) || (args.file_path as string) || (args.path as string) || "";
@@ -271,6 +464,19 @@ export function extractCommand(args: Record<string, unknown>): string {
  * @returns Object with all guard functions bound to the merged pattern sets.
  */
 export function createCredentialGuard(config?: CredentialGuardConfig): CredentialGuard {
+  const names = config?.allowedEnvironmentVariables;
+  if (
+    names !== undefined &&
+    (!Array.isArray(names) || names.some((name) => typeof name !== "string"))
+  ) {
+    throw new Error("allowedEnvironmentVariables must be an array of strings");
+  }
+  const allowedEnvironmentVariables = new Set(names ?? []);
+  for (const name of allowedEnvironmentVariables) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`Invalid allowed environment variable name: ${JSON.stringify(name)}`);
+    }
+  }
   const blockedPathPatterns = [
     ...DEFAULT_BLOCKED_PATH_PATTERNS,
     ...(config?.additionalBlockedPaths ?? []).map((p) => new RegExp(p)),
@@ -332,7 +538,10 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function isDangerousBashCommand(command: string): boolean {
-    return dangerousBashPatterns.some((pattern) => pattern.test(command));
+    return (
+      dangerousBashPatterns.some((pattern) => pattern.test(command)) ||
+      hasEnvironmentRead(command, allowedEnvironmentVariables)
+    );
   }
 
   function isGhCommandAllowed(command: string): boolean {

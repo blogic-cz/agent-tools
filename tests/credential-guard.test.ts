@@ -382,6 +382,172 @@ describe("path traversal and evasion", () => {
 });
 
 describe("dangerous bash command evasion", () => {
+  it.each([
+    "printenv HERDR_ENV",
+    "printenv -- HERDR_ENV",
+    "printenv TEST_FLAG",
+    "rtk proxy printenv WORKSPACE_LABEL",
+    "printenv TEST_FLAG WORKSPACE_LABEL",
+    "rtk printenv HERDR_ENV",
+    "rtk proxy printenv HERDR_ENV",
+    "/usr/bin/printenv 'HERDR_ENV'",
+    "command printenv HERDR_ENV",
+    "rtk printenv HERDR_ENV && git diff --name-only",
+    "printenv HERDR_ENV; printenv HERDR_ENV",
+    "printenv TEST_FLAG && npm test | tail -20",
+    "printenv TEST_FLAG; ls | wc -l",
+    "printenv TEST_FLAG || ls | wc -l",
+    "ls | wc -l; printenv TEST_FLAG",
+    "echo 'printenv' | head; ls | wc -l",
+    "printenv TEST_FLAG |& head",
+    "rg -n 'printenv|HERDR_ENV' src",
+    "rtk proxy rg -n 'printenv|HERDR_ENV' src | head",
+    "git grep -n printenv -- src",
+    "grep 'printenv' README.md",
+    "echo 'printenv TOKEN; env'",
+    'printf "%s\\n" "printenv"',
+    "rg -n 'process.env' src",
+    "rg -n 'pr{i,}ntenv|e{n,}v' src",
+    "echo 'pr{i..i}ntenv'",
+    "echo { '{a,b}'",
+    'cat > file.ts << EOF\nimport { describe, it, expect } from "vitest";\nEOF',
+    'tee file.json <<EOF\n{"a":1,"b":2}\nEOF',
+    "rtk proxy cat > file.ts <<'EOF'\nconst code = `printenv ${NAME}`;\nEOF",
+    'cat > file.py <<"EOF"\nconfig = {"a": 1, "b": 2}\nEOF\n',
+    "cat > file.ts <<-EOF\n\timport {a,b} from 'module';\n\tEOF",
+    "printf '%s\\n' '{a,b}' > file.txt",
+    "echo 'printenv TOKEN' > file.txt",
+  ])("allows static metadata reads and literal search text: %s", (command) => {
+    const guard = createCredentialGuard({
+      allowedEnvironmentVariables: ["HERDR_ENV", "TEST_FLAG", "WORKSPACE_LABEL"],
+    });
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "rtk printenv",
+    "rtk proxy printenv TOKEN",
+    "printenv HERDR_ENV TOKEN",
+    "printenv HERDR_ENV --null",
+    "printenv TEST_FLAG UNKNOWN_FLAG",
+    "printenv TEST_FLAG | sh",
+    "printenv TEST_FLAG | unknown-runner",
+    "printenv TEST_FLAG | unknown-runner; ls | wc -l",
+    "echo 'printenv' | (head; sh)",
+    "echo 'printenv' |& sh",
+    "printenv TEST_FLAG |& sh",
+    "echo 'pr{i..i}ntenv TOKEN' |& sh",
+    "(printenv TEST_FLAG) | sh",
+    "printenv HERDR_ENV_TOKEN",
+    "printenv herdr_env",
+    "printenv $NAME",
+    "rtk printenv HERDR_ENV && printenv TOKEN",
+    "printenv HERDR_ENV\nprintenv",
+    "echo hi | /usr/bin/printenv TOKEN",
+    "'printenv' TOKEN",
+    "pr'int'env TOKEN",
+    "print\\env TOKEN",
+    "rtk env",
+    "/usr/bin/env",
+    "echo hi\nenv",
+    "echo $(printenv TOKEN)",
+    'echo "$(printenv TOKEN)"',
+    'echo "`printenv TOKEN`"',
+    'sh -c "printenv TOKEN"',
+    'bash -c "env"',
+    "eval 'printenv HERDR_ENV'",
+    "rg --pre printenv pattern src",
+    "rg --pre=printenv pattern src",
+    "git grep --open-files-in-pager=printenv pattern",
+    "git grep -O printenv pattern",
+    "git grep -Oprintenv pattern",
+    "git grep -nOprintenv pattern",
+    "git grep --open-files='printenv; echo' pattern",
+    "git grep --open-files-in-page='printenv; echo' pattern",
+    "rg --hostname-bin=printenv --hyperlink-format=default --color=always -H pattern README.md",
+    "rg --hostname-bin printenv pattern src",
+    "echo 'printenv' | sh",
+    "printf '%s\\n' 'printenv' | bash",
+    "echo 'printenv' | xargs",
+    "echo 'printenv' | unknown-runner",
+    "sort --compress-program=printenv input.txt",
+    "pr{i,}ntenv TOKEN",
+    "p{r,x}intenv TOKEN",
+    "pr{i..i}ntenv TOKEN",
+    "pr{'i',}ntenv TOKEN",
+    "e{n,}v",
+    "rtk proxy pr{i,}ntenv TOKEN",
+    'true "$UNSET"; pr{i..i}ntenv TOKEN',
+    'echo "$(pr{i..i}ntenv TOKEN)"',
+    'echo "`pr{i..i}ntenv TOKEN`"',
+    "sh -c 'pr{i,}ntenv TOKEN'",
+    "sh -c \"bash -c 'pr{i,}ntenv TOKEN'\"",
+    "eval 'e{n,}v'",
+    "timeout 1 bash -c 'pr{i..i}ntenv TOKEN'",
+    "sudo bash -lc 'pr{i,}ntenv TOKEN'",
+    "xargs sh -c 'e{n,}v'",
+    "echo 'pr{i,}ntenv' | sh",
+    "echo 'pr{i,}ntenv' | sh > output.txt",
+    "printenv HERDR_ENV > output.txt",
+    "printenv 'HERDR_ENV",
+    "cat > output.txt <<EOF\n$(pr{i..i}ntenv TOKEN)\nEOF",
+    "cat > output.txt <<EOF\n`pr{i..i}ntenv TOKEN`\nEOF",
+    "cat > output.txt <<EOF\nE\\\nOF\npr{i..i}ntenv TOKEN\nEOF",
+    "bash <<'EOF'\npr{i..i}ntenv TOKEN\nEOF",
+    "cat > output.sh <<'EOF'\npr{i..i}ntenv TOKEN\nEOF\nbash output.sh",
+    "cat > output.sh <<EOF\nEOF\npr{i..i}ntenv TOKEN\ncat <<EOF\n{a,b}\nEOF",
+    "cat > output.sh <<EOF; pr{i..i}ntenv TOKEN\n{a,b}\nEOF",
+    "printf '%s' '{a,b}' > output.txt; pr{i..i}ntenv TOKEN",
+    "printf '%s' 'printenv TOKEN' > output.sh; sh output.sh",
+    "printf '%s' '{a,b}' | bash > output.txt",
+    "cat > output.txt <<EOF\n{a,b}\nMISSING",
+  ])("blocks secret reads and unverified shell syntax: %s", (command) => {
+    const guard = createCredentialGuard({
+      allowedEnvironmentVariables: ["HERDR_ENV", "TEST_FLAG", "WORKSPACE_LABEL"],
+    });
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow(
+      "might expose secrets",
+    );
+  });
+
+  it("keeps configured dangerous patterns active for otherwise safe commands", () => {
+    const guard = createCredentialGuard({
+      allowedEnvironmentVariables: ["HERDR_ENV"],
+      additionalDangerousBashPatterns: ["HERDR_ENV"],
+    });
+    expect(guard.isDangerousBashCommand("rtk printenv HERDR_ENV")).toBe(true);
+  });
+
+  it("does not give any environment name a built-in exception", () => {
+    expect(isDangerousBashCommand("printenv HERDR_ENV")).toBe(true);
+    expect(isDangerousBashCommand("printenv TEST_FLAG")).toBe(true);
+    expect(isDangerousBashCommand("rg -n printenv src")).toBe(false);
+  });
+
+  it.each(["", "*", "TEST_*", "--help", "TEST-FLAG", "TEST FLAG"])(
+    "rejects invalid allowed environment names: %s",
+    (name) => {
+      expect(() => createCredentialGuard({ allowedEnvironmentVariables: [name] })).toThrow(
+        "Invalid allowed environment variable name",
+      );
+    },
+  );
+
+  it.each(["TOKEN", null, 1, {}, [null], [1], [true]])(
+    "rejects malformed allowed environment lists: %j",
+    (names) => {
+      expect(() =>
+        createCredentialGuard({
+          allowedEnvironmentVariables: names as unknown as string[],
+        }),
+      ).toThrow("allowedEnvironmentVariables must be an array of strings");
+    },
+  );
+
   it("blocks printenv", () => {
     expect(isDangerousBashCommand("printenv")).toBe(true);
   });

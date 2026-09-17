@@ -185,6 +185,8 @@ export type CliToolOverride = {
 
 /** Credential guard config - merged with built-in defaults */
 export type CredentialGuardConfig = {
+  /** Exact, case-sensitive names approved for static printenv reads. Empty by default. */
+  allowedEnvironmentVariables?: string[];
   additionalBlockedPaths?: string[];
   additionalAllowedPaths?: string[];
   additionalBlockedCliTools?: CliToolOverride[];

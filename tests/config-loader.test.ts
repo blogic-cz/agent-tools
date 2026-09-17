@@ -377,6 +377,22 @@ describe("getDefaultEnvironment", () => {
 });
 
 describe("decodeConfig", () => {
+  it("preserves generic credential-guard environment permissions", () => {
+    const config = decodeConfig({
+      credentialGuard: { allowedEnvironmentVariables: ["TEST_FLAG", "WORKSPACE_LABEL"] },
+    });
+    expect(config.credentialGuard?.allowedEnvironmentVariables).toEqual([
+      "TEST_FLAG",
+      "WORKSPACE_LABEL",
+    ]);
+  });
+
+  it("rejects non-string environment permissions", () => {
+    expect(() =>
+      decodeConfig({ credentialGuard: { allowedEnvironmentVariables: [true] } }),
+    ).toThrow("Invalid agent-tools config");
+  });
+
   it("ignores unknown top-level sections while keeping known sections available", () => {
     const config = decodeConfig(
       {
