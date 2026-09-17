@@ -289,7 +289,7 @@ function parseStaticShellCommands(
     } else if (char === "'" || char === '"') {
       quote = char;
       started = true;
-    } else if (char === "{" && hasBraceExpansion(command.slice(i))) {
+    } else if (char === "{" && /^\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(command.slice(i))) {
       return "brace-expansion";
     } else if (/[<>()]/.test(char) || (char === "#" && !started)) {
       return undefined;
@@ -383,6 +383,7 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
 }
 
 function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
+  if (isLiteralTextWrite(command)) return false;
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
@@ -405,6 +406,36 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
         (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
       ),
   );
+}
+
+/** A single literal writer cannot execute its body or feed another command. */
+function isLiteralTextWrite(command: string): boolean {
+  const lines = command.trimEnd().split(/\r?\n/);
+  const heredoc = /^(.*?)<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3[ \t]*$/.exec(lines[0] ?? "");
+  let header = command;
+  let writers = ["echo", "printf"];
+  if (heredoc) {
+    const [, prefix, stripTabs, quote, delimiter] = heredoc;
+    const end = lines.findIndex(
+      (line, index) => index > 0 && (stripTabs ? line.replace(/^\t+/, "") : line) === delimiter,
+    );
+    // Only the first delimiter closes the body. No following commands are exceptions.
+    if (end < 0 || end !== lines.length - 1) return false;
+    const body = lines.slice(1, end).join("\n");
+    if (!quote && /[$`\\]/.test(body)) return false;
+    header = prefix ?? "";
+    writers = ["cat", "tee"];
+  } else if (!command.includes(">")) {
+    return false;
+  }
+
+  // Output redirection does not execute text. Other unsupported syntax still fails parsing.
+  const parsed = parseStaticShellCommands(header.replace(/>/g, " "));
+  if (!parsed || parsed === "brace-expansion" || parsed.pipelines.length !== 1) return false;
+  const pipeline = parsed.pipelines[0];
+  if (pipeline?.length !== 1) return false;
+  const argv = unwrapStaticCommand(pipeline[0] ?? []);
+  return writers.includes(argv[0]?.split("/").at(-1) ?? "");
 }
 
 /** Extract file path from hook arguments. */

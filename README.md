@@ -637,8 +637,10 @@ That's it. The hook reads tool input from stdin, runs the guard, and exits with 
 The guard permits static `printenv` reads only for exact names in `credentialGuard.allowedEnvironmentVariables`. The default list is empty. Multiple names are allowed only when each name is approved.
 It recognizes `rtk` and `rtk proxy` prefixes and checks each command in a pipeline or chain.
 Literal environment-command text in `rg`, `grep`, `git grep`, `echo`, and `printf` is allowed. In pipelines, every other command must be a known passive text command or an approved static environment read.
+Each pipeline is checked separately from statements joined by `;`, `&&`, or `||`.
 Execution options, other environment reads, and environment reads in dynamic or unsupported shell syntax stay blocked. Custom dangerous-command patterns still apply to the complete input.
 Active brace expansion is refused, including path expansions such as `src/{a,b}`. Fully quoted literal brace text remains usable in static searches.
+Single literal `echo`/`printf` writes with output redirection and single `cat`/`tee` heredoc writes are allowed. Heredoc braces are data. Unquoted heredocs with `$`, backticks, or backslashes, interpreter heredocs, and writes followed by more commands do not receive this exception. Use a quoted delimiter for literal code.
 
 ### Setup for OpenCode
 
