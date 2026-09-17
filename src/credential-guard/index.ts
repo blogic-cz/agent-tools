@@ -295,6 +295,7 @@ function parseStaticShellCommands(
       return undefined;
     } else if (char === "|" && command[i - 1] !== "|" && command[i + 1] !== "|") {
       finishCommand();
+      if (command[i + 1] === "&") i++;
     } else if (/[;&|\r\n]/.test(char)) {
       finishPipeline();
     } else if (/\s/.test(char)) {
