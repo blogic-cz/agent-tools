@@ -246,9 +246,9 @@ function escapeRegex(s: string): string {
 /** Static shell words only. Never expand variables or execute a command. */
 function parseStaticShellCommands(
   command: string,
-): { commands: string[][]; hasPipe: boolean } | "brace-expansion" | undefined {
-  const commands: string[][] = [];
-  let hasPipe = false;
+): { pipelines: string[][][] } | "brace-expansion" | undefined {
+  const pipelines: string[][][] = [];
+  let commands: string[][] = [];
   let argv: string[] = [];
   let word = "";
   let started = false;
@@ -263,6 +263,11 @@ function parseStaticShellCommands(
     finishWord();
     if (argv.length) commands.push(argv);
     argv = [];
+  };
+  const finishPipeline = () => {
+    finishCommand();
+    if (commands.length) pipelines.push(commands);
+    commands = [];
   };
 
   for (let i = 0; i < command.length; i++) {
@@ -286,11 +291,12 @@ function parseStaticShellCommands(
       started = true;
     } else if (char === "{" && hasBraceExpansion(command.slice(i))) {
       return "brace-expansion";
-    } else if (char === "<" || char === ">" || (char === "#" && !started)) {
+    } else if (/[<>()]/.test(char) || (char === "#" && !started)) {
       return undefined;
-    } else if (/[;&|()\r\n]/.test(char)) {
-      if (char === "|" && command[i - 1] !== "|" && command[i + 1] !== "|") hasPipe = true;
+    } else if (char === "|" && command[i - 1] !== "|" && command[i + 1] !== "|") {
       finishCommand();
+    } else if (/[;&|\r\n]/.test(char)) {
+      finishPipeline();
     } else if (/\s/.test(char)) {
       finishWord();
     } else {
@@ -300,8 +306,8 @@ function parseStaticShellCommands(
   }
 
   if (quote) return undefined;
-  finishCommand();
-  return { commands, hasPipe };
+  finishPipeline();
+  return { pipelines };
 }
 
 function mentionsEnvironmentRead(text: string): boolean {
@@ -380,21 +386,23 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
   if (!parsed) return mentionsEnvironmentRead(command) || hasBraceExpansion(command);
-  const unwrapped = parsed.commands.map(unwrapStaticCommand);
+  const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
+  const unwrapped = pipelines.flat();
   if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
 
   // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
-  return (
-    parsed.hasPipe &&
-    unwrapped.some(
-      (argv) =>
-        isAllowedEnvironmentRead(argv, allowedNames) ||
-        (isPassiveTextCommand(argv) &&
-          (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
-    ) &&
-    unwrapped.some(
-      (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
-    )
+  return pipelines.some(
+    (pipeline) =>
+      pipeline.length > 1 &&
+      pipeline.some(
+        (argv) =>
+          isAllowedEnvironmentRead(argv, allowedNames) ||
+          (isPassiveTextCommand(argv) &&
+            (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
+      ) &&
+      pipeline.some(
+        (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
+      ),
   );
 }
 
