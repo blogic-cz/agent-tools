@@ -321,16 +321,17 @@ function hasBraceExpansion(text: string): boolean {
 }
 
 /**
- * The command without quoted regex quantifiers such as `{0,80}`, `{2,}` or `{,5}`. Many commands
- * re-parse quoted text as shell code, so every other quoted brace stays. The expansion of a
- * digits-only quantifier cannot spell a command name. An unclosed quote keeps the raw command.
+ * The command without quoted regex quantifiers such as `{0,80}`. Many commands re-parse quoted
+ * text as shell code, so every other quoted brace stays. When both sides are digits, the expansion
+ * cannot spell a command name. An empty side is not safe: `e{,}nv` and `e{0,}nv` expand to `env`.
+ * An unclosed quote keeps the raw command.
  */
 function withoutQuotedQuantifiers(command: string): string {
   let text = "";
   let quote: "'" | '"' | "$'" | undefined;
   for (let i = 0; i < command.length; i++) {
     const char = command.charAt(i);
-    const quantifier = quote ? /^\{\d*,\d*\}/.exec(command.slice(i))?.[0] : undefined;
+    const quantifier = quote ? /^\{\d+,\d+\}/.exec(command.slice(i))?.[0] : undefined;
     if (quantifier) {
       i += quantifier.length - 1;
       continue;
@@ -352,9 +353,9 @@ function withoutQuotedQuantifiers(command: string): string {
   return quote ? command : text;
 }
 
-/** Braces in static words, except digits-only quantifiers whose expansion cannot name a command. */
+/** Braces in static words, except `{m,n}` with digits on both sides (see above). */
 function hasArgumentBraceExpansion(text: string): boolean {
-  return hasBraceExpansion(text.replace(/\{\d*,\d*\}/g, ""));
+  return hasBraceExpansion(text.replace(/\{\d+,\d+\}/g, ""));
 }
 
 /** echo and printf print their arguments; grep -o, rg and git grep print matched pattern text. */
