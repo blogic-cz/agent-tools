@@ -63,14 +63,14 @@ export const renameBranch = Effect.fn("branch.renameBranch")(function* (opts: {
 export const branchRenameCommand = Command.make(
   "rename",
   {
-    confirm: Flag.boolean("confirm").pipe(
+    confirm: Flag.Boolean("confirm").pipe(
       Flag.withDescription("Actually rename (without this flag, only shows dry-run)"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    newName: Flag.string("new-name").pipe(Flag.withDescription("New branch name")),
-    oldName: Flag.string("old-name").pipe(Flag.withDescription("Current branch name to rename")),
-    repo: Flag.string("repo").pipe(
+    newName: Flag.String("new-name").pipe(Flag.withDescription("New branch name")),
+    oldName: Flag.String("old-name").pipe(Flag.withDescription("Current branch name to rename")),
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),

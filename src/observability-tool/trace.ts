@@ -506,7 +506,7 @@ function handleTraceGet(
 const getCommand = Command.make(
   "get",
   {
-    id: Argument.string("id"),
+    id: Argument.String("id"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
@@ -517,19 +517,19 @@ const getCommand = Command.make(
 const logsCommand = Command.make(
   "logs",
   {
-    id: Argument.string("id"),
+    id: Argument.String("id"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Max log lines (default: 100)"),
       Flag.withDefault(100),
     ),
-    start: Flag.string("start").pipe(
+    start: Flag.String("start").pipe(
       Flag.withDescription("Start time (default: now-1h)"),
       Flag.withDefault("now-1h"),
     ),
-    end: Flag.string("end").pipe(
+    end: Flag.String("end").pipe(
       Flag.withDescription("End time (default: now)"),
       Flag.withDefault("now"),
     ),
@@ -608,7 +608,7 @@ const logsCommand = Command.make(
 const findCommand = Command.make(
   "find",
   {
-    id: Argument.string("id"),
+    id: Argument.String("id"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
@@ -623,19 +623,19 @@ const findCommand = Command.make(
 const searchCommand = Command.make(
   "search",
   {
-    query: Argument.string("query"),
+    query: Argument.String("query"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Max traces to return (default: 20)"),
       Flag.withDefault(20),
     ),
-    start: Flag.string("start").pipe(
+    start: Flag.String("start").pipe(
       Flag.withDescription("Start time (default: now-1h, max span now-168h)"),
       Flag.withDefault("now-1h"),
     ),
-    end: Flag.string("end").pipe(
+    end: Flag.String("end").pipe(
       Flag.withDescription("End time (default: now)"),
       Flag.withDefault("now"),
     ),

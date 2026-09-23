@@ -89,7 +89,7 @@ const searchOrgCode = Effect.fn("repo.searchOrgCode")(function* (opts: {
 // CLI Commands
 // ---------------------------------------------------------------------------
 
-const repoOption = Flag.string("repo").pipe(
+const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),
   Flag.optional,
 );
@@ -114,12 +114,12 @@ export const repoListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of repositories to return"),
       Flag.withDefault(30),
     ),
-    org: Flag.string("org").pipe(Flag.withDescription("GitHub organization slug")),
-    visibility: Flag.choice("visibility", ["public", "private", "all"]).pipe(
+    org: Flag.String("org").pipe(Flag.withDescription("GitHub organization slug")),
+    visibility: Flag.Literals("visibility", ["public", "private", "all"]).pipe(
       Flag.withDescription("Filter by repository visibility"),
       Flag.optional,
     ),
@@ -141,12 +141,12 @@ export const repoSearchCodeCommand = Command.make(
   "search-code",
   {
     format: formatOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of results to return"),
       Flag.withDefault(30),
     ),
-    org: Flag.string("org").pipe(Flag.withDescription("GitHub organization slug")),
-    query: Flag.string("query").pipe(Flag.withDescription("Code search query")),
+    org: Flag.String("org").pipe(Flag.withDescription("GitHub organization slug")),
+    query: Flag.String("query").pipe(Flag.withDescription("Code search query")),
   },
   ({ format, limit, org, query }) =>
     Effect.gen(function* () {

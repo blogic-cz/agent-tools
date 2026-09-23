@@ -204,7 +204,7 @@ function transformJsonLines(lines: ReadonlyArray<string>): string {
   const ordered = LEVEL_ORDER.flatMap((level) =>
     parsedLines
       .filter((entry) => entry.level === level)
-      .sort((a, b) => a.originalIndex - b.originalIndex),
+      .toSorted((a, b) => a.originalIndex - b.originalIndex),
   );
 
   const output: Array<string> = [];

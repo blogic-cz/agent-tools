@@ -34,13 +34,13 @@ export function formatObservabilityError(error: unknown): string {
   return String(error);
 }
 
-export const envOption = Flag.string("env").pipe(
+export const envOption = Flag.String("env").pipe(
   Flag.withDescription("Target environment name from agent-tools config (default: local)"),
   Flag.withDefault("local"),
 );
 
 export const profileOption = Flag.optional(
-  Flag.string("profile").pipe(
+  Flag.String("profile").pipe(
     Flag.withDescription(
       "Observability profile name from agent-tools config (default: 'default' key or single entry)",
     ),

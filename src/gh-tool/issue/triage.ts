@@ -9,7 +9,7 @@ import { fetchReviewTriage } from "#gh/pr/commands";
 
 import { fetchIssueComments } from "./core";
 
-const repoOption = Flag.string("repo").pipe(
+const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),
   Flag.optional,
 );
@@ -258,9 +258,9 @@ export const issueTriageCommand = Command.make(
   "triage",
   {
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number")),
     repo: repoOption,
-    verbosity: Flag.choice("verbosity", ["compact", "full"] as const).pipe(
+    verbosity: Flag.Literals("verbosity", ["compact", "full"] as const).pipe(
       Flag.withDescription("Output detail level: compact or full"),
       Flag.withDefault("compact"),
     ),
@@ -281,8 +281,8 @@ export const issueSnapshotBatchCommand = Command.make(
   "snapshot-batch",
   {
     format: formatOption,
-    issues: Flag.string("issues").pipe(Flag.withDescription("Comma-separated issue numbers")),
-    owner: Flag.string("owner").pipe(
+    issues: Flag.String("issues").pipe(Flag.withDescription("Comma-separated issue numbers")),
+    owner: Flag.String("owner").pipe(
       Flag.withDescription("Automation owner login used to mark eligible issues"),
       Flag.optional,
     ),

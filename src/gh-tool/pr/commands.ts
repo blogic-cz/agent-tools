@@ -70,7 +70,7 @@ import {
 // CLI Commands
 // ---------------------------------------------------------------------------
 
-const repoOption = Flag.string("repo").pipe(
+const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),
   Flag.optional,
 );
@@ -460,11 +460,11 @@ export const prViewCommand = Command.make(
   "view",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
-    prs: Flag.string("prs").pipe(
+    prs: Flag.String("prs").pipe(
       Flag.withDescription("Comma-separated PR numbers to view in one call (overrides --pr)"),
       Flag.optional,
     ),
@@ -511,21 +511,21 @@ export const prListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    state: Flag.choice("state", ["open", "closed", "merged", "all"]).pipe(
+    state: Flag.Literals("state", ["open", "closed", "merged", "all"]).pipe(
       Flag.withDescription("Filter by state: open, closed, merged, all"),
       Flag.withDefault("open"),
     ),
-    author: Flag.string("author").pipe(
+    author: Flag.String("author").pipe(
       Flag.withDescription("Filter by author login (use @me for yourself)"),
       Flag.optional,
     ),
-    base: Flag.string("base").pipe(Flag.withDescription("Filter by base branch"), Flag.optional),
-    head: Flag.string("head").pipe(Flag.withDescription("Filter by head branch"), Flag.optional),
-    search: Flag.string("search").pipe(
+    base: Flag.String("base").pipe(Flag.withDescription("Filter by base branch"), Flag.optional),
+    head: Flag.String("head").pipe(Flag.withDescription("Filter by head branch"), Flag.optional),
+    search: Flag.String("search").pipe(
       Flag.withDescription("GitHub search query (e.g. 'review:required')"),
       Flag.optional,
     ),
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of PRs to return"),
       Flag.withDefault(30),
     ),
@@ -556,11 +556,11 @@ export const prWaitMergeableCommand = Command.make(
   "wait-mergeable",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
-    timeout: Flag.integer("timeout").pipe(
+    timeout: Flag.Int("timeout").pipe(
       Flag.withDescription(
         "Max seconds to wait for a definitive mergeable verdict (capped at 180)",
       ),
@@ -585,30 +585,30 @@ export const prWaitMergeableCommand = Command.make(
 export const prCreateCommand = Command.make(
   "create",
   {
-    base: Flag.string("base").pipe(
+    base: Flag.String("base").pipe(
       Flag.withDescription("Base branch for the PR (default: repository default branch)"),
       Flag.optional,
     ),
-    body: Flag.string("body").pipe(Flag.withDescription("PR body/description"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("PR body/description"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read PR body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    bodyStdin: Flag.boolean("body-stdin").pipe(
+    bodyStdin: Flag.Boolean("body-stdin").pipe(
       Flag.withDescription("Read PR body from stdin"),
       Flag.withDefault(false),
     ),
-    draft: Flag.boolean("draft").pipe(
+    draft: Flag.Boolean("draft").pipe(
       Flag.withDescription("Create as draft PR"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    head: Flag.string("head").pipe(
+    head: Flag.String("head").pipe(
       Flag.withDescription("Source branch name (required in GitButler workspace mode)"),
       Flag.optional,
     ),
     repo: repoOption,
-    title: Flag.string("title").pipe(Flag.withDescription("PR title")),
+    title: Flag.String("title").pipe(Flag.withDescription("PR title")),
   },
   ({ base, body, bodyFile, bodyStdin, draft, format, head, repo, title }) =>
     withRepo(
@@ -641,20 +641,20 @@ export const prCreateCommand = Command.make(
 export const prEditCommand = Command.make(
   "edit",
   {
-    base: Flag.string("base").pipe(Flag.withDescription("New base branch"), Flag.optional),
-    body: Flag.string("body").pipe(Flag.withDescription("New PR body/description"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    base: Flag.String("base").pipe(Flag.withDescription("New base branch"), Flag.optional),
+    body: Flag.String("body").pipe(Flag.withDescription("New PR body/description"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read PR body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    bodyStdin: Flag.boolean("body-stdin").pipe(
+    bodyStdin: Flag.Boolean("body-stdin").pipe(
       Flag.withDescription("Read PR body from stdin"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to edit")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("PR number to edit")),
     repo: repoOption,
-    title: Flag.string("title").pipe(Flag.withDescription("New PR title"), Flag.optional),
+    title: Flag.String("title").pipe(Flag.withDescription("New PR title"), Flag.optional),
   },
   ({ base, body, bodyFile, bodyStdin, format, pr, repo, title }) =>
     withRepo(
@@ -685,20 +685,20 @@ export const prEditCommand = Command.make(
 export const prCloseCommand = Command.make(
   "close",
   {
-    comment: Flag.string("comment").pipe(
+    comment: Flag.String("comment").pipe(
       Flag.withDescription("Comment to add when closing"),
       Flag.optional,
     ),
-    commentFile: Flag.string("comment-file").pipe(
+    commentFile: Flag.String("comment-file").pipe(
       Flag.withDescription("Read close comment from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    deleteBranch: Flag.boolean("delete-branch").pipe(
+    deleteBranch: Flag.Boolean("delete-branch").pipe(
       Flag.withDescription("Delete the branch after closing"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to close")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("PR number to close")),
     repo: repoOption,
   },
   ({ comment, commentFile, deleteBranch, format, pr, repo }) =>
@@ -727,20 +727,20 @@ export const prCloseCommand = Command.make(
 export const prMergeCommand = Command.make(
   "merge",
   {
-    confirm: Flag.boolean("confirm").pipe(
+    confirm: Flag.Boolean("confirm").pipe(
       Flag.withDescription("Actually merge (without this flag, only shows dry-run)"),
       Flag.withDefault(false),
     ),
-    deleteBranch: Flag.boolean("delete-branch").pipe(
+    deleteBranch: Flag.Boolean("delete-branch").pipe(
       Flag.withDescription(
         "Delete the remote branch after merge (local/worktree cleanup is separate)",
       ),
       Flag.withDefault(DEFAULT_DELETE_BRANCH),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to merge")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("PR number to merge")),
     repo: repoOption,
-    strategy: Flag.choice("strategy", MERGE_STRATEGIES).pipe(
+    strategy: Flag.Literals("strategy", MERGE_STRATEGIES).pipe(
       Flag.withDescription("Merge strategy: squash, merge, or rebase"),
       Flag.withDefault(DEFAULT_MERGE_STRATEGY),
     ),
@@ -764,7 +764,7 @@ export const prReadyCommand = Command.make(
   "ready",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -787,21 +787,21 @@ export const prReadyCommand = Command.make(
 export const prChecksCommand = Command.make(
   "checks",
   {
-    failFast: Flag.boolean("fail-fast").pipe(
+    failFast: Flag.Boolean("fail-fast").pipe(
       Flag.withDefault(true),
       Flag.withDescription("Stop watching on first failure (with --watch)"),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
-    prs: Flag.string("prs").pipe(
+    prs: Flag.String("prs").pipe(
       Flag.withDescription("Comma-separated PR numbers for a one-shot batch snapshot (no --watch)"),
       Flag.optional,
     ),
     repo: repoOption,
-    timeout: Flag.integer("timeout").pipe(
+    timeout: Flag.Int("timeout").pipe(
       Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
       Flag.withDescription("Timeout in seconds for watch mode (default: 600, minimum 1)"),
       Flag.filter(
@@ -809,7 +809,7 @@ export const prChecksCommand = Command.make(
         () => "--timeout must be at least 1 second",
       ),
     ),
-    watch: Flag.boolean("watch").pipe(
+    watch: Flag.Boolean("watch").pipe(
       Flag.withDefault(false),
       Flag.withDescription("Watch until checks complete or timeout"),
     ),
@@ -859,12 +859,12 @@ export const prChecksFailedCommand = Command.make(
   "checks-failed",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    withLogs: Flag.boolean("with-logs").pipe(
+    withLogs: Flag.Boolean("with-logs").pipe(
       Flag.withDescription(
         "Inline the failed-step logs for each failed check so no follow-up job-logs call is needed",
       ),
@@ -885,17 +885,17 @@ export const prChecksFailedCommand = Command.make(
 export const prWatchCommand = Command.make(
   "watch",
   {
-    prs: Flag.string("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
-    until: Flag.choice("until", ["terminal"]).pipe(Flag.withDefault("terminal")),
-    format: Flag.choice("format", ["jsonl"]).pipe(Flag.withDefault("jsonl")),
-    interval: Flag.integer("interval").pipe(
+    prs: Flag.String("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
+    until: Flag.Literals("until", ["terminal"]).pipe(Flag.withDefault("terminal")),
+    format: Flag.Literals("format", ["jsonl"]).pipe(Flag.withDefault("jsonl")),
+    interval: Flag.Int("interval").pipe(
       Flag.withDefault(5),
       Flag.filter(
         (n) => n >= 1 && n <= 60,
         () => "--interval must be 1..60 seconds",
       ),
     ),
-    timeout: Flag.integer("timeout").pipe(
+    timeout: Flag.Int("timeout").pipe(
       Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
       Flag.filter(
         (n) => n >= 1,
@@ -922,17 +922,17 @@ export const prRerunChecksCommand = Command.make(
   "rerun-checks",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    failedOnly: Flag.boolean("failed-only").pipe(
+    failedOnly: Flag.Boolean("failed-only").pipe(
       Flag.withDefault(true),
       Flag.withDescription("Only rerun failed checks (default: true)"),
     ),
-    watch: Flag.boolean("watch").pipe(Flag.withDefault(false)),
-    timeout: Flag.integer("timeout").pipe(
+    watch: Flag.Boolean("watch").pipe(Flag.withDefault(false)),
+    timeout: Flag.Int("timeout").pipe(
       Flag.withDefault(60),
       Flag.filter(
         (n) => n >= 1,
@@ -960,18 +960,18 @@ export const prTriggerChecksCommand = Command.make(
   "trigger-checks",
   {
     field: Param.variadic(
-      Param.string(Param.flagKind, "field").pipe(
+      Param.String(Param.flagKind, "field").pipe(
         Param.withAlias("f"),
         Param.withDescription("Workflow input as key=value; may be repeated"),
       ),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    workflow: Flag.string("workflow").pipe(
+    workflow: Flag.String("workflow").pipe(
       Flag.withDescription("workflow_dispatch workflow file to run against the PR head branch"),
     ),
   },
@@ -993,16 +993,16 @@ export const prThreadsCommand = Command.make(
   "threads",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    unresolvedOnly: Flag.boolean("unresolved-only").pipe(
+    unresolvedOnly: Flag.Boolean("unresolved-only").pipe(
       Flag.withDescription("Only show unresolved threads"),
       Flag.withDefault(true),
     ),
-    visibleOpenOnly: Flag.boolean("visible-open-only").pipe(
+    visibleOpenOnly: Flag.Boolean("visible-open-only").pipe(
       Flag.withDescription(
         "Show threads that still look open to humans: unresolved threads plus resolved threads with no reply",
       ),
@@ -1028,12 +1028,12 @@ export const prCommentsCommand = Command.make(
   "comments",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    since: Flag.string("since").pipe(
+    since: Flag.String("since").pipe(
       Flag.withDescription("ISO timestamp to filter comments created after"),
       Flag.optional,
     ),
@@ -1054,7 +1054,7 @@ export const prLastHumanReviewerCommand = Command.make(
   "last-human-reviewer",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1077,21 +1077,21 @@ export const prLastHumanReviewerCommand = Command.make(
 export const prReviewsCommand = Command.make(
   "reviews",
   {
-    author: Flag.string("author").pipe(
+    author: Flag.String("author").pipe(
       Flag.withDescription("Filter by author login substring"),
       Flag.optional,
     ),
-    bodyContains: Flag.string("body-contains").pipe(
+    bodyContains: Flag.String("body-contains").pipe(
       Flag.withDescription("Filter reviews by body substring"),
       Flag.optional,
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    state: Flag.string("state").pipe(
+    state: Flag.String("state").pipe(
       Flag.withDescription(
         "Filter by review state (APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED)",
       ),
@@ -1120,24 +1120,24 @@ export const prReviewsCommand = Command.make(
 export const prFeedbackCommand = Command.make(
   "feedback",
   {
-    excludeAuthors: Flag.string("exclude-authors").pipe(
+    excludeAuthors: Flag.String("exclude-authors").pipe(
       Flag.withDescription(
         "Comma-separated author substrings to drop (e.g. github-actions,dependabot)",
       ),
       Flag.optional,
     ),
     format: formatOption,
-    only: Flag.choice("only", FEEDBACK_FILTERS).pipe(
+    only: Flag.Literals("only", FEEDBACK_FILTERS).pipe(
       Flag.withDefault("all" as FeedbackFilter),
       Flag.withDescription(
         "all (default) | visible-open | needs-human-reply | current-head; narrowed filters drop issue comments",
       ),
     ),
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
-    rawBodies: Flag.boolean("raw-bodies").pipe(
+    rawBodies: Flag.Boolean("raw-bodies").pipe(
       Flag.withDefault(false),
       Flag.withDescription("Keep base64 report payloads in bodies instead of omitting them"),
     ),
@@ -1170,21 +1170,21 @@ export const prFeedbackCommand = Command.make(
 export const prIssueCommentsCommand = Command.make(
   "issue-comments",
   {
-    author: Flag.string("author").pipe(
+    author: Flag.String("author").pipe(
       Flag.withDescription("Filter by author login substring"),
       Flag.optional,
     ),
-    bodyContains: Flag.string("body-contains").pipe(
+    bodyContains: Flag.String("body-contains").pipe(
       Flag.withDescription("Filter comments by body substring"),
       Flag.optional,
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    since: Flag.string("since").pipe(
+    since: Flag.String("since").pipe(
       Flag.withDescription("ISO timestamp to filter comments created after"),
       Flag.optional,
     ),
@@ -1212,16 +1212,16 @@ export const prIssueCommentsCommand = Command.make(
 export const prIssueCommentsLatestCommand = Command.make(
   "issue-comments-latest",
   {
-    author: Flag.string("author").pipe(
+    author: Flag.String("author").pipe(
       Flag.withDescription("Filter by author login substring"),
       Flag.optional,
     ),
-    bodyContains: Flag.string("body-contains").pipe(
+    bodyContains: Flag.String("body-contains").pipe(
       Flag.withDescription("Filter comments by body substring"),
       Flag.optional,
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1244,16 +1244,16 @@ export const prIssueCommentsLatestCommand = Command.make(
 export const prCommentCommand = Command.make(
   "comment",
   {
-    body: Flag.string("body").pipe(
+    body: Flag.String("body").pipe(
       Flag.withDescription("General PR comment body text"),
       Flag.optional,
     ),
-    bodyFile: Flag.string("body-file").pipe(
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read general PR comment body from a file path or '-' for stdin"),
       Flag.optional,
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1282,7 +1282,7 @@ export const prDiscussionSummaryCommand = Command.make(
   "discussion-summary",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1304,16 +1304,14 @@ export const prDiscussionSummaryCommand = Command.make(
 export const prReplyCommand = Command.make(
   "reply",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Reply body text"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("Reply body text"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read reply body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    commentId: Flag.integer("comment-id").pipe(
-      Flag.withDescription("ID of the comment to reply to"),
-    ),
+    commentId: Flag.Int("comment-id").pipe(Flag.withDescription("ID of the comment to reply to")),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1342,7 +1340,7 @@ export const prResolveCommand = Command.make(
   "resolve",
   {
     format: formatOption,
-    threadId: Flag.string("thread-id").pipe(
+    threadId: Flag.String("thread-id").pipe(
       Flag.withDescription("GraphQL node ID of the thread to resolve"),
     ),
     repo: repoOption,
@@ -1357,12 +1355,12 @@ export const prResolveCommand = Command.make(
     ),
 ).pipe(Command.withDescription("Resolve a review thread via GraphQL"));
 
-const reviewEventOption = Flag.choice("event", REVIEW_EVENTS).pipe(
+const reviewEventOption = Flag.Literals("event", REVIEW_EVENTS).pipe(
   Flag.withDescription("Review verdict: comment, approve, or request-changes"),
   Flag.withDefault(DEFAULT_REVIEW_EVENT),
 );
 
-const reviewConfirmOption = Flag.boolean("confirm").pipe(
+const reviewConfirmOption = Flag.Boolean("confirm").pipe(
   Flag.withDescription("Required for --event approve and --event request-changes"),
   Flag.withDefault(false),
 );
@@ -1370,19 +1368,19 @@ const reviewConfirmOption = Flag.boolean("confirm").pipe(
 export const prReviewCommand = Command.make(
   "review",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Review body text"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("Review body text"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read review body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    bodyStdin: Flag.boolean("body-stdin").pipe(
+    bodyStdin: Flag.Boolean("body-stdin").pipe(
       Flag.withDescription("Read review body from stdin"),
       Flag.withDefault(false),
     ),
     confirm: reviewConfirmOption,
     event: reviewEventOption,
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1422,23 +1420,23 @@ export const prReviewCommand = Command.make(
 export const prSubmitReviewCommand = Command.make(
   "submit-review",
   {
-    body: Flag.string("body").pipe(
+    body: Flag.String("body").pipe(
       Flag.withDescription("Optional review body text when submitting"),
       Flag.optional,
     ),
-    bodyFile: Flag.string("body-file").pipe(
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read review body from a file path or '-' for stdin"),
       Flag.optional,
     ),
     confirm: reviewConfirmOption,
     event: reviewEventOption,
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    reviewId: Flag.string("review-id").pipe(
+    reviewId: Flag.String("review-id").pipe(
       Flag.withDescription(
         "Pending review GraphQL ID (defaults to current user's pending review on PR)",
       ),
@@ -1502,13 +1500,13 @@ export const prReviewTriageCommand = Command.make(
   "review-triage",
   {
     format: formatOption,
-    omit: Flag.string("omit").pipe(
+    omit: Flag.String("omit").pipe(
       Flag.withDescription(
         `Comma-separated sections to leave out (${OMITTABLE_TRIAGE_SECTIONS.join(", ")}) — use for cheap repeated snapshots; \`pr feedback\` owns the full inventory`,
       ),
       Flag.optional,
     ),
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
@@ -1536,9 +1534,9 @@ export const prRequestReviewCommand = Command.make(
   "request-review",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("Positive pull request number")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("Positive pull request number")),
     repo: repoOption,
-    reviewers: Flag.string("reviewers").pipe(
+    reviewers: Flag.String("reviewers").pipe(
       Flag.withDescription("Comma-separated GitHub user logins"),
     ),
   },
@@ -1555,7 +1553,7 @@ export const prReviewTriageBatchCommand = Command.make(
   "review-triage-batch",
   {
     format: formatOption,
-    prs: Flag.string("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
+    prs: Flag.String("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
     repo: repoOption,
   },
   ({ format, prs, repo }) =>
@@ -1579,21 +1577,19 @@ export const prReviewTriageBatchCommand = Command.make(
 export const prReplyAndResolveCommand = Command.make(
   "reply-and-resolve",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Reply body text"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("Reply body text"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read reply body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    commentId: Flag.integer("comment-id").pipe(
-      Flag.withDescription("ID of the comment to reply to"),
-    ),
+    commentId: Flag.Int("comment-id").pipe(Flag.withDescription("ID of the comment to reply to")),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(
+    pr: Flag.Int("pr").pipe(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
     repo: repoOption,
-    threadId: Flag.string("thread-id").pipe(
+    threadId: Flag.String("thread-id").pipe(
       Flag.withDescription(
         "GraphQL node ID of the thread to resolve (inferred from comment when omitted)",
       ),
@@ -1632,7 +1628,7 @@ const prStackViewCommand = Command.make(
   "view",
   {
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("PR number to read the stack of")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("PR number to read the stack of")),
     repo: repoOption,
   },
   ({ format, pr, repo }) =>
@@ -1648,14 +1644,14 @@ const prStackViewCommand = Command.make(
 const prStackMergeCommand = Command.make(
   "merge",
   {
-    confirm: Flag.boolean("confirm").pipe(
+    confirm: Flag.Boolean("confirm").pipe(
       Flag.withDescription("Actually merge (without this flag, only shows the ordered plan)"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("Any PR in the stack to merge")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("Any PR in the stack to merge")),
     repo: repoOption,
-    strategy: Flag.choice("strategy", MERGE_STRATEGIES).pipe(
+    strategy: Flag.Literals("strategy", MERGE_STRATEGIES).pipe(
       Flag.withDescription("Merge strategy: squash, merge, or rebase"),
       Flag.withDefault(DEFAULT_MERGE_STRATEGY),
     ),
@@ -1677,14 +1673,14 @@ const prStackMergeCommand = Command.make(
 const prStackUnstackCommand = Command.make(
   "unstack",
   {
-    confirm: Flag.boolean("confirm").pipe(
+    confirm: Flag.Boolean("confirm").pipe(
       Flag.withDescription(
         "Actually unstack (without this flag, only shows what would be removed)",
       ),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    pr: Flag.integer("pr").pipe(Flag.withDescription("Any PR in the stack to dissolve")),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("Any PR in the stack to dissolve")),
     repo: repoOption,
   },
   ({ confirm, format, pr, repo }) =>

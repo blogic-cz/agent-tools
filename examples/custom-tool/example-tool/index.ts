@@ -22,7 +22,7 @@ import { Command, Flag } from "effect/unstable/cli";
 // Shared helpers (inline — real tools use #shared from the package internals)
 // ---------------------------------------------------------------------------
 
-const formatOption = Flag.choice("format", ["toon", "json"]).pipe(
+const formatOption = Flag.Literals("format", ["toon", "json"]).pipe(
   Flag.withDescription("Output format: toon (default, token-efficient) or json"),
   Flag.withDefault("toon"),
 );

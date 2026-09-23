@@ -786,7 +786,7 @@ describe("listPipelineRuns", () => {
 // ---------------------------------------------------------------------------
 
 describe("typed build subcommands – wiring assumptions", () => {
-  // Each subcommand in index.ts destructures Flag.integer flags and calls a build.ts
+  // Each subcommand in index.ts destructures Flag.Int flags and calls a build.ts
   // function directly. We verify that the build functions accept the expected integer
   // arguments and return the expected shapes, matching subcommand output wrappers.
 
@@ -798,7 +798,7 @@ describe("typed build subcommands – wiring assumptions", () => {
           "invoke:build:timeline": mockTimeline,
         });
 
-        // Subcommand calls getBuildTimeline(buildId) where buildId is Flag.integer
+        // Subcommand calls getBuildTimeline(buildId) where buildId is Flag.Int
         const result = yield* getBuildTimeline(123).pipe(Effect.provide(layer));
 
         // Subcommand wraps with formatAny(result, format)
@@ -964,7 +964,7 @@ describe("typed build subcommands – wiring assumptions", () => {
 });
 
 describe("typed integer flag semantics", () => {
-  // Flag.integer("build-id") parses CLI strings to numbers before the handler runs.
+  // Flag.Int("build-id") parses CLI strings to numbers before the handler runs.
   // The build module functions accept `number` — these tests confirm integer contract.
 
   it.effect("buildId=0 is a valid integer argument", () =>
@@ -998,14 +998,14 @@ describe("typed integer flag semantics", () => {
         "invoke:build:logs": "log output here",
       });
 
-      // Both buildId and logId are integers from Flag.integer
+      // Both buildId and logId are integers from Flag.Int
       const content = yield* getBuildLogContent(100, 200).pipe(Effect.provide(layer));
       expect(content).toBe("log output here");
     }),
   );
 
   it("integer values are number type, not string", () => {
-    // Flag.integer parses "123" -> 123 (number)
+    // Flag.Int parses "123" -> 123 (number)
     // Verify build functions accept number, not string
     const buildId: Parameters<typeof getBuildTimeline>[0] = 123;
     const logId: Parameters<typeof getBuildLogContent>[1] = 45;

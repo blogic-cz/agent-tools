@@ -29,7 +29,7 @@ import { ConfigServiceLayer } from "#config";
 
 const commonBuildFlags = {
   format: formatOption,
-  profile: Flag.optional(Flag.string("profile")).pipe(
+  profile: Flag.optional(Flag.String("profile")).pipe(
     Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
   ),
 };
@@ -42,7 +42,7 @@ const buildTimelineCommand = Command.make(
   "timeline",
   {
     ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+    buildId: Flag.Int("build-id").pipe(Flag.withDescription("Build ID")),
   },
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
@@ -55,7 +55,7 @@ const buildFailedJobsCommand = Command.make(
   "failed-jobs",
   {
     ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+    buildId: Flag.Int("build-id").pipe(Flag.withDescription("Build ID")),
   },
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
@@ -68,7 +68,7 @@ const buildLogsCommand = Command.make(
   "logs",
   {
     ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+    buildId: Flag.Int("build-id").pipe(Flag.withDescription("Build ID")),
   },
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
@@ -81,8 +81,8 @@ const buildLogContentCommand = Command.make(
   "log-content",
   {
     ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
-    logId: Flag.integer("log-id").pipe(Flag.withDescription("Log ID")),
+    buildId: Flag.Int("build-id").pipe(Flag.withDescription("Build ID")),
+    logId: Flag.Int("log-id").pipe(Flag.withDescription("Log ID")),
   },
   ({ buildId, format, logId, profile: _profile }) =>
     Effect.gen(function* () {
@@ -95,7 +95,7 @@ const buildSummaryCommand = Command.make(
   "summary",
   {
     ...commonBuildFlags,
-    buildId: Flag.integer("build-id").pipe(Flag.withDescription("Build ID")),
+    buildId: Flag.Int("build-id").pipe(Flag.withDescription("Build ID")),
   },
   ({ buildId, format, profile: _profile }) =>
     Effect.gen(function* () {
@@ -126,14 +126,14 @@ const buildCommand = Command.make("build", {}).pipe(
 const cmdCommand = Command.make(
   "cmd",
   {
-    profile: Flag.optional(Flag.string("profile")).pipe(
+    profile: Flag.optional(Flag.String("profile")).pipe(
       Flag.withDescription("Azure DevOps profile name (from agent-tools config)"),
     ),
-    project: Flag.optional(Flag.string("project")).pipe(
+    project: Flag.optional(Flag.String("project")).pipe(
       Flag.withDescription("Azure DevOps project name (overrides config default)"),
     ),
-    cmd: Flag.string("cmd").pipe(Flag.withDescription("az command (without 'az' prefix)")),
-    dryRun: Flag.boolean("dry-run").pipe(
+    cmd: Flag.String("cmd").pipe(Flag.withDescription("az command (without 'az' prefix)")),
+    dryRun: Flag.Boolean("dry-run").pipe(
       Flag.withDescription("Show command without executing"),
       Flag.withDefault(false),
     ),

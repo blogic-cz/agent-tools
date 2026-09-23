@@ -17,6 +17,7 @@
     "eslint/no-self-compare": "error",
     "eslint/no-template-curly-in-string": "error",
     "eslint/no-var": "error",
+    "eslint/no-underscore-dangle": "off",
     "import/no-cycle": "error",
     "import/no-duplicates": "error",
     "import/no-relative-parent-imports": "error",
@@ -38,8 +39,9 @@
       }
     ],
     "unicorn/error-message": "error",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/throw-new-error": "off",
     "unicorn/require-module-specifiers": "off",
-    "unicorn/throw-new-error": "error",
     "vitest/no-import-node-test": "error"
   },
   "overrides": [
@@ -57,6 +59,8 @@
         "vitest/no-conditional-expect": "off",
         "vitest/no-conditional-tests": "off",
         "vitest/no-disabled-tests": "off",
+        "vitest/expect-expect": "off",
+        "vitest/no-standalone-expect": "off",
         "vitest/require-to-throw-message": "off",
         "unicorn/no-array-sort": "off"
       }

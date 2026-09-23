@@ -15,7 +15,7 @@ import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { AzService, AzServiceLayer } from "./service";
 import { ConfigServiceLayer } from "#config";
 
-const profileFlag = Flag.optional(Flag.string("profile")).pipe(
+const profileFlag = Flag.optional(Flag.String("profile")).pipe(
   Flag.withDescription("Azure platform profile name (from agent-tools config)"),
 );
 
@@ -48,7 +48,7 @@ const resourcesCommand = Command.make(
   "resources",
   {
     ...commonFlags,
-    group: Flag.optional(Flag.string("group")).pipe(
+    group: Flag.optional(Flag.String("group")).pipe(
       Flag.withDescription("Limit the listing to one resource group"),
     ),
   },
@@ -68,8 +68,8 @@ const cmdCommand = Command.make(
   "cmd",
   {
     ...commonFlags,
-    cmd: Flag.string("cmd").pipe(Flag.withDescription("az command (without the 'az' prefix)")),
-    dryRun: Flag.boolean("dry-run").pipe(
+    cmd: Flag.String("cmd").pipe(Flag.withDescription("az command (without the 'az' prefix)")),
+    dryRun: Flag.Boolean("dry-run").pipe(
       Flag.withDescription("Show the command that would run, after security checks"),
       Flag.withDefault(false),
     ),

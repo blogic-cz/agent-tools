@@ -15,8 +15,8 @@ import { dumpCommandSchema } from "#shared/schema-dump";
 const greet = Command.make(
   "greet",
   {
-    name: Flag.string("name").pipe(Flag.withDescription("who to greet")),
-    mode: Flag.choice("mode", ["loud", "soft"]).pipe(Flag.optional),
+    name: Flag.String("name").pipe(Flag.withDescription("who to greet")),
+    mode: Flag.Literals("mode", ["loud", "soft"]).pipe(Flag.optional),
   },
   () => Effect.void,
 ).pipe(Command.withDescription("Greet someone"));

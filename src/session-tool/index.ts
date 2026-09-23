@@ -29,7 +29,7 @@ import {
 
 const AppLayer = SessionServiceLayer.pipe(Layer.provideMerge(ResolvedPathsLayer));
 
-const sourceOption = Flag.string("source").pipe(
+const sourceOption = Flag.String("source").pipe(
   Flag.withDescription("Filter by source: all, opencode, claude-code, codex, pi"),
   Flag.withDefault("all"),
 );
@@ -75,15 +75,12 @@ const mapSummary = (maxBodyChars: number) => (summary: MessageSummary) => {
 const listCommand = Command.make(
   "list",
   {
-    all: Flag.boolean("all").pipe(
+    all: Flag.Boolean("all").pipe(
       Flag.withDescription("Search all projects"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    limit: Flag.integer("limit").pipe(
-      Flag.withDescription("Limit result count"),
-      Flag.withDefault(10),
-    ),
+    limit: Flag.Int("limit").pipe(Flag.withDescription("Limit result count"), Flag.withDefault(10)),
     source: sourceOption,
   },
   ({ all, format, limit, source }) =>
@@ -179,20 +176,17 @@ const listCommand = Command.make(
 const searchCommand = Command.make(
   "search",
   {
-    query: Argument.string("query").pipe(Argument.withDescription("Search query")),
-    all: Flag.boolean("all").pipe(
+    query: Argument.String("query").pipe(Argument.withDescription("Search query")),
+    all: Flag.Boolean("all").pipe(
       Flag.withDescription("Search all projects"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    bodyChars: Flag.integer("body-chars").pipe(
+    bodyChars: Flag.Int("body-chars").pipe(
       Flag.withDescription("Max message body characters per result (0 = full bodies)"),
       Flag.withDefault(500),
     ),
-    limit: Flag.integer("limit").pipe(
-      Flag.withDescription("Limit result count"),
-      Flag.withDefault(10),
-    ),
+    limit: Flag.Int("limit").pipe(Flag.withDescription("Limit result count"), Flag.withDefault(10)),
     source: sourceOption,
   },
   ({ all, bodyChars, format, limit, query, source }) =>
@@ -264,7 +258,7 @@ const searchCommand = Command.make(
 const readCommand = Command.make(
   "read",
   {
-    session: Flag.string("session").pipe(Flag.withDescription("Session ID to read")),
+    session: Flag.String("session").pipe(Flag.withDescription("Session ID to read")),
     format: formatOption,
     source: sourceOption,
   },
