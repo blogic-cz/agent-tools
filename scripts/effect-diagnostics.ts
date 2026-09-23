@@ -53,6 +53,9 @@ export async function runEffectDiagnostics(): Promise<EffectDiagnosticsResult> {
   ]);
 
   try {
+    if (exitCode !== 0) {
+      throw new Error(stderr.trim() || `effect-tsgo exited with code ${exitCode}`);
+    }
     const result = JSON.parse(stdout) as TsgoResult;
     return {
       files: result.summary.filesChecked,
@@ -72,7 +75,11 @@ export async function runEffectDiagnostics(): Promise<EffectDiagnosticsResult> {
           column: 1,
           severity: "error",
           code: exitCode,
-          message: stderr.trim() || "effect-tsgo returned invalid JSON",
+          message:
+            stderr.trim() ||
+            (exitCode !== 0
+              ? `effect-tsgo exited with code ${exitCode}`
+              : "effect-tsgo returned invalid JSON"),
         },
       ],
       totalErrors: 1,
