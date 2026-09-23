@@ -104,19 +104,19 @@ export function extractLogsFromDsQuery(response: {
 const queryCommand = Command.make(
   "query",
   {
-    logql: Argument.string("logql"),
+    logql: Argument.String("logql"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
-    start: Flag.string("start").pipe(
+    start: Flag.String("start").pipe(
       Flag.withDescription("Start time (default: now-1h)"),
       Flag.withDefault("now-1h"),
     ),
-    end: Flag.string("end").pipe(
+    end: Flag.String("end").pipe(
       Flag.withDescription("End time (default: now)"),
       Flag.withDefault("now"),
     ),
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Max log lines (default: 100)"),
       Flag.withDefault(100),
     ),

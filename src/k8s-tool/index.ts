@@ -188,18 +188,18 @@ const logTransformedResult = (
   });
 
 const commonFlags = {
-  env: Flag.optional(Flag.string("env")).pipe(
+  env: Flag.optional(Flag.String("env")).pipe(
     Flag.withDescription(
       "Target environment (e.g. test, prod). Falls back to defaultEnvironment in config.",
     ),
   ),
-  dryRun: Flag.boolean("dry-run").pipe(
+  dryRun: Flag.Boolean("dry-run").pipe(
     Flag.withAlias("d"),
     Flag.withDescription("Show command without executing"),
     Flag.withDefault(false),
   ),
   format: formatOption,
-  profile: Flag.optional(Flag.string("profile")).pipe(
+  profile: Flag.optional(Flag.String("profile")).pipe(
     Flag.withDescription("Kubernetes profile name (if multiple configured)"),
   ),
 };
@@ -235,7 +235,7 @@ const kubectlCommand = Command.make(
   "kubectl",
   {
     ...commonFlags,
-    cmd: Flag.string("cmd").pipe(
+    cmd: Flag.String("cmd").pipe(
       Flag.withDescription('kubectl command (without "kubectl" prefix)'),
     ),
   },
@@ -302,15 +302,15 @@ const podsCommand = Command.make(
   "pods",
   {
     ...commonFlags,
-    namespace: Flag.string("namespace").pipe(
+    namespace: Flag.String("namespace").pipe(
       Flag.withDescription("Namespace to query"),
       Flag.optional,
     ),
-    label: Flag.string("label").pipe(
+    label: Flag.String("label").pipe(
       Flag.withDescription("Label selector (key=value)"),
       Flag.optional,
     ),
-    wide: Flag.boolean("wide").pipe(
+    wide: Flag.Boolean("wide").pipe(
       Flag.withDescription("Show additional pod information"),
       Flag.withDefault(false),
     ),
@@ -334,17 +334,17 @@ const logsCommand = Command.make(
   "logs",
   {
     ...commonFlags,
-    pod: Flag.string("pod").pipe(Flag.withDescription("Pod name")),
-    namespace: Flag.string("namespace").pipe(
+    pod: Flag.String("pod").pipe(Flag.withDescription("Pod name")),
+    namespace: Flag.String("namespace").pipe(
       Flag.withDescription("Namespace containing the pod"),
       Flag.optional,
     ),
-    container: Flag.string("container").pipe(
+    container: Flag.String("container").pipe(
       Flag.withDescription("Container name (for multi-container pods)"),
       Flag.optional,
     ),
-    tail: Flag.integer("tail").pipe(Flag.withDescription("Show last N log lines"), Flag.optional),
-    follow: Flag.boolean("follow").pipe(
+    tail: Flag.Int("tail").pipe(Flag.withDescription("Show last N log lines"), Flag.optional),
+    follow: Flag.Boolean("follow").pipe(
       Flag.withAlias("f"),
       Flag.withDescription("Stream logs in real time"),
       Flag.withDefault(false),
@@ -374,11 +374,11 @@ const describeCommand = Command.make(
   "describe",
   {
     ...commonFlags,
-    resource: Flag.string("resource").pipe(
+    resource: Flag.String("resource").pipe(
       Flag.withDescription("Resource type (pod, deploy, svc, etc.)"),
     ),
-    name: Flag.string("name").pipe(Flag.withDescription("Resource name")),
-    namespace: Flag.string("namespace").pipe(
+    name: Flag.String("name").pipe(Flag.withDescription("Resource name")),
+    namespace: Flag.String("namespace").pipe(
       Flag.withDescription("Namespace containing the resource"),
       Flag.optional,
     ),
@@ -398,15 +398,15 @@ const execCommand = Command.make(
   "exec",
   {
     ...commonFlags,
-    pod: Flag.string("pod").pipe(Flag.withDescription("Pod name")),
-    execCmd: Flag.string("exec-cmd").pipe(
+    pod: Flag.String("pod").pipe(Flag.withDescription("Pod name")),
+    execCmd: Flag.String("exec-cmd").pipe(
       Flag.withDescription("Allowlisted diagnostic: redis-cli PING/INFO or ls"),
     ),
-    namespace: Flag.string("namespace").pipe(
+    namespace: Flag.String("namespace").pipe(
       Flag.withDescription("Namespace containing the pod"),
       Flag.optional,
     ),
-    container: Flag.string("container").pipe(
+    container: Flag.String("container").pipe(
       Flag.withDescription("Container name (for multi-container pods)"),
       Flag.optional,
     ),
@@ -430,11 +430,11 @@ const topCommand = Command.make(
   "top",
   {
     ...commonFlags,
-    namespace: Flag.string("namespace").pipe(
+    namespace: Flag.String("namespace").pipe(
       Flag.withDescription("Namespace to inspect"),
       Flag.optional,
     ),
-    sortBy: Flag.choice("sort-by", ["cpu", "memory"] as const).pipe(
+    sortBy: Flag.Literals("sort-by", ["cpu", "memory"] as const).pipe(
       Flag.withDescription("Sort metrics output when supported by kubectl"),
       Flag.optional,
     ),

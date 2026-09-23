@@ -4,7 +4,7 @@ import { Effect } from "effect";
 
 import type { BaseResult, OutputFormat } from "./types";
 
-export const formatOption = Flag.choice("format", ["toon", "json"]).pipe(
+export const formatOption = Flag.Literals("format", ["toon", "json"]).pipe(
   Flag.withDescription("Output format: toon (default, token-efficient) or json"),
   Flag.withDefault("toon"),
 );

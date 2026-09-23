@@ -34,7 +34,7 @@ import { LogsConfigError, LogsNotFoundError, LogsReadError, LogsTimeoutError } f
 import { LogsService, LogsServiceLayer } from "./service";
 
 const profileOption = Flag.optional(
-  Flag.string("profile").pipe(
+  Flag.String("profile").pipe(
     Flag.withDescription(
       "Named profile from agent-tools.json5 logs section (default: 'default' key or single entry)",
     ),
@@ -95,7 +95,7 @@ const buildSource = (
 const listCommand = Command.make(
   "list",
   {
-    env: Flag.optional(Flag.string("env")).pipe(
+    env: Flag.optional(Flag.String("env")).pipe(
       Flag.withDescription(
         "Target environment (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
       ),
@@ -148,29 +148,26 @@ const listCommand = Command.make(
 const readCommand = Command.make(
   "read",
   {
-    env: Flag.optional(Flag.string("env")).pipe(
+    env: Flag.optional(Flag.String("env")).pipe(
       Flag.withDescription(
         "Target environment (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
       ),
     ),
-    file: Flag.string("file").pipe(
+    file: Flag.String("file").pipe(
       Flag.withDescription("Specific log file to read"),
       Flag.optional,
     ),
     format: formatOption,
-    grep: Flag.string("grep").pipe(
+    grep: Flag.String("grep").pipe(
       Flag.withDescription("Filter lines containing case-insensitive literal text"),
       Flag.optional,
     ),
-    pretty: Flag.boolean("pretty").pipe(
+    pretty: Flag.Boolean("pretty").pipe(
       Flag.withDescription("Pretty-print JSON log entries"),
       Flag.withDefault(false),
     ),
     profile: profileOption,
-    tail: Flag.integer("tail").pipe(
-      Flag.withDescription("Show last N lines"),
-      Flag.withDefault(100),
-    ),
+    tail: Flag.Int("tail").pipe(Flag.withDescription("Show last N lines"), Flag.withDefault(100)),
   },
   ({ env, file, format, grep, pretty, profile, tail }) =>
     Effect.gen(function* () {

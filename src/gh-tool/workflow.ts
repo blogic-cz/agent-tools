@@ -50,7 +50,7 @@ export type LogEntry = {
   message: string;
 };
 
-const repoOption = Flag.string("repo").pipe(
+const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name. Defaults to current repo"),
   Flag.optional,
 );
@@ -686,17 +686,17 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
 export const workflowListCommand = Command.make(
   "list",
   {
-    branch: Flag.string("branch").pipe(
+    branch: Flag.String("branch").pipe(
       Flag.withDescription("Filter by branch name"),
       Flag.optional,
     ),
     format: formatOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of runs to return"),
       Flag.withDefault(10),
     ),
     repo: repoOption,
-    status: Flag.choice("status", [
+    status: Flag.Literals("status", [
       "queued",
       "in_progress",
       "completed",
@@ -710,7 +710,7 @@ export const workflowListCommand = Command.make(
       "timed_out",
       "waiting",
     ]).pipe(Flag.withDescription("Filter by run status"), Flag.optional),
-    workflow: Flag.string("workflow").pipe(
+    workflow: Flag.String("workflow").pipe(
       Flag.withDescription("Filter by workflow file name (e.g., build-and-deploy.yml)"),
       Flag.optional,
     ),
@@ -736,7 +736,7 @@ export const workflowViewCommand = Command.make(
   {
     format: formatOption,
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID")),
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
@@ -751,7 +751,7 @@ export const workflowJobsCommand = Command.make(
   {
     format: formatOption,
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID")),
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
@@ -764,13 +764,13 @@ export const workflowJobsCommand = Command.make(
 export const workflowLogsCommand = Command.make(
   "logs",
   {
-    failedOnly: Flag.boolean("failed-only").pipe(
+    failedOnly: Flag.Boolean("failed-only").pipe(
       Flag.withDescription("Only show logs from failed jobs (default: true)"),
       Flag.withDefault(true),
     ),
     format: formatOption,
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID")),
   },
   ({ failedOnly, format, repo, run }) =>
     Effect.gen(function* () {
@@ -788,13 +788,13 @@ export const workflowLogsCommand = Command.make(
 export const workflowRerunCommand = Command.make(
   "rerun",
   {
-    failedOnly: Flag.boolean("failed-only").pipe(
+    failedOnly: Flag.Boolean("failed-only").pipe(
       Flag.withDescription("Only rerun failed jobs (default: true)"),
       Flag.withDefault(true),
     ),
     format: formatOption,
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to rerun")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID to rerun")),
   },
   ({ failedOnly, format, repo, run }) =>
     Effect.gen(function* () {
@@ -809,7 +809,7 @@ export const workflowCancelCommand = Command.make(
   {
     format: formatOption,
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to cancel")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID to cancel")),
   },
   ({ format, repo, run }) =>
     Effect.gen(function* () {
@@ -823,17 +823,17 @@ export const workflowRunCommand = Command.make(
   "run",
   {
     field: Param.variadic(
-      Param.string(Param.flagKind, "field").pipe(
+      Param.String(Param.flagKind, "field").pipe(
         Param.withAlias("f"),
         Param.withDescription("Workflow input as key=value; may be repeated"),
       ),
     ),
     format: formatOption,
-    ref: Flag.string("ref").pipe(
+    ref: Flag.String("ref").pipe(
       Flag.withDescription("Git ref to run the workflow on (branch, tag, or SHA)"),
     ),
     repo: repoOption,
-    workflow: Flag.string("workflow").pipe(
+    workflow: Flag.String("workflow").pipe(
       Flag.withDescription("Workflow file name (e.g., build.yml) or workflow ID"),
     ),
   },
@@ -873,14 +873,14 @@ export const workflowWatchCommand = Command.make(
   "watch",
   {
     format: formatOption,
-    frames: Flag.boolean("frames").pipe(
+    frames: Flag.Boolean("frames").pipe(
       Flag.withDescription(
         "Include the raw watch progress frames (large); omitted by default — final status/conclusion/jobs are always returned",
       ),
     ),
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID to watch")),
-    timeout: Flag.integer("timeout").pipe(
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID to watch")),
+    timeout: Flag.Int("timeout").pipe(
       Flag.withDescription(
         `Max seconds to block before returning a snapshot (default: ${DEFAULT_WATCH_RUN_TIMEOUT_SECONDS}, minimum 1)`,
       ),
@@ -902,20 +902,20 @@ export const workflowWatchCommand = Command.make(
 export const workflowJobLogsCommand = Command.make(
   "job-logs",
   {
-    diagnose: Flag.boolean("diagnose").pipe(
+    diagnose: Flag.Boolean("diagnose").pipe(
       Flag.withDescription("Return concise failure diagnosis metadata without log entries"),
       Flag.withDefault(false),
     ),
-    failedStepsOnly: Flag.boolean("failed-steps-only").pipe(
+    failedStepsOnly: Flag.Boolean("failed-steps-only").pipe(
       Flag.withDescription("Only show logs from failed steps (default: false)"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    job: Flag.string("job").pipe(
+    job: Flag.String("job").pipe(
       Flag.withDescription("Job name to fetch logs for (exact or partial match)"),
     ),
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID")),
   },
   ({ diagnose, failedStepsOnly, format, job, repo, run }) =>
     Effect.gen(function* () {
@@ -945,12 +945,12 @@ export const workflowAnnotationsCommand = Command.make(
   "annotations",
   {
     format: formatOption,
-    job: Flag.string("job").pipe(
+    job: Flag.String("job").pipe(
       Flag.withDescription("Filter to a specific job name (exact or partial match)"),
       Flag.optional,
     ),
     repo: repoOption,
-    run: Flag.integer("run").pipe(Flag.withDescription("Workflow run ID")),
+    run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID")),
   },
   ({ format, job, repo, run }) =>
     Effect.gen(function* () {

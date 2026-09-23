@@ -20,7 +20,7 @@ import {
 } from "./core";
 import { GitHubService } from "#gh/service";
 
-const repoOption = Flag.string("repo").pipe(
+const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),
   Flag.optional,
 );
@@ -35,16 +35,16 @@ export const issueListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    labels: Flag.string("labels").pipe(
+    labels: Flag.String("labels").pipe(
       Flag.withDescription("Filter by label (comma-separated)"),
       Flag.optional,
     ),
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of issues to return"),
       Flag.withDefault(30),
     ),
     repo: repoOption,
-    state: Flag.choice("state", ["open", "closed", "all"]).pipe(
+    state: Flag.Literals("state", ["open", "closed", "all"]).pipe(
       Flag.withDescription("Filter by state: open, closed, all"),
       Flag.withDefault("open"),
     ),
@@ -67,7 +67,7 @@ export const issueViewCommand = Command.make(
   "view",
   {
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number")),
     repo: repoOption,
   },
   ({ format, issue, repo }) =>
@@ -87,18 +87,18 @@ export const issueViewCommand = Command.make(
 export const issueCommentsCommand = Command.make(
   "comments",
   {
-    author: Flag.string("author").pipe(
+    author: Flag.String("author").pipe(
       Flag.withDescription("Filter by author login substring"),
       Flag.optional,
     ),
-    bodyContains: Flag.string("body-contains").pipe(
+    bodyContains: Flag.String("body-contains").pipe(
       Flag.withDescription("Filter comments by body substring"),
       Flag.optional,
     ),
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number")),
     repo: repoOption,
-    since: Flag.string("since").pipe(
+    since: Flag.String("since").pipe(
       Flag.withDescription("ISO timestamp to filter comments created after"),
       Flag.optional,
     ),
@@ -121,18 +121,18 @@ export const issueCommentsCommand = Command.make(
 export const issueCloseCommand = Command.make(
   "close",
   {
-    comment: Flag.string("comment").pipe(
+    comment: Flag.String("comment").pipe(
       Flag.withDescription("Comment to add when closing"),
       Flag.optional,
     ),
-    commentFile: Flag.string("comment-file").pipe(
+    commentFile: Flag.String("comment-file").pipe(
       Flag.withDescription("Read close comment from a file path or '-' for stdin"),
       Flag.optional,
     ),
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to close")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number to close")),
     repo: repoOption,
-    reason: Flag.choice("reason", ["completed", "not planned"]).pipe(
+    reason: Flag.Literals("reason", ["completed", "not planned"]).pipe(
       Flag.withDescription("Close reason: completed, not planned"),
       Flag.withDefault("completed"),
     ),
@@ -163,16 +163,16 @@ export const issueCloseCommand = Command.make(
 export const issueReopenCommand = Command.make(
   "reopen",
   {
-    comment: Flag.string("comment").pipe(
+    comment: Flag.String("comment").pipe(
       Flag.withDescription("Comment to add when reopening"),
       Flag.optional,
     ),
-    commentFile: Flag.string("comment-file").pipe(
+    commentFile: Flag.String("comment-file").pipe(
       Flag.withDescription("Read reopen comment from a file path or '-' for stdin"),
       Flag.optional,
     ),
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to reopen")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number to reopen")),
     repo: repoOption,
   },
   ({ comment, commentFile, format, issue, repo }) =>
@@ -200,26 +200,26 @@ export const issueReopenCommand = Command.make(
 export const issueCreateCommand = Command.make(
   "create",
   {
-    assignee: Flag.string("assignee").pipe(
+    assignee: Flag.String("assignee").pipe(
       Flag.withDescription("Assignee login (comma-separated for multiple)"),
       Flag.optional,
     ),
-    body: Flag.string("body").pipe(Flag.withDescription("Issue body"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("Issue body"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read issue body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    bodyStdin: Flag.boolean("body-stdin").pipe(
+    bodyStdin: Flag.Boolean("body-stdin").pipe(
       Flag.withDescription("Read issue body from stdin"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    labels: Flag.string("labels").pipe(
+    labels: Flag.String("labels").pipe(
       Flag.withDescription("Labels to apply (comma-separated)"),
       Flag.optional,
     ),
     repo: repoOption,
-    title: Flag.string("title").pipe(Flag.withDescription("Issue title")),
+    title: Flag.String("title").pipe(Flag.withDescription("Issue title")),
   },
   ({ assignee, body, bodyFile, bodyStdin, format, labels, repo, title }) =>
     withRepo(
@@ -251,13 +251,13 @@ export const issueCreateCommand = Command.make(
 export const issueCommentCommand = Command.make(
   "comment",
   {
-    body: Flag.string("body").pipe(Flag.withDescription("Comment body text"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("Comment body text"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read comment body from a file path or '-' for stdin"),
       Flag.optional,
     ),
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to comment on")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number to comment on")),
     repo: repoOption,
   },
   ({ body, bodyFile, format, issue, repo }) =>
@@ -282,31 +282,31 @@ export const issueCommentCommand = Command.make(
 export const issueEditCommand = Command.make(
   "edit",
   {
-    addAssignee: Flag.string("add-assignee").pipe(
+    addAssignee: Flag.String("add-assignee").pipe(
       Flag.withDescription("Add assignee login (comma-separated for multiple)"),
       Flag.optional,
     ),
-    addLabels: Flag.string("add-labels").pipe(
+    addLabels: Flag.String("add-labels").pipe(
       Flag.withDescription("Add labels (comma-separated)"),
       Flag.optional,
     ),
-    body: Flag.string("body").pipe(Flag.withDescription("New issue body"), Flag.optional),
-    bodyFile: Flag.string("body-file").pipe(
+    body: Flag.String("body").pipe(Flag.withDescription("New issue body"), Flag.optional),
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read issue body from a file path or '-' for stdin"),
       Flag.optional,
     ),
     format: formatOption,
-    issue: Flag.integer("issue").pipe(Flag.withDescription("Issue number to edit")),
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number to edit")),
     repo: repoOption,
-    removeAssignee: Flag.string("remove-assignee").pipe(
+    removeAssignee: Flag.String("remove-assignee").pipe(
       Flag.withDescription("Remove assignee login (comma-separated for multiple)"),
       Flag.optional,
     ),
-    removeLabels: Flag.string("remove-labels").pipe(
+    removeLabels: Flag.String("remove-labels").pipe(
       Flag.withDescription("Remove labels (comma-separated)"),
       Flag.optional,
     ),
-    title: Flag.string("title").pipe(Flag.withDescription("New issue title"), Flag.optional),
+    title: Flag.String("title").pipe(Flag.withDescription("New issue title"), Flag.optional),
   },
   ({
     addAssignee,

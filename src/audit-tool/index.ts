@@ -28,14 +28,14 @@ const listCommand = Command.make(
   "list",
   {
     ...commonFlags,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of recent audit entries to return"),
       Flag.withDefault(20),
     ),
-    project: Flag.optional(Flag.string("project")).pipe(
+    project: Flag.optional(Flag.String("project")).pipe(
       Flag.withDescription("Filter entries by exact working directory path"),
     ),
-    tool: Flag.optional(Flag.string("tool")).pipe(
+    tool: Flag.optional(Flag.String("tool")).pipe(
       Flag.withDescription("Filter entries by tool name (gh, k8s, db, az, logs, session, audit)"),
     ),
   },
@@ -67,7 +67,7 @@ const purgeCommand = Command.make(
   "purge",
   {
     ...commonFlags,
-    days: Flag.integer("days").pipe(
+    days: Flag.Int("days").pipe(
       Flag.withDescription("Delete audit entries older than this many days"),
       Flag.withDefault(90),
     ),

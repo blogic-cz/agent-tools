@@ -529,12 +529,10 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
         },
         { concurrency: "unbounded" },
       ).pipe(
-        Effect.map(
-          (r): BranchResult => ({
-            branch: branchName,
-            ...r,
-          }),
-        ),
+        Effect.map((r): BranchResult => ({
+          branch: branchName,
+          ...r,
+        })),
       ),
     ),
     { concurrency: "unbounded" },

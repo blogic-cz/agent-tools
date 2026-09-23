@@ -15,19 +15,19 @@ import {
 const queryCommand = Command.make(
   "query",
   {
-    promql: Argument.string("promql"),
+    promql: Argument.String("promql"),
     format: formatOption,
     env: envOption,
     profile: profileOption,
-    start: Flag.string("start").pipe(
+    start: Flag.String("start").pipe(
       Flag.withDescription("Start time (default: now-1h)"),
       Flag.withDefault("now-1h"),
     ),
-    end: Flag.string("end").pipe(
+    end: Flag.String("end").pipe(
       Flag.withDescription("End time (default: now)"),
       Flag.withDefault("now"),
     ),
-    step: Flag.integer("step").pipe(
+    step: Flag.Int("step").pipe(
       Flag.withDescription("Step in seconds (default: 60)"),
       Flag.withDefault(60),
     ),

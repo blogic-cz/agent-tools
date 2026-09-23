@@ -60,19 +60,19 @@ const resolveEnv = (envOption: Option.Option<string>) =>
 const sqlCommand = Command.make(
   "sql",
   {
-    env: Flag.optional(Flag.string("env")).pipe(
+    env: Flag.optional(Flag.String("env")).pipe(
       Flag.withDescription(
         "Target database environment name (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
       ),
     ),
-    sql: Flag.string("sql").pipe(Flag.withDescription("SQL query to execute")),
-    limit: Flag.optional(Flag.integer("limit")).pipe(
+    sql: Flag.String("sql").pipe(Flag.withDescription("SQL query to execute")),
+    limit: Flag.optional(Flag.Int("limit")).pipe(
       Flag.withDescription(
         "Max rows to return (default 50). Use 0 for no cap. Prefer a SQL LIMIT for large tables.",
       ),
     ),
     format: formatOption,
-    profile: Flag.optional(Flag.string("profile")).pipe(
+    profile: Flag.optional(Flag.String("profile")).pipe(
       Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
@@ -88,22 +88,22 @@ const sqlCommand = Command.make(
 const schemaCommand = Command.make(
   "schema",
   {
-    env: Flag.optional(Flag.string("env")).pipe(
+    env: Flag.optional(Flag.String("env")).pipe(
       Flag.withDescription(
         "Target database environment name (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
       ),
     ),
-    mode: Flag.choice("mode", ["tables", "columns", "full", "relationships"]).pipe(
+    mode: Flag.Literals("mode", ["tables", "columns", "full", "relationships"]).pipe(
       Flag.withDescription(
         "Schema introspection mode: tables (list all), columns (show columns for --table), full (all tables with columns), relationships (foreign keys)",
       ),
     ),
-    table: Flag.string("table").pipe(
+    table: Flag.String("table").pipe(
       Flag.withDescription("Table name (required for --mode columns)"),
       Flag.optional,
     ),
     format: formatOption,
-    profile: Flag.optional(Flag.string("profile")).pipe(
+    profile: Flag.optional(Flag.String("profile")).pipe(
       Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
@@ -124,7 +124,7 @@ const envsCommand = Command.make(
   "envs",
   {
     format: formatOption,
-    profile: Flag.optional(Flag.string("profile")).pipe(
+    profile: Flag.optional(Flag.String("profile")).pipe(
       Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
@@ -179,16 +179,16 @@ const makeDiagnosticCommand = (name: string, description: string, sql: string) =
   Command.make(
     name,
     {
-      env: Flag.optional(Flag.string("env")).pipe(
+      env: Flag.optional(Flag.String("env")).pipe(
         Flag.withDescription(
           "Target database environment name (e.g. local, test, prod). Falls back to defaultEnvironment in config.",
         ),
       ),
-      limit: Flag.optional(Flag.integer("limit")).pipe(
+      limit: Flag.optional(Flag.Int("limit")).pipe(
         Flag.withDescription("Max rows to return (default 50). Use 0 for no cap."),
       ),
       format: formatOption,
-      profile: Flag.optional(Flag.string("profile")).pipe(
+      profile: Flag.optional(Flag.String("profile")).pipe(
         Flag.withDescription(
           "Database profile name from agent-tools.json5 (if multiple configured)",
         ),

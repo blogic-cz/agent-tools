@@ -348,53 +348,53 @@ const releaseStatus = Effect.fn("release.releaseStatus")(function* (repo: string
 export const releaseCreateCommand = Command.make(
   "create",
   {
-    body: Flag.string("body").pipe(
+    body: Flag.String("body").pipe(
       Flag.withDescription("Release notes body (markdown)"),
       Flag.optional,
     ),
-    bodyFile: Flag.string("body-file").pipe(
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read release notes body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    draft: Flag.boolean("draft").pipe(
+    draft: Flag.Boolean("draft").pipe(
       Flag.withDescription("Create as draft release"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    generateNotes: Flag.boolean("generate-notes").pipe(
+    generateNotes: Flag.Boolean("generate-notes").pipe(
       Flag.withDescription("Automatically generate release notes"),
       Flag.withDefault(false),
     ),
-    latest: Flag.boolean("latest").pipe(
+    latest: Flag.Boolean("latest").pipe(
       Flag.withDescription("Mark this release as latest (true/false). Omit to leave unchanged"),
       Flag.optional,
     ),
-    notesFile: Flag.string("notes-file").pipe(
+    notesFile: Flag.String("notes-file").pipe(
       Flag.withDescription("Path to release notes file (passed to gh --notes-file)"),
       Flag.optional,
     ),
-    notesStartTag: Flag.string("notes-start-tag").pipe(
+    notesStartTag: Flag.String("notes-start-tag").pipe(
       Flag.withDescription("Tag to start generating notes from"),
       Flag.optional,
     ),
-    prerelease: Flag.boolean("prerelease").pipe(
+    prerelease: Flag.Boolean("prerelease").pipe(
       Flag.withDescription("Mark as pre-release"),
       Flag.withDefault(false),
     ),
-    repo: Flag.string("repo").pipe(
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),
-    tag: Flag.string("tag").pipe(Flag.withDescription("Tag name for release (e.g., v1.2.3)")),
-    target: Flag.string("target").pipe(
+    tag: Flag.String("tag").pipe(Flag.withDescription("Tag name for release (e.g., v1.2.3)")),
+    target: Flag.String("target").pipe(
       Flag.withDescription("Target branch or commit SHA for tag"),
       Flag.optional,
     ),
-    title: Flag.string("title").pipe(
+    title: Flag.String("title").pipe(
       Flag.withDescription("Release title (defaults to tag)"),
       Flag.optional,
     ),
-    verifyTag: Flag.boolean("verify-tag").pipe(
+    verifyTag: Flag.Boolean("verify-tag").pipe(
       Flag.withDescription("Abort if tag does not already exist in remote"),
       Flag.withDefault(false),
     ),
@@ -452,11 +452,11 @@ export const releaseListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of releases to return"),
       Flag.withDefault(10),
     ),
-    repo: Flag.string("repo").pipe(
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),
@@ -476,11 +476,11 @@ export const releaseViewCommand = Command.make(
   "view",
   {
     format: formatOption,
-    repo: Flag.string("repo").pipe(
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),
-    tag: Flag.string("tag").pipe(Flag.withDescription("Release tag to view (e.g., v1.2.3)")),
+    tag: Flag.String("tag").pipe(Flag.withDescription("Release tag to view (e.g., v1.2.3)")),
   },
   ({ format, repo, tag }) =>
     Effect.gen(function* () {
@@ -496,33 +496,33 @@ export const releaseViewCommand = Command.make(
 export const releaseEditCommand = Command.make(
   "edit",
   {
-    body: Flag.string("body").pipe(
+    body: Flag.String("body").pipe(
       Flag.withDescription("New release notes body (markdown)"),
       Flag.optional,
     ),
-    bodyFile: Flag.string("body-file").pipe(
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read release notes body from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    draft: Flag.boolean("draft").pipe(
+    draft: Flag.Boolean("draft").pipe(
       Flag.withDescription("Set draft status (true/false). Omit to keep current value"),
       Flag.optional,
     ),
     format: formatOption,
-    latest: Flag.boolean("latest").pipe(
+    latest: Flag.Boolean("latest").pipe(
       Flag.withDescription("Set latest status (true/false). Omit to keep current value"),
       Flag.optional,
     ),
-    prerelease: Flag.boolean("prerelease").pipe(
+    prerelease: Flag.Boolean("prerelease").pipe(
       Flag.withDescription("Set prerelease status (true/false). Omit to keep current value"),
       Flag.optional,
     ),
-    repo: Flag.string("repo").pipe(
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),
-    tag: Flag.string("tag").pipe(Flag.withDescription("Release tag to edit (e.g., v1.2.3)")),
-    title: Flag.string("title").pipe(Flag.withDescription("New release title"), Flag.optional),
+    tag: Flag.String("tag").pipe(Flag.withDescription("Release tag to edit (e.g., v1.2.3)")),
+    title: Flag.String("title").pipe(Flag.withDescription("New release title"), Flag.optional),
   },
   ({ body, bodyFile, draft, format, latest, prerelease, repo, tag, title }) =>
     Effect.gen(function* () {
@@ -552,20 +552,20 @@ export const releaseEditCommand = Command.make(
 export const releaseDeleteCommand = Command.make(
   "delete",
   {
-    cleanupTag: Flag.boolean("cleanup-tag").pipe(
+    cleanupTag: Flag.Boolean("cleanup-tag").pipe(
       Flag.withDescription("Also delete the git tag from remote"),
       Flag.withDefault(false),
     ),
-    confirm: Flag.boolean("confirm").pipe(
+    confirm: Flag.Boolean("confirm").pipe(
       Flag.withDescription("Actually delete release (without this flag, only shows dry-run)"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    repo: Flag.string("repo").pipe(
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),
-    tag: Flag.string("tag").pipe(Flag.withDescription("Release tag to delete (e.g., v1.2.3)")),
+    tag: Flag.String("tag").pipe(Flag.withDescription("Release tag to delete (e.g., v1.2.3)")),
   },
   ({ cleanupTag, confirm, format, repo, tag }) =>
     Effect.gen(function* () {
@@ -584,7 +584,7 @@ export const releaseStatusCommand = Command.make(
   "status",
   {
     format: formatOption,
-    repo: Flag.string("repo").pipe(
+    repo: Flag.String("repo").pipe(
       Flag.withDescription("Target repository (owner/name). Defaults to current repo"),
       Flag.optional,
     ),

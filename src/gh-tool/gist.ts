@@ -402,11 +402,11 @@ export const gistListCommand = Command.make(
   "list",
   {
     format: formatOption,
-    limit: Flag.integer("limit").pipe(
+    limit: Flag.Int("limit").pipe(
       Flag.withDescription("Maximum number of gists to return"),
       Flag.withDefault(10),
     ),
-    visibility: Flag.choice("visibility", ["public", "secret"]).pipe(
+    visibility: Flag.Literals("visibility", ["public", "secret"]).pipe(
       Flag.withDescription("Filter by visibility: public or secret"),
       Flag.optional,
     ),
@@ -424,13 +424,13 @@ export const gistListCommand = Command.make(
 export const gistViewCommand = Command.make(
   "view",
   {
-    filename: Flag.string("filename").pipe(
+    filename: Flag.String("filename").pipe(
       Flag.withDescription("Return only this file from the gist"),
       Flag.optional,
     ),
     format: formatOption,
-    id: Flag.string("id").pipe(Flag.withDescription("Gist id or URL")),
-    metadataOnly: Flag.boolean("metadata-only").pipe(
+    id: Flag.String("id").pipe(Flag.withDescription("Gist id or URL")),
+    metadataOnly: Flag.Boolean("metadata-only").pipe(
       Flag.withDescription("Omit file contents"),
       Flag.withDefault(false),
     ),
@@ -450,27 +450,27 @@ export const gistViewCommand = Command.make(
 export const gistCreateCommand = Command.make(
   "create",
   {
-    body: Flag.string("body").pipe(
+    body: Flag.String("body").pipe(
       Flag.withDescription("Inline gist content (requires --filename)"),
       Flag.optional,
     ),
-    bodyFile: Flag.string("body-file").pipe(
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription(
         "Read gist content from a file path or '-' for stdin (requires --filename)",
       ),
       Flag.optional,
     ),
-    desc: Flag.string("desc").pipe(Flag.withDescription("Gist description"), Flag.optional),
-    filename: Flag.string("filename").pipe(
+    desc: Flag.String("desc").pipe(Flag.withDescription("Gist description"), Flag.optional),
+    filename: Flag.String("filename").pipe(
       Flag.withDescription("File name used for --body/--body-file content"),
       Flag.optional,
     ),
-    files: Flag.string("files").pipe(
+    files: Flag.String("files").pipe(
       Flag.withDescription("Comma-separated paths of existing files to upload"),
       Flag.optional,
     ),
     format: formatOption,
-    public: Flag.boolean("public").pipe(
+    public: Flag.Boolean("public").pipe(
       Flag.withDescription("Publish as a public gist (gists are secret by default)"),
       Flag.withDefault(false),
     ),
@@ -526,26 +526,26 @@ export const gistCreateCommand = Command.make(
 export const gistEditCommand = Command.make(
   "edit",
   {
-    add: Flag.string("add").pipe(
+    add: Flag.String("add").pipe(
       Flag.withDescription("Path of a new file to add to the gist"),
       Flag.optional,
     ),
-    body: Flag.string("body").pipe(
+    body: Flag.String("body").pipe(
       Flag.withDescription("Replacement content for --filename"),
       Flag.optional,
     ),
-    bodyFile: Flag.string("body-file").pipe(
+    bodyFile: Flag.String("body-file").pipe(
       Flag.withDescription("Read replacement content from a file path or '-' for stdin"),
       Flag.optional,
     ),
-    desc: Flag.string("desc").pipe(Flag.withDescription("New gist description"), Flag.optional),
-    filename: Flag.string("filename").pipe(
+    desc: Flag.String("desc").pipe(Flag.withDescription("New gist description"), Flag.optional),
+    filename: Flag.String("filename").pipe(
       Flag.withDescription("Gist file to replace with --body/--body-file"),
       Flag.optional,
     ),
     format: formatOption,
-    id: Flag.string("id").pipe(Flag.withDescription("Gist id or URL")),
-    remove: Flag.string("remove").pipe(
+    id: Flag.String("id").pipe(Flag.withDescription("Gist id or URL")),
+    remove: Flag.String("remove").pipe(
       Flag.withDescription("File name to remove from the gist"),
       Flag.optional,
     ),
@@ -609,12 +609,12 @@ export const gistEditCommand = Command.make(
 export const gistDeleteCommand = Command.make(
   "delete",
   {
-    confirm: Flag.boolean("confirm").pipe(
+    confirm: Flag.Boolean("confirm").pipe(
       Flag.withDescription("Actually delete the gist (without this flag, only shows dry-run)"),
       Flag.withDefault(false),
     ),
     format: formatOption,
-    id: Flag.string("id").pipe(Flag.withDescription("Gist id or URL")),
+    id: Flag.String("id").pipe(Flag.withDescription("Gist id or URL")),
   },
   ({ confirm, format, id }) =>
     Effect.gen(function* () {

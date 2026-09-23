@@ -1283,7 +1283,7 @@ spec:
       });
     });
 
-    describe("describe", () => {
+    describe("description", () => {
       it("builds base describe command", () => {
         expect(buildCmd("describe pod my-pod", [""])).toBe("describe pod my-pod");
       });
