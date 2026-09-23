@@ -352,26 +352,14 @@ function withoutQuotedQuantifiers(command: string): string {
   return quote ? command : text;
 }
 
-/** Commands that can print their own argument text, not only their input. */
+/** Braces in static words, except digits-only quantifiers whose expansion cannot name a command. */
+function hasArgumentBraceExpansion(text: string): boolean {
+  return hasBraceExpansion(text.replace(/\{\d*,\d*\}/g, ""));
+}
+
+/** echo and printf print their arguments; grep -o, rg and git grep print matched pattern text. */
 function isLiteralTextProducer(argv: string[]): boolean {
-  const name = argv[0]?.split("/").at(-1) ?? "";
-  const args = argv.slice(1);
-  if (name === "echo" || name === "printf") return true;
-  if (name === "grep") return hasExecutionOption(args, ["label"]);
-  if (name === "rg") {
-    return hasExecutionOption(
-      args,
-      [
-        "replace",
-        "context-separator",
-        "field-context-separator",
-        "field-match-separator",
-        "path-separator",
-      ],
-      "r",
-    );
-  }
-  return false;
+  return isPassiveTextCommand(argv) && argv[0]?.split("/").at(-1) !== "head";
 }
 
 function unwrapStaticCommand(words: string[]): string[] {
@@ -425,11 +413,9 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
   if (name === "env") return true;
   if (isPassiveTextCommand(argv)) return false;
   // Any command may re-parse an argument as shell code (trap, find -exec, awk system()).
-  const args = argv
-    .slice(1)
-    .join(" ")
-    .replace(/\{\d*,\d*\}/g, "");
-  return hasBraceExpansion(args) || mentionsEnvironmentRead(argv.join(" "));
+  return (
+    hasArgumentBraceExpansion(argv.slice(1).join(" ")) || mentionsEnvironmentRead(argv.join(" "))
+  );
 }
 
 function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
@@ -445,7 +431,6 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
   if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
 
   // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
-  // grep, head, rg and git grep print their input, so their pattern arguments are not output.
   return pipelines.some(
     (pipeline) =>
       pipeline.length > 1 &&
@@ -453,7 +438,7 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
         (argv) =>
           isAllowedEnvironmentRead(argv, allowedNames) ||
           (isLiteralTextProducer(argv) &&
-            (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
+            (mentionsEnvironmentRead(argv.join(" ")) || hasArgumentBraceExpansion(argv.join(" ")))),
       ) &&
       pipeline.some(
         (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
