@@ -348,17 +348,19 @@ function unquotedText(command: string): string | undefined {
 /**
  * Quoted text is brace-expanded only when something runs it as shell code: a named shell or
  * eval-like word, a command substitution, a variable in command position, or a `-c` script.
+ * Words are matched with quotes and backslashes removed, as the shell joins `e'v'al` and `\-c`.
  */
-function canRunQuotedText(command: string): boolean {
+function canRunQuotedText(raw: string): boolean {
+  const command = raw.replace(/['"\\]/g, "");
   return (
     /\$\(|`/.test(command) ||
     /(?:^|[\s;&|(){}='"/])(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|eval|xargs|source|exec|\.)(?=$|[\s;&|(){}'"])/.test(
       command,
     ) ||
-    /(?:^|[;&|(){}!\n]|\b(?:then|do|else|elif|time|nohup|sudo|command|builtin)\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*["']?\$/.test(
+    /(?:^|[;&|({!\n]|\b(?:then|do|else|elif|time|nohup|sudo|command|builtin)\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*["']?\$/.test(
       command,
     ) ||
-    /\s-[A-Za-z]*c\s+["'$]/.test(command)
+    /\s-[A-Za-z]*c\s+[^\s-]/.test(command)
   );
 }
 
