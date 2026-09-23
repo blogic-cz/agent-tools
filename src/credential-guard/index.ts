@@ -312,11 +312,76 @@ function parseStaticShellCommands(
 }
 
 function mentionsEnvironmentRead(text: string): boolean {
-  return /printenv|\benv\b/i.test(text.replace(/['"\\]/g, ""));
+  // `--env dev` is a flag of another command, not the env command.
+  return /printenv|(?<!--)\benv\b/i.test(text.replace(/['"\\]/g, ""));
 }
 
 function hasBraceExpansion(text: string): boolean {
   return /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(text);
+}
+
+/** Text outside quotes, or undefined when a quote is not closed. */
+function unquotedText(command: string): string | undefined {
+  let text = "";
+  let quote: "'" | '"' | "$'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const char = command.charAt(i);
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+    } else if (quote) {
+      if (char === "\\") i++;
+      else if (char === quote.at(-1)) quote = undefined;
+    } else if (char === "\\") {
+      text += char + (command[++i] ?? "");
+    } else if (char === "$" && command[i + 1] === "'") {
+      quote = "$'";
+      i++;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else {
+      text += char;
+    }
+  }
+  return quote ? undefined : text;
+}
+
+/**
+ * Quoted text is brace-expanded only when something runs it as shell code: a named shell or
+ * eval-like word, a command substitution, a variable in command position, or a `-c` script.
+ */
+function canRunQuotedText(command: string): boolean {
+  return (
+    /\$\(|`/.test(command) ||
+    /(?:^|[\s;&|(){}='"/])(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|eval|xargs|source|exec|\.)(?=$|[\s;&|(){}'"])/.test(
+      command,
+    ) ||
+    /(?:^|[;&|(){}!\n]|\b(?:then|do|else|elif|time|nohup|sudo|command|builtin)\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*["']?\$/.test(
+      command,
+    ) ||
+    /\s-[A-Za-z]*c\s+["'$]/.test(command)
+  );
+}
+
+/** Commands that can print their own argument text, not only their input. */
+function isLiteralTextProducer(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  const args = argv.slice(1);
+  if (name === "echo" || name === "printf") return true;
+  if (name === "grep") return hasExecutionOption(args, ["label"]);
+  if (name === "rg") {
+    return hasExecutionOption(
+      args,
+      [
+        "replace",
+        "context-separator",
+        "field-context-separator",
+        "field-match-separator",
+        "path-separator",
+      ],
+      "r",
+    );
+  }
+  return false;
 }
 
 function unwrapStaticCommand(words: string[]): string[] {
@@ -387,19 +452,23 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
-  if (!parsed) return mentionsEnvironmentRead(command) || hasBraceExpansion(command);
+  if (!parsed) {
+    const scanned = canRunQuotedText(command) ? command : (unquotedText(command) ?? command);
+    return mentionsEnvironmentRead(command) || hasBraceExpansion(scanned);
+  }
   const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
   const unwrapped = pipelines.flat();
   if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
 
   // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
+  // grep, head, rg and git grep print their input, so their pattern arguments are not output.
   return pipelines.some(
     (pipeline) =>
       pipeline.length > 1 &&
       pipeline.some(
         (argv) =>
           isAllowedEnvironmentRead(argv, allowedNames) ||
-          (isPassiveTextCommand(argv) &&
+          (isLiteralTextProducer(argv) &&
             (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
       ) &&
       pipeline.some(
