@@ -312,11 +312,55 @@ function parseStaticShellCommands(
 }
 
 function mentionsEnvironmentRead(text: string): boolean {
-  return /printenv|\benv\b/i.test(text.replace(/['"\\]/g, ""));
+  // `--env dev` is a flag of another command, not the env command.
+  return /printenv|(?<!--)\benv\b/i.test(text.replace(/['"\\]/g, ""));
 }
 
 function hasBraceExpansion(text: string): boolean {
   return /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(text);
+}
+
+/**
+ * The command without quoted regex quantifiers such as `{0,80}`. Many commands re-parse quoted
+ * text as shell code, so every other quoted brace stays. When both sides are digits, the expansion
+ * cannot spell a command name. An empty side is not safe: `e{,}nv` and `e{0,}nv` expand to `env`.
+ * An unclosed quote keeps the raw command.
+ */
+function withoutQuotedQuantifiers(command: string): string {
+  let text = "";
+  let quote: "'" | '"' | "$'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const char = command.charAt(i);
+    const quantifier = quote ? /^\{\d+,\d+\}/.exec(command.slice(i))?.[0] : undefined;
+    if (quantifier) {
+      i += quantifier.length - 1;
+      continue;
+    }
+    text += char;
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+    } else if (char === "\\") {
+      text += command[++i] ?? "";
+    } else if (quote) {
+      if (char === quote.at(-1)) quote = undefined;
+    } else if (char === "$" && command[i + 1] === "'") {
+      quote = "$'";
+      text += command[++i];
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    }
+  }
+  return quote ? command : text;
+}
+
+/** Braces in static words, except `{m,n}` with digits on both sides (see above). */
+function hasArgumentBraceExpansion(text: string): boolean {
+  return hasBraceExpansion(text.replace(/\{\d+,\d+\}/g, ""));
+}
+
+/** echo and printf print their arguments; grep -o, rg and git grep print matched pattern text. */
+function isLiteralTextProducer(argv: string[]): boolean {
+  return isPassiveTextCommand(argv) && argv[0]?.split("/").at(-1) !== "head";
 }
 
 function unwrapStaticCommand(words: string[]): string[] {
@@ -369,17 +413,10 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
   if (name === "printenv") return !isAllowedEnvironmentRead(argv, allowedNames);
   if (name === "env") return true;
   if (isPassiveTextCommand(argv)) return false;
-  if (
-    argv.some((arg) =>
-      ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "eval"].includes(
-        arg.split("/").at(-1) ?? "",
-      ),
-    ) &&
-    hasBraceExpansion(argv.slice(1).join(" "))
-  ) {
-    return true;
-  }
-  return mentionsEnvironmentRead(argv.join(" "));
+  // Any command may re-parse an argument as shell code (trap, find -exec, awk system()).
+  return (
+    hasArgumentBraceExpansion(argv.slice(1).join(" ")) || mentionsEnvironmentRead(argv.join(" "))
+  );
 }
 
 function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
@@ -387,7 +424,9 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
-  if (!parsed) return mentionsEnvironmentRead(command) || hasBraceExpansion(command);
+  if (!parsed) {
+    return mentionsEnvironmentRead(command) || hasBraceExpansion(withoutQuotedQuantifiers(command));
+  }
   const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
   const unwrapped = pipelines.flat();
   if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
@@ -399,8 +438,8 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
       pipeline.some(
         (argv) =>
           isAllowedEnvironmentRead(argv, allowedNames) ||
-          (isPassiveTextCommand(argv) &&
-            (mentionsEnvironmentRead(argv.join(" ")) || hasBraceExpansion(argv.join(" ")))),
+          (isLiteralTextProducer(argv) &&
+            (mentionsEnvironmentRead(argv.join(" ")) || hasArgumentBraceExpansion(argv.join(" ")))),
       ) &&
       pipeline.some(
         (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
