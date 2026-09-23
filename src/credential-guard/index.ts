@@ -320,48 +320,36 @@ function hasBraceExpansion(text: string): boolean {
   return /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(text);
 }
 
-/** Text outside quotes, or undefined when a quote is not closed. */
-function unquotedText(command: string): string | undefined {
+/**
+ * The command without quoted regex quantifiers such as `{0,80}`, `{2,}` or `{,5}`. Many commands
+ * re-parse quoted text as shell code, so every other quoted brace stays. The expansion of a
+ * digits-only quantifier cannot spell a command name. An unclosed quote keeps the raw command.
+ */
+function withoutQuotedQuantifiers(command: string): string {
   let text = "";
   let quote: "'" | '"' | "$'" | undefined;
   for (let i = 0; i < command.length; i++) {
     const char = command.charAt(i);
+    const quantifier = quote ? /^\{\d*,\d*\}/.exec(command.slice(i))?.[0] : undefined;
+    if (quantifier) {
+      i += quantifier.length - 1;
+      continue;
+    }
+    text += char;
     if (quote === "'") {
       if (char === "'") quote = undefined;
-    } else if (quote) {
-      if (char === "\\") i++;
-      else if (char === quote.at(-1)) quote = undefined;
     } else if (char === "\\") {
-      text += char + (command[++i] ?? "");
+      text += command[++i] ?? "";
+    } else if (quote) {
+      if (char === quote.at(-1)) quote = undefined;
     } else if (char === "$" && command[i + 1] === "'") {
       quote = "$'";
-      i++;
+      text += command[++i];
     } else if (char === "'" || char === '"') {
       quote = char;
-    } else {
-      text += char;
     }
   }
-  return quote ? undefined : text;
-}
-
-/**
- * Quoted text is brace-expanded only when something runs it as shell code: a named shell or
- * eval-like word, a command substitution, a variable in command position, or a `-c` script.
- * Words are matched with quotes and backslashes removed, as the shell joins `e'v'al` and `\-c`.
- */
-function canRunQuotedText(raw: string): boolean {
-  const command = raw.replace(/['"\\]/g, "");
-  return (
-    /\$\(|`/.test(command) ||
-    /(?:^|[\s;&|(){}='"/])(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|eval|xargs|source|exec|\.)(?=$|[\s;&|(){}'"])/.test(
-      command,
-    ) ||
-    /(?:^|[;&|({!\n]|\b(?:then|do|else|elif|time|nohup|sudo|command|builtin)\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*["']?\$/.test(
-      command,
-    ) ||
-    /\s-[A-Za-z]*c\s+[^\s-]/.test(command)
-  );
+  return quote ? command : text;
 }
 
 /** Commands that can print their own argument text, not only their input. */
@@ -436,17 +424,12 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
   if (name === "printenv") return !isAllowedEnvironmentRead(argv, allowedNames);
   if (name === "env") return true;
   if (isPassiveTextCommand(argv)) return false;
-  if (
-    argv.some((arg) =>
-      ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "eval"].includes(
-        arg.split("/").at(-1) ?? "",
-      ),
-    ) &&
-    hasBraceExpansion(argv.slice(1).join(" "))
-  ) {
-    return true;
-  }
-  return mentionsEnvironmentRead(argv.join(" "));
+  // Any command may re-parse an argument as shell code (trap, find -exec, awk system()).
+  const args = argv
+    .slice(1)
+    .join(" ")
+    .replace(/\{\d*,\d*\}/g, "");
+  return hasBraceExpansion(args) || mentionsEnvironmentRead(argv.join(" "));
 }
 
 function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
@@ -455,8 +438,7 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
   if (!parsed) {
-    const scanned = canRunQuotedText(command) ? command : (unquotedText(command) ?? command);
-    return mentionsEnvironmentRead(command) || hasBraceExpansion(scanned);
+    return mentionsEnvironmentRead(command) || hasBraceExpansion(withoutQuotedQuantifiers(command));
   }
   const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
   const unwrapped = pipelines.flat();
