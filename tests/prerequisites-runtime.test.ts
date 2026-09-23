@@ -11,6 +11,8 @@ it("passes Bun-native SQLite VPN lifecycle tests", { timeout: 60_000 }, () => {
   });
 
   const output = `${result.stdout}\n${result.stderr}`;
-  expect(result.status).toBe(0);
+  // Keep the child-process output attached to status failures for CI diagnosis.
+  // eslint-disable-next-line vitest/valid-expect -- Vitest supports assertion failure messages.
+  expect(result.status, output).toBe(0);
   expect(output).toContain("44 pass");
 });
