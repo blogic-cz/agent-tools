@@ -29,8 +29,7 @@
       "#azdo/*": ["./src/azdo-tool/*"],
       "#guard": ["./src/credential-guard/index.ts"],
       "#session/*": ["./src/session-tool/*"]
-    },
-    "plugins": [{ "name": "@effect/language-service" }]
+    }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist"]

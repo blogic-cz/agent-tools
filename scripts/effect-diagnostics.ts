@@ -41,6 +41,8 @@ export async function runEffectDiagnostics(): Promise<EffectDiagnosticsResult> {
       "json",
       "--severity",
       "error",
+      "--lspconfig",
+      '{"diagnostics":true}',
     ],
     { stdout: "pipe", stderr: "pipe" },
   );
