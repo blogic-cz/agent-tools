@@ -618,8 +618,9 @@ function hasSensitiveFileRead(command: string): boolean {
     /(?:^|[/\s'"])(?:[.]env(?![.](?:example|template|sample)\b)|\S*[.](?:pem|key)\b|\S*[.](?:ssh|aws)[/]|(?:\S*secret(?:-|[/\s.]|$))|(?:(?:secrets?|credentials?)(?:[/\s.]|$)|[A-Za-z0-9_.-]*(?:secrets?|credentials?)(?:[/\s.]|$)|[A-Za-z0-9_.-]*-(?:secrets?|credentials?)(?:[/\s.-]|$)))/i;
   const sensitiveCamelCase =
     /(?:^|[/\s'"])[A-Za-z0-9_.-]*(?:(?:secret|credential)[A-Z]|(?:Secret|Credential)[A-Z])[^/\s'"]*/;
+  const sensitiveName = /secret|credential/i;
   const isSensitivePath = (text: string) =>
-    sensitivePath.test(text) || sensitiveCamelCase.test(text);
+    sensitivePath.test(text) || sensitiveCamelCase.test(text) || sensitiveName.test(text);
   if (/(?:^|[\s;&|])--env-file(?:=|\s)[^;&|]*\.env\b/i.test(command)) return true;
   if (/\bcat\b[^;&|]*<<-?\s*\S+[\s\S]*\b(?:secret|credential)\b/i.test(command)) return true;
   const parsed = parseStaticShellCommands(command);
@@ -641,7 +642,8 @@ function hasSensitiveFileRead(command: string): boolean {
   }
   return (
     new RegExp(readers.source + "[^;&|]*" + sensitivePath.source, "i").test(unquoted) ||
-    new RegExp(readers.source + "[^;&|]*" + sensitiveCamelCase.source).test(unquoted)
+    new RegExp(readers.source + "[^;&|]*" + sensitiveCamelCase.source).test(unquoted) ||
+    new RegExp(readers.source + "[^;&|]*" + sensitiveName.source, "i").test(unquoted)
   );
 }
 

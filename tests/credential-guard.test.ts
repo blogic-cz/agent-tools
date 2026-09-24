@@ -35,7 +35,7 @@ describe("credential guard corpus", () => {
   const guard = createCredentialGuard();
 
   it.each(corpus)("$label: $command", ({ command, label }) => {
-    expect(guard.isDangerousBashCommand(command)).toBe(label === "TP");
+    expect(guard.isDangerousBashCommand(command)).toBe(label !== "FP");
   });
 });
 
@@ -690,6 +690,15 @@ describe("dangerous bash command evasion", () => {
 
   it("blocks env at start", () => {
     expect(isDangerousBashCommand("env")).toBe(true);
+  });
+
+  it.each([
+    "cat mysecretfile.txt",
+    "cat backupsecrets2023.txt",
+    "cat db_credentials_backup",
+    "cat my_credential_store",
+  ])("blocks %s, a secret or credential name without a delimiter", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
   });
 
   it.each(["env --", "env FOO=bar --", "env -i --", "/usr/bin/env --"])(
