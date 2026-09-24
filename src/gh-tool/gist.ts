@@ -3,7 +3,7 @@ import { Effect, Option } from "effect";
 import { join } from "node:path";
 
 import { formatOption, logFormatted } from "#shared";
-import { isSensitivePath, resolveOptionalTextInput } from "#gh/text-input";
+import { isSensitivePath, resolveOptionalTextInput, validateOutboundFile } from "#gh/text-input";
 import { GitHubCommandError } from "./errors";
 import { GitHubService } from "./service";
 
@@ -294,6 +294,8 @@ export const createGist = Effect.fn("gist.createGist")(function* (opts: {
 }) {
   const gh = yield* GitHubService;
 
+  for (const path of opts.paths) yield* validateOutboundFile(path, "gh-tool gist create");
+
   const args = ["gist", "create", ...opts.paths];
 
   if (opts.description !== null) {
@@ -338,6 +340,10 @@ const editGist = Effect.fn("gist.editGist")(function* (opts: {
   sourcePath: string | null;
 }) {
   const gh = yield* GitHubService;
+
+  for (const path of [opts.sourcePath, opts.add]) {
+    if (path !== null) yield* validateOutboundFile(path, "gh-tool gist edit");
+  }
 
   const args = ["gist", "edit", opts.id];
   const changes: string[] = [];

@@ -14,6 +14,7 @@ import {
   GitHubNotFoundError,
 } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import { githubApi } from "#gh/api";
 import {
   closeIssue,
   commentOnIssue,
@@ -65,6 +66,7 @@ import {
   resolveDefaultTextInput,
   resolveOptionalTextInput,
   resolveRequiredTextInput,
+  unsafeOutboundTextReason,
 } from "#gh/text-input";
 import type { GitHubPrTitlePolicy, GitHubRepoConfig } from "#config";
 import { ConfigService } from "#config";
@@ -113,6 +115,14 @@ const inventedShellSensitiveText = [
   "The demo pipeline now records the queue state after validation: success calls `demoQueue.MarkReady(...)` + `PersistDemoAsync(...)`, and failure calls `demoQueue.MarkBroken(...)` + `PersistDemoAsync(...)`.",
   "I also added coverage in `DemoQueueValidatorSpec`, and `bun run check` passes.",
   "Literal shell chars: $SANDBOX & !",
+].join("\n");
+
+const inventedEnvironmentDump = [
+  "APP_MODE=test",
+  "LOG_LEVEL=info",
+  "REGION=example",
+  "SERVICE_PASSWORD=synthetic-value",
+  "WORKERS=2",
 ].join("\n");
 
 const mockGraphQLThreadsResponse = {
@@ -337,6 +347,11 @@ describe("gist helpers", () => {
 
   it.effect("rejects gist creation when gh returns no URL", () =>
     Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (_filePath: string) => ({ text: () => Promise.resolve("example snippet") }),
+      });
       const result = yield* createGist({
         paths: ["snippet.txt"],
         description: null,
@@ -345,6 +360,12 @@ describe("gist helpers", () => {
         Effect.provide(
           createMockGhLayer({
             runGh: () => Effect.succeed({ stdout: "created", stderr: "", exitCode: 0 }),
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
           }),
         ),
         Effect.result,
@@ -357,6 +378,43 @@ describe("gist helpers", () => {
           message: "gh gist create did not return a gist URL",
         });
       }
+    }),
+  );
+
+  it.effect("rejects gist files containing credentials before invoking gh", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const fakeToken = `ghp_${"x".repeat(36)}`;
+      let invoked = false;
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (_filePath: string) => ({ text: () => Promise.resolve(fakeToken) }),
+      });
+
+      const result = yield* createGist({
+        paths: ["snippet.txt"],
+        description: null,
+        public: false,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () => {
+              invoked = true;
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(invoked).toBe(false);
     }),
   );
 
@@ -452,6 +510,21 @@ describe("workflow dispatch", () => {
 });
 
 describe("GitHubService.runGh() error mapping", () => {
+  it.effect("rejects a credential in a title before spawning gh", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+      const result = yield* service
+        .runGh(["pr", "create", "--title", inventedEnvironmentDump])
+        .pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(observedGhCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+    );
+  });
   it.effect("uses the configured default repository for plain gh calls", () => {
     const observedGhCommands: ObservedGhCommand[] = [];
 
@@ -710,6 +783,23 @@ describe("GitHubService.runGh() error mapping", () => {
         }),
       ),
     ),
+  );
+});
+
+describe("direct GitHub API outbound validation", () => {
+  it.effect("rejects a credential in the request body before authentication or fetch", () =>
+    Effect.gen(function* () {
+      expect(
+        unsafeOutboundTextReason(JSON.stringify({ title: inventedEnvironmentDump }), {}),
+      ).toBeNull();
+      const result = yield* githubApi({
+        path: "repos/test-owner/test-repo/issues",
+        method: "POST",
+        body: { title: inventedEnvironmentDump },
+      }).pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure._tag).toBe("GitHubCommandError");
+    }),
   );
 });
 
@@ -5516,6 +5606,40 @@ describe("PR composite commands", () => {
       );
 
       expect(resolvedBody).toBe(inventedShellSensitiveText);
+    }),
+  );
+
+  it("rejects a final environment dump and an exact environment credential", () => {
+    expect(unsafeOutboundTextReason(inventedEnvironmentDump, {})).toBe("an environment dump");
+    expect(
+      unsafeOutboundTextReason("Reply includes synthetic-value-123", {
+        SERVICE_PASSWORD: "synthetic-value-123",
+      }),
+    ).toBe("a credential from the process environment");
+    expect(unsafeOutboundTextReason(inventedShellSensitiveText, {})).toBeNull();
+  });
+
+  it.effect("resolveRequiredTextInput rejects a final environment dump before posting", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveRequiredTextInput({
+        command: "gh-tool pr reply",
+        value: inventedEnvironmentDump,
+        fileValue: null,
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      }).pipe(Effect.result);
+
+      Result.match(result, {
+        onFailure: (error) => {
+          expect(error._tag).toBe("GitHubCommandError");
+          if (error._tag === "GitHubCommandError") {
+            expect(error.message).toContain("environment dump");
+            expect(error.message).not.toContain("synthetic-value");
+          }
+        },
+        onSuccess: () => expect.fail("Expected a final environment dump to be rejected"),
+      });
     }),
   );
 

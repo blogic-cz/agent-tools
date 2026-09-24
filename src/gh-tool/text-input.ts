@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { GitHubCommandError } from "#gh/errors";
+import { detectSecrets } from "#guard";
 
 const STDIN_SENTINEL = "-";
 const SENSITIVE_PATH_PATTERNS = [
@@ -15,6 +16,60 @@ const readTextFromStdin = () => Bun.stdin.text();
 
 export const isSensitivePath = (filePath: string) =>
   SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
+
+/** Inspect the final text, after shell expansion and after reading files or stdin. */
+export function unsafeOutboundTextReason(
+  text: string,
+  environment: Record<string, string | undefined> = process.env,
+): string | null {
+  if (detectSecrets(text)) return "a credential pattern";
+
+  const sensitiveName =
+    /(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|PSK)/i;
+  for (const [name, value] of Object.entries(environment)) {
+    if (sensitiveName.test(name) && value && value.length >= 8 && text.includes(value)) {
+      return "a credential from the process environment";
+    }
+  }
+
+  const assignments = text.match(/^[A-Za-z_][A-Za-z0-9_]*=.*$/gm) ?? [];
+  if (
+    assignments.length >= 5 &&
+    assignments.some((line) => sensitiveName.test(line.split("=", 1)[0] ?? ""))
+  ) {
+    return "an environment dump";
+  }
+  return null;
+}
+
+export const validateOutboundText = (text: string, command: string) => {
+  const reason = unsafeOutboundTextReason(text);
+  return reason === null
+    ? Effect.succeed(text)
+    : Effect.fail(
+        new GitHubCommandError({
+          command,
+          exitCode: 1,
+          stderr: `Refusing to publish text containing ${reason}`,
+          message: `Refusing to publish text containing ${reason}`,
+        }),
+      );
+};
+
+export const validateOutboundFile = (filePath: string, command: string) =>
+  Effect.tryPromise({
+    try: () => readTextFile(filePath),
+    catch: () =>
+      new GitHubCommandError({
+        command,
+        exitCode: 1,
+        stderr: `Refusing to publish unreadable or sensitive file: ${filePath}`,
+        message: `Refusing to publish unreadable or sensitive file: ${filePath}`,
+      }),
+  }).pipe(
+    Effect.flatMap((text) => validateOutboundText(text, command)),
+    Effect.asVoid,
+  );
 
 const readTextFile = (filePath: string) => {
   if (isSensitivePath(filePath)) {
@@ -80,13 +135,13 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
   }
 
   if (value !== null) {
-    return value;
+    return yield* validateOutboundText(value, command);
   }
 
   if (fileValue !== null) {
     const source = fileValue === STDIN_SENTINEL ? "stdin" : fileValue;
 
-    return yield* Effect.tryPromise({
+    const text = yield* Effect.tryPromise({
       try: () => (fileValue === STDIN_SENTINEL ? readTextFromStdin() : readTextFile(fileValue)),
       catch: (error) =>
         new GitHubCommandError({
@@ -96,10 +151,11 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
           message: `Failed to read ${label} from ${source}: ${error instanceof Error ? error.message : String(error)}`,
         }),
     });
+    return yield* validateOutboundText(text, command);
   }
 
   if (stdin) {
-    return yield* Effect.tryPromise({
+    const text = yield* Effect.tryPromise({
       try: () => readTextFromStdin(),
       catch: (error) =>
         new GitHubCommandError({
@@ -109,6 +165,7 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
           message: `Failed to read ${label} from stdin: ${error instanceof Error ? error.message : String(error)}`,
         }),
     });
+    return yield* validateOutboundText(text, command);
   }
 
   if (missingMode === "null") {
@@ -116,7 +173,7 @@ const resolveTextInputInternal = Effect.fn("gh.resolveTextInputInternal")(functi
   }
 
   if (missingMode === "default") {
-    return missingValue ?? "";
+    return yield* validateOutboundText(missingValue ?? "", command);
   }
 
   return yield* Effect.fail(
