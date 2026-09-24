@@ -26,8 +26,10 @@ export function unsafeOutboundTextReason(
 
   const sensitiveName =
     /(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|PSK)/i;
+  const isSensitiveName = (name: string) =>
+    name !== "PWD" && name !== "OLDPWD" && sensitiveName.test(name);
   for (const [name, value] of Object.entries(environment)) {
-    if (sensitiveName.test(name) && value && value.length >= 8 && text.includes(value)) {
+    if (isSensitiveName(name) && value && value.length >= 8 && text.includes(value)) {
       return "a credential from the process environment";
     }
   }
@@ -35,7 +37,7 @@ export function unsafeOutboundTextReason(
   const assignments = text.match(/^[A-Za-z_][A-Za-z0-9_]*=.*$/gm) ?? [];
   if (
     assignments.length >= 5 &&
-    assignments.some((line) => sensitiveName.test(line.split("=", 1)[0] ?? ""))
+    assignments.some((line) => isSensitiveName(line.split("=", 1)[0] ?? ""))
   ) {
     return "an environment dump";
   }

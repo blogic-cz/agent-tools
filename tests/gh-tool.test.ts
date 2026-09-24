@@ -5616,6 +5616,17 @@ describe("PR composite commands", () => {
         SERVICE_PASSWORD: "synthetic-value-123",
       }),
     ).toBe("a credential from the process environment");
+    expect(
+      unsafeOutboundTextReason("Stack trace: /workspace/repo/src/index.ts:42", {
+        PWD: "/workspace/repo",
+        OLDPWD: "/workspace",
+      }),
+    ).toBeNull();
+    expect(
+      unsafeOutboundTextReason("Reply includes synthetic-value-123", {
+        DB_PWD: "synthetic-value-123",
+      }),
+    ).toBe("a credential from the process environment");
     expect(unsafeOutboundTextReason(inventedShellSensitiveText, {})).toBeNull();
   });
 
