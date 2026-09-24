@@ -363,7 +363,7 @@ function hasArgumentBraceExpansion(text: string): boolean {
 function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
   // LogQL is data for this wrapper; its quoted label selectors are never shell-evaluated.
   if (
-    argv[0] === "bun" &&
+    argv[0]?.split("/").at(-1) === "bun" &&
     argv[1] === "run" &&
     argv[2] === "observability-tool" &&
     argv[3] === "logs" &&
