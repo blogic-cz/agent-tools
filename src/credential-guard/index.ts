@@ -708,8 +708,10 @@ function hasSensitiveFileRead(command: string): boolean {
               continue;
             }
             const combinedPatternFile = arg.match(/^-[A-Za-z]*f(.+)$/)?.[1];
-            if (combinedPatternFile && isSensitivePath(combinedPatternFile))
-              paths.push(combinedPatternFile);
+            if (combinedPatternFile) {
+              if (isSensitivePath(combinedPatternFile)) paths.push(combinedPatternFile);
+              hasPattern = true;
+            }
             const optionValue = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : null;
             if (optionValue && isSensitivePath(optionValue)) paths.push(optionValue);
             continue;
