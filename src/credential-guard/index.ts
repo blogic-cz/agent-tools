@@ -411,7 +411,7 @@ function unwrapEnvironmentCommand(argv: string[]): string[] | null {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) continue;
-    if (arg === "--") return args.slice(i + 1);
+    if (arg === "--") return i + 1 === args.length ? null : args.slice(i + 1);
     if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
       i++;
       continue;

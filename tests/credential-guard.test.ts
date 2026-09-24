@@ -692,6 +692,13 @@ describe("dangerous bash command evasion", () => {
     expect(isDangerousBashCommand("env")).toBe(true);
   });
 
+  it.each(["env --", "env FOO=bar --", "env -i --", "/usr/bin/env --"])(
+    "blocks %s, which lists the environment like bare env",
+    (command) => {
+      expect(isDangerousBashCommand(command)).toBe(true);
+    },
+  );
+
   it("blocks env after &&", () => {
     expect(isDangerousBashCommand("echo hi && env")).toBe(true);
   });
