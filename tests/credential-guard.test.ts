@@ -1,4 +1,5 @@
 import { describe, expect, it, test } from "vitest";
+import corpus from "./fixtures/credential-guard-corpus.json";
 
 import {
   createCredentialGuard,
@@ -21,7 +22,7 @@ const EXAMPLE_AWS_KEY = `${AWS_PREFIX}${AWS_SUFFIX}`;
 
 const GHP_PREFIX = "ghp_";
 const GHP_BODY = "x".repeat(36);
-const EXAMPLE_GH_TOKEN = `${GHP_PREFIX}${GHP_BODY}`;
+const EXAMPLE_SCM_TOKEN = `${GHP_PREFIX}${GHP_BODY}`;
 
 const SK_PREFIX = "sk-";
 const SK_BODY = "x".repeat(48);
@@ -29,6 +30,14 @@ const EXAMPLE_OPENAI_KEY = `${SK_PREFIX}${SK_BODY}`;
 
 // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
 const GENERIC_SECRET_VALUE = "my-super-" + "secret-password-12345-abcdef";
+
+describe("credential guard corpus", () => {
+  const guard = createCredentialGuard();
+
+  it.each(corpus)("$label: $command", ({ command, label }) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(label !== "FP");
+  });
+});
 
 test("apps/web-app/.env.prod is NOT in default allowed paths", () => {
   // Should not be allowed by default (user must add via config)
@@ -45,7 +54,7 @@ describe("detectSecrets", () => {
     });
 
     it("detects GitHub tokens", () => {
-      const content = `token = "${EXAMPLE_GH_TOKEN}"`;
+      const content = `token = "${EXAMPLE_SCM_TOKEN}"`;
       const result = detectSecrets(content);
       expect(result).not.toBeNull();
       expect(result?.name).toBe("GitHub Token");
@@ -443,6 +452,36 @@ describe("dangerous bash command evasion", () => {
   });
 
   it.each([
+    "env cat .env",
+    "env foo=1 cat .env",
+    "env printenv",
+    "env -i cat ~/.aws/credentials",
+    "cat aws-secrets.txt",
+    "cat old-credentials.json",
+    "cat serviceCredentials.txt",
+    "cat getSecretValue.js",
+    "cat mySecretConfig.json",
+  ])("blocks env-wrapped sensitive commands: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+  });
+
+  it.each(["echo please cat .env carefully", "echo do not cat the secrets file"])(
+    "allows quoted sensitive words in literal text: %s",
+    (command) => {
+      expect(isDangerousBashCommand(command)).toBe(false);
+    },
+  );
+
+  it.each([
+    'herdr agent prompt worker-a "$(cat .env)"',
+    'herdr agent prompt worker-a "`cat ~/.aws/credentials`"',
+    'echo "$(cat id_rsa.pem)"',
+    'x="$(cat ~/.aws/credentials)"',
+  ])("blocks sensitive reads inside quoted substitutions: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+  });
+
+  it.each([
     "rtk printenv",
     "rtk proxy printenv TOKEN",
     "printenv HERDR_ENV TOKEN",
@@ -575,8 +614,6 @@ describe("dangerous bash command evasion", () => {
     "F=x; awk 'BEGIN{system(\"cat .e{n,}v\")}'",
     "F=x; ssh host 'cat .e{n,}v' $F",
     "F=x; bash -c 'cat .e{0,n}v' $F",
-    "S=/tmp; ls -la $S/post.* | awk '{print $5,$9}'",
-    "cd /tmp && printf '%s\\n' '- note: blocks quoted {m,n} and --env' >> notes.md && tail -1 notes.md",
     'F=x; echo "$(cat .e{n,}v)" $F',
     "echo $'\\'' {a,b} $'\\''",
     "echo 'x {a,b} > f",
@@ -591,6 +628,26 @@ describe("dangerous bash command evasion", () => {
     expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow(
       "might expose secrets",
     );
+  });
+
+  it.each([
+    "S=/tmp; ls -la $S/post.* | awk '{print $5,$9}'",
+    "ls -la /tmp/post.* | awk '{print $5,$9}'",
+    "cd /tmp && printf '%s\\n' '- note: blocks quoted {m,n} and --env' >> notes.md && tail -1 notes.md",
+    "printf '%s\\n' 'Releases #1 (... `--env` flag ...).' > /tmp/rel.md; bun run gh-tool pr create --body-file /tmp/rel.md",
+    "for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done",
+    "jq '{dependencies, peerDependencies}' package.json",
+    "herdr agent prompt worker-a-guard \"Please check `for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done` and `jq '{dependencies, peerDependencies}' package.json`.\"",
+    "env -u CI bun check.ts module docs",
+    "bun run fooOprintenv.ts",
+    'echo "please cat .env carefully"',
+    'echo "do not cat the secrets file"',
+    "bun run foo-printenv.ts",
+  ])("allows non-executing shell syntax: %s", (command) => {
+    const guard = createCredentialGuard({
+      allowedEnvironmentVariables: ["HERDR_ENV", "TEST_FLAG", "WORKSPACE_LABEL"],
+    });
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
   });
 
   it("keeps configured dangerous patterns active for otherwise safe commands", () => {
@@ -634,6 +691,22 @@ describe("dangerous bash command evasion", () => {
   it("blocks env at start", () => {
     expect(isDangerousBashCommand("env")).toBe(true);
   });
+
+  it.each([
+    "cat mysecretfile.txt",
+    "cat backupsecrets2023.txt",
+    "cat db_credentials_backup",
+    "cat my_credential_store",
+  ])("blocks %s, a secret or credential name without a delimiter", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+  });
+
+  it.each(["env --", "env FOO=bar --", "env -i --", "/usr/bin/env --"])(
+    "blocks %s, which lists the environment like bare env",
+    (command) => {
+      expect(isDangerousBashCommand(command)).toBe(true);
+    },
+  );
 
   it("blocks env after &&", () => {
     expect(isDangerousBashCommand("echo hi && env")).toBe(true);
@@ -916,7 +989,7 @@ describe("handleToolExecuteBefore tool name normalization", () => {
     ).toThrow("Direct gh usage blocked");
   });
 
-  it("blocks raw gh via Claude Code capitalized 'Bash'", () => {
+  it("blocks raw gh via an AI coding agent's capitalized 'Bash'", () => {
     expect(() =>
       guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: "gh issue list" } }),
     ).toThrow("Direct gh usage blocked");
@@ -928,7 +1001,7 @@ describe("handleToolExecuteBefore tool name normalization", () => {
     ).toThrow("Direct gh usage blocked");
   });
 
-  it("blocks .env read via Claude Code capitalized 'Read'", () => {
+  it("blocks .env read via an AI coding agent's capitalized 'Read'", () => {
     expect(() =>
       guard.handleToolExecuteBefore({ tool: "Read" }, { args: { filePath: ".env" } }),
     ).toThrow("Access blocked");
@@ -944,7 +1017,7 @@ describe("handleToolExecuteBefore tool name normalization", () => {
     expect(() =>
       guard.handleToolExecuteBefore(
         { tool: "mcp_write" },
-        { args: { filePath: "config.ts", content: `token = "${EXAMPLE_GH_TOKEN}"` } },
+        { args: { filePath: "config.ts", content: `token = "${EXAMPLE_SCM_TOKEN}"` } },
       ),
     ).toThrow("Secret detected");
   });

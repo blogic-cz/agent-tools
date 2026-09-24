@@ -118,6 +118,17 @@ async function formatCheck(): Promise<{
   };
 }
 
+async function identifierScan(): Promise<{
+  success: boolean;
+  output?: string;
+}> {
+  const result = await run(["bun", "scripts/check-no-identifiers.ts"]);
+  return {
+    success: result.exitCode === 0,
+    output: result.exitCode !== 0 ? result.stderr || result.stdout : undefined,
+  };
+}
+
 async function test(): Promise<{
   success: boolean;
   output?: string;
@@ -157,12 +168,14 @@ async function runAll(): Promise<void> {
   }
 
   // 2. Run lint, typecheck, effect, test in parallel
-  const [lintResult, typecheckResult, effectResult, testResult] = await Promise.all([
-    runStep("lint", lint),
-    runStep("typecheck", typecheck),
-    runStep("effect", effectDiagnostics),
-    runStep("test", test),
-  ]);
+  const [lintResult, typecheckResult, effectResult, testResult, identifierResult] =
+    await Promise.all([
+      runStep("lint", lint),
+      runStep("typecheck", typecheck),
+      runStep("effect", effectDiagnostics),
+      runStep("test", test),
+      runStep("identifier scan", identifierScan),
+    ]);
 
   if (testResult.success && testResult.output) {
     testResult.name = `test (${testResult.output})`;
@@ -178,24 +191,28 @@ async function runAll(): Promise<void> {
   printResult(typecheckResult);
   printResult(effectResult);
   printResult(testResult);
+  printResult(identifierResult);
 
   if (
     !lintResult.success ||
     !typecheckResult.success ||
     !effectResult.success ||
-    !testResult.success
+    !testResult.success ||
+    !identifierResult.success
   ) {
     process.exit(1);
   }
 }
 
 async function runCi(): Promise<void> {
-  const [lintResult, typecheckResult, effectResult, formatResult] = await Promise.all([
-    runStep("lint", lint),
-    runStep("typecheck", typecheck),
-    runStep("effect", effectDiagnostics),
-    runStep("format", formatCheck),
-  ]);
+  const [lintResult, typecheckResult, effectResult, formatResult, identifierResult] =
+    await Promise.all([
+      runStep("lint", lint),
+      runStep("typecheck", typecheck),
+      runStep("effect", effectDiagnostics),
+      runStep("format", formatCheck),
+      runStep("identifier scan", identifierScan),
+    ]);
 
   const testResult = await runStep("test", test);
 
@@ -213,6 +230,7 @@ async function runCi(): Promise<void> {
   printResult(typecheckResult);
   printResult(effectResult);
   printResult(formatResult);
+  printResult(identifierResult);
   printResult(testResult);
 
   if (
@@ -220,7 +238,8 @@ async function runCi(): Promise<void> {
     !typecheckResult.success ||
     !effectResult.success ||
     !formatResult.success ||
-    !testResult.success
+    !testResult.success ||
+    !identifierResult.success
   ) {
     process.exit(1);
   }

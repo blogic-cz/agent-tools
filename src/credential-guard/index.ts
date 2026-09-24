@@ -140,19 +140,6 @@ const SECRET_PATTERNS = [
 ];
 
 /**
- * Dangerous bash patterns that might expose secrets.
- */
-const DEFAULT_DANGEROUS_BASH_PATTERNS: RegExp[] = [
-  /\bcat\s+\S*\.env/i,
-  /\bcat\s+\S*\.pem/i,
-  /\bcat\s+\S*\.key/i,
-  /\bcat\s+\S*secret/i,
-  /\bcat\s+\S*credential/i,
-  /\bcat\s+\S*\/\.ssh\//i,
-  /\bcat\s+\S*\/\.aws\//i,
-];
-
-/**
  * CLI tools that must use wrapper tools for security and audit.
  */
 const DEFAULT_BLOCKED_CLI_TOOLS: BlockedCliTool[] = [
@@ -313,11 +300,26 @@ function parseStaticShellCommands(
 
 function mentionsEnvironmentRead(text: string): boolean {
   // `--env dev` is a flag of another command, not the env command.
-  return /printenv|(?<!--)\benv\b/i.test(text.replace(/['"\\]/g, ""));
+  return /(?<![\w.-])printenv\b(?!-)|(?<![\w.-])-\w*Oprintenv\b|(?<![\w.-])\benv\b(?!-)/i.test(
+    text.replace(/['"\\]/g, ""),
+  );
 }
 
 function hasBraceExpansion(text: string): boolean {
   return /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(text);
+}
+
+function hasNonExecutingAwkProgram(text: string): boolean {
+  const match = /\bawk\s+(['"])([\s\S]*?)\1/.exec(text);
+  if (!match) return false;
+  const program = match[2] ?? "";
+  return !/\b(?:system|getline)\s*\(|\||\b(?:print|printf)\b[^\n]*>/.test(program);
+}
+
+function hasShellBraceExpansion(text: string): boolean {
+  if (!hasBraceExpansion(text)) return false;
+  if (!hasNonExecutingAwkProgram(text)) return true;
+  return hasBraceExpansion(text.replace(/(\bawk\s+(['"]))[\s\S]*?\2/, "awk "));
 }
 
 /**
@@ -355,12 +357,81 @@ function withoutQuotedQuantifiers(command: string): string {
 
 /** Braces in static words, except `{m,n}` with digits on both sides (see above). */
 function hasArgumentBraceExpansion(text: string): boolean {
-  return hasBraceExpansion(text.replace(/\{\d+,\d+\}/g, ""));
+  return hasShellBraceExpansion(text.replace(/\{\d+,\d+\}/g, ""));
+}
+
+function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
+  return (argv[0]?.split("/").at(-1) === "awk" && !isAwkExecution(argv)) ||
+    isJqObjectConstruction(argv)
+    ? false
+    : hasArgumentBraceExpansion(argv.join(" "));
 }
 
 /** echo and printf print their arguments; grep -o, rg and git grep print matched pattern text. */
 function isLiteralTextProducer(argv: string[]): boolean {
   return isPassiveTextCommand(argv) && argv[0]?.split("/").at(-1) !== "head";
+}
+
+function isAwkExecution(argv: string[]): boolean {
+  if (argv[0]?.split("/").at(-1) !== "awk") return false;
+  const program = argv.slice(1).join(" ");
+  return /\b(?:system|getline)\s*\(|\||\b(?:print|printf)\b[^\n]*>/.test(program);
+}
+
+function isJqObjectConstruction(argv: string[]): boolean {
+  return (
+    argv[0]?.split("/").at(-1) === "jq" &&
+    argv
+      .slice(1)
+      .some((arg) => /^\{[A-Za-z_][A-Za-z0-9_-]*(?:,\s*[A-Za-z_][A-Za-z0-9_-]*)*\}$/.test(arg)) &&
+    !argv.slice(1).some((arg) => /\benv\b|\binput(?:s)?\b/.test(arg))
+  );
+}
+
+/** Index in `args` where the command wrapped by `env` starts, or null when `env` only lists. */
+function environmentCommandStart(args: string[]): number | null {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) continue;
+    if (arg === "--") return i + 1 === args.length ? null : i + 1;
+    if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
+      i++;
+      continue;
+    }
+    if (arg === "-i" || arg === "--ignore-environment" || arg.startsWith("--chdir=")) continue;
+    if (arg.startsWith("-")) continue;
+    return i;
+  }
+  return null;
+}
+
+function isEnvironmentListing(argv: string[]): boolean {
+  return environmentCommandStart(argv.slice(1)) === null;
+}
+
+function unwrapEnvironmentCommand(argv: string[]): string[] | null {
+  if (argv[0]?.split("/").at(-1) !== "env") return null;
+  const args = argv.slice(1);
+  const start = environmentCommandStart(args);
+  return start === null ? null : args.slice(start);
+}
+
+function isSafeLiteralInspection(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  return (
+    ["head", "tail"].includes(name) &&
+    !argv.slice(1).some((arg) => /\.env(?:\.|$)|\.(?:pem|key)\b|secret|credential/i.test(arg))
+  );
+}
+
+function isSafeLiteralConsumer(argv: string[]): boolean {
+  return (
+    isSafeLiteralInspection(argv) ||
+    (argv[0]?.split("/").at(-1) === "bun" &&
+      argv[1] === "run" &&
+      argv[2] === "gh-tool" &&
+      argv.includes("--body-file"))
+  );
 }
 
 function unwrapStaticCommand(words: string[]): string[] {
@@ -401,6 +472,8 @@ function isPassiveTextCommand(argv: string[]): boolean {
     return true;
   }
   if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
+  if (name === "awk") return !isAwkExecution(argv);
+  if (name === "jq") return isJqObjectConstruction(argv);
   return (
     name === "git" &&
     args[0] === "grep" &&
@@ -411,7 +484,12 @@ function isPassiveTextCommand(argv: string[]): boolean {
 function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
   const name = argv[0]?.split("/").at(-1);
   if (name === "printenv") return !isAllowedEnvironmentRead(argv, allowedNames);
-  if (name === "env") return true;
+  if (name === "env") {
+    const wrapped = unwrapEnvironmentCommand(argv);
+    return wrapped === null
+      ? isEnvironmentListing(argv)
+      : hasStaticEnvironmentRead(unwrapStaticCommand(wrapped), allowedNames);
+  }
   if (isPassiveTextCommand(argv)) return false;
   // Any command may re-parse an argument as shell code (trap, find -exec, awk system()).
   return (
@@ -419,32 +497,68 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
   );
 }
 
+function isStaticHerdrPrompt(command: string): boolean {
+  if (/^herdr\s+agent\s+prompt\s+\S+\s+(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*')$/.test(command.trim())) {
+    if (!/[$`]/.test(command)) return true;
+    return !hasSensitiveFileRead(command) && !mentionsEnvironmentRead(command);
+  }
+  const parsed = parseStaticShellCommands(command);
+  if (
+    !parsed ||
+    typeof parsed === "string" ||
+    parsed.pipelines.length !== 1 ||
+    parsed.pipelines[0]?.length !== 1
+  ) {
+    return false;
+  }
+  const argv = unwrapStaticCommand(parsed.pipelines[0]?.[0] ?? []);
+  return argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt";
+}
+
+function isHerdrPrompt(command: string): boolean {
+  return /^herdr\s+agent\s+prompt\b/.test(command.trim());
+}
+
 function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
+  if (isStaticHerdrPrompt(command)) return false;
+  if (isHerdrPrompt(command)) return true;
   if (isLiteralTextWrite(command)) return false;
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
   if (!parsed) {
-    return mentionsEnvironmentRead(command) || hasBraceExpansion(withoutQuotedQuantifiers(command));
+    const unquoted = command.replace(/'(?:\\.|[^'])*'/g, " ").replace(/"(?:\\.|[^"$`])*"/g, " ");
+    const hasExecutor =
+      /\|\s*(?:sh|bash|zsh|xargs)|\b(?:sh|bash|zsh)\b|\$\(|`|\b(?:eval|source)\b|\bfind\b.*\b-exec\b/i.test(
+        command,
+      );
+    return (
+      mentionsEnvironmentRead(unquoted) ||
+      (mentionsEnvironmentRead(command) && hasExecutor) ||
+      hasShellBraceExpansion(withoutQuotedQuantifiers(command))
+    );
   }
   const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
   const unwrapped = pipelines.flat();
-  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) return true;
+  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) {
+    return true;
+  }
 
   // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
-  return pipelines.some(
+  const result = pipelines.some(
     (pipeline) =>
       pipeline.length > 1 &&
       pipeline.some(
         (argv) =>
           isAllowedEnvironmentRead(argv, allowedNames) ||
           (isLiteralTextProducer(argv) &&
-            (mentionsEnvironmentRead(argv.join(" ")) || hasArgumentBraceExpansion(argv.join(" ")))),
+            (mentionsEnvironmentRead(argv.join(" ")) || hasCommandArgumentBraceExpansion(argv))),
       ) &&
       pipeline.some(
         (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
       ),
   );
+  return result;
 }
 
 /** A single literal writer cannot execute its body or feed another command. */
@@ -469,12 +583,73 @@ function isLiteralTextWrite(command: string): boolean {
   }
 
   // Output redirection does not execute text. Other unsupported syntax still fails parsing.
-  const parsed = parseStaticShellCommands(header.replace(/>/g, " "));
-  if (!parsed || parsed === "brace-expansion" || parsed.pipelines.length !== 1) return false;
-  const pipeline = parsed.pipelines[0];
-  if (pipeline?.length !== 1) return false;
-  const argv = unwrapStaticCommand(pipeline[0] ?? []);
-  return writers.includes(argv[0]?.split("/").at(-1) ?? "");
+  const parsed = parseStaticShellCommands(header.replace(/2>&1/g, " ").replace(/>>?/g, " "));
+  if (!parsed || parsed === "brace-expansion") {
+    const balancedQuotes =
+      (command.match(/'/g)?.length ?? 0) % 2 === 0 && (command.match(/"/g)?.length ?? 0) % 2 === 0;
+    return (
+      balancedQuotes &&
+      /^(?:cd\s+\S+\s+&&\s+)?(?:echo|printf)\b[\s\S]*>>?\s+\S+\s*(?:&&\s+tail\b.*)?$/i.test(command)
+    );
+  }
+  const commands = parsed.pipelines.flat().map(unwrapStaticCommand);
+  const writerIndexes = commands
+    .map((argv, index) => (writers.includes(argv[0]?.split("/").at(-1) ?? "") ? index : -1))
+    .filter((index) => index >= 0);
+  return (
+    writerIndexes.length === 1 &&
+    commands.every((argv, index) => {
+      if (index === writerIndexes[0]) return true;
+      const name = argv[0]?.split("/").at(-1) ?? "";
+      return name === "cd" || isSafeLiteralConsumer(argv);
+    })
+  );
+}
+
+function hasSensitiveFileRead(command: string): boolean {
+  const sensitivePath =
+    /(?:^|[/\s'"])(?:[.]env(?![.](?:example|template|sample)\b)|\S*[.](?:pem|key)\b|\S*[.](?:ssh|aws)[/]|(?:\S*secret(?:-|[/\s.]|$))|(?:(?:secrets?|credentials?)(?:[/\s.]|$)|[A-Za-z0-9_.-]*(?:secrets?|credentials?)(?:[/\s.]|$)|[A-Za-z0-9_.-]*-(?:secrets?|credentials?)(?:[/\s.-]|$)))/i;
+  const sensitiveCamelCase =
+    /(?:^|[/\s'"])[A-Za-z0-9_.-]*(?:(?:secret|credential)[A-Z]|(?:Secret|Credential)[A-Z])[^/\s'"]*/;
+  const sensitiveName = /secret|credential/i;
+  const isSensitivePath = (text: string) =>
+    sensitivePath.test(text) || sensitiveCamelCase.test(text) || sensitiveName.test(text);
+  if (/(?:^|[\s;&|])--env-file(?:=|\s)[^;&|]*\.env\b/i.test(command)) return true;
+  if (/\bcat\b[^;&|]*<<-?\s*\S+[\s\S]*\b(?:secret|credential)\b/i.test(command)) return true;
+  const parsed = parseStaticShellCommands(command);
+  const readers = /\b(?:cat|cp|grep|rg|sed|awk|head|tail|less|more|source|ls)\b/i;
+  if (parsed && parsed !== "brace-expansion") {
+    return parsed.pipelines.flat().some((words) => {
+      const argv = unwrapStaticCommand(words);
+      const inspectedArgv =
+        argv[0]?.split("/").at(-1) === "env" ? unwrapEnvironmentCommand(argv) : argv;
+      if (inspectedArgv === null) return false;
+      const inspected = unwrapStaticCommand(inspectedArgv);
+      const name = inspected[0]?.split("/").at(-1) ?? "";
+      return readers.test(name) && inspected.slice(1).some(isSensitivePath);
+    });
+  }
+  const unquoted = command.replace(/'(?:\\.|[^'])*'/g, " ").replace(/"(?:\\.|[^"$`])*"/g, " ");
+  if (/\b(?:bun|node|python3?|ruby)\b/i.test(command) && isSensitivePath(command)) {
+    return true;
+  }
+  return (
+    new RegExp(readers.source + "[^;&|]*" + sensitivePath.source, "i").test(unquoted) ||
+    new RegExp(readers.source + "[^;&|]*" + sensitiveCamelCase.source).test(unquoted) ||
+    new RegExp(readers.source + "[^;&|]*" + sensitiveName.source, "i").test(unquoted)
+  );
+}
+
+function hasEnvironmentVariableExpansionRead(command: string): boolean {
+  if (!/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/.test(command)) return false;
+  return /\b(?:echo|printf)\b[^;&|]*\$|\b(?:sh|bash|zsh)\b[^;&|]*\s-c\b/i.test(command);
+}
+
+function hasEnvironmentSourceAccess(command: string): boolean {
+  return (
+    /\b(?:os\.environ|process\.env|Environment\.GetEnvironmentVariable)\b/.test(command) &&
+    /\b(?:python3?|node|bun)\b/.test(command)
+  );
 }
 
 /** Extract file path from hook arguments. */
@@ -527,8 +702,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   ];
 
   const dangerousBashPatterns = [
-    ...DEFAULT_DANGEROUS_BASH_PATTERNS,
-    ...(config?.additionalDangerousBashPatterns ?? []).map((p) => new RegExp(p)),
+    ...(config?.additionalDangerousBashPatterns?.map((p) => new RegExp(p)) ?? []),
   ];
 
   const blockedCliTools: BlockedCliTool[] = [
@@ -579,6 +753,9 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   function isDangerousBashCommand(command: string): boolean {
     return (
       dangerousBashPatterns.some((pattern) => pattern.test(command)) ||
+      hasSensitiveFileRead(command) ||
+      hasEnvironmentVariableExpansionRead(command) ||
+      hasEnvironmentSourceAccess(command) ||
       hasEnvironmentRead(command, allowedEnvironmentVariables)
     );
   }
@@ -632,7 +809,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
 
   function handleToolExecuteBefore(input: HookInput, output: HookOutput): void {
     // Normalize tool name across platforms:
-    // - Claude Code passes capitalized: "Bash", "Read", "Write", "Edit"
+    // - AI coding agents pass capitalized: "Bash", "Read", "Write", "Edit"
     // - OpenCode MCP tools pass prefixed: "mcp_bash", "mcp_read", "mcp_write", "mcp_edit"
     const tool = input.tool.toLowerCase().replace(/^mcp_/, "");
     const args = output.args;
@@ -645,7 +822,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           `\u{1F6AB} Access blocked: "${filePath}" is a sensitive file.\n\n` +
             `This file may contain credentials or secrets.\n` +
             `If you need this file's content, ask the user to provide relevant parts.\n\n` +
-            `Think this should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the guard, and submit a PR.`,
+            `Think this should be allowed? Review the project repository, extend the guard, and submit a PR.`,
         );
       }
     }
@@ -661,7 +838,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
               `\u{1F6AB} Secret detected: Potential ${detected.name} found in content.\n\n` +
                 `Matched: ${detected.match}\n\n` +
                 `Never commit secrets to code. Use environment variables or secret managers.\n\n` +
-                `Think this is a false positive? See https://github.com/blogic-cz/agent-tools — fork, fix the pattern, and submit a PR.`,
+                `Think this is a false positive? Review the project repository, fix the pattern, and submit a PR.`,
             );
           }
         }
@@ -676,7 +853,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           `\u{1F6AB} Command blocked: This command might expose secrets.\n\n` +
             `Command: ${command}\n\n` +
             `If you need environment info, ask the user directly.\n\n` +
-            `Think this is wrong? See https://github.com/blogic-cz/agent-tools — fork, adjust the patterns, and submit a PR.`,
+            `Think this is wrong? Review the project repository, adjust the patterns, and submit a PR.`,
         );
       }
 
@@ -698,7 +875,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
             `AI agents must use wrapper tools for security and audit.\n\n` +
             `Use instead: bun ${skillName}\n\n` +
             `Example: bun ${skillName} --help\n\n` +
-            `Think this tool should be allowed? See https://github.com/blogic-cz/agent-tools — fork, extend the whitelist, and submit a PR.\n` +
+            `Think this tool should be allowed? Review the project repository, extend the whitelist, and submit a PR.\n` +
             `→ Skill "${skillName}"`,
         );
       }
