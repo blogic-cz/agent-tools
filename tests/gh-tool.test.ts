@@ -61,6 +61,7 @@ import {
   discoverDispatchedRun,
   dispatchWorkflow,
   fetchJobLogs,
+  parseRawJobLogs,
 } from "#gh/workflow";
 import {
   resolveDefaultTextInput,
@@ -1166,6 +1167,115 @@ describe("Workflow log diagnosis", () => {
       diagnoseLogEntries([{ step: "Run tests", message: "Tests failed at line 99" }]).fingerprint,
     );
   });
+
+  it("prefers a TUnit assertion over an unrelated timeout comment", () => {
+    const diagnosis = diagnoseLogEntries([
+      { step: "Secret scan", message: "# Composite action cannot set timeout-minutes" },
+      { step: "Run checks", message: "Running tests from Core.IntegrationTests.dll" },
+      { step: "Run checks", message: "[Test Failure] AssertionException: Expected count 1, got 0" },
+    ]);
+
+    expect(diagnosis.category).toBe("test_failure");
+    expect(diagnosis.testsStarted).toBe(true);
+    expect(diagnosis.firstRelevantError).toContain("AssertionException");
+  });
+
+  it("parses GitHub CLI step labels instead of command groups", () => {
+    const entries = parseRawJobLogs(
+      "Build and Test\tRun checks (build, format, test)\t\uFEFF2026-09-24T19:29:37Z ##[group]Run bun check.ts ci\n" +
+        "Build and Test\tRun checks (build, format, test)\t2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0",
+    );
+
+    expect(entries).toEqual([
+      {
+        step: "Run checks (build, format, test)",
+        message: "[Test Failure] AssertionException: Expected count 1, got 0",
+      },
+    ]);
+  });
+
+  it.effect("uses GitHub's failed-step view for a job", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* fetchJobLogs({
+        runId: 36048484807,
+        job: "Build and Test",
+        jobId: 107797832643,
+        failedStepsOnly: true,
+        failedStepNames: ["Run checks (build, format, test)"],
+        format: "json",
+        repo: "sabservis/nexus-be",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({
+                stdout:
+                  "Build and Test\tRun checks (build, format, test)\t2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0",
+                stderr: "",
+                exitCode: 0,
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(calls).toEqual([
+        [
+          "run",
+          "view",
+          "36048484807",
+          "--repo",
+          "sabservis/nexus-be",
+          "--log-failed",
+          "--job",
+          "107797832643",
+        ],
+      ]);
+      expect("entries" in result && result.entries).toEqual([
+        {
+          step: "Run checks (build, format, test)",
+          message: "[Test Failure] AssertionException: Expected count 1, got 0",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("keeps available logs if the failed step name cannot be matched", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchJobLogs({
+        runId: 36048484807,
+        job: "Build and Test",
+        jobId: 107797832643,
+        failedStepsOnly: true,
+        failedStepNames: ["Run checks (build, format, test)"],
+        format: "json",
+        repo: "sabservis/nexus-be",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) =>
+              Effect.succeed({
+                stdout:
+                  args[0] === "api"
+                    ? "2026-09-24T19:29:37Z ##[group]Run bun check.ts ci\n2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0"
+                    : "",
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+
+      expect("entries" in result && result.entries).toEqual([
+        {
+          step: "Run bun check.ts ci",
+          message: "[Test Failure] AssertionException: Expected count 1, got 0",
+        },
+      ]);
+    }),
+  );
 
   it.effect("returns concise diagnose metadata without entries", () =>
     Effect.gen(function* () {
