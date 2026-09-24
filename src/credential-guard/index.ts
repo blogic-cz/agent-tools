@@ -361,6 +361,15 @@ function hasArgumentBraceExpansion(text: string): boolean {
 }
 
 function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
+  // LogQL is data for this wrapper; its quoted label selectors are never shell-evaluated.
+  if (
+    argv[0]?.split("/").at(-1) === "bun" &&
+    argv[1] === "run" &&
+    argv[2] === "observability-tool" &&
+    argv[3] === "logs" &&
+    argv[4] === "query"
+  )
+    return false;
   return (argv[0]?.split("/").at(-1) === "awk" && !isAwkExecution(argv)) ||
     isJqObjectConstruction(argv)
     ? false
@@ -492,9 +501,7 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
   }
   if (isPassiveTextCommand(argv)) return false;
   // Any command may re-parse an argument as shell code (trap, find -exec, awk system()).
-  return (
-    hasArgumentBraceExpansion(argv.slice(1).join(" ")) || mentionsEnvironmentRead(argv.join(" "))
-  );
+  return hasCommandArgumentBraceExpansion(argv) || mentionsEnvironmentRead(argv.join(" "));
 }
 
 function isStaticHerdrPrompt(command: string): boolean {
@@ -626,7 +633,98 @@ function hasSensitiveFileRead(command: string): boolean {
       if (inspectedArgv === null) return false;
       const inspected = unwrapStaticCommand(inspectedArgv);
       const name = inspected[0]?.split("/").at(-1) ?? "";
-      return readers.test(name) && inspected.slice(1).some(isSensitivePath);
+      if (!readers.test(name)) return false;
+      if (name === "rg" || name === "grep") {
+        const args = inspected.slice(1);
+        const paths: string[] = [];
+        let hasPattern = false;
+        let options = true;
+        let filesOnly = false;
+        for (let i = 0; i < args.length; i++) {
+          const arg = args[i] ?? "";
+          if (options && arg === "--") {
+            options = false;
+            continue;
+          }
+          if (
+            options &&
+            (arg === "--pre" ||
+              arg.startsWith("--pre=") ||
+              arg === "--hostname-bin" ||
+              arg.startsWith("--hostname-bin="))
+          )
+            return true;
+          if (options && (arg.startsWith("--file=") || /^-f.+/.test(arg))) {
+            paths.push(arg.startsWith("--file=") ? arg.slice(7) : arg.slice(2));
+            hasPattern = true;
+            continue;
+          }
+          if (options && (arg.startsWith("--regexp=") || /^-e.+/.test(arg))) {
+            hasPattern = true;
+            continue;
+          }
+          if (
+            options &&
+            (arg.startsWith("--glob=") ||
+              arg.startsWith("--iglob=") ||
+              arg.startsWith("--include=") ||
+              /^-g.+/.test(arg))
+          ) {
+            const glob = arg.startsWith("--iglob=")
+              ? arg.slice(8)
+              : arg.startsWith("--include=")
+                ? arg.slice(10)
+                : arg.startsWith("--glob=")
+                  ? arg.slice(7)
+                  : arg.slice(2);
+            if (isSensitivePath(glob)) paths.push(glob);
+            continue;
+          }
+          if (
+            options &&
+            ["-e", "--regexp", "-f", "--file", "-g", "--glob", "--iglob", "--include"].includes(arg)
+          ) {
+            const value = args[++i];
+            if (arg === "-f" || arg === "--file") paths.push(value ?? "");
+            if (
+              (arg === "-g" || arg === "--glob" || arg === "--iglob" || arg === "--include") &&
+              value &&
+              isSensitivePath(value)
+            )
+              paths.push(value);
+            if (arg === "-e" || arg === "--regexp" || arg === "-f" || arg === "--file")
+              hasPattern = true;
+            continue;
+          }
+          if (options && (arg === "--files" || (arg === "-l" && name === "grep"))) {
+            filesOnly = arg === "--files";
+            if (filesOnly) continue;
+          }
+          if (options && arg.startsWith("-")) {
+            if (/^-[A-Za-z]+[fg]$/.test(arg)) {
+              const value = args[++i];
+              if (value && isSensitivePath(value)) paths.push(value);
+              if (arg.endsWith("f")) hasPattern = true;
+              continue;
+            }
+            const combinedPatternFile = arg.match(/^-[A-Za-z]*f(.+)$/)?.[1];
+            if (combinedPatternFile) {
+              if (isSensitivePath(combinedPatternFile)) paths.push(combinedPatternFile);
+              hasPattern = true;
+            }
+            const optionValue = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : null;
+            if (optionValue && isSensitivePath(optionValue)) paths.push(optionValue);
+            continue;
+          }
+          if (!hasPattern && !filesOnly) {
+            hasPattern = true;
+            continue;
+          }
+          paths.push(arg);
+        }
+        return paths.some(isSensitivePath);
+      }
+      return inspected.slice(1).some(isSensitivePath);
     });
   }
   const unquoted = command.replace(/'(?:\\.|[^'])*'/g, " ").replace(/"(?:\\.|[^"$`])*"/g, " ");

@@ -10,6 +10,7 @@ import { retryTransient } from "#shared/retry-transient";
 import { githubApi } from "./api";
 import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
+import { validateOutboundText } from "#gh/text-input";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
 const NETWORK_ERROR_RE =
@@ -267,11 +268,14 @@ export class GitHubService extends Context.Service<
         // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
         const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
           const canRetry = isSafeRetryRead(args);
-          return retryTransient({
-            attempt: () => runGhAttempt(args),
-            isTransient: (err) =>
-              err instanceof GitHubCommandError && err.retryable === true && canRetry,
-            maxRetries: MAX_GH_RETRIES,
+          return Effect.gen(function* () {
+            yield* validateOutboundText(args.join("\n"), "gh-tool");
+            return yield* retryTransient({
+              attempt: () => runGhAttempt(args),
+              isTransient: (err) =>
+                err instanceof GitHubCommandError && err.retryable === true && canRetry,
+              maxRetries: MAX_GH_RETRIES,
+            });
           });
         };
 

@@ -4,6 +4,7 @@ import { retryTransient } from "#shared/retry-transient";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 import type { GitHubApiError } from "./errors";
+import { validateOutboundText } from "./text-input";
 
 // Direct HTTP, not `gh api`: the CLI collapses every failure into a non-zero exit and
 // loses the status code, but merge-async answers 202 (accepted), 200 (already merged or
@@ -66,9 +67,28 @@ export type GitHubApiRequest = {
 
 const MAX_API_RETRIES = 2;
 
+const outboundBodyText = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(outboundBodyText).join("\n");
+  if (value !== null && typeof value === "object")
+    return Object.values(value).map(outboundBodyText).join("\n");
+  return "";
+};
+
 const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(opts: GitHubApiRequest) {
-  const token = yield* resolveGitHubToken();
   const method = opts.method ?? "GET";
+  const bodyText = yield* Effect.try({
+    try: () => outboundBodyText(opts.body),
+    catch: () =>
+      new GitHubCommandError({
+        command: `gh-tool ${method} ${opts.path}`,
+        exitCode: 1,
+        stderr: "Refusing to publish an invalid request body",
+        message: "Refusing to publish an invalid request body",
+      }),
+  });
+  yield* validateOutboundText(`${opts.path}\n${bodyText}`, `gh-tool ${method} ${opts.path}`);
+  const token = yield* resolveGitHubToken();
   const url = `${GITHUB_API_ROOT}/${opts.path.replace(/^\//, "")}`;
 
   const response = yield* Effect.tryPromise({
