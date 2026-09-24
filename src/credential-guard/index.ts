@@ -388,39 +388,32 @@ function isJqObjectConstruction(argv: string[]): boolean {
   );
 }
 
-function isEnvironmentListing(argv: string[]): boolean {
-  const args = argv.slice(1);
+/** Index in `args` where the command wrapped by `env` starts, or null when `env` only lists. */
+function environmentCommandStart(args: string[]): number | null {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) continue;
-    if (arg === "--") return i + 1 === args.length;
+    if (arg === "--") return i + 1 === args.length ? null : i + 1;
     if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
       i++;
       continue;
     }
     if (arg === "-i" || arg === "--ignore-environment" || arg.startsWith("--chdir=")) continue;
     if (arg.startsWith("-")) continue;
-    return false;
+    return i;
   }
-  return true;
+  return null;
+}
+
+function isEnvironmentListing(argv: string[]): boolean {
+  return environmentCommandStart(argv.slice(1)) === null;
 }
 
 function unwrapEnvironmentCommand(argv: string[]): string[] | null {
   if (argv[0]?.split("/").at(-1) !== "env") return null;
   const args = argv.slice(1);
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i] ?? "";
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) continue;
-    if (arg === "--") return i + 1 === args.length ? null : args.slice(i + 1);
-    if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
-      i++;
-      continue;
-    }
-    if (arg === "-i" || arg === "--ignore-environment" || arg.startsWith("--chdir=")) continue;
-    if (arg.startsWith("-")) continue;
-    return args.slice(i);
-  }
-  return null;
+  const start = environmentCommandStart(args);
+  return start === null ? null : args.slice(start);
 }
 
 function isSafeLiteralInspection(argv: string[]): boolean {
