@@ -1,6 +1,9 @@
 import { fileURLToPath } from "node:url";
 
-export const EFFECT_VERSION_RANGE = "^4.0.0-rc.117";
+// eslint-disable-next-line import/no-relative-parent-imports -- package.json lives at project root, outside src/
+import pkg from "../../package.json" with { type: "json" };
+
+export const EFFECT_VERSION_RANGE = pkg.peerDependencies.effect;
 
 export const effectVersionError = (version: string | undefined): string | undefined => {
   if (version === undefined) {
