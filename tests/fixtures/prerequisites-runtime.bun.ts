@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 
 import { decodeConfig } from "#config/loader";
 import { parseVpnStatus, vpnCommandSpec } from "#shared/prerequisites/driver-commands";
@@ -194,12 +195,17 @@ const poisonUnknown = async (runtimeRoot: string) => {
 const replacementFailingSpawn = (
   runtimeRoot: string,
   failure: "before-reserve" | "after-reserve",
-  control: { exitFirst: () => void },
+  control: {
+    exitFirst: () => void;
+    replacementFailure: Promise<void>;
+    signalReplacementFailure: () => void;
+  },
 ) => {
   let generation = 0;
   return ((_command: string[], options?: unknown) => {
     generation += 1;
     if (generation === 2 && failure === "before-reserve") {
+      control.signalReplacementFailure();
       throw new Error("replacement spawn failed before reserve");
     }
     const currentGeneration = generation;
@@ -241,6 +247,7 @@ const replacementFailingSpawn = (
           });
         } else {
           exit();
+          control.signalReplacementFailure();
         }
       },
       kill: exit,
@@ -1216,15 +1223,25 @@ describe("runWithProfilePrerequisites", () => {
     }
   });
 
-  test("failed detached replacement never activates stale generations or starts work", async () => {
-    for (const failure of ["before-reserve", "after-reserve"] as const) {
-      const runtimeRoot = root();
-      process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
-      const control = { exitFirst: noop };
-      const labels: string[] = [];
-      let workRan = false;
+  const assertFailedDetachedReplacement = async (failure: "before-reserve" | "after-reserve") => {
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    let signalReplacementFailure!: () => void;
+    const control = {
+      exitFirst: noop,
+      replacementFailure: new Promise<void>((resolve) => {
+        signalReplacementFailure = () => {
+          resolve();
+        };
+      }),
+      signalReplacementFailure: () => signalReplacementFailure(),
+    };
+    const labels: string[] = [];
+    let workRan = false;
+    const originalDateNow = Date.now;
+    Date.now = () => 1_000;
 
-      // eslint-disable-next-line no-await-in-loop -- replacement cases share process state
+    try {
       const result = await Effect.runPromise(
         Effect.result(
           runWithProfilePrerequisites(
@@ -1234,8 +1251,9 @@ describe("runWithProfilePrerequisites", () => {
               labels.push(label);
               return Effect.promise(async () => {
                 control.exitFirst();
-                await new Promise((resolve) => {
-                  setTimeout(resolve, 0);
+                await control.replacementFailure;
+                await new Promise<void>((resolve) => {
+                  setImmediate(resolve);
                 });
                 return { stdout: connectedOutput(), stderr: "", exitCode: 0 };
               });
@@ -1246,7 +1264,7 @@ describe("runWithProfilePrerequisites", () => {
             {
               guardianSpawn: replacementFailingSpawn(runtimeRoot, failure, control),
             },
-          ),
+          ).pipe(Effect.provide(TestClock.layer())),
         ),
       );
 
@@ -1273,8 +1291,16 @@ describe("runWithProfilePrerequisites", () => {
       });
       expect(store.claimStop("stop", "token", process.pid, Date.now())).toBeUndefined();
       store.close();
+    } finally {
+      Date.now = originalDateNow;
     }
-  });
+  };
+
+  test("failed detached replacement before reserve never activates stale generations", () =>
+    assertFailedDetachedReplacement("before-reserve"));
+
+  test("failed detached replacement after reserve never activates stale generations", () =>
+    assertFailedDetachedReplacement("after-reserve"));
 
   test("release during detached replacement targets only the reserved replacement", async () => {
     const runtimeRoot = root();
@@ -1562,49 +1588,68 @@ describe("runWithProfilePrerequisites", () => {
   });
 
   test("start timeout and Effect failure fence STARTING as UNKNOWN", async () => {
-    for (const failure of ["timeout", "effect"] as const) {
-      const runtimeRoot = root();
-      process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
-      const commands: string[] = [];
-      let staleGuard: OperationGuard | undefined;
-      const startedAt = performance.now();
-      // eslint-disable-next-line no-await-in-loop -- cases share process environment and must stay sequential
-      const result = await Effect.runPromise(
-        Effect.result(
-          runWithProfilePrerequisites(
-            runtimeConfig(),
-            { vpn: "work" },
-            (_command, label) => {
-              commands.push(label);
-              if (commands.length === 1) {
-                return Effect.succeed({
-                  stdout: disconnectedOutput(),
-                  stderr: "",
-                  exitCode: 0,
-                });
-              }
-              staleGuard = currentOperationGuard(runtimeRoot);
-              return failure === "timeout" ? Effect.never : Effect.fail(new Error("start failed"));
-            },
-            Effect.void,
-            { runGuardianInProcess: true },
-          ),
-        ),
-      );
-      expect(performance.now() - startedAt).toBeLessThan(1_000);
-      expect(result._tag).toBe("Failure");
-      expect(commands).toHaveLength(2);
-      const reconciled = VpnStore.open(driver, { root: runtimeRoot });
-      expect(reconciled.snapshot().lifecycle).toBe("UNKNOWN");
-      expect(
-        reconciled.commitStart(required(staleGuard), "managed", "late", "late", Date.now()),
-      ).toBe(false);
-      reconciled.close();
-      // eslint-disable-next-line no-await-in-loop -- verifies timed-out command cannot dispatch later
-      await new Promise((resolve) => {
-        setTimeout(resolve, 75);
-      });
-      expect(commands).toHaveLength(2);
+    const originalDateNow = Date.now;
+    Date.now = () => 1_000;
+
+    try {
+      for (const failure of ["timeout", "effect"] as const) {
+        const runtimeRoot = root();
+        process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+        const commands: string[] = [];
+        let staleGuard: OperationGuard | undefined;
+        let dispatchStart!: () => void;
+        const startCommandDispatched = new Promise<void>((resolve) => {
+          dispatchStart = resolve;
+        });
+
+        // eslint-disable-next-line no-await-in-loop -- cases share process environment and must stay sequential
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(
+              Effect.result(
+                runWithProfilePrerequisites(
+                  runtimeConfig(),
+                  { vpn: "work" },
+                  (_command, label) => {
+                    commands.push(label);
+                    if (commands.length === 1) {
+                      return Effect.succeed({
+                        stdout: disconnectedOutput(),
+                        stderr: "",
+                        exitCode: 0,
+                      });
+                    }
+                    staleGuard = currentOperationGuard(runtimeRoot);
+                    dispatchStart();
+                    return failure === "timeout"
+                      ? Effect.never
+                      : Effect.fail(new Error("start failed"));
+                  },
+                  Effect.void,
+                  { runGuardianInProcess: true },
+                ),
+              ),
+            );
+            yield* Effect.promise(() => startCommandDispatched);
+            yield* TestClock.adjust("51 millis");
+            const joinedResult = yield* Fiber.join(fiber);
+            yield* TestClock.adjust("75 millis");
+            return joinedResult;
+          }).pipe(Effect.provide(TestClock.layer())),
+        );
+
+        expect(result._tag).toBe("Failure");
+        expect(commands).toHaveLength(2);
+        const reconciled = VpnStore.open(driver, { root: runtimeRoot });
+        expect(reconciled.snapshot().lifecycle).toBe("UNKNOWN");
+        expect(
+          reconciled.commitStart(required(staleGuard), "managed", "late", "late", Date.now()),
+        ).toBe(false);
+        reconciled.close();
+        expect(commands).toHaveLength(2);
+      }
+    } finally {
+      Date.now = originalDateNow;
     }
   });
 
