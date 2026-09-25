@@ -1395,10 +1395,127 @@ describe("PR ready", () => {
 });
 
 describe("PR merge logic", () => {
+  it.effect("gets the merge SHA from the PR when gh pr merge prints no SHA", () =>
+    Effect.gen(function* () {
+      let viewCount = 0;
+      const result = yield* mergePR({
+        pr: 839,
+        strategy: "squash",
+        deleteBranch: false,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "view") {
+                viewCount += 1;
+                return Effect.succeed(
+                  viewCount === 1
+                    ? { ...mockPRInfo, number: 839 }
+                    : { mergeCommit: { oid: "df5bce49939e0cd8d9ce73bc5555e1b11cad7e7c" } },
+                );
+              }
+              return Effect.succeed({});
+            },
+            runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+
+      expect(result.merged).toBe(true);
+      expect(result.sha).toBe("df5bce49939e0cd8d9ce73bc5555e1b11cad7e7c");
+      expect(result.retargetedChildren).toBeUndefined();
+      expect(result.branchDeleteSkipped).toBeUndefined();
+    }),
+  );
+
+  it.effect("retries the PR merge SHA lookup while GitHub is computing it", () =>
+    Effect.gen(function* () {
+      let viewCount = 0;
+      const fiber = yield* Effect.forkChild(
+        mergePR({
+          pr: 839,
+          strategy: "squash",
+          deleteBranch: false,
+          confirm: true,
+        }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[1] === "view") {
+                  viewCount += 1;
+                  if (viewCount === 1) return Effect.succeed({ ...mockPRInfo, number: 839 });
+                  if (viewCount === 2) return Effect.succeed({ mergeCommit: null });
+                  return Effect.succeed({
+                    mergeCommit: { oid: "df5bce49939e0cd8d9ce73bc5555e1b11cad7e7c" },
+                  });
+                }
+                return Effect.succeed({});
+              },
+              runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            }),
+          ),
+        ),
+      );
+
+      yield* TestClock.adjust("1000 millis");
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.sha).toBe("df5bce49939e0cd8d9ce73bc5555e1b11cad7e7c");
+      expect(viewCount).toBe(3);
+    }),
+  );
+
+  it.effect("warns when the merge SHA remains unavailable after the retry window", () =>
+    Effect.gen(function* () {
+      let viewCount = 0;
+      const errors: unknown[][] = [];
+      const console = yield* TestConsole.make;
+      const consoleLayer = Layer.succeed(Console.Console, {
+        ...console,
+        error: (...args: unknown[]) => errors.push(args),
+      });
+      const fiber = yield* Effect.forkChild(
+        mergePR({
+          pr: 839,
+          strategy: "squash",
+          deleteBranch: false,
+          confirm: true,
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  if (args[1] === "view") {
+                    viewCount += 1;
+                    return Effect.succeed(
+                      viewCount === 1 ? { ...mockPRInfo, number: 839 } : { mergeCommit: null },
+                    );
+                  }
+                  return Effect.succeed({});
+                },
+                runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+              }),
+              consoleLayer,
+            ),
+          ),
+        ),
+      );
+
+      yield* TestClock.adjust("5000 millis");
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.sha).toBeNull();
+      expect(viewCount).toBe(7);
+      expect(errors.flat().join(" ")).toContain("merge commit SHA is still unknown");
+    }),
+  );
+
   it.effect("long-lived head (promotion PR) merges without retargeting or branch deletion", () =>
     Effect.gen(function* () {
       const ghCalls: string[][] = [];
       const jsonCalls: string[][] = [];
+      let viewCount = 0;
 
       const result = yield* mergePR({
         pr: 458,
@@ -1410,12 +1527,20 @@ describe("PR merge logic", () => {
           createMockGhLayer({
             runGhJson: (args) => {
               jsonCalls.push(args);
-              return Effect.succeed({
-                ...mockPRInfo,
-                number: 458,
-                headRefName: "main",
-                baseRefName: "staging",
-              });
+              if (args[1] === "view") {
+                viewCount += 1;
+                return Effect.succeed(
+                  viewCount === 1
+                    ? {
+                        ...mockPRInfo,
+                        number: 458,
+                        headRefName: "main",
+                        baseRefName: "staging",
+                      }
+                    : { mergeCommit: { oid: "abc1234" } },
+                );
+              }
+              return Effect.succeed({});
             },
             runGh: (args) => {
               ghCalls.push(args);
@@ -1439,6 +1564,7 @@ describe("PR merge logic", () => {
     Effect.gen(function* () {
       const ghCalls: string[][] = [];
       const jsonCalls: string[][] = [];
+      let viewCount = 0;
 
       const result = yield* mergePR({
         pr: 350,
@@ -1451,7 +1577,12 @@ describe("PR merge logic", () => {
             runGhJson: (args) => {
               jsonCalls.push(args);
               if (args[1] === "view") {
-                return Effect.succeed({ ...mockPRInfo, number: 350 });
+                viewCount += 1;
+                return Effect.succeed(
+                  viewCount === 1
+                    ? { ...mockPRInfo, number: 350 }
+                    : { mergeCommit: { oid: "abcdef1234567890" } },
+                );
               }
               if (args[1] === "list") {
                 return Effect.succeed([

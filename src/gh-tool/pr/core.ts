@@ -40,6 +40,8 @@ const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
 const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
+const MERGE_SHA_POLL_INTERVAL_MS = 1000;
+const MERGE_SHA_WAIT_SECONDS = 5;
 
 const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string) {
   const gh = yield* GitHubService;
@@ -78,6 +80,44 @@ const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string
     stderr: lines.join("\n"),
     message: lines[0] ?? "PR title does not match the required format.",
   });
+});
+
+const resolveMergeSha = Effect.fn("pr.resolveMergeSha")(function* (pr: number) {
+  const gh = yield* GitHubService;
+  const readMergeSha = () =>
+    gh
+      .runGhJson<{ mergeCommit: { oid: string } | null }>([
+        "pr",
+        "view",
+        String(pr),
+        "--json",
+        "mergeCommit",
+      ])
+      .pipe(Effect.map((result) => result.mergeCommit?.oid ?? null));
+  const sha = yield* readMergeSha().pipe(
+    Effect.andThen((initial) =>
+      pollUntilResolved({
+        initial,
+        isPending: (value) => value === null,
+        fetchLatest: readMergeSha,
+        intervalMs: MERGE_SHA_POLL_INTERVAL_MS,
+        budgetSeconds: MERGE_SHA_WAIT_SECONDS,
+      }),
+    ),
+    Effect.catch((error) =>
+      Console.error(
+        `Warning: PR #${pr} was merged, but its merge commit SHA could not be read: ${error.message}`,
+      ).pipe(Effect.as(null)),
+    ),
+  );
+
+  if (sha === null) {
+    yield* Console.error(
+      `Warning: PR #${pr} was merged, but its merge commit SHA is still unknown after ${MERGE_SHA_WAIT_SECONDS}s.`,
+    );
+  }
+
+  return sha;
 });
 
 const buildChecksCommand = (pr: number | null, includeWatch: boolean): string =>
@@ -1005,10 +1045,9 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
 
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
 
-  const mergedSha = yield* gh
+  yield* gh
     .runGh(mergeArgs)
     .pipe(
-      Effect.map((result) => result.stdout.match(/([0-9a-f]{7,40})/)?.[1] ?? null),
       Effect.catchTag("GitHubCommandError", (error) =>
         ASYNC_MERGE_REQUIRED_RE.test(error.stderr)
           ? mergeViaAsyncApi({ pr: opts.pr, strategy: opts.strategy })
@@ -1091,6 +1130,8 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
             ),
       ),
     );
+
+  const mergedSha = yield* resolveMergeSha(opts.pr);
 
   // `gh pr merge --delete-branch` aborts its remote delete when the head branch is checked out in a
   // worktree; deleting the remote ref explicitly is worktree-independent. Local cleanup is separate.
