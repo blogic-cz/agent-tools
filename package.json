@@ -162,7 +162,7 @@
     "vitest": "5.0.1"
   },
   "peerDependencies": {
-    "effect": "4.0.0-rc.117"
+    "effect": "^4.0.0-rc.117"
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.117"
