@@ -24,6 +24,49 @@ const greet = Command.make(
 const root = Command.make("root", {}).pipe(Command.withSubcommands([greet]));
 
 describe("dumpCommandSchema", () => {
+  it("runs workflow watch without the optional --frames flag", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "gh-tool-watch-"));
+    const gh = join(directory, "gh");
+    await writeFile(
+      gh,
+      `#!/bin/sh
+case "$1 $2" in
+  "repo view") printf '%s\\n' '{"owner":{"login":"o"},"name":"r","defaultBranchRef":{"name":"main"},"url":"https://github.com/o/r"}' ;;
+  "run watch") ;;
+  "run view") printf '%s\\n' '{"databaseId":1,"displayTitle":"test","status":"completed","conclusion":"success","headBranch":"main","createdAt":"2026-01-01T00:00:00Z","event":"push","url":"https://example.test/run/1","workflowName":"CI","jobs":[]}' ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    await chmod(gh, 0o755);
+    try {
+      const result = spawnSync(
+        "bun",
+        [
+          "./src/gh-tool/index.ts",
+          "workflow",
+          "watch",
+          "--run",
+          "1",
+          "--repo",
+          "o/r",
+          "--format",
+          "json",
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+          timeout: 15000,
+        },
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain('"runId": 1');
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("Missing required flag: --frames");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("gh-tool aliases expose watch/rerun/reply command schemas", async () => {
     const packageJson = JSON.parse(await readFile("package.json", "utf8")) as {
       bin: Record<string, string>;
