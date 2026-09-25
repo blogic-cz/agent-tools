@@ -1511,6 +1511,52 @@ describe("PR merge logic", () => {
     }),
   );
 
+  it.effect("prints one warning when the merge SHA lookup fails", () =>
+    Effect.gen(function* () {
+      const errors: unknown[][] = [];
+      const console = yield* TestConsole.make;
+      const consoleLayer = Layer.succeed(Console.Console, {
+        ...console,
+        error: (...args: unknown[]) => errors.push(args),
+      });
+      const result = yield* mergePR({
+        pr: 839,
+        strategy: "squash",
+        deleteBranch: false,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[1] === "view") {
+                  return args.at(-1) === "mergeCommit"
+                    ? Effect.fail(
+                        new GitHubNotFoundError({
+                          message: "temporary lookup failure",
+                          identifier: "839",
+                          resource: "pull-request",
+                        }),
+                      )
+                    : Effect.succeed({ ...mockPRInfo, number: 839 });
+                }
+                return Effect.succeed({});
+              },
+              runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            }),
+            consoleLayer,
+          ),
+        ),
+      );
+
+      const warning = errors.flat().join(" ");
+      expect(result.sha).toBeNull();
+      expect(errors).toHaveLength(1);
+      expect(warning).toContain("merge commit SHA could not be read");
+      expect(warning).not.toContain("still unknown after");
+    }),
+  );
+
   it.effect("long-lived head (promotion PR) merges without retargeting or branch deletion", () =>
     Effect.gen(function* () {
       const ghCalls: string[][] = [];
@@ -1617,6 +1663,7 @@ describe("PR merge logic", () => {
       expect(result.sha).toBe("abcdef1234567890");
       expect(result.branchDeleted).toBe(true);
       expect(result.retargetedChildren).toEqual([352]);
+      expect(jsonCalls.some((args) => args.at(-1) === "mergeCommit")).toBe(false);
       expect(jsonCalls.some((args) => args.includes("PUT"))).toBe(true);
       const patchBases = ghCalls
         .filter((args) => args.includes("PATCH"))
