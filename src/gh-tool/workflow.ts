@@ -877,6 +877,7 @@ export const workflowWatchCommand = Command.make(
       Flag.withDescription(
         "Include the raw watch progress frames (large); omitted by default — final status/conclusion/jobs are always returned",
       ),
+      Flag.withDefault(false),
     ),
     repo: repoOption,
     run: Flag.Int("run").pipe(Flag.withDescription("Workflow run ID to watch")),
