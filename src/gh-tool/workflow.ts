@@ -154,7 +154,7 @@ const fetchLogs = Effect.fn("workflow.fetchLogs")(function* (
   }
 
   if (jobId !== null) {
-    args.push("--log", "--job", String(jobId));
+    args.push(failedOnly ? "--log-failed" : "--log", "--job", String(jobId));
   } else if (failedOnly) {
     args.push("--log-failed");
   } else {
@@ -459,12 +459,13 @@ export function parseRawJobLogs(raw: string): LogEntry[] {
   let currentStep = "(unknown)";
 
   for (const rawLine of raw.split("\n")) {
-    const line = rawLine.replace(/\r$/, "");
+    const cliLine = rawLine.match(/^[^\t]+\t([^\t]+)\t(\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?.*)$/);
+    const line = (cliLine?.[2] ?? rawLine).replace(/^\uFEFF/, "").replace(/\r$/, "");
 
     // Step group markers
     const groupMatch = line.match(/##\[group\](.+)/);
     if (groupMatch) {
-      currentStep = groupMatch[1].trim();
+      if (!cliLine) currentStep = groupMatch[1].trim();
       continue;
     }
     if (line.includes("##[endgroup]")) continue;
@@ -472,7 +473,7 @@ export function parseRawJobLogs(raw: string): LogEntry[] {
     const cleaned = cleanLogLine(line);
     if (cleaned.length === 0) continue;
 
-    entries.push({ step: currentStep, message: cleaned });
+    entries.push({ step: cliLine?.[1] ?? currentStep, message: cleaned });
   }
 
   return entries;
@@ -512,7 +513,9 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
   const text = lines.join("\n");
   const find = (pattern: RegExp) => lines.find((line) => pattern.test(line)) ?? null;
   const testsStarted =
-    /\b(vitest|jest|pytest|go test|cargo test|test suites?|tests? (?:run|failed))\b/i.test(text)
+    /\b(vitest|jest|pytest|tunit|go test|cargo test|test suites?|tests? (?:run|failed)|running tests?)\b/i.test(
+      text,
+    )
       ? true
       : /\b(install|checkout|restore|setup)\b/i.test(text)
         ? false
@@ -526,6 +529,7 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
       "network",
       /econnreset|enotfound|network.*(?:error|timeout)|connection (?:reset|refused)|could not resolve host/i,
     ],
+    ["test_failure", /\[Test Failure\]|Assertion(?:Error|Exception)/i],
     ["timeout", /timed? ?out|deadline exceeded/i],
     ["lint_failure", /\b(?:eslint|oxlint|lint)\b.*(?:error|failed)|lint failed/i],
     ["build_failure", /\b(?:build|compile|typescript)\b.*(?:error|failed)|compilation failed/i],
@@ -604,7 +608,8 @@ const filterFailedStepEntries = Effect.fn("workflow.filterFailedStepEntries")(fu
 
   if (failedStepNames.size === 0) return entries;
 
-  return entries.filter((e) => failedStepNames.has(e.step));
+  const filtered = entries.filter((e) => failedStepNames.has(e.step));
+  return filtered.length > 0 ? filtered : entries;
 });
 
 export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
@@ -641,23 +646,28 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
 
   const jobId = opts.jobId ?? (yield* resolveJobId(opts.runId, opts.job, opts.repo));
 
-  // Fetch raw logs via API (follows 302 redirect automatically)
-  const raw = yield* gh
-    .runGh(["api", `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`])
-    .pipe(
-      Effect.map((r) => r.stdout),
-      Effect.catchTag("GitHubCommandError", () => {
-        // Fallback: use gh run view --log --job
-        return fetchLogs(opts.runId, false, jobId, opts.repo).pipe(Effect.map((r) => r.log));
-      }),
-    );
+  const apiLogs = Effect.suspend(() =>
+    gh
+      .runGh(["api", `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`])
+      .pipe(Effect.map((r) => r.stdout)),
+  );
+  const cliLogs = fetchLogs(opts.runId, opts.failedStepsOnly, jobId, opts.repo).pipe(
+    Effect.map((r) => r.log),
+  );
+  const raw = opts.failedStepsOnly
+    ? yield* cliLogs.pipe(
+        Effect.flatMap((log) => (log.trim() ? Effect.succeed(log) : apiLogs)),
+        Effect.catchTag("GitHubCommandError", () => apiLogs),
+      )
+    : yield* apiLogs.pipe(Effect.catchTag("GitHubCommandError", () => cliLogs));
 
   let entries = parseRawJobLogs(raw);
 
   if (opts.failedStepsOnly) {
     if (Array.isArray(opts.failedStepNames) && opts.failedStepNames.length > 0) {
       const wanted = new Set(opts.failedStepNames);
-      entries = entries.filter((e) => wanted.has(e.step));
+      const filtered = entries.filter((e) => wanted.has(e.step));
+      if (filtered.length > 0) entries = filtered;
     } else {
       entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
     }
