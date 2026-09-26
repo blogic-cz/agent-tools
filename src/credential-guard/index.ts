@@ -249,6 +249,26 @@ function getLeadingLiteralAssignments(
   return assignments;
 }
 
+function isSafeHerdrTabCreate(argv: string[]): boolean {
+  if (argv[0] !== "herdr" || argv[1] !== "tab" || argv[2] !== "create") return false;
+  const seen = new Set<string>();
+  for (let index = 3; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    const [option, ...attached] = arg.split("=");
+    if (option === "--focus" || option === "--no-focus") {
+      if (attached.length || seen.has("focus")) return false;
+      seen.add("focus");
+      continue;
+    }
+    if (!["--workspace", "--cwd", "--label"].includes(option ?? "") || seen.has(option ?? ""))
+      return false;
+    const value = attached.length ? attached.join("=") : argv[++index];
+    if (!value || (!attached.length && value.startsWith("--"))) return false;
+    seen.add(option ?? "");
+  }
+  return true;
+}
+
 function hasSafeLocalAssignmentCommands(
   command: string,
   assignments: Map<string, { value: string; end: number }>,
@@ -259,9 +279,14 @@ function hasSafeLocalAssignmentCommands(
   return parsed.pipelines.flat().every((words) => {
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./-]+)$/.exec(words[0] ?? "");
     if (assignment) {
-      return words.length === 1 && assignments.get(assignment[1] ?? "")?.value === assignment[2];
+      return (
+        words.length === 1 &&
+        assignment[1] !== "IFS" &&
+        assignments.get(assignment[1] ?? "")?.value === assignment[2]
+      );
     }
     const argv = unwrapStaticCommand(words);
+    if (isSafeHerdrTabCreate(argv)) return true;
     const name = argv[0]?.split("/").at(-1) ?? "";
     if (name === "cd") return isNavigationOperand(argv, "LOCALVALUE");
     if (name === "git") {
