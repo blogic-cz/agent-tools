@@ -547,17 +547,38 @@ function isLiteralTextProducer(argv: string[]): boolean {
   return isPassiveTextCommand(argv) && argv[0]?.split("/").at(-1) !== "head";
 }
 
+function awkProgramIndex(argv: string[]): number | undefined {
+  if (argv[0]?.split("/").at(-1) !== "awk") return undefined;
+  let index = 1;
+  while (index < argv.length) {
+    const arg = argv[index] ?? "";
+    if (arg === "--") return index + 1 < argv.length ? index + 1 : undefined;
+    if (arg === "-F") {
+      if (argv[index + 1] === undefined) return undefined;
+      index += 2;
+      continue;
+    }
+    if (arg.startsWith("-F") && arg.length > 2) {
+      index++;
+      continue;
+    }
+    if (arg.startsWith("-")) return undefined;
+    return index;
+  }
+  return undefined;
+}
+
 function isAwkExecution(argv: string[]): boolean {
   if (argv[0]?.split("/").at(-1) !== "awk") return false;
-  // Only a literal inline program establishes passive behavior. File/unknown options do not.
-  const program = argv[1];
+  // Only a literal inline program with known-safe options establishes passive behavior.
+  const index = awkProgramIndex(argv);
+  const program = index === undefined ? undefined : argv[index];
   return (
     !program ||
-    program.startsWith("-") ||
     /\b(?:system|getline|ENVIRON)\b|\||\b(?:print|printf)\b[^\n]*>|@(?:include|load)/.test(
       program,
     ) ||
-    argv.slice(2).some((arg) => arg.startsWith("-"))
+    argv.slice((index ?? -1) + 1).some((arg) => arg.startsWith("-"))
   );
 }
 

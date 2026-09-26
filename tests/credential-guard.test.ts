@@ -1521,6 +1521,38 @@ describe("static shell safety proofs", () => {
   });
 });
 
+describe("AWK option parsing", () => {
+  const guard = createCredentialGuard();
+
+  it.each([
+    'docker ps --format \'{{.Label "com.docker.compose.project"}}|{{.Image}}|{{.RunningFor}}\' | awk -F\'|\' \'{p=$1; if(p=="") p="(none:"$2")"; c[p]++; t[p]=$3} END {for (k in c) print c[k], k, t[k]}\' | sort -rn',
+    "awk -F'|' '{print $1, $2}'",
+    "awk -F '|' '{print $1, $2}'",
+    "awk -- '{print $1, $2}'",
+    "awk -F'|' '{print $1}' data.txt",
+  ])("allows inline AWK programs with safe field separator options: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "awk -f /tmp/program '{print $1, $2}'",
+    "awk --file=/tmp/program '{print $1, $2}'",
+    "awk -Z '{print $1, $2}'",
+    "awk -F'|' 'BEGIN {print ENVIRON[\"TOKEN\"]}'",
+    "awk --source='BEGIN {print ENVIRON[\"TOKEN\"]}' '{print $1}'",
+    "awk -F'|' 'BEGIN {system(\"printenv\")}'",
+    "awk 'BEGIN {ARGV[1]=\".env\"; ARGC=2} {print}'",
+    "awk '{getline x < \".env\"; print x}'",
+    "awk -F'|' '{getline x < \".env\"; print x}'",
+    "awk '{system(\"cat .env\")}'",
+    "awk -F'|' '{system(\"cat .env\")}'",
+    "awk -F'|' 'BEGIN {ARGV[1]=\".env\"; ARGC=2} {print}'",
+    "awk -F'|' '{print $1}' .env",
+  ])("keeps AWK execution and sensitive file checks fail closed: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+  });
+});
+
 describe("materialized options and inert variable uses", () => {
   const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_PANE_ID"] });
   it.each([
