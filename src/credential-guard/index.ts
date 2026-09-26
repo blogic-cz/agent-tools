@@ -299,12 +299,11 @@ function hasSensitivePathRedirect(
   command: string,
   isPathBlocked: (path: string) => boolean,
 ): boolean {
-  const lines = command.split(/\r?\n/);
-  const heredoc = /<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(lines[0] ?? "");
-  if (heredoc) {
-    const end = lines.findIndex((line, index) => index > 0 && line.trimStart() === heredoc[2]);
-    if (end >= 0)
-      command = [(lines[0] ?? "").replace(heredoc[0], ""), ...lines.slice(end + 1)].join("\n");
+  let heredoc = boundedHeredoc(command);
+  while (heredoc) {
+    if (!heredoc.closed) return true;
+    command = [heredoc.header, heredoc.following].join("\n");
+    heredoc = boundedHeredoc(command);
   }
   const parsed = parseStaticShellCommands(command, true);
   if (!parsed || typeof parsed === "string") return false;
@@ -917,9 +916,15 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
       const inspected = unwrapStaticCommand(inspectedArgv);
       const name = inspected[0]?.split("/").at(-1) ?? "";
       if (name === "bun" && inspected[1] === "run" && inspected[2] === "gh-tool") {
-        return inspected.some(
-          (arg, index) => arg === "--body-file" && isPathBlocked(inspected[index + 1] ?? ""),
-        );
+        return inspected.some((arg, index) => {
+          const path =
+            arg === "--body-file"
+              ? inspected[index + 1]
+              : arg.startsWith("--body-file=")
+                ? arg.slice("--body-file=".length)
+                : undefined;
+          return path !== undefined && (isPathBlocked(path) || isSensitivePath(path));
+        });
       }
       if (!readers.test(name)) return false;
       if (name === "rg" || name === "grep") {
@@ -1350,7 +1355,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         const match = blockedCliTools.find(({ name }) =>
           name === "curl (Azure DevOps)"
             ? executable === "curl" && argv.slice(1).join(" ").includes("dev.azure.com")
-            : name.startsWith("az")
+            : name === "az" || name === "az (Azure DevOps)"
               ? executable === "az" &&
                 (name !== "az (Azure DevOps)" ||
                   /^(?:devops|pipelines|repos|boards|artifacts)$/.test(argv[1] ?? ""))

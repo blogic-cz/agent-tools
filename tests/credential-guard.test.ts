@@ -1797,3 +1797,78 @@ describe("heredoc expansion boundary", () => {
     else expect(invoke).not.toThrow();
   });
 });
+
+describe("redirects around heredoc bodies", () => {
+  it.each([
+    {
+      command:
+        "mkdir -p /tmp/scratch\ntee /tmp/scratch/report.md <<'EOF'\nhello\nEOF\nprintf x > .env",
+      blocked: true,
+    },
+    {
+      command:
+        "mkdir -p /tmp/scratch\ntee /tmp/scratch/report.md <<'EOF'\nhello\nEOF\nprintf x > /tmp/scratch/output.txt",
+      blocked: false,
+    },
+    {
+      command:
+        "pwd\ntee /tmp/report.md <<'FIRST'\nhello\nFIRST\ntee /tmp/second.md <<'SECOND'\nworld\nSECOND\nprintf x > .env",
+      blocked: true,
+    },
+    {
+      command:
+        "pwd\ntee /tmp/report.md <<'FIRST'\nhello\nFIRST\ntee /tmp/second.md <<'SECOND'\nworld\nSECOND\nprintf x > /tmp/output.txt",
+      blocked: false,
+    },
+    { command: "pwd\ntee /tmp/report.md > .env <<'EOF'\nhello\nEOF", blocked: true },
+    { command: "printf x > .env\ntee /tmp/report.md <<'EOF'\nhello\nEOF", blocked: true },
+    { command: "pwd\ntee /tmp/report.md <<'EOF'\nprintf x > .env\nEOF", blocked: false },
+    { command: "pwd\ntee /tmp/report.md <<'EOF'\nhello", blocked: true },
+    { command: "pwd\ntee /tmp/report.md <<'EOF' > /tmp/output.txt\nhello\nEOF", blocked: true },
+  ])("preserves headers and following commands: $command", ({ command, blocked }) => {
+    const guard = createCredentialGuard();
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+});
+
+describe("custom CLI names and wrapper file operands", () => {
+  it.each([
+    "azcopy login --identity",
+    "rtk azcopy login --identity",
+    "rtk proxy azcopy login --identity",
+    "env -u CI command azcopy login --identity",
+    "CI=1 azcopy login --identity",
+  ])("preserves custom blocking for Azure-prefixed names: %s", (command) => {
+    const guard = createCredentialGuard({
+      additionalBlockedCliTools: [{ tool: "azcopy", suggestion: "agent-tools-azcopy" }],
+    });
+    expect(guard.getBlockedCliTool(command)).toEqual({
+      name: "azcopy",
+      wrapper: "agent-tools-azcopy",
+    });
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each([
+    { path: "leaked-credentials-notes.txt", blocked: true },
+    { path: "serviceCredentials.txt", blocked: true },
+    { path: ".env", blocked: true },
+    { path: "notes.md", blocked: false },
+    { path: ".agent/hooks/credential-guard.ts", blocked: false },
+    { path: "docs/credential-guard.md", blocked: false },
+  ])("applies shared body-file policy: $path", ({ path, blocked }) => {
+    const guard = createCredentialGuard();
+    for (const command of [
+      `cat ${path}`,
+      `bun run gh-tool pr create --body-file ${path}`,
+      `bun run gh-tool pr create --body-file=${path}`,
+    ]) {
+      expect(guard.isDangerousBashCommand(command)).toBe(blocked);
+      const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+      if (blocked) expect(invoke).toThrow();
+      else expect(invoke).not.toThrow();
+    }
+  });
+});
