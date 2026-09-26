@@ -30,6 +30,7 @@ const EXAMPLE_OPENAI_KEY = `${SK_PREFIX}${SK_BODY}`;
 
 // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
 const GENERIC_SECRET_VALUE = "my-super-" + "secret-password-12345-abcdef";
+const CREDENTIAL_GUARD_HOOK_PATH = ".agent/hooks/credential-guard.ts";
 
 describe("credential guard corpus", () => {
   const guard = createCredentialGuard();
@@ -392,6 +393,89 @@ describe("path traversal and evasion", () => {
 
 describe("dangerous bash command evasion", () => {
   it.each([
+    "cat ~/.kube/config",
+    "cat cert.p12",
+    "cat .sentryclirc",
+    "rtk proxy cat ~/.kube/config",
+  ])("uses canonical blocked paths for Bash reads: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+  });
+
+  it("uses configured blocked and allowed paths for Bash reads", () => {
+    const guard = createCredentialGuard({
+      additionalBlockedPaths: ["private/custom.dat"],
+      additionalAllowedPaths: ["private/public.dat"],
+    });
+    expect(guard.isDangerousBashCommand("cat private/custom.dat")).toBe(true);
+    expect(guard.isDangerousBashCommand("cat private/public.dat")).toBe(false);
+  });
+
+  it.each([
+    "rtk gh auth token",
+    "rtk proxy gh auth token",
+    "command gh auth token",
+    "echo start && rtk proxy gh auth token",
+  ])("blocks credential CLI through wrappers: %s", (command) => {
+    expect(getBlockedCliTool(command)).toEqual({ name: "gh", wrapper: "agent-tools-gh" });
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).toThrow("Direct gh usage blocked");
+  });
+
+  it("keeps external repository readonly gh exceptions per command and through wrappers", () => {
+    expect(
+      getBlockedCliTool(
+        "rtk gh issue list -R owner/repo ; rtk proxy gh pr view 42 --repo other/repo",
+      ),
+    ).toBeNull();
+    expect(getBlockedCliTool("rtk gh issue list -R owner/repo ; command gh auth token")).toEqual({
+      name: "gh",
+      wrapper: "agent-tools-gh",
+    });
+  });
+
+  it.each([
+    "env -u CI bun check.ts > /tmp/check.log 2>&1",
+    'herdr agent prompt worker "read the instruction" >/dev/null',
+    'herdr agent prompt worker "read the instruction" | head -c 40',
+    'herdr agent prompt worker "read the instruction" && git status --short',
+    `cat ${CREDENTIAL_GUARD_HOOK_PATH}`,
+    "jq '{a: .foo, b: .bar}' report.json",
+    'F=README.md; echo "$F"',
+    "echo PANE=$HERDR_PANE_ID",
+    "printf '%s\\n' \"PANE=$HERDR_PANE_ID\"",
+    "git status --short; echo SHA=$GIT_COMMIT",
+  ])("allows bounded non-secret command: %s", (command) => {
+    const guard = createCredentialGuard({
+      allowedEnvironmentVariables: ["HERDR_PANE_ID", "GIT_COMMIT"],
+    });
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "echo $UNKNOWN",
+    'echo "$TOKEN"; TOKEN=literal',
+    "echo ${!HERDR_PANE_ID}",
+    'echo "$(printenv HERDR_PANE_ID)"',
+    "echo ok > `printenv`",
+    "echo $HERDR_PANE_ID | sh",
+    'bun -e "console.log(process.env.HERDR_PANE_ID)"',
+    'herdr agent prompt worker "read $(cat .env)"',
+    "rtk gh auth token | head -c 4",
+    'F=README.md; true; F=.env; cat "$F"',
+    'F=README.md; eval "F=.env"; cat "$F"',
+    'F=README.md; source update-path.sh; cat "$F"',
+  ])("keeps dynamic or executable access blocked: %s", (command) => {
+    const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_PANE_ID"] });
+    expect(guard.isDangerousBashCommand(command) || guard.getBlockedCliTool(command) !== null).toBe(
+      true,
+    );
+  });
+
+  it.each([
     "printenv HERDR_ENV",
     "printenv -- HERDR_ENV",
     "printenv TEST_FLAG",
@@ -635,9 +719,7 @@ describe("dangerous bash command evasion", () => {
     "ls -la /tmp/post.* | awk '{print $5,$9}'",
     "cd /tmp && printf '%s\\n' '- note: blocks quoted {m,n} and --env' >> notes.md && tail -1 notes.md",
     "printf '%s\\n' 'Releases #1 (... `--env` flag ...).' > /tmp/rel.md; bun run gh-tool pr create --body-file /tmp/rel.md",
-    "for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done",
     "jq '{dependencies, peerDependencies}' package.json",
-    "herdr agent prompt worker-a-guard \"Please check `for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done` and `jq '{dependencies, peerDependencies}' package.json`.\"",
     "env -u CI bun check.ts module docs",
     "bun run fooOprintenv.ts",
     'echo "please cat .env carefully"',
@@ -648,6 +730,13 @@ describe("dangerous bash command evasion", () => {
       allowedEnvironmentVariables: ["HERDR_ENV", "TEST_FLAG", "WORKSPACE_LABEL"],
     });
     expect(guard.isDangerousBashCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done",
+    "herdr agent prompt worker-a-guard \"Please check `for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done` and `jq '{dependencies, peerDependencies}' package.json`.\"",
+  ])("denies dynamic loop operands and executable prompt substitutions: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
   });
 
   it("keeps configured dangerous patterns active for otherwise safe commands", () => {
@@ -1044,5 +1133,742 @@ describe("handleToolExecuteBefore tool name normalization", () => {
     expect(() =>
       guard.handleToolExecuteBefore({ tool: "mcp_read" }, { args: { filePath: "src/index.ts" } }),
     ).not.toThrow();
+  });
+});
+
+// Regression inputs are inspected by the hook only; none is executed by a shell.
+describe("static shell safety proofs", () => {
+  const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_PANE_ID"] });
+  it.each([
+    {
+      case: "approved value cannot choose printf options",
+      command: 'F=README.md; printf "$HERDR_PANE_ID" F .env; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "approved value cannot choose printf format",
+      command: 'F=README.md; printf -- "$HERDR_PANE_ID" F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "approved value as printf data",
+      command: 'printf -- "%s" "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "approved value cannot configure executable",
+      command: "LD_PRELOAD=$HERDR_PANE_ID rtk echo ok",
+      blocked: true,
+    },
+
+    {
+      case: "redirect before unsupported trailing syntax",
+      command: "echo x > .env\nprintf 'unterminated",
+      blocked: true,
+    },
+
+    { case: "local sort sensitive path", command: 'F=.env; sort "$F"', blocked: true },
+    { case: "local path suffix sensitive", command: 'F=/tmp; cut -c1-20 "$F/.env"', blocked: true },
+    {
+      case: "wrapper body file sensitive",
+      command: 'F=.env; bun run gh-tool pr create --body-file "$F"',
+      blocked: true,
+    },
+    { case: "nested canonical path", command: 'echo "$(cat ~/.kube/config)"', blocked: true },
+
+    {
+      case: "quote",
+      command: 'echo "it\'s $TOKEN"',
+      blocked: true,
+    },
+    {
+      case: "quote braced",
+      command: 'printf "%s" "it\'s ${TOKEN}"',
+      blocked: true,
+    },
+    {
+      case: "quote pipeline",
+      command: 'echo "it\'s $TOKEN" | head',
+      blocked: true,
+    },
+    {
+      case: "quote redirect",
+      command: 'echo "it\'s $TOKEN" > /tmp/x',
+      blocked: true,
+    },
+    {
+      case: "literal redirect",
+      command: 'echo "a > b"',
+      blocked: false,
+    },
+    {
+      case: "literal greater",
+      command: "jq '.a > .b' report.json",
+      blocked: false,
+    },
+    {
+      case: "literal prompt",
+      command: 'herdr agent prompt worker "use a > b"',
+      blocked: false,
+    },
+    {
+      case: "quoted redirect",
+      command: 'echo ok > "/tmp/x"',
+      blocked: false,
+    },
+    {
+      case: "comment kube",
+      command: "cat ~/.kube/config # read config",
+      blocked: true,
+    },
+    {
+      case: "comment p12",
+      command: "cat cert.p12 # read certificate",
+      blocked: true,
+    },
+    {
+      case: "comment sentry",
+      command: "cat .sentryclirc # read config",
+      blocked: true,
+    },
+    {
+      case: "substitution kube",
+      command: "cat ~/.kube/config $(true)",
+      blocked: true,
+    },
+    {
+      case: "redirect input kube",
+      command: "cat < ~/.kube/config",
+      blocked: true,
+    },
+    {
+      case: "redirect input env",
+      command: 'cat < ".env"',
+      blocked: true,
+    },
+    {
+      case: "static jq kube",
+      command: "jq '{a: .users}' ~/.kube/config",
+      blocked: true,
+    },
+    {
+      case: "wrapped env gh",
+      command: "env -u CI rtk gh auth token",
+      blocked: true,
+    },
+    {
+      case: "wrapped command gh",
+      command: "rtk command gh auth token",
+      blocked: true,
+    },
+    {
+      case: "comment wrapped gh",
+      command: "rtk gh auth token # auth",
+      blocked: true,
+    },
+    {
+      case: "leading assignment gh",
+      command: "CI=1 rtk gh auth token",
+      blocked: true,
+    },
+    {
+      case: "quoted cli literal",
+      command: "echo 'gh auth token'",
+      blocked: false,
+    },
+    {
+      case: "quoted chain literal",
+      command: "echo '; gh auth token'",
+      blocked: false,
+    },
+    {
+      case: "sed execution",
+      command: "F=README.md; sed -n '1e printenv' \"$F\"",
+      blocked: true,
+    },
+    {
+      case: "awk program option",
+      command: 'F=README.md; awk -f /tmp/program "$F"',
+      blocked: true,
+    },
+    {
+      case: "awk getline",
+      command: "echo printenv | awk 'BEGIN { getline x < \"/tmp/program\"; print x }'",
+      blocked: true,
+    },
+    {
+      case: "printf assigns",
+      command: 'F=README.md; printf -v F .env; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "printf name from local",
+      command: 'F=TOKEN; printf -v F %s .env; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "jq slurpfile",
+      command: "F=README.md; jq --rawfile x .env '{a: .x}' \"$F\"",
+      blocked: true,
+    },
+    {
+      case: "herdr jq slurpfile",
+      command: "herdr agent prompt worker 'review'; jq --rawfile x .env '{a: .x}' report.json",
+      blocked: true,
+    },
+    {
+      case: "herdr awk file",
+      command: "herdr agent prompt worker 'review' | awk -f /tmp/program",
+      blocked: true,
+    },
+    {
+      case: "herdr double quoted backtick",
+      command: 'herdr agent prompt worker "use `printenv`"',
+      blocked: true,
+    },
+    {
+      case: "herdr single quoted backtick",
+      command: "herdr agent prompt worker 'use `printenv`'",
+      blocked: false,
+    },
+    {
+      case: "heredoc unquoted env",
+      command: "cat <<EOF\n$TOKEN\nEOF",
+      blocked: true,
+    },
+    {
+      case: "heredoc quoted env",
+      command: "cat <<'EOF'\n$TOKEN\nEOF",
+      blocked: false,
+    },
+    {
+      case: "D1",
+      command: 'echo "$TOKEN"; TOKEN=literal',
+      blocked: true,
+    },
+    {
+      case: "D2",
+      command: "echo ok >`printenv`",
+      blocked: true,
+    },
+    {
+      case: "D3",
+      command: "awk '{print $1}' file.txt",
+      blocked: false,
+    },
+    {
+      case: "D4 quote",
+      command: "printf 'x;TOKEN=literal'; echo \"$TOKEN\"",
+      blocked: true,
+    },
+    {
+      case: "D4 command-local",
+      command: 'TOKEN=literal true; echo "$TOKEN"',
+      blocked: true,
+    },
+    {
+      case: "D4 conditional",
+      command: 'false && TOKEN=literal; echo "$TOKEN"',
+      blocked: true,
+    },
+    {
+      case: "D5 reassignment",
+      command: 'F=README.md; true; F=.env; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "D5 source",
+      command: 'F=README.md; source /tmp/set-f; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "D5 eval",
+      command: 'F=README.md; eval "F=.env"; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "allow pane",
+      command: 'echo "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "allow file",
+      command: 'F=README.md; cat "$F"',
+      blocked: false,
+    },
+    {
+      case: "jq decoy filter",
+      command: "jq -n --arg x '{a: .b}' '$ENV'",
+      blocked: true,
+    },
+    {
+      case: "jq decoy filter shorthand",
+      command: "jq -n --arg x '{a,b}' '$ENV'",
+      blocked: true,
+    },
+    {
+      case: "jq rawfile kube",
+      command: "jq --rawfile x ~/.kube/config '{a: .x}' report.json",
+      blocked: true,
+    },
+    {
+      case: "herdr jq decoy",
+      command: "herdr agent prompt worker 'review'; jq -n --arg x '{a: .b}' '$ENV'",
+      blocked: true,
+    },
+    {
+      case: "allowlist awk executable",
+      command: 'echo "$HERDR_PANE_ID" | awk -f /dev/stdin',
+      blocked: true,
+    },
+    {
+      case: "allowlist printf assigns",
+      command: 'printf -v F %s "$HERDR_PANE_ID"; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "literal prompt greater sensitive",
+      command: 'herdr agent prompt worker "compare foo > .env"',
+      blocked: false,
+    },
+    {
+      case: "literal sql comparator",
+      command: "bun run db-tool query --env dev --sql \"select x where x <> ''\"",
+      blocked: false,
+    },
+    {
+      case: "allowlist via file executor",
+      command: 'echo "$HERDR_PANE_ID" > /tmp/script; sh /tmp/script',
+      blocked: true,
+    },
+    {
+      case: "local via printf mutation echo",
+      command: 'F=README.md; printf -v F .env; echo "$F"; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "quoted sensitive redirect",
+      command: "printf x > .en''v",
+      blocked: true,
+    },
+    {
+      case: "literal dollar redirect",
+      command: "echo ok > '/tmp/$TOKEN'",
+      blocked: false,
+    },
+    {
+      case: "awk environment source",
+      command: 'echo "$HERDR_PANE_ID" | awk \'BEGIN {print ENVIRON["TOKEN"]}\' ',
+      blocked: true,
+    },
+    {
+      case: "printf attached variable option",
+      command: 'F=README.md; printf -vF .env; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "local reassigned by printf count",
+      command: "F=README.md; printf '%n' F; cat \"$F\"",
+      blocked: true,
+    },
+    {
+      case: "known env option with approved metadata",
+      command: "env -u CI rtk printenv HERDR_PANE_ID",
+      blocked: false,
+    },
+    {
+      case: "unknown env option cannot prove safety",
+      command: "env --unknown rtk printenv HERDR_PANE_ID",
+      blocked: true,
+    },
+    {
+      case: "redirect scope independent of approved echo",
+      command: 'herdr agent list 2>/dev/null | head; echo "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "selected jq JSON env fields",
+      command: "jq -r '.env.DISABLE_UPDATES' settings.json",
+      blocked: false,
+    },
+    {
+      case: "loading jq option after filter",
+      command: "herdr agent prompt worker 'review'; jq '{a: .b}' --from-file /tmp/program",
+      blocked: true,
+    },
+    {
+      case: "quoted operator with approved echo",
+      command: 'echo "it\'s $HERDR_PANE_ID > text"',
+      blocked: false,
+    },
+  ])("$case", ({ command, blocked }) => {
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+});
+
+describe("materialized options and inert variable uses", () => {
+  const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_PANE_ID"] });
+  it.each([
+    {
+      case: "unquoted navigation cannot inject git options",
+      command: "git -C $WORKTREE_ROOT status --short",
+      blocked: true,
+    },
+    {
+      case: "configured unquoted navigation cannot inject git options",
+      command: "git -C $HERDR_PANE_ID status --short",
+      blocked: true,
+    },
+    {
+      case: "quoted navigation and approved unquoted display",
+      command: 'cd "$WORKTREE_ROOT"; echo PANE=$HERDR_PANE_ID',
+      blocked: false,
+    },
+
+    {
+      case: "local printf option expansion",
+      command: 'O=-v; F=README.md; printf "$O" F .env; echo "$F"; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "local printf attached option expansion",
+      command: 'O=-vF; F=README.md; printf "$O" .env; echo "$F"; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "local awk option expansion",
+      command: 'O=-f; F=/tmp/program; echo "$F"; awk "$O" "$F"',
+      blocked: true,
+    },
+    {
+      case: "local printf concealed target",
+      command: 'O=-v; F=README.md; printf "$O" F .en%s v; echo "$F"; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "ambient home directory",
+      command: 'cd "$HOME"',
+      blocked: false,
+    },
+    {
+      case: "ambient pwd git metadata",
+      command: 'git -C "$PWD" status --short',
+      blocked: false,
+    },
+    {
+      case: "inert comment expansion",
+      command: "git status --short # $TOKEN",
+      blocked: false,
+    },
+    {
+      case: "active quoted hash expansion",
+      command: 'echo "# $TOKEN"',
+      blocked: true,
+    },
+    {
+      case: "active after comment newline",
+      command: 'git status --short # note\necho "$TOKEN"',
+      blocked: true,
+    },
+    {
+      case: "printf approved data",
+      command: 'printf -- "%s" "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "printf approved option",
+      command: 'F=README.md; printf "$HERDR_PANE_ID" F .env; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "printf approved format",
+      command: 'F=README.md; printf -- "$HERDR_PANE_ID" F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "approved wrapper config",
+      command: "LD_PRELOAD=$HERDR_PANE_ID rtk echo ok",
+      blocked: true,
+    },
+    {
+      case: "quoted static printf data",
+      command: "printf '%s' '-version %n'",
+      blocked: false,
+    },
+    {
+      case: "literal printf with approved data",
+      command: 'printf -- "%s" "-version" "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "sensitive jq static filter options",
+      command: "jq -rn '{a: .b}' ~/.kube/config",
+      blocked: true,
+    },
+    {
+      case: "jq real ENV filter",
+      command: "jq -n '$ENV'",
+      blocked: true,
+    },
+    {
+      case: "nested read canonical",
+      command: 'echo "$(cat ~/.kube/config)"',
+      blocked: true,
+    },
+    {
+      case: "redirect concatenation",
+      command: "echo ok > '.en'v",
+      blocked: true,
+    },
+    {
+      case: "redirect escaped literal dollar",
+      command: 'echo ok > "/tmp/\\$TOKEN"',
+      blocked: false,
+    },
+    {
+      case: "source path with comment",
+      command: "cat .agent/hooks/credential-guard.ts # source",
+      blocked: false,
+    },
+    {
+      case: "ordinary named navigation variable",
+      command: 'cd "$WORKTREE_ROOT"',
+      blocked: false,
+    },
+    {
+      case: "ordinary named git metadata variable",
+      command: 'git -C "$WORKTREE_ROOT" status --short',
+      blocked: false,
+    },
+    {
+      case: "navigation variable not display permission",
+      command: 'cd "$WORKTREE_ROOT"; echo "$WORKTREE_ROOT"',
+      blocked: true,
+    },
+    {
+      case: "navigation variable not executor permission",
+      command: '"$WORKTREE_ROOT" --help',
+      blocked: true,
+    },
+    {
+      case: "navigation variable not option permission",
+      command: 'git "$WORKTREE_ROOT" status --short',
+      blocked: true,
+    },
+    {
+      case: "navigation variable not code permission",
+      command: 'sh -c "$WORKTREE_ROOT"',
+      blocked: true,
+    },
+    {
+      case: "navigation variable not file permission",
+      command: 'cat "$WORKTREE_ROOT"',
+      blocked: true,
+    },
+    {
+      case: "navigation variable not redirect permission",
+      command: 'echo ok > "$WORKTREE_ROOT"',
+      blocked: true,
+    },
+    {
+      case: "navigation variable not wrapper configuration",
+      command: "LD_PRELOAD=$WORKTREE_ROOT git status --short",
+      blocked: true,
+    },
+    {
+      case: "quoted hash adjacent to word is active",
+      command: 'echo "text"# $TOKEN',
+      blocked: true,
+    },
+    {
+      case: "hash inside word is active",
+      command: "echo text# $TOKEN",
+      blocked: true,
+    },
+    {
+      case: "comment after separator is inert",
+      command: "git status;# $TOKEN",
+      blocked: false,
+    },
+    {
+      case: "navigation and inert comment",
+      command: 'cd "$WORKTREE_ROOT" # $TOKEN',
+      blocked: false,
+    },
+    {
+      case: "local printf format mutation",
+      command: 'O=%n; F=README.md; printf "$O" F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "local printf width format mutation",
+      command: 'O=%5n; F=README.md; printf "$O" F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "printf numeric width mutation",
+      command: 'F=README.md; printf "%5n" F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "printf flags width mutation",
+      command: 'F=README.md; printf "%+5n" F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "printf star width mutation",
+      command: 'F=README.md; printf "%*n" 5 F; cat "$F"',
+      blocked: true,
+    },
+    {
+      case: "printf data percent n stays inert",
+      command: 'printf -- "%s" "%n -v" "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "printf escaped percent n stays inert",
+      command: 'printf -- "%%n %s" "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+    {
+      case: "local printf static data stays inert",
+      command: 'F=README.md; printf "%s" "-v %n" "$F"; cat "$F"',
+      blocked: false,
+    },
+    {
+      case: "local value does not alter approved format proof",
+      command: 'O=-v; printf "$O" F "%s" "$HERDR_PANE_ID"',
+      blocked: true,
+    },
+    {
+      case: "configured variable navigation is also inert",
+      command: 'cd "$HERDR_PANE_ID"',
+      blocked: false,
+    },
+  ])("$case", ({ command, blocked }) => {
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+});
+
+describe("RTK file-reader normalization", () => {
+  it.each([
+    { command: "rtk read .env", blocked: true },
+    { command: "rtk read ~/.kube/config", blocked: true },
+    { command: "rtk read cert.p12", blocked: true },
+    { command: "rtk read README.md", blocked: false },
+    { command: "read F", blocked: false },
+    { command: 'F=README.md; read F; cat "$F"', blocked: true },
+  ])("checks the actual reader: $command", ({ command, blocked }) => {
+    const guard = createCredentialGuard();
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+});
+
+describe("heredoc expansion boundary", () => {
+  it.each([
+    { command: "cat <<EOF # note\n# $TOKEN\nEOF", blocked: true },
+    { command: "pwd\ncat <<EOF\n# $TOKEN\nEOF", blocked: true },
+    { command: "herdr agent prompt w 'cat <<EOF'", blocked: false },
+    { command: 'git status # cat <<EOF\necho "$TOKEN"', blocked: true },
+    { command: "cat <<'EOF' # note\n# $TOKEN\nEOF", blocked: false },
+    { command: "cat <<'A'\n# $TOKEN\nA\ncat <<B\n# $TOKEN\nB", blocked: true },
+
+    { command: "cat <<EOF\n# $TOKEN\nEOF", blocked: true },
+    { command: "cat <<EOF\nit's $TOKEN\nEOF", blocked: true },
+    { command: 'cat <<EOF\n"$TOKEN"\nEOF', blocked: true },
+    { command: "cat <<EOF\n# `unknown-command`\nEOF", blocked: true },
+    { command: "cat <<'EOF'\n# $TOKEN\nEOF", blocked: false },
+    { command: "cat <<'EOF'\nit's $TOKEN\nEOF", blocked: false },
+    { command: "cat <<'EOF'\n# $TOKEN\nEOF\necho \"$TOKEN\"", blocked: true },
+    { command: "cat <<'EOF'\nit's $TOKEN\nEOF\necho \"$TOKEN\"", blocked: true },
+    { command: "cat <<'EOF'\n# $TOKEN\nEOF\ngit status --short", blocked: false },
+    { command: 'cat <<EOF\nplain text\nEOF\necho "$TOKEN"', blocked: true },
+    { command: "cat <<-EOF\n\t# $TOKEN\n\tEOF", blocked: true },
+  ])("checks heredoc data and following commands: $command", ({ command, blocked }) => {
+    const guard = createCredentialGuard();
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+});
+
+describe("redirects around heredoc bodies", () => {
+  it.each([
+    {
+      command:
+        "mkdir -p /tmp/scratch\ntee /tmp/scratch/report.md <<'EOF'\nhello\nEOF\nprintf x > .env",
+      blocked: true,
+    },
+    {
+      command:
+        "mkdir -p /tmp/scratch\ntee /tmp/scratch/report.md <<'EOF'\nhello\nEOF\nprintf x > /tmp/scratch/output.txt",
+      blocked: false,
+    },
+    {
+      command:
+        "pwd\ntee /tmp/report.md <<'FIRST'\nhello\nFIRST\ntee /tmp/second.md <<'SECOND'\nworld\nSECOND\nprintf x > .env",
+      blocked: true,
+    },
+    {
+      command:
+        "pwd\ntee /tmp/report.md <<'FIRST'\nhello\nFIRST\ntee /tmp/second.md <<'SECOND'\nworld\nSECOND\nprintf x > /tmp/output.txt",
+      blocked: false,
+    },
+    { command: "pwd\ntee /tmp/report.md > .env <<'EOF'\nhello\nEOF", blocked: true },
+    { command: "printf x > .env\ntee /tmp/report.md <<'EOF'\nhello\nEOF", blocked: true },
+    { command: "pwd\ntee /tmp/report.md <<'EOF'\nprintf x > .env\nEOF", blocked: false },
+    { command: "pwd\ntee /tmp/report.md <<'EOF'\nhello", blocked: true },
+    { command: "pwd\ntee /tmp/report.md <<'EOF' > /tmp/output.txt\nhello\nEOF", blocked: true },
+  ])("preserves headers and following commands: $command", ({ command, blocked }) => {
+    const guard = createCredentialGuard();
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+});
+
+describe("custom CLI names and wrapper file operands", () => {
+  it.each([
+    "azcopy login --identity",
+    "rtk azcopy login --identity",
+    "rtk proxy azcopy login --identity",
+    "env -u CI command azcopy login --identity",
+    "CI=1 azcopy login --identity",
+  ])("preserves custom blocking for Azure-prefixed names: %s", (command) => {
+    const guard = createCredentialGuard({
+      additionalBlockedCliTools: [{ tool: "azcopy", suggestion: "agent-tools-azcopy" }],
+    });
+    expect(guard.getBlockedCliTool(command)).toEqual({
+      name: "azcopy",
+      wrapper: "agent-tools-azcopy",
+    });
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each([
+    { path: "leaked-credentials-notes.txt", blocked: true },
+    { path: "serviceCredentials.txt", blocked: true },
+    { path: ".env", blocked: true },
+    { path: "notes.md", blocked: false },
+    { path: ".agent/hooks/credential-guard.ts", blocked: false },
+    { path: "docs/credential-guard.md", blocked: false },
+  ])("applies shared body-file policy: $path", ({ path, blocked }) => {
+    const guard = createCredentialGuard();
+    for (const command of [
+      `cat ${path}`,
+      `bun run gh-tool pr create --body-file ${path}`,
+      `bun run gh-tool pr create --body-file=${path}`,
+    ]) {
+      expect(guard.isDangerousBashCommand(command)).toBe(blocked);
+      const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+      if (blocked) expect(invoke).toThrow();
+      else expect(invoke).not.toThrow();
+    }
   });
 });
