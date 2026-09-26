@@ -634,8 +634,9 @@ Claude Code uses shell command hooks. The package ships a ready-made wrapper scr
 
 That's it. The hook reads tool input from stdin, runs the guard, and exits with code 2 (blocked + reason on stderr) or 0 (allowed).
 
-The guard permits static `printenv` reads only for exact names in `credentialGuard.allowedEnvironmentVariables`. The default list is empty. Multiple names are allowed only when each name is approved.
-It recognizes `rtk` and `rtk proxy` prefixes and checks each command in a pipeline or chain.
+The guard permits static `printenv` reads and simple `echo`/`printf` expansions only for exact names in `credentialGuard.allowedEnvironmentVariables`. The default list is empty. Multiple names are allowed only when each name is approved. Leading standalone literal assignments such as `F=README.md; cat "$F"` work in supported static commands. Conditional assignments, loop variables, mutation such as `printf -v`, and unknown commands cannot establish that proof. Use a literal path or a leading semicolon-terminated assignment for these cases. Approved environment values may be displayed, but redirecting their pipeline or passing them to an executor stays blocked.
+Ordinary navigation operands such as `cd "$HOME"` and `git -C "$WORKTREE_ROOT" status --short` do not need display permission. This does not authorize printing those values, using them as code/options, or reading unknown file paths. In `printf`, approved values belong in data arguments after a fixed nonmutating format, for example `printf -- '%s' "$WORKSPACE_LABEL"`.
+It recognizes `rtk`, `rtk proxy`, `command`, and supported `env` prefixes and checks each command in a pipeline or chain. Quoted filenames, comments, and redirects retain the sensitive-path checks. Jq object selectors and inline awk programs qualify only when their actual program and options establish passive behavior.
 Literal environment-command text in `rg`, `grep`, `git grep`, `echo`, and `printf` is allowed. In pipelines, every other command must be a known passive text command or an approved static environment read.
 Each pipeline is checked separately from statements joined by `;`, `&&`, or `||`.
 Execution options, other environment reads, and environment reads in dynamic or unsupported shell syntax stay blocked. Custom dangerous-command patterns still apply to the complete input.
