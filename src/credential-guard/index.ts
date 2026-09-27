@@ -414,7 +414,6 @@ function parseStaticShellCommands(
   return { pipelines, redirects };
 }
 
-/** Shared identity for refusal paths, including versioned/free-threaded Python and Windows names. */
 /** A lexical binding proof, preserving shell quotes and rejecting every other expansion. */
 function literalBindingText(
   command: string,
@@ -700,6 +699,7 @@ function staticPackageInventory(program: string): string[] | undefined {
   return bin.test(suffix) || scripts.test(suffix) ? paths : undefined;
 }
 
+/** Shared identity for refusal paths, including versioned/free-threaded Python and Windows names. */
 function inlineRuntimeKind(executable: string | undefined): "python" | "node" | "bun" | undefined {
   const name =
     executable
