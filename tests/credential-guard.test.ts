@@ -1,4 +1,5 @@
 import { describe, expect, it, test } from "vitest";
+import { spawnSync } from "node:child_process";
 import corpus from "./fixtures/credential-guard-corpus.json";
 
 import {
@@ -27,6 +28,7 @@ const EXAMPLE_SCM_TOKEN = `${GHP_PREFIX}${GHP_BODY}`;
 const SK_PREFIX = "sk-";
 const SK_BODY = "x".repeat(48);
 const EXAMPLE_OPENAI_KEY = `${SK_PREFIX}${SK_BODY}`;
+const SYNTHETIC_HANDLER_TOKEN = `ghp_${"A".repeat(36)}`;
 
 // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
 const GENERIC_SECRET_VALUE = "my-super-" + "secret-password-12345-abcdef";
@@ -37,6 +39,84 @@ describe("credential guard corpus", () => {
 
   it.each(corpus)("$label: $command", ({ command, label }) => {
     expect(guard.isDangerousBashCommand(command)).toBe(label !== "FP");
+  });
+});
+
+describe("credential guard handler error redaction", () => {
+  it("redacts credentials from blocked Bash, Read, and Write errors", () => {
+    const guard = createCredentialGuard();
+    const cases = [
+      () =>
+        guard.handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command: `cat .env; echo ${SYNTHETIC_HANDLER_TOKEN}` } },
+        ),
+      () =>
+        guard.handleToolExecuteBefore(
+          { tool: "Read" },
+          { args: { filePath: `/workspace/secrets/${SYNTHETIC_HANDLER_TOKEN}.txt` } },
+        ),
+      () =>
+        guard.handleToolExecuteBefore(
+          { tool: "Write" },
+          {
+            args: {
+              filePath: "src/example.ts",
+              content: `const token = "${SYNTHETIC_HANDLER_TOKEN}";`,
+            },
+          },
+        ),
+    ];
+
+    for (const invoke of cases) {
+      let message = "";
+      try {
+        invoke();
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toContain("[REDACTED]");
+      expect(message).not.toContain(SYNTHETIC_HANDLER_TOKEN);
+    }
+  });
+
+  it("redacts process environment values and protects raw adapter error output", () => {
+    const envName = "AGENT_TOOLS_SYNTHETIC_AUTH_TOKEN";
+    const envValue = "synthetic-auth-value-0123456789";
+    const previousValue = process.env[envName];
+    process.env[envName] = envValue;
+    try {
+      let message = "";
+      try {
+        createCredentialGuard().handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command: `cat .env; echo ${envValue}` } },
+        );
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toContain("[REDACTED]");
+      expect(message).not.toContain(envValue);
+    } finally {
+      if (previousValue === undefined) delete process.env[envName];
+      else process.env[envName] = previousValue;
+    }
+
+    const result = spawnSync(
+      "bun",
+      [
+        "-e",
+        `import { createCredentialGuard } from "./src/credential-guard/index.ts"; const token = process.env.SYNTHETIC_TOKEN; try { createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args: { command: "cat .env; echo " + token } }); } catch (error) { process.stderr.write(error.message); }`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, SYNTHETIC_TOKEN: SYNTHETIC_HANDLER_TOKEN },
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("[REDACTED]");
+    expect(result.stderr).not.toContain(SYNTHETIC_HANDLER_TOKEN);
   });
 });
 

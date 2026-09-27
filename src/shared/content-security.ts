@@ -1,4 +1,4 @@
-import { findSecretMatches } from "#guard";
+import { findSecretMatches } from "./credential-patterns";
 
 const SENSITIVE_ENV_NAME =
   /(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|PSK)/i;
