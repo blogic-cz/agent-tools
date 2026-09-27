@@ -62,6 +62,29 @@ const configWith = (
   platform ? ({ azurePlatform: platform } as AgentToolsConfig) : ({} as AgentToolsConfig);
 
 describe("AzService", () => {
+  it.effect("refuses credential-bearing command arguments before spawning az", () =>
+    Effect.gen(function* () {
+      const observed: string[][] = [];
+      const layer = createServiceLayer(
+        configWith({ default: { subscription: SUBSCRIPTION } }),
+        observed,
+      );
+      const token = `ghp_${"A".repeat(36)}`;
+      const splitToken = `ghp_${"A".repeat(18)}'${"A".repeat(18)}'`;
+      const result = yield* Effect.gen(function* () {
+        const az = yield* AzService;
+        return yield* az.runCommand(`vm list --query ${splitToken}`);
+      }).pipe(Effect.result, Effect.provide(layer));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result) && result.failure._tag === "AzSecurityError") {
+        expect(result.failure.message).toContain("credential pattern");
+        expect(result.failure.command).not.toContain(token);
+      }
+      expect(observed).toHaveLength(0);
+    }),
+  );
+
   describe("subscription pinning", () => {
     it.effect("appends the configured subscription to every spawned command", () =>
       Effect.gen(function* () {

@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { redactSensitiveText } from "./content-security";
 
 // eslint-disable-next-line import/no-relative-parent-imports -- package.json lives at project root, outside src/
 import pkg from "../../package.json" with { type: "json" };
@@ -27,6 +28,6 @@ export const checkEffectVersion = async (): Promise<boolean> => {
 
   const error = effectVersionError(version);
   if (error === undefined) return true;
-  console.error(error);
+  console.error(redactSensitiveText(error));
   return false;
 };

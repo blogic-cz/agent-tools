@@ -14,6 +14,7 @@ import {
   VERSION,
 } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 import { K8sService, K8sServiceLayer } from "./service";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment, getToolConfig } from "#config";
 import type { K8sConfig } from "#config";
@@ -471,6 +472,7 @@ const mainCommand = Command.make("k8s-tool", {}).pipe(
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
 const MainLayer = K8sServiceLayer.pipe(
@@ -479,7 +481,7 @@ const MainLayer = K8sServiceLayer.pipe(
   Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = withAudit("k8s", cli).pipe(
+const program = withRedactedOutput(withAudit("k8s", cli)).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );

@@ -14,6 +14,11 @@ export { expandPath, runCommand } from "./bun";
 export { commonArgOptions, parseCommonArgs } from "./cli";
 
 export { renderCauseToStderr } from "./error-renderer";
+export {
+  redactSensitiveText,
+  redactSensitiveValue,
+  unsafeOutboundTextReason,
+} from "./content-security";
 
 export { dumpCommandSchema, makeSchemaCommand, type CommandSchema } from "./schema-dump";
 

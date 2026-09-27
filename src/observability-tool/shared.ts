@@ -5,6 +5,7 @@ import { ConfigService, getToolConfig } from "#config";
 import type { ObservabilityConfig } from "#config";
 
 import { ObservabilityToolError } from "./errors";
+import { unsafeOutboundTextReason } from "#shared/content-security";
 import type {
   DsQueryOpts,
   DsQueryResponse,
@@ -200,6 +201,45 @@ export function observabilityFetch<T>(
   path: string,
   init?: RequestInit,
 ): Effect.Effect<T, ObservabilityToolError> {
+  const rawBody = typeof init?.body === "string" ? init.body : "";
+  const url = `${config.url}${path}`;
+  let decodedUrl: string;
+  try {
+    decodedUrl = decodeURIComponent(url);
+  } catch {
+    return Effect.fail(
+      new ObservabilityToolError({
+        cause: new Error("Refusing malformed observability URL encoding."),
+      }),
+    );
+  }
+  const bodyText = [rawBody];
+  const appendJsonText = (value: unknown): void => {
+    if (typeof value === "string") {
+      bodyText.push(value);
+    } else if (Array.isArray(value)) {
+      value.forEach(appendJsonText);
+    } else if (typeof value === "object" && value !== null) {
+      for (const [key, nested] of Object.entries(value)) {
+        bodyText.push(key);
+        appendJsonText(nested);
+      }
+    }
+  };
+  try {
+    appendJsonText(JSON.parse(rawBody) as unknown);
+  } catch {
+    // Non-JSON request bodies are still checked as supplied above.
+  }
+  const unsafeReason = unsafeOutboundTextReason([url, decodedUrl, ...bodyText].join("\n"));
+  if (unsafeReason !== null) {
+    return Effect.fail(
+      new ObservabilityToolError({
+        cause: new Error(`Refusing to send observability request containing ${unsafeReason}.`),
+      }),
+    );
+  }
+
   return Effect.tryPromise({
     try: async () => {
       const headers = buildHeaders(config.token);
@@ -210,7 +250,7 @@ export function observabilityFetch<T>(
         });
       }
 
-      const response = await fetch(`${config.url}${path}`, {
+      const response = await fetch(url, {
         ...init,
         headers,
       });

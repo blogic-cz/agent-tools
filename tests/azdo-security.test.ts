@@ -1,7 +1,88 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect } from "vitest";
+import { it } from "@effect/vitest";
+import { Effect, Layer, Result } from "effect";
+import { ChildProcessSpawner } from "effect/unstable/process";
+
+import type { AgentToolsConfig } from "#config";
 
 import { ALLOWED_INVOKE_AREAS, BLOCKED_INVOKE_AREAS } from "#azdo/config";
 import { isCommandAllowed, isInvokeAllowed } from "#azdo/security";
+import { AzdoService } from "#azdo/service";
+import { ConfigService } from "#config";
+
+describe("AzdoService outbound content checks", () => {
+  it.effect("refuses credential-bearing pipeline parameters before spawning az", () => {
+    const observed: string[] = [];
+    const token = `ghp_${"A".repeat(36)}`;
+    const splitToken = `ghp_${"A".repeat(18)}'${"A".repeat(18)}'`;
+    const config = {
+      azure: {
+        default: { organization: "https://dev.azure.com/example", defaultProject: "project" },
+      },
+    } as AgentToolsConfig;
+    const spawner = ChildProcessSpawner.make((command) => {
+      observed.push((command as { command: string }).command);
+      return Effect.die("unexpected subprocess spawn");
+    });
+    const layer = AzdoService.layer.pipe(
+      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      Layer.provide(Layer.succeed(ConfigService, config)),
+    );
+
+    return Effect.gen(function* () {
+      const service = yield* AzdoService;
+      const result = yield* service
+        .runCommand(`pipelines run --id 123 --variables example=${splitToken}`)
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result) && result.failure._tag === "AzdoSecurityError") {
+        expect(result.failure.message).toContain("credential pattern");
+        expect(result.failure.command).not.toContain(token);
+      }
+      expect(observed).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("checks direct invoke parameters before spawning az", () => {
+    const observed: string[] = [];
+    const variable = "AGENT_TOOLS_AZDO_TOKEN";
+    const secret = 'quoted"\\token\nvalue';
+    const config = {
+      azure: {
+        default: { organization: "https://dev.azure.com/example", defaultProject: "project" },
+      },
+    } as AgentToolsConfig;
+    const spawner = ChildProcessSpawner.make((command) => {
+      observed.push((command as { command: string }).command);
+      return Effect.die("unexpected subprocess spawn");
+    });
+    const layer = AzdoService.layer.pipe(
+      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      Layer.provide(Layer.succeed(ConfigService, config)),
+    );
+
+    return Effect.gen(function* () {
+      const previous = process.env[variable];
+      process.env[variable] = secret;
+      try {
+        const service = yield* AzdoService;
+        const result = yield* service
+          .runInvoke({ area: "build", resource: "builds", queryParameters: { filter: secret } })
+          .pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result) && result.failure._tag === "AzdoSecurityError") {
+          expect(result.failure.message).toContain("credential from the process environment");
+        }
+        expect(observed).toEqual([]);
+      } finally {
+        if (previous === undefined) delete process.env[variable];
+        else process.env[variable] = previous;
+      }
+    }).pipe(Effect.provide(layer));
+  });
+});
 
 describe("azdo-tool security", () => {
   describe("isCommandAllowed", () => {

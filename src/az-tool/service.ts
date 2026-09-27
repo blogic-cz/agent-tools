@@ -11,6 +11,7 @@ import { isAzCommandAllowed } from "./security";
 import { ConfigService, getToolConfig } from "#config";
 import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { renderCommandLine } from "#shared/exec";
+import { unsafeOutboundTextReason } from "#shared/content-security";
 
 const DEFAULT_TIMEOUT_MS = 60000;
 
@@ -92,6 +93,14 @@ export class AzService extends Context.Service<
               hint:
                 securityCheck.hint ??
                 "Only read-only Azure platform commands are allowed. Use azdo-tool for Azure DevOps.",
+            });
+          }
+
+          const unsafeReason = unsafeOutboundTextReason(securityCheck.argv.join(" "));
+          if (unsafeReason !== null) {
+            return yield* new AzSecurityError({
+              message: `Refusing to send command containing ${unsafeReason}.`,
+              command: "[redacted]",
             });
           }
 

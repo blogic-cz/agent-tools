@@ -1,6 +1,7 @@
 import type { Effect } from "effect";
 
 import { Cause, Console } from "effect";
+import { redactSensitiveText } from "./content-security";
 
 const formatError = (error: unknown): string => {
   if (
@@ -42,7 +43,19 @@ const formatError = (error: unknown): string => {
 
 const formatCause = (cause: Cause.Cause<unknown>): string => {
   const firstFailure = cause.reasons.find(Cause.isFailReason);
-  if (firstFailure !== undefined) return formatError(firstFailure.error);
+  if (firstFailure !== undefined) {
+    if (
+      typeof firstFailure.error === "object" &&
+      firstFailure.error !== null &&
+      Reflect.get(firstFailure.error, "_tag") === "ShowHelp"
+    ) {
+      const errors = Reflect.get(firstFailure.error, "errors");
+      return Array.isArray(errors) && errors.length > 0
+        ? errors.map(formatError).join("; ")
+        : "Help requested";
+    }
+    return formatError(firstFailure.error);
+  }
 
   const firstDefect = cause.reasons.find(Cause.isDieReason);
   if (firstDefect !== undefined) {
@@ -56,4 +69,4 @@ const formatCause = (cause: Cause.Cause<unknown>): string => {
 };
 
 export const renderCauseToStderr = (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
-  Console.error(formatCause(cause));
+  Console.error(redactSensitiveText(formatCause(cause)));

@@ -29,6 +29,7 @@ import {
   VERSION,
 } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { LogsConfigError, LogsNotFoundError, LogsReadError, LogsTimeoutError } from "./errors";
 import { LogsService, LogsServiceLayer } from "./service";
@@ -227,11 +228,15 @@ const mainCommand = Command.make("logs-tool", {}).pipe(
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
-export const run = Command.runWith(mainCommand, {
+const runWithErrorsDisabled = Command.runWith(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
+export const run = (args: ReadonlyArray<string>) =>
+  withRedactedOutput(runWithErrorsDisabled(args)).pipe(Effect.tapCause(renderCauseToStderr));
 
 const MainLayer = LogsServiceLayer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
@@ -239,7 +244,7 @@ const MainLayer = LogsServiceLayer.pipe(
   Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = withAudit("logs", cli).pipe(
+const program = withRedactedOutput(withAudit("logs", cli)).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );

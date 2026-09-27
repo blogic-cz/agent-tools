@@ -22,6 +22,7 @@ import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { isKubectlCommandAllowed, isSafeLogPath } from "./security";
 import { parseKubeConfigView, selectKubeContext } from "./context";
+import { unsafeOutboundTextReason } from "#shared/content-security";
 
 export class K8sService extends Context.Service<
   K8sService,
@@ -248,6 +249,14 @@ export class K8sService extends Context.Service<
           argv: readonly string[],
           profile?: string,
         ) {
+          const unsafeReason = unsafeOutboundTextReason(argv.join(" "));
+          if (unsafeReason !== null) {
+            return yield* new K8sDangerousCommandError({
+              message: `Refusing to send command containing ${unsafeReason}.`,
+              command: "[redacted]",
+            });
+          }
+
           const k8sConfig = yield* requireK8sConfig(profile);
           const timeoutMs = k8sConfig.timeoutMs ?? 60000;
           const apiProbeTimeoutMs = k8sConfig.apiProbeTimeoutMs ?? 2000;
@@ -338,6 +347,14 @@ export class K8sService extends Context.Service<
           _env: Environment,
           profile?: string,
         ) {
+          const unsafeReason = unsafeOutboundTextReason(cmd);
+          if (unsafeReason !== null) {
+            return yield* new K8sDangerousCommandError({
+              message: `Refusing to send command containing ${unsafeReason}.`,
+              command: "[redacted]",
+            });
+          }
+
           // Security: block dangerous commands before execution
           const securityCheck = isKubectlCommandAllowed(cmd);
           if (!securityCheck.allowed || !securityCheck.argv) {
@@ -369,6 +386,14 @@ export class K8sService extends Context.Service<
           dryRun: boolean,
           profile?: string,
         ) {
+          const unsafeReason = unsafeOutboundTextReason(cmd);
+          if (unsafeReason !== null) {
+            return yield* new K8sDangerousCommandError({
+              message: `Refusing to send command containing ${unsafeReason}.`,
+              command: "[redacted]",
+            });
+          }
+
           // Security: block dangerous commands before execution (even dry-run)
           const securityCheck = isKubectlCommandAllowed(cmd);
           if (!securityCheck.allowed || !securityCheck.argv) {

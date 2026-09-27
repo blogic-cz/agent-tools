@@ -15,8 +15,16 @@ import type { MessageSummary, SessionResult, SessionSource } from "./types";
 
 import { ALL_SESSION_SOURCES } from "./types";
 
-import { makeSchemaCommand, formatOption, formatOutput, logText, VERSION } from "#shared";
+import {
+  makeSchemaCommand,
+  formatOption,
+  formatOutput,
+  logText,
+  renderCauseToStderr,
+  VERSION,
+} from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 import { ResolvedPaths, ResolvedPathsLayer } from "./config";
 import { SessionStorageNotFoundError } from "./errors";
 import { formatDate, SessionService, SessionServiceLayer } from "./service";
@@ -321,18 +329,25 @@ const mainCommand = Command.make("session-tool", {}).pipe(
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
-export const run = Command.runWith(mainCommand, {
+const runWithErrorsDisabled = Command.runWith(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
+export const run = (args: ReadonlyArray<string>) =>
+  withRedactedOutput(runWithErrorsDisabled(args)).pipe(Effect.tapCause(renderCauseToStderr));
 
 const MainLayer = AppLayer.pipe(
   Layer.provideMerge(BunServices.layer),
   Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = withAudit("session", cli).pipe(Effect.provide(MainLayer));
+const program = withRedactedOutput(withAudit("session", cli)).pipe(
+  Effect.provide(MainLayer),
+  Effect.tapCause(renderCauseToStderr),
+);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,

@@ -21,6 +21,7 @@ import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 import type { GhResult } from "#gh/service";
 import { logText } from "#shared";
+import { redactSensitiveText } from "#shared/content-security";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
 import { pollUntilResolved } from "#shared/poll-until-resolved";
@@ -114,14 +115,18 @@ const resolveMergeSha = Effect.fn("pr.resolveMergeSha")(function* (
     Effect.map((sha) => ({ sha, failed: false as const })),
     Effect.catch((error) =>
       Console.error(
-        `Warning: PR #${pr} was merged, but its merge commit SHA could not be read: ${error.message}`,
+        redactSensitiveText(
+          `Warning: PR #${pr} was merged, but its merge commit SHA could not be read: ${error.message}`,
+        ),
       ).pipe(Effect.as({ sha: null, failed: true as const })),
     ),
   );
 
   if (result.sha === null && !result.failed) {
     yield* Console.error(
-      `Warning: PR #${pr} was merged, but its merge commit SHA is still unknown after ${MERGE_SHA_WAIT_SECONDS}s.`,
+      redactSensitiveText(
+        `Warning: PR #${pr} was merged, but its merge commit SHA is still unknown after ${MERGE_SHA_WAIT_SECONDS}s.`,
+      ),
     );
   }
 
@@ -1088,7 +1093,9 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
                   if (error._tag !== "GitHubCommandError") {
                     return rollbackNote === ""
                       ? Effect.fail(error)
-                      : Console.error(rollbackNote.trim()).pipe(Effect.andThen(Effect.fail(error)));
+                      : Console.error(redactSensitiveText(rollbackNote.trim())).pipe(
+                          Effect.andThen(Effect.fail(error)),
+                        );
                   }
 
                   const stderr = error.stderr.toLowerCase();

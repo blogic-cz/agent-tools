@@ -1,8 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
+import { vi } from "vitest";
 
 import { ObservabilityToolError } from "#observability/errors";
-import { formatObservabilityError, requireTempoUid } from "#observability/shared";
+import {
+  formatObservabilityError,
+  observabilityDsQuery,
+  observabilityFetch,
+  requireTempoUid,
+} from "#observability/shared";
 import { searchTempoByQuery, summarizeSearchHits } from "#observability/trace";
 import type { ObservabilityEnvConfig } from "#observability/types";
 
@@ -28,6 +34,101 @@ describe("requireTempoUid", () => {
 
       expect(error).toBeInstanceOf(ObservabilityToolError);
       expect((error.cause as Error).message).toContain("No Tempo datasource found");
+    }),
+  );
+});
+
+describe("outbound content checks", () => {
+  it.effect("refuses credential-bearing query bodies before fetching Grafana", () =>
+    Effect.gen(function* () {
+      const fetch = vi.spyOn(globalThis, "fetch");
+      const token = `ghp_${"A".repeat(36)}`;
+      try {
+        const result = yield* observabilityDsQuery(
+          config(),
+          "loki",
+          "loki",
+          `{app="api"} |= "${token}"`,
+        ).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(formatObservabilityError(result.failure)).toContain("credential pattern");
+        }
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    }),
+  );
+
+  it.effect("checks URL encoded query content before fetching Grafana", () =>
+    Effect.gen(function* () {
+      const fetch = vi.spyOn(globalThis, "fetch");
+      const token = `ghp_${"A".repeat(36)}`;
+      try {
+        const result = yield* observabilityFetch(
+          config(),
+          `/api/search?q=${encodeURIComponent(token)}`,
+        ).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    }),
+  );
+
+  it.effect(
+    "checks decoded query body strings when JSON escaping changes an environment value",
+    () =>
+      Effect.gen(function* () {
+        const fetch = vi.spyOn(globalThis, "fetch");
+        const variable = "AGENT_TOOLS_CONTENT_TOKEN";
+        const previous = process.env[variable];
+        const secret = 'quoted"\\token\nvalue';
+        process.env[variable] = secret;
+        try {
+          for (const options of [{ from: secret }, { to: secret }]) {
+            const result = yield* observabilityDsQuery(
+              config(),
+              "loki",
+              "loki",
+              '{app="api"}',
+              options,
+            ).pipe(Effect.result);
+
+            expect(Result.isFailure(result)).toBe(true);
+          }
+          expect(fetch).not.toHaveBeenCalled();
+        } finally {
+          if (previous === undefined) delete process.env[variable];
+          else process.env[variable] = previous;
+          fetch.mockRestore();
+        }
+      }),
+  );
+
+  it.effect("keeps configured authorization headers out of payload scanning", () =>
+    Effect.gen(function* () {
+      const token = `ghp_${"A".repeat(36)}`;
+      const fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response(JSON.stringify({ results: {} }), { status: 200 }));
+      try {
+        const result = yield* observabilityFetch({ ...config(), token }, "/api/ds/query", {
+          method: "POST",
+          body: JSON.stringify({ queries: [{ expr: '{app="api"}' }] }),
+        }).pipe(Effect.result);
+
+        expect(Result.isSuccess(result)).toBe(true);
+        expect(fetch).toHaveBeenCalledOnce();
+        const init = fetch.mock.calls[0]?.[1];
+        expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${token}`);
+      } finally {
+        fetch.mockRestore();
+      }
     }),
   );
 });

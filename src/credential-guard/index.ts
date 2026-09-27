@@ -15,6 +15,11 @@
  */
 
 import type { CliToolOverride, CredentialGuardConfig } from "#config/types";
+import { redactSensitiveText } from "#shared/content-security";
+import { SECRET_PATTERNS } from "#shared/credential-patterns";
+
+export { findSecretMatches } from "#shared/credential-patterns";
+export { redactSensitiveText } from "#shared/content-security";
 
 // ============================================================================
 // TYPES
@@ -82,61 +87,6 @@ const DEFAULT_ALLOWED_PATH_PATTERNS: RegExp[] = [
   /\.env\.example$/,
   /\.env\.template$/,
   /\.env\.sample$/,
-];
-
-/** Patterns to detect secrets in content. */
-const SECRET_PATTERNS = [
-  {
-    name: "AWS Access Key",
-    pattern: /(?:AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}/,
-  },
-  {
-    name: "GitHub Token",
-    pattern: /gh[ps]_[A-Za-z0-9]{36}/,
-  },
-  {
-    name: "GitHub PAT",
-    pattern: /github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}/,
-  },
-  { name: "OpenAI Key", pattern: /sk-[A-Za-z0-9]{48}/ },
-  {
-    name: "Generic API Key",
-    pattern: /(?:api[_-]?key|apikey)["\s:=]+["']?([A-Za-z0-9_-]{20,})["']?/i,
-  },
-  {
-    name: "Generic Secret",
-    pattern:
-      /(?:secret|token|password|passwd|pwd)["  \t:=]+["']?(?!\$\{|process\.env|z\.|generate|create|read|get|fetch|import|export|const|function|return|Schema)[^\s"']{32,}["']?/i,
-  },
-  {
-    // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
-    name: "Priv" + "ate Key",
-    pattern: new RegExp("-----BEGIN.*PRIVATE KEY-----"),
-  },
-  {
-    name: "JWT Token",
-    pattern: /(?:["'=:\s]|^)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
-  },
-  {
-    name: "Azure SAS Token",
-    pattern: /[?&]sig=[A-Za-z0-9%+/=]{20,}/,
-  },
-  {
-    name: "GCP Service Account Key",
-    pattern: /"type"\s*:\s*"service_account"/,
-  },
-  {
-    name: "Slack Webhook URL",
-    pattern: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/,
-  },
-  {
-    name: "Discord Webhook URL",
-    pattern: /https:\/\/discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/,
-  },
-  {
-    name: "Database URL",
-    pattern: /(?:postgres(?:ql)?|mysql|mongodb):\/\/(?!\$\{)[^:]+:(?!\$\{)[^@]+@/,
-  },
 ];
 
 /**
@@ -1425,6 +1375,25 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function handleToolExecuteBefore(input: HookInput, output: HookOutput): void {
+    try {
+      enforceToolExecuteBefore(input, output);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const sanitized = redactSensitiveText(message);
+      if (error instanceof Error) {
+        if (sanitized !== message) {
+          error.message = sanitized;
+          if (error.stack) error.stack = error.stack.replace(message, sanitized);
+        }
+        throw error;
+      }
+      // Do not preserve an unsanitized non-Error value as the new error's cause.
+      // eslint-disable-next-line eslint/preserve-caught-error
+      throw new Error(sanitized);
+    }
+  }
+
+  function enforceToolExecuteBefore(input: HookInput, output: HookOutput): void {
     // Normalize tool name across platforms:
     // - AI coding agents pass capitalized: "Bash", "Read", "Write", "Edit"
     // - OpenCode MCP tools pass prefixed: "mcp_bash", "mcp_read", "mcp_write", "mcp_edit"
@@ -1453,7 +1422,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           if (detected) {
             throw new Error(
               `\u{1F6AB} Secret detected: Potential ${detected.name} found in content.\n\n` +
-                `Matched: ${detected.match}\n\n` +
+                `Matched: [REDACTED]\n\n` +
                 `Never commit secrets to code. Use environment variables or secret managers.\n\n` +
                 `Think this is a false positive? Review the project repository, fix the pattern, and submit a PR.`,
             );

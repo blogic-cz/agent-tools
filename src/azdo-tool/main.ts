@@ -13,6 +13,7 @@ import {
   VERSION,
 } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 import {
   findFailedJobs,
   getBuildJobSummary,
@@ -204,6 +205,7 @@ Raw az wrapper:
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
 const MainLayer = AzdoServiceLayer.pipe(
@@ -212,7 +214,7 @@ const MainLayer = AzdoServiceLayer.pipe(
   Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = withAudit("azdo", cli).pipe(
+const program = withRedactedOutput(withAudit("azdo", cli)).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );

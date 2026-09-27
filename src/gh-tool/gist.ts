@@ -1,9 +1,15 @@
 import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { formatOption, logFormatted } from "#shared";
-import { isSensitivePath, resolveOptionalTextInput, validateOutboundFile } from "#gh/text-input";
+import {
+  isSensitivePath,
+  readValidatedOutboundFile,
+  resolveOptionalTextInput,
+} from "#gh/text-input";
 import { GitHubCommandError } from "./errors";
 import { GitHubService } from "./service";
 
@@ -118,29 +124,13 @@ const validateFilePath = (path: string, command: string) =>
 // `gh gist create/edit` read content from files only; inline --body is staged in a temp file
 // whose basename becomes the gist filename.
 const stageBody = Effect.fn("gist.stageBody")(function* (opts: {
-  body: string;
+  body: string | Uint8Array;
   filename: string;
   command: string;
 }) {
   const directory = yield* Effect.acquireRelease(
     Effect.tryPromise({
-      try: async () => {
-        const proc = Bun.spawn(
-          ["mktemp", "-d", join(process.env.TMPDIR ?? "/tmp", "gh-tool-gist-XXXXXX")],
-          { stdout: "pipe", stderr: "pipe" },
-        );
-        const [exitCode, stdout, stderr] = await Promise.all([
-          proc.exited,
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-        ]);
-
-        if (exitCode !== 0) {
-          throw new Error(stderr.trim() || `mktemp exited with code ${exitCode}`);
-        }
-
-        return stdout.trim();
-      },
+      try: () => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "gh-tool-gist-")),
       catch: (error) =>
         inputError(
           `Failed to stage gist content: ${error instanceof Error ? error.message : String(error)}`,
@@ -149,20 +139,14 @@ const stageBody = Effect.fn("gist.stageBody")(function* (opts: {
     }),
     (tempDirectory) =>
       Effect.tryPromise({
-        try: async () => {
-          const proc = Bun.spawn(["rm", "-rf", tempDirectory], {
-            stdout: "ignore",
-            stderr: "ignore",
-          });
-          await proc.exited;
-        },
+        try: () => rm(tempDirectory, { recursive: true, force: true }),
         catch: () => undefined,
       }).pipe(Effect.ignore),
   );
   const path = join(directory, opts.filename);
 
   yield* Effect.tryPromise({
-    try: () => Bun.write(path, opts.body),
+    try: () => writeFile(path, opts.body),
     catch: (error) =>
       inputError(
         `Failed to stage gist content: ${error instanceof Error ? error.message : String(error)}`,
@@ -293,45 +277,55 @@ export const createGist = Effect.fn("gist.createGist")(function* (opts: {
   public: boolean;
 }) {
   const gh = yield* GitHubService;
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const snapshots: string[] = [];
+      for (const path of opts.paths) {
+        const validated = yield* readValidatedOutboundFile(path, "gh-tool gist create");
+        const filename = path.split(/[\\/]/).at(-1) ?? path;
+        snapshots.push(
+          yield* stageBody({ body: validated.bytes, filename, command: "gh-tool gist create" }),
+        );
+      }
 
-  for (const path of opts.paths) yield* validateOutboundFile(path, "gh-tool gist create");
+      const args = ["gist", "create", ...snapshots];
 
-  const args = ["gist", "create", ...opts.paths];
+      if (opts.description !== null) {
+        args.push("--desc", opts.description);
+      }
 
-  if (opts.description !== null) {
-    args.push("--desc", opts.description);
-  }
+      if (opts.public) {
+        args.push("--public");
+      }
 
-  if (opts.public) {
-    args.push("--public");
-  }
+      const result = yield* gh.runGh(args);
+      const url =
+        result.stdout
+          .trim()
+          .split("\n")
+          .map((line) => line.trim())
+          .findLast((line) => line.startsWith("https://")) ?? "";
 
-  const result = yield* gh.runGh(args);
-  const url =
-    result.stdout
-      .trim()
-      .split("\n")
-      .map((line) => line.trim())
-      .findLast((line) => line.startsWith("https://")) ?? "";
+      if (url === "") {
+        return yield* Effect.fail(
+          inputError("gh gist create did not return a gist URL", "gh-tool gist create"),
+        );
+      }
 
-  if (url === "") {
-    return yield* Effect.fail(
-      inputError("gh gist create did not return a gist URL", "gh-tool gist create"),
-    );
-  }
+      const created: GistCreateResult = {
+        created: true,
+        id: url.split("/").at(-1) ?? "",
+        url,
+        public: opts.public,
+        files: opts.paths.map((path) => path.split(/[\\/]/).at(-1) ?? path),
+      };
 
-  const created: GistCreateResult = {
-    created: true,
-    id: url.split("/").at(-1) ?? "",
-    url,
-    public: opts.public,
-    files: opts.paths.map((path) => path.split("/").at(-1) ?? path),
-  };
-
-  return created;
+      return created;
+    }),
+  );
 });
 
-const editGist = Effect.fn("gist.editGist")(function* (opts: {
+export const editGist = Effect.fn("gist.editGist")(function* (opts: {
   id: string;
   description: string | null;
   add: string | null;
@@ -341,15 +335,13 @@ const editGist = Effect.fn("gist.editGist")(function* (opts: {
 }) {
   const gh = yield* GitHubService;
 
-  for (const path of [opts.sourcePath, opts.add]) {
-    if (path !== null) yield* validateOutboundFile(path, "gh-tool gist edit");
-  }
-
   const args = ["gist", "edit", opts.id];
   const changes: string[] = [];
 
   if (opts.sourcePath !== null) {
-    args.push(opts.sourcePath);
+    const validated = yield* readValidatedOutboundFile(opts.sourcePath, "gh-tool gist edit");
+    const filename = opts.filename ?? opts.sourcePath.split(/[\\/]/).at(-1) ?? "";
+    args.push(yield* stageBody({ body: validated.bytes, filename, command: "gh-tool gist edit" }));
     changes.push(`content:${opts.filename ?? opts.sourcePath.split("/").at(-1)}`);
   }
 
@@ -359,7 +351,14 @@ const editGist = Effect.fn("gist.editGist")(function* (opts: {
   }
 
   if (opts.add !== null) {
-    args.push("--add", opts.add);
+    const validated = yield* readValidatedOutboundFile(opts.add, "gh-tool gist edit");
+    const filename = opts.add.split(/[\\/]/).at(-1) ?? opts.add;
+    const snapshot = yield* stageBody({
+      body: validated.bytes,
+      filename,
+      command: "gh-tool gist edit",
+    });
+    args.push("--add", snapshot);
     changes.push(`add:${opts.add.split("/").at(-1)}`);
   }
 

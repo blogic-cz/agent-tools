@@ -595,7 +595,7 @@ export AGENT_TOOLS_DB_PASSWORD="your-password"
 export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
 ```
 
-The credential guard ensures these values never leak into agent output.
+The wrappers check outgoing user content and redact recognized credentials in agent-facing output, errors, and audit records. Detection uses credential patterns and exact values of sensitive process environment variables of at least eight characters. Unknown credentials and transformed or encoded values may evade detection.
 
 ## Credential Guard
 
@@ -607,6 +607,14 @@ The guard blocks agents from accessing sensitive files, leaking secrets, and run
 - Writes containing detected secrets (API keys, tokens, passwords)
 - Dangerous shell patterns (`printenv`, `cat .env`, etc.)
 - Direct CLI usage (`gh`, `kubectl`, `psql`, `az`) — must use wrapper tools
+
+### Content checks in wrappers
+
+GitHub text and file publication, database queries, Azure and Kubernetes command arguments, and observability requests are checked before execution. GitHub file uploads use snapshots of the inspected bytes. Generated release notes and existing pending reviews or draft releases are inspected before publication. Authentication headers and connection credentials remain inside the tools.
+
+Results retain their JSON or TOON structure, with detected credentials replaced by `[REDACTED]`. Audit records are sanitized before storage; reading older records also sanitizes the returned content but does not rewrite the database.
+
+These checks apply to these wrappers. They do not intercept arbitrary shell programs or other agent tools. GitHub does not offer an atomic content-version condition for submitting pending reviews or publishing existing drafts, so a concurrent remote edit between inspection and publication remains possible.
 
 ### Setup for Claude Code
 

@@ -2,7 +2,8 @@ import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
-import { resolveOptionalTextInput } from "#gh/text-input";
+import { resolveOptionalTextInput, validateOutboundText } from "#gh/text-input";
+import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "./service";
 
 type ReleaseListItem = {
@@ -129,11 +130,36 @@ const viewRelease = Effect.fn("release.viewRelease")(function* (opts: {
   return yield* gh.runGhJson<ReleaseDetail>(args);
 });
 
-const createRelease = Effect.fn("release.createRelease")(function* (opts: {
+export const resolveCreateNotes = (opts: {
+  body: string | null;
+  bodyFile: string | null;
+  notesFile: string | null;
+}) => {
+  if (opts.bodyFile !== null && opts.notesFile !== null) {
+    return Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool release create",
+        exitCode: 1,
+        message: "Provide only one of --body-file or --notes-file",
+        stderr: "Provide only one of --body-file or --notes-file",
+      }),
+    );
+  }
+
+  return resolveOptionalTextInput({
+    command: "gh-tool release create",
+    value: opts.body,
+    fileValue: opts.bodyFile ?? opts.notesFile,
+    valueFlag: "--body",
+    fileFlag: opts.notesFile === null ? "--body-file" : "--notes-file",
+    label: "body",
+  });
+};
+
+export const createRelease = Effect.fn("release.createRelease")(function* (opts: {
   tag: string;
   title: string | null;
   body: string | null;
-  notesFile: string | null;
   draft: boolean;
   prerelease: boolean;
   generateNotes: boolean;
@@ -145,18 +171,59 @@ const createRelease = Effect.fn("release.createRelease")(function* (opts: {
 }) {
   const gh = yield* GitHubService;
 
+  if (opts.title !== null) {
+    yield* validateOutboundText(opts.title, "gh-tool release create");
+  }
+
+  let body = opts.body;
+  let title = opts.title;
+  if (opts.generateNotes) {
+    const generated = yield* gh.withRepoTarget(
+      opts.repo,
+      Effect.gen(function* () {
+        const repo = yield* gh.getRepoInfo();
+        const args = [
+          "api",
+          "--hostname",
+          new URL(repo.url).hostname,
+          "--method",
+          "POST",
+          `repos/${repo.owner}/${repo.name}/releases/generate-notes`,
+          "-f",
+          `tag_name=${opts.tag}`,
+        ];
+        if (opts.target !== null) args.push("-f", `target_commitish=${opts.target}`);
+        if (opts.notesStartTag !== null) args.push("-f", `previous_tag_name=${opts.notesStartTag}`);
+        return yield* gh.runGhJson<{ name: string; body: string }>(args);
+      }),
+    );
+    if (typeof generated?.body !== "string" || typeof generated.name !== "string") {
+      return yield* Effect.fail(
+        new GitHubCommandError({
+          command: "gh-tool release create",
+          exitCode: 1,
+          message: "Could not inspect generated release notes; refusing to create release",
+          stderr: "GitHub returned incomplete generated release notes",
+        }),
+      );
+    }
+    yield* validateOutboundText(generated.body, "gh-tool release create");
+    if (title === null || title === "") {
+      yield* validateOutboundText(generated.name, "gh-tool release create");
+      title = generated.name;
+    }
+    body = opts.body ? `${opts.body}\n${generated.body}` : generated.body;
+    yield* validateOutboundText(body, "gh-tool release create");
+  }
+
   const args = ["release", "create", opts.tag];
 
-  if (opts.title !== null) {
-    args.push("--title", opts.title);
+  if (title !== null) {
+    args.push("--title", title);
   }
 
-  if (opts.body !== null) {
-    args.push("--notes", opts.body);
-  }
-
-  if (opts.notesFile !== null) {
-    args.push("--notes-file", opts.notesFile);
+  if (body !== null) {
+    args.push("--notes", body);
   }
 
   if (opts.draft) {
@@ -165,14 +232,6 @@ const createRelease = Effect.fn("release.createRelease")(function* (opts: {
 
   if (opts.prerelease) {
     args.push("--prerelease");
-  }
-
-  if (opts.generateNotes) {
-    args.push("--generate-notes");
-  }
-
-  if (opts.notesStartTag !== null) {
-    args.push("--notes-start-tag", opts.notesStartTag);
   }
 
   if (opts.target !== null) {
@@ -203,7 +262,7 @@ const createRelease = Effect.fn("release.createRelease")(function* (opts: {
   const created: ReleaseCreateResult = {
     created: true,
     tagName: opts.tag,
-    name: opts.title ?? opts.tag,
+    name: title ?? opts.tag,
     url,
     isDraft: opts.draft,
     isPrerelease: opts.prerelease,
@@ -212,7 +271,7 @@ const createRelease = Effect.fn("release.createRelease")(function* (opts: {
   return created;
 });
 
-const editRelease = Effect.fn("release.editRelease")(function* (opts: {
+export const editRelease = Effect.fn("release.editRelease")(function* (opts: {
   tag: string;
   title: string | null;
   body: string | null;
@@ -222,6 +281,26 @@ const editRelease = Effect.fn("release.editRelease")(function* (opts: {
   repo: string | null;
 }) {
   const gh = yield* GitHubService;
+
+  if (opts.title !== null) {
+    yield* validateOutboundText(opts.title, "gh-tool release edit");
+  }
+
+  if (opts.draft === false) {
+    const current = yield* viewRelease({ tag: opts.tag, repo: opts.repo });
+    if (typeof current.name !== "string" || typeof current.body !== "string") {
+      return yield* Effect.fail(
+        new GitHubCommandError({
+          command: "gh-tool release edit",
+          exitCode: 1,
+          message: "Could not inspect release content; refusing to publish",
+          stderr: "GitHub returned incomplete release content",
+        }),
+      );
+    }
+    yield* validateOutboundText(opts.title ?? current.name, "gh-tool release edit");
+    yield* validateOutboundText(opts.body ?? current.body, "gh-tool release edit");
+  }
 
   const args = ["release", "edit", opts.tag];
 
@@ -370,7 +449,7 @@ export const releaseCreateCommand = Command.make(
       Flag.optional,
     ),
     notesFile: Flag.String("notes-file").pipe(
-      Flag.withDescription("Path to release notes file (passed to gh --notes-file)"),
+      Flag.withDescription("Read release notes from a file path or '-' for stdin"),
       Flag.optional,
     ),
     notesStartTag: Flag.String("notes-start-tag").pipe(
@@ -416,20 +495,16 @@ export const releaseCreateCommand = Command.make(
     verifyTag,
   }) =>
     Effect.gen(function* () {
-      const resolvedBody = yield* resolveOptionalTextInput({
-        command: "gh-tool release create",
-        value: Option.getOrNull(body),
-        fileValue: Option.getOrNull(bodyFile),
-        valueFlag: "--body",
-        fileFlag: "--body-file",
-        label: "body",
+      const resolvedBody = yield* resolveCreateNotes({
+        body: Option.getOrNull(body),
+        bodyFile: Option.getOrNull(bodyFile),
+        notesFile: Option.getOrNull(notesFile),
       });
 
       const result = yield* createRelease({
         tag,
         title: Option.getOrNull(title),
         body: resolvedBody,
-        notesFile: Option.getOrNull(notesFile),
         draft,
         prerelease,
         generateNotes,
