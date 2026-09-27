@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { Cause, Context, Effect, Layer } from "effect";
 
 import { loadConfig } from "#config";
+import { redactSensitiveText } from "./content-security";
 
 const DEFAULT_AUDIT_RETENTION_DAYS = 90;
 const IN_MEMORY_DB_PATH = ":memory:";
@@ -80,12 +81,12 @@ const isInMemoryDatabase = (dbPath: string): boolean =>
 const toAuditEntry = (row: AuditRow): AuditLogEntry => ({
   id: row.id,
   ts: row.ts,
-  tool: row.tool,
-  project: row.project,
-  args: row.args,
+  tool: redactSensitiveText(row.tool),
+  project: redactSensitiveText(row.project),
+  args: redactSensitiveText(row.args),
   duration: row.duration,
   success: row.success === 1,
-  error: row.error,
+  error: row.error === null ? null : redactSensitiveText(row.error),
   exitCode: row.exit_code,
 });
 
@@ -246,12 +247,12 @@ const createAuditService = (dbPath: string, db: Database | null): AuditServiceSh
           db.run(
             "INSERT INTO audit_log (tool, project, args, duration, success, error, exit_code) VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
-              safeToolName(entry.tool),
-              entry.project,
-              entry.args,
+              redactSensitiveText(safeToolName(entry.tool)),
+              redactSensitiveText(entry.project),
+              redactSensitiveText(entry.args),
               entry.duration,
               entry.success ? 1 : 0,
-              entry.error ?? null,
+              entry.error === undefined ? null : redactSensitiveText(entry.error),
               entry.exitCode ?? null,
             ],
           );
@@ -317,7 +318,7 @@ export const withAudit = <A, E, R>(
   Effect.suspend(() => {
     const startedAt = Date.now();
     const project = process.cwd();
-    const args = process.argv.slice(2).join(" ");
+    const args = redactSensitiveText(process.argv.slice(2).join(" "));
     const tool = safeToolName(toolName || deriveToolNameFromArgv());
 
     return Effect.matchCauseEffect(program, {
@@ -332,7 +333,7 @@ export const withAudit = <A, E, R>(
             args,
             duration: Date.now() - startedAt,
             success: pureHelp,
-            error: pureHelp ? undefined : formatCause(cause),
+            error: pureHelp ? undefined : redactSensitiveText(formatCause(cause)),
             exitCode: pureHelp ? 0 : extractExitCode(cause),
           }),
           () => Effect.failCause(cause),

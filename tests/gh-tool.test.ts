@@ -3,6 +3,9 @@ import { Clock, Console, Effect, Fiber, Result, Layer, Schema, Sink, Stream } fr
 import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
 import { FeedbackOrigin, LogDiagnosisCategory } from "#gh/types";
@@ -54,7 +57,14 @@ import {
   submitPendingReview,
 } from "#gh/pr/review";
 import { renameBranch } from "#gh/branch";
-import { createGist, toGistDetail, validateBodyFilename, validateEditInput } from "#gh/gist";
+import {
+  createGist,
+  editGist,
+  toGistDetail,
+  validateBodyFilename,
+  validateEditInput,
+} from "#gh/gist";
+import { createRelease, editRelease, resolveCreateNotes } from "#gh/release";
 import {
   buildWatchResult,
   diagnoseLogEntries,
@@ -316,6 +326,41 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
   );
 }
 
+const pendingReviewContent = () => ({
+  id: "review-1",
+  state: "PENDING",
+  body: "safe summary",
+  author: { login: "demo-user" },
+  pullRequest: {
+    number: 123,
+    repository: { nameWithOwner: "test-owner/test-repo" },
+  },
+  comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+});
+
+const makeTextFixture = (filename: string, content: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const directory = await mkdtemp(join(tmpdir(), "agent-tools-gh-test-"));
+      const path = join(directory, filename);
+      await writeFile(path, content);
+      return { directory, path };
+    },
+    catch: (error) =>
+      new GitHubCommandError({
+        command: "test fixture",
+        exitCode: 1,
+        message: String(error),
+        stderr: String(error),
+      }),
+  });
+
+const removeTextFixture = (directory: string) =>
+  Effect.tryPromise({
+    try: () => rm(directory, { recursive: true, force: true }),
+    catch: () => undefined,
+  }).pipe(Effect.ignore);
+
 describe("gist helpers", () => {
   it("rejects edits without a content or mutation flag", () => {
     const error = validateEditInput({
@@ -348,12 +393,13 @@ describe("gist helpers", () => {
   it.effect("rejects gist creation when gh returns no URL", () =>
     Effect.gen(function* () {
       const originalBun = Reflect.get(globalThis, "Bun");
+      const fixture = yield* makeTextFixture("snippet.txt", "example snippet");
       Reflect.set(globalThis, "Bun", {
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
-        file: (_filePath: string) => ({ text: () => Promise.resolve("example snippet") }),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
       const result = yield* createGist({
-        paths: ["snippet.txt"],
+        paths: [fixture.path],
         description: null,
         public: false,
       }).pipe(
@@ -368,6 +414,7 @@ describe("gist helpers", () => {
             else Reflect.set(globalThis, "Bun", originalBun);
           }),
         ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
         Effect.result,
       );
 
@@ -385,14 +432,15 @@ describe("gist helpers", () => {
     Effect.gen(function* () {
       const originalBun = Reflect.get(globalThis, "Bun");
       const fakeToken = `ghp_${"x".repeat(36)}`;
+      const fixture = yield* makeTextFixture("snippet.txt", fakeToken);
       let invoked = false;
       Reflect.set(globalThis, "Bun", {
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
-        file: (_filePath: string) => ({ text: () => Promise.resolve(fakeToken) }),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
 
       const result = yield* createGist({
-        paths: ["snippet.txt"],
+        paths: [fixture.path],
         description: null,
         public: false,
       }).pipe(
@@ -410,11 +458,185 @@ describe("gist helpers", () => {
             else Reflect.set(globalThis, "Bun", originalBun);
           }),
         ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
         Effect.result,
       );
 
       expect(Result.isFailure(result)).toBe(true);
       expect(invoked).toBe(false);
+    }),
+  );
+
+  it.effect("uploads the exact validated gist snapshot", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const safeContent = "safe snippet";
+      const fixture = yield* makeTextFixture("snippet.txt", safeContent);
+      let sourceReads = 0;
+      let uploaded = "";
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (filePath: string) => ({
+          bytes: () => {
+            sourceReads += 1;
+            return sourceReads === 1
+              ? readFile(filePath)
+              : Promise.resolve(new TextEncoder().encode(`ghp_${"x".repeat(36)}`));
+          },
+        }),
+      });
+
+      const result = yield* createGist({
+        paths: [fixture.path],
+        description: null,
+        public: false,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) =>
+              Effect.tryPromise({
+                try: async () => {
+                  uploaded = await readFile(args[2]!, "utf8");
+                  return { stdout: "https://gist.github.com/user/abc123", stderr: "", exitCode: 0 };
+                },
+                catch: (error) =>
+                  new GitHubCommandError({
+                    command: "test",
+                    exitCode: 1,
+                    message: String(error),
+                    stderr: String(error),
+                  }),
+              }),
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
+      );
+
+      expect(result.created).toBe(true);
+      expect(uploaded).toBe(safeContent);
+      expect(sourceReads).toBe(1);
+    }),
+  );
+
+  it.effect("adds the exact validated gist snapshot", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const safeContent = "safe added file";
+      const fixture = yield* makeTextFixture("new.txt", safeContent);
+      let sourceReads = 0;
+      let uploaded = "";
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (filePath: string) => ({
+          bytes: () => {
+            sourceReads += 1;
+            return sourceReads === 1
+              ? readFile(filePath)
+              : Promise.resolve(new TextEncoder().encode(`ghp_${"x".repeat(36)}`));
+          },
+        }),
+      });
+
+      const result = yield* Effect.scoped(
+        editGist({
+          id: "gist-id",
+          description: null,
+          add: fixture.path,
+          remove: null,
+          filename: null,
+          sourcePath: null,
+        }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGh: (args) =>
+                Effect.tryPromise({
+                  try: async () => {
+                    uploaded = await readFile(args[args.indexOf("--add") + 1]!, "utf8");
+                    return { stdout: "", stderr: "", exitCode: 0 };
+                  },
+                  catch: (error) =>
+                    new GitHubCommandError({
+                      command: "test",
+                      exitCode: 1,
+                      message: String(error),
+                      stderr: String(error),
+                    }),
+                }),
+            }),
+          ),
+        ),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
+      );
+
+      expect(result.edited).toBe(true);
+      expect(uploaded).toBe(safeContent);
+      expect(sourceReads).toBe(1);
+    }),
+  );
+
+  it.effect("cleans up gist snapshots when gh rejects the create", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const fixture = yield* makeTextFixture("snippet.txt", "safe snippet");
+      let snapshotPath = "";
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
+      });
+
+      const result = yield* createGist({
+        paths: [fixture.path],
+        description: null,
+        public: false,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              snapshotPath = args[2] ?? "";
+              return Effect.fail(
+                new GitHubCommandError({
+                  command: "gh gist create",
+                  exitCode: 1,
+                  message: "synthetic gh failure",
+                  stderr: "synthetic gh failure",
+                }),
+              );
+            },
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      const snapshotExists = yield* Effect.promise(async () => {
+        try {
+          await readFile(snapshotPath);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      expect(snapshotExists).toBe(false);
     }),
   );
 
@@ -460,6 +682,196 @@ describe("gist helpers", () => {
       ],
     });
   });
+});
+
+describe("release publication content", () => {
+  it.effect("resolves --notes-file through the outbound text validator", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const token = `ghp_${"x".repeat(36)}`;
+      const fixture = yield* makeTextFixture("release-notes.md", token);
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
+      });
+
+      const result = yield* resolveCreateNotes({
+        body: null,
+        bodyFile: null,
+        notesFile: fixture.path,
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+    }),
+  );
+
+  it.effect("resolves safe --notes-file contents unchanged", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const notes = "A safe release summary";
+      const fixture = yield* makeTextFixture("release-notes.md", notes);
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
+      });
+
+      const result = yield* resolveCreateNotes({
+        body: null,
+        bodyFile: null,
+        notesFile: fixture.path,
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
+      );
+
+      expect(result).toBe(notes);
+    }),
+  );
+
+  it.effect("rejects generated release credentials before release creation", () =>
+    Effect.gen(function* () {
+      let created = false;
+      const result = yield* createRelease({
+        tag: "v1.2.3",
+        title: null,
+        body: null,
+        draft: false,
+        prerelease: false,
+        generateNotes: true,
+        notesStartTag: null,
+        target: null,
+        verifyTag: false,
+        latest: null,
+        repo: null,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () => Effect.succeed({ name: "Release", body: `ghp_${"x".repeat(36)}` }),
+            runGh: () => {
+              created = true;
+              return Effect.succeed({
+                stdout: "https://github.com/test/release",
+                stderr: "",
+                exitCode: 0,
+              });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(created).toBe(false);
+    }),
+  );
+
+  it.effect("publishes validated generated notes with preserved generation options", () =>
+    Effect.gen(function* () {
+      let generationArgs: string[] = [];
+      let args: string[] = [];
+      const result = yield* createRelease({
+        tag: "v1.2.3",
+        title: "",
+        body: "Additional notes",
+        draft: true,
+        prerelease: false,
+        generateNotes: true,
+        notesStartTag: "v1.2.2",
+        target: "main",
+        verifyTag: true,
+        latest: true,
+        repo: "test-owner/test-repo",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            getRepoInfo: () =>
+              Effect.succeed({ ...mockRepoInfo, url: "https://ghe.example/test-owner/test-repo" }),
+            runGhJson: (request) => {
+              generationArgs = request;
+              return Effect.succeed({ name: "Generated title", body: "Generated notes" });
+            },
+            runGh: (forwarded) => {
+              args = forwarded;
+              return Effect.succeed({
+                stdout: "https://github.com/test/release",
+                stderr: "",
+                exitCode: 0,
+              });
+            },
+          }),
+        ),
+      );
+
+      expect(result.name).toBe("Generated title");
+      expect(generationArgs).toContain("--hostname");
+      expect(generationArgs).toContain("ghe.example");
+      expect(generationArgs).toContain("repos/test-owner/test-repo/releases/generate-notes");
+      expect(generationArgs).toContain("tag_name=v1.2.3");
+      expect(generationArgs).toContain("target_commitish=main");
+      expect(generationArgs).toContain("previous_tag_name=v1.2.2");
+      expect(args).toContain("--notes");
+      expect(args[args.indexOf("--notes") + 1]).toBe("Additional notes\nGenerated notes");
+      expect(args).not.toContain("--generate-notes");
+      expect(args).toContain("--verify-tag");
+      expect(args).toContain("--target");
+    }),
+  );
+
+  it.effect("blocks publishing an existing draft with uninspected release content", () =>
+    Effect.gen(function* () {
+      let published = false;
+      const result = yield* editRelease({
+        tag: "v1.2.3",
+        title: null,
+        body: null,
+        draft: false,
+        prerelease: null,
+        latest: null,
+        repo: null,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () =>
+              Effect.succeed({
+                tagName: "v1.2.3",
+                name: "Release",
+                body: `ghp_${"x".repeat(36)}`,
+                isDraft: true,
+                isPrerelease: false,
+                createdAt: "2026-01-01T00:00:00Z",
+                publishedAt: null,
+                url: "https://github.com/test/release",
+                targetCommitish: "main",
+                author: null,
+                assets: [],
+              }),
+            runGh: () => {
+              published = true;
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(published).toBe(false);
+    }),
+  );
 });
 
 describe("workflow dispatch", () => {
@@ -5755,18 +6167,17 @@ describe("PR composite commands", () => {
   it.effect("resolveRequiredTextInput reads shell-sensitive body text from file", () =>
     Effect.gen(function* () {
       const originalBun = Reflect.get(globalThis, "Bun");
+      const fixture = yield* makeTextFixture("reply-body.txt", inventedShellSensitiveText);
 
       Reflect.set(globalThis, "Bun", {
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
-        file: (_filePath: string) => ({
-          text: () => Promise.resolve(inventedShellSensitiveText),
-        }),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
 
       const resolvedBody = yield* resolveRequiredTextInput({
         command: "gh-tool pr reply",
         value: null,
-        fileValue: "/tmp/reply-body.txt",
+        fileValue: fixture.path,
         valueFlag: "--body",
         fileFlag: "--body-file",
         label: "body",
@@ -5781,6 +6192,7 @@ describe("PR composite commands", () => {
             Reflect.set(globalThis, "Bun", originalBun);
           }),
         ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
       );
 
       expect(resolvedBody).toBe(inventedShellSensitiveText);
@@ -6267,8 +6679,24 @@ describe("PR composite commands", () => {
       let forwardedVariables: Record<string, string | number | null> | undefined;
 
       const layer = createMockGhLayer({
-        runGraphQL: (_query, variables) => {
+        runGraphQL: (query, variables) => {
           forwardedVariables = variables;
+          if (query.includes("... on PullRequestReview")) {
+            return Effect.succeed({
+              viewer: { login: "demo-user" },
+              node: {
+                id: "review-1",
+                state: "PENDING",
+                body: "",
+                author: { login: "demo-user" },
+                pullRequest: {
+                  number: 123,
+                  repository: { nameWithOwner: "test-owner/test-repo" },
+                },
+                comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            });
+          }
           return Effect.succeed({
             submitPullRequestReview: {
               pullRequestReview: { id: "review-1", state: "CHANGES_REQUESTED" },
@@ -6302,8 +6730,24 @@ describe("PR composite commands", () => {
       let forwardedVariables: Record<string, string | number | null> | undefined;
 
       const layer = createMockGhLayer({
-        runGraphQL: (_query, variables) => {
+        runGraphQL: (query, variables) => {
           forwardedVariables = variables;
+          if (query.includes("... on PullRequestReview")) {
+            return Effect.succeed({
+              viewer: { login: "demo-user" },
+              node: {
+                id: "review-1",
+                state: "PENDING",
+                body: "",
+                author: { login: "demo-user" },
+                pullRequest: {
+                  number: 123,
+                  repository: { nameWithOwner: "test-owner/test-repo" },
+                },
+                comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            });
+          }
           return Effect.succeed({
             submitPullRequestReview: {
               pullRequestReview: { id: "review-1", state: "COMMENTED" },
@@ -6320,6 +6764,210 @@ describe("PR composite commands", () => {
       expect(forwardedVariables?.body).toBe(inventedShellSensitiveText);
       // Pins the backward-compatible default: a pending submit must never become a verdict.
       expect(forwardedVariables?.event).toBe("COMMENT");
+    }),
+  );
+
+  it.effect("checks every pending inline comment page before submitting", () =>
+    Effect.gen(function* () {
+      let contentPage = 0;
+      let submitted = false;
+      const layer = createMockGhLayer({
+        runGraphQL: (query) => {
+          if (query.includes("... on PullRequestReview")) {
+            contentPage += 1;
+            return Effect.succeed({
+              viewer: { login: "demo-user" },
+              node: {
+                id: "review-1",
+                state: "PENDING",
+                body: "safe summary",
+                author: { login: "demo-user" },
+                pullRequest: {
+                  number: 123,
+                  repository: { nameWithOwner: "test-owner/test-repo" },
+                },
+                comments:
+                  contentPage === 1
+                    ? {
+                        nodes: [{ body: "safe first comment" }],
+                        pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+                      }
+                    : {
+                        nodes: [{ body: `ghp_${"x".repeat(36)}` }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+              },
+            });
+          }
+          submitted = true;
+          return Effect.succeed({
+            submitPullRequestReview: { pullRequestReview: { id: "review-1", state: "COMMENTED" } },
+          });
+        },
+      });
+
+      const result = yield* submitPendingReview(123, "review-1", null, "comment", true).pipe(
+        Effect.provide(layer),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(contentPage).toBe(2);
+      expect(submitted).toBe(false);
+    }),
+  );
+
+  it.effect("fails closed on malformed or non-owned pending review data", () =>
+    Effect.gen(function* () {
+      const cases: Array<{ name: string; content: () => unknown }> = [
+        {
+          name: "missing summary",
+          content: () => ({ ...pendingReviewContent(), body: null }),
+        },
+        {
+          name: "wrong author",
+          content: () => ({ ...pendingReviewContent(), author: { login: "someone-else" } }),
+        },
+        {
+          name: "wrong pull request",
+          content: () => ({
+            ...pendingReviewContent(),
+            pullRequest: { ...pendingReviewContent().pullRequest, number: 456 },
+          }),
+        },
+        {
+          name: "wrong repository",
+          content: () => ({
+            ...pendingReviewContent(),
+            pullRequest: {
+              ...pendingReviewContent().pullRequest,
+              repository: { nameWithOwner: "other/repo" },
+            },
+          }),
+        },
+        {
+          name: "non-pending state",
+          content: () => ({ ...pendingReviewContent(), state: "SUBMITTED" }),
+        },
+        {
+          name: "missing comment page info",
+          content: () => ({ ...pendingReviewContent(), comments: { nodes: [] } }),
+        },
+      ];
+
+      for (const testCase of cases) {
+        let submitted = false;
+        const result = yield* submitPendingReview(123, "review-1", null, "comment", true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGraphQL: (query) => {
+                if (query.includes("... on PullRequestReview")) {
+                  return Effect.succeed({
+                    viewer: { login: "demo-user" },
+                    node: testCase.content(),
+                  });
+                }
+                submitted = true;
+                return Effect.succeed({
+                  submitPullRequestReview: {
+                    pullRequestReview: { id: "review-1", state: "COMMENTED" },
+                  },
+                });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(submitted).toBe(false);
+      }
+    }),
+  );
+
+  it.effect("finds and validates the current user's pending review on a later page", () =>
+    Effect.gen(function* () {
+      let pendingPage = 0;
+      let submitted = false;
+      const layer = createMockGhLayer({
+        runGraphQL: (query) => {
+          if (query.includes("reviews(first")) {
+            pendingPage += 1;
+            return Effect.succeed({
+              viewer: { login: "demo-user" },
+              repository: {
+                pullRequest: {
+                  reviews: {
+                    nodes:
+                      pendingPage === 1
+                        ? []
+                        : [{ id: "review-1", state: "PENDING", author: { login: "demo-user" } }],
+                    pageInfo:
+                      pendingPage === 1
+                        ? { hasNextPage: true, endCursor: "review-cursor" }
+                        : { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            });
+          }
+          if (query.includes("... on PullRequestReview")) {
+            return Effect.succeed({ viewer: { login: "demo-user" }, node: pendingReviewContent() });
+          }
+          submitted = true;
+          return Effect.succeed({
+            submitPullRequestReview: {
+              pullRequestReview: { id: "review-1", state: "COMMENTED" },
+            },
+          });
+        },
+      });
+
+      const result = yield* submitPendingReview(123, null, null, "comment", true).pipe(
+        Effect.provide(layer),
+      );
+      expect(result.submitted).toBe(true);
+      expect(pendingPage).toBe(2);
+      expect(submitted).toBe(true);
+    }),
+  );
+
+  it.effect("refuses a repeated pending comment cursor without submitting", () =>
+    Effect.gen(function* () {
+      let contentPage = 0;
+      let submitted = false;
+      const result = yield* submitPendingReview(123, "review-1", null, "comment", true).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGraphQL: (query) => {
+              if (query.includes("... on PullRequestReview")) {
+                contentPage += 1;
+                return Effect.succeed({
+                  viewer: { login: "demo-user" },
+                  node: {
+                    ...pendingReviewContent(),
+                    comments: {
+                      nodes: [],
+                      pageInfo: { hasNextPage: true, endCursor: "same-cursor" },
+                    },
+                  },
+                });
+              }
+              submitted = true;
+              return Effect.succeed({
+                submitPullRequestReview: {
+                  pullRequestReview: { id: "review-1", state: "COMMENTED" },
+                },
+              });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(contentPage).toBe(2);
+      expect(submitted).toBe(false);
     }),
   );
 

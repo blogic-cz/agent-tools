@@ -15,6 +15,7 @@ import type { REVIEW_EVENTS } from "#gh/config";
 
 import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import { validateOutboundText } from "#gh/text-input";
 
 import { viewPR } from "./core";
 
@@ -83,16 +84,39 @@ const RESOLVE_THREAD_MUTATION = `
 `;
 
 const PENDING_REVIEWS_QUERY = `
-  query($owner: String!, $name: String!, $pr: Int!) {
+  query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     viewer { login }
     repository(owner: $owner, name: $name) {
       pullRequest(number: $pr) {
-        reviews(last: 100, states: [PENDING]) {
+        reviews(first: 100, after: $after, states: [PENDING]) {
           nodes {
             id
             state
             author { login }
           }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+`;
+
+const PENDING_REVIEW_CONTENT_QUERY = `
+  query($reviewId: ID!, $after: String) {
+    viewer { login }
+    node(id: $reviewId) {
+      ... on PullRequestReview {
+        id
+        state
+        body
+        author { login }
+        pullRequest {
+          number
+          repository { nameWithOwner }
+        }
+        comments(first: 100, after: $after) {
+          nodes { body }
+          pageInfo { hasNextPage endCursor }
         }
       }
     }
@@ -188,9 +212,25 @@ type PendingReviewsQueryResult = {
           state: string;
           author: { login: string };
         }>;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
       };
     };
   };
+};
+
+type PendingReviewContentQueryResult = {
+  viewer: { login: string };
+  node: {
+    id: string;
+    state: string;
+    body: string | null;
+    author: { login: string };
+    pullRequest: { number: number; repository: { nameWithOwner: string } };
+    comments: {
+      nodes: Array<{ body: string }>;
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  } | null;
 };
 
 type SubmitReviewResult = {
@@ -1080,18 +1120,76 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
   let targetReviewId = reviewId;
 
   if (targetReviewId === null) {
-    const pending = (yield* service.runGraphQL(PENDING_REVIEWS_QUERY, {
-      owner: repoInfo.owner,
-      name: repoInfo.name,
-      pr: resolvedPr,
-    })) as PendingReviewsQueryResult;
+    let after: string | null = null;
+    let hasNextPage = true;
+    let viewerLogin: string | null = null;
+    let ownPendingReviewId: string | null = null;
+    const seenPendingCursors = new Set<string>();
 
-    const viewerLogin = pending.viewer.login;
-    const pendingReviews = pending.repository.pullRequest.reviews.nodes;
+    while (hasNextPage) {
+      const pending = (yield* service.runGraphQL(PENDING_REVIEWS_QUERY, {
+        owner: repoInfo.owner,
+        name: repoInfo.name,
+        pr: resolvedPr,
+        after,
+      })) as PendingReviewsQueryResult;
 
-    const ownPendingReview = pendingReviews.find((review) => review.author.login === viewerLogin);
+      if (
+        typeof pending.viewer?.login !== "string" ||
+        !Array.isArray(pending.repository?.pullRequest?.reviews?.nodes) ||
+        typeof pending.repository.pullRequest.reviews?.pageInfo?.hasNextPage !== "boolean" ||
+        (pending.repository.pullRequest.reviews.pageInfo.endCursor !== null &&
+          typeof pending.repository.pullRequest.reviews.pageInfo.endCursor !== "string") ||
+        pending.repository.pullRequest.reviews.nodes.some(
+          (review) =>
+            typeof review?.id !== "string" ||
+            typeof review.state !== "string" ||
+            typeof review.author?.login !== "string",
+        )
+      ) {
+        return yield* Effect.fail(
+          new GitHubCommandError({
+            command: "gh-tool pr submit-review",
+            exitCode: 1,
+            message: "Could not verify pending reviews; refusing to submit",
+            stderr: "Pending review lookup returned incomplete data",
+          }),
+        );
+      }
 
-    if (!ownPendingReview) {
+      viewerLogin ??= pending.viewer.login;
+      const own = pending.repository.pullRequest.reviews.nodes.find(
+        (review) => review.author?.login === viewerLogin && review.state === "PENDING",
+      );
+      ownPendingReviewId ??= own?.id ?? null;
+
+      const pageInfo = pending.repository.pullRequest.reviews.pageInfo;
+      hasNextPage = pageInfo.hasNextPage;
+      after = pageInfo.endCursor;
+      if (hasNextPage && (after === null || after.length === 0)) {
+        return yield* Effect.fail(
+          new GitHubCommandError({
+            command: "gh-tool pr submit-review",
+            exitCode: 1,
+            message: "Could not verify all pending reviews; refusing to submit",
+            stderr: "Pending review lookup returned an incomplete page cursor",
+          }),
+        );
+      }
+      if (hasNextPage && after !== null && seenPendingCursors.has(after)) {
+        return yield* Effect.fail(
+          new GitHubCommandError({
+            command: "gh-tool pr submit-review",
+            exitCode: 1,
+            message: "Could not verify all pending reviews; refusing to submit",
+            stderr: "Pending review lookup repeated a page cursor",
+          }),
+        );
+      }
+      if (hasNextPage && after !== null) seenPendingCursors.add(after);
+    }
+
+    if (ownPendingReviewId === null) {
       return yield* Effect.fail(
         new GitHubCommandError({
           command: "gh-tool pr submit-review",
@@ -1102,7 +1200,96 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
       );
     }
 
-    targetReviewId = ownPendingReview.id;
+    targetReviewId = ownPendingReviewId;
+  }
+
+  if (targetReviewId === null) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command: "gh-tool pr submit-review",
+        exitCode: 1,
+        message: "Could not identify pending review; refusing to submit",
+        stderr: "Pending review lookup returned no review ID",
+      }),
+    );
+  }
+
+  let afterComment: string | null = null;
+  let commentsHaveNextPage = true;
+  const seenCommentCursors = new Set<string>();
+  while (commentsHaveNextPage) {
+    const pendingReview = (yield* service.runGraphQL(PENDING_REVIEW_CONTENT_QUERY, {
+      reviewId: targetReviewId,
+      after: afterComment,
+    })) as PendingReviewContentQueryResult;
+
+    const review = pendingReview?.node;
+    if (
+      typeof pendingReview?.viewer?.login !== "string" ||
+      review === null ||
+      review === undefined ||
+      review.id !== targetReviewId ||
+      review.state !== "PENDING" ||
+      review.author?.login !== pendingReview.viewer.login ||
+      review.pullRequest?.number !== resolvedPr ||
+      typeof review.pullRequest.repository?.nameWithOwner !== "string" ||
+      review.pullRequest.repository.nameWithOwner.toLowerCase() !==
+        `${repoInfo.owner}/${repoInfo.name}`.toLowerCase() ||
+      typeof review.body !== "string" ||
+      !Array.isArray(review.comments?.nodes) ||
+      typeof review.comments.pageInfo?.hasNextPage !== "boolean" ||
+      (review.comments.pageInfo.endCursor !== null &&
+        typeof review.comments.pageInfo.endCursor !== "string")
+    ) {
+      return yield* Effect.fail(
+        new GitHubCommandError({
+          command: "gh-tool pr submit-review",
+          exitCode: 1,
+          message: "Could not verify pending review contents; refusing to submit",
+          stderr: "Pending review lookup returned incomplete or non-owned review data",
+        }),
+      );
+    }
+
+    yield* validateOutboundText(review.body, "gh-tool pr submit-review");
+    for (const comment of review.comments.nodes) {
+      if (typeof comment?.body !== "string") {
+        return yield* Effect.fail(
+          new GitHubCommandError({
+            command: "gh-tool pr submit-review",
+            exitCode: 1,
+            message: "Could not verify pending review comments; refusing to submit",
+            stderr: "Pending review lookup returned a comment without a body",
+          }),
+        );
+      }
+      yield* validateOutboundText(comment.body, "gh-tool pr submit-review");
+    }
+
+    const pageInfo = review.comments.pageInfo;
+    commentsHaveNextPage = pageInfo.hasNextPage;
+    afterComment = pageInfo.endCursor;
+    if (commentsHaveNextPage && (afterComment === null || afterComment.length === 0)) {
+      return yield* Effect.fail(
+        new GitHubCommandError({
+          command: "gh-tool pr submit-review",
+          exitCode: 1,
+          message: "Could not verify all pending review comments; refusing to submit",
+          stderr: "Pending review lookup returned an incomplete comment cursor",
+        }),
+      );
+    }
+    if (commentsHaveNextPage && afterComment !== null && seenCommentCursors.has(afterComment)) {
+      return yield* Effect.fail(
+        new GitHubCommandError({
+          command: "gh-tool pr submit-review",
+          exitCode: 1,
+          message: "Could not verify all pending review comments; refusing to submit",
+          stderr: "Pending review lookup repeated a comment cursor",
+        }),
+      );
+    }
+    if (commentsHaveNextPage && afterComment !== null) seenCommentCursors.add(afterComment);
   }
 
   const result = (yield* service.runGraphQL(SUBMIT_REVIEW_MUTATION, {

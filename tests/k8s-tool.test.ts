@@ -179,6 +179,35 @@ function createMockK8sServiceLayer(
 }
 
 describe("K8sService", () => {
+  it.effect("refuses credential-bearing command arguments before spawning kubectl", () => {
+    const observedCommands: string[] = [];
+    const token = `ghp_${"A".repeat(36)}`;
+
+    return Effect.gen(function* () {
+      const service = yield* K8sService;
+      const result = yield* service
+        .runKubectl(`get pods --selector="app=${token}"`, false, "selected")
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result) && result.failure._tag === "K8sDangerousCommandError") {
+        expect(result.failure.message).toContain("credential pattern");
+        expect(result.failure.command).not.toContain(token);
+      }
+      expect(observedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(K8sService.layer),
+      Effect.provide(createMockChildProcessSpawnerLayer({}, observedCommands)),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          kubernetes: {
+            selected: { clusterId: "selected-cluster", namespaces: { test: "selected" } },
+          },
+        }),
+      ),
+    );
+  });
+
   it.effect("rejects unsafe syntax and profile overrides before spawning any process", () => {
     const observedCommands: string[] = [];
 

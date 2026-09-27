@@ -12,6 +12,7 @@ import {
   VERSION,
 } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 import { AzService, AzServiceLayer } from "./service";
 import { ConfigServiceLayer } from "#config";
 
@@ -135,6 +136,7 @@ Raw az wrapper:
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
 const MainLayer = AzServiceLayer.pipe(
@@ -143,7 +145,7 @@ const MainLayer = AzServiceLayer.pipe(
   Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = withAudit("az", cli).pipe(
+const program = withRedactedOutput(withAudit("az", cli)).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );

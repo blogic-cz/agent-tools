@@ -339,6 +339,38 @@ describe("db schema introspection SQL", () => {
 });
 
 describe("DbService", () => {
+  it.effect("refuses credential-bearing SQL before calling the SQL client", () => {
+    const observedSql: ObservedSql[] = [];
+    const token = `ghp_${"A".repeat(36)}`;
+
+    return Effect.gen(function* () {
+      const service = yield* DbService;
+      const result = yield* service
+        .executeQuery("local", `INSERT INTO items(value) VALUES ('${token}')`)
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result) && result.failure._tag === "DbQueryError") {
+        expect(result.failure.message).toContain("credential pattern");
+        expect(result.failure.sql).not.toContain(token);
+      }
+      expect(observedSql).toHaveLength(0);
+    }).pipe(
+      Effect.provide(
+        createRealDbServiceLayer(
+          {},
+          {
+            environments: {
+              local: { host: "127.0.0.1", port: 5432, user: "app", database: "app" },
+            },
+          },
+          {},
+          observedSql,
+        ),
+      ),
+    );
+  });
+
   describe("resolveDbAccessMode", () => {
     it("treats local environment as mutable without a tunnel", () => {
       const mode = resolveDbAccessMode("local", "127.0.0.1", true);
@@ -1105,6 +1137,38 @@ describe("DbService", () => {
   });
 
   describe("executeSchemaQuery", () => {
+    it.effect("refuses credential-bearing table names before querying schema metadata", () => {
+      const observedSql: ObservedSql[] = [];
+      const token = `ghp_${"A".repeat(36)}`;
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service
+          .executeSchemaQuery("local", "columns", token)
+          .pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result) && result.failure._tag === "DbQueryError") {
+          expect(result.failure.message).toContain("credential pattern");
+          expect(result.failure.sql).not.toContain(token);
+        }
+        expect(observedSql).toHaveLength(0);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            {
+              environments: {
+                local: { host: "127.0.0.1", port: 5432, user: "app", database: "app" },
+              },
+            },
+            {},
+            observedSql,
+          ),
+        ),
+      );
+    });
+
     it.effect("lists all tables with tables mode", () =>
       Effect.gen(function* () {
         const service = yield* DbService;

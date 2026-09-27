@@ -13,6 +13,7 @@
 import { loadConfig } from "#config/loader";
 
 import { createCredentialGuard } from "./index";
+import { redactSensitiveText } from "#shared/content-security";
 
 const stdin = await Bun.stdin.text();
 
@@ -29,6 +30,6 @@ try {
   );
 } catch (error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(message);
+  process.stderr.write(redactSensitiveText(message));
   process.exit(2);
 }

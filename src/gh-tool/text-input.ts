@@ -1,7 +1,10 @@
 import { Effect, Schema } from "effect";
+import { realpath } from "node:fs/promises";
 
 import { GitHubCommandError } from "#gh/errors";
-import { detectSecrets } from "#guard";
+import { unsafeOutboundTextReason } from "#shared/content-security";
+
+export { unsafeOutboundTextReason } from "#shared/content-security";
 
 const STDIN_SENTINEL = "-";
 const SENSITIVE_PATH_PATTERNS = [
@@ -17,33 +20,6 @@ const readTextFromStdin = () => Bun.stdin.text();
 export const isSensitivePath = (filePath: string) =>
   SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
 
-/** Inspect the final text, after shell expansion and after reading files or stdin. */
-export function unsafeOutboundTextReason(
-  text: string,
-  environment: Record<string, string | undefined> = process.env,
-): string | null {
-  if (detectSecrets(text)) return "a credential pattern";
-
-  const sensitiveName =
-    /(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|PSK)/i;
-  const isSensitiveName = (name: string) =>
-    name !== "PWD" && name !== "OLDPWD" && sensitiveName.test(name);
-  for (const [name, value] of Object.entries(environment)) {
-    if (isSensitiveName(name) && value && value.length >= 8 && text.includes(value)) {
-      return "a credential from the process environment";
-    }
-  }
-
-  const assignments = text.match(/^[A-Za-z_][A-Za-z0-9_]*=.*$/gm) ?? [];
-  if (
-    assignments.length >= 5 &&
-    assignments.some((line) => isSensitiveName(line.split("=", 1)[0] ?? ""))
-  ) {
-    return "an environment dump";
-  }
-  return null;
-}
-
 export const validateOutboundText = (text: string, command: string) => {
   const reason = unsafeOutboundTextReason(text);
   return reason === null
@@ -58,9 +34,9 @@ export const validateOutboundText = (text: string, command: string) => {
       );
 };
 
-export const validateOutboundFile = (filePath: string, command: string) =>
+export const readValidatedOutboundFile = (filePath: string, command: string) =>
   Effect.tryPromise({
-    try: () => readTextFile(filePath),
+    try: () => readAllowedFile(filePath),
     catch: () =>
       new GitHubCommandError({
         command,
@@ -68,17 +44,22 @@ export const validateOutboundFile = (filePath: string, command: string) =>
         stderr: `Refusing to publish unreadable or sensitive file: ${filePath}`,
         message: `Refusing to publish unreadable or sensitive file: ${filePath}`,
       }),
-  }).pipe(
-    Effect.flatMap((text) => validateOutboundText(text, command)),
-    Effect.asVoid,
-  );
+  }).pipe(Effect.tap(({ text }) => validateOutboundText(text, command)));
+
+export const validateOutboundFile = (filePath: string, command: string) =>
+  readValidatedOutboundFile(filePath, command).pipe(Effect.asVoid);
 
 const readTextFile = (filePath: string) => {
-  if (isSensitivePath(filePath)) {
-    return Promise.reject(new Error(`Refusing to read sensitive file: ${filePath}`));
-  }
+  return readAllowedFile(filePath).then(({ text }) => text);
+};
 
-  return Bun.file(filePath).text();
+const readAllowedFile = async (filePath: string) => {
+  if (isSensitivePath(filePath)) throw new Error(`Refusing to read sensitive file: ${filePath}`);
+  const resolvedPath = await realpath(filePath);
+  if (isSensitivePath(resolvedPath))
+    throw new Error(`Refusing to read sensitive file: ${resolvedPath}`);
+  const bytes = await Bun.file(resolvedPath).bytes();
+  return { bytes, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
 };
 
 const ensureResolvedText = (resolvedValue: string | null, context: string) => {

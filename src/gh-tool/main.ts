@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect";
 
 import { makeSchemaCommand, renderCauseToStderr, VERSION } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 import { ConfigServiceLayer } from "#config";
 import {
   issueCloseCommand,
@@ -240,6 +241,7 @@ WORKFLOW FOR AI AGENTS:
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
 const MainLayer = GitHubService.layer.pipe(
@@ -248,7 +250,7 @@ const MainLayer = GitHubService.layer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
 );
 
-const program = withAudit("gh", cli).pipe(
+const program = withRedactedOutput(withAudit("gh", cli)).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );

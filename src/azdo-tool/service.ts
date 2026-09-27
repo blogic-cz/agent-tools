@@ -10,6 +10,7 @@ import { isCommandAllowed, isInvokeAllowed } from "./security";
 import { transformCmdOutput } from "./transformers";
 import { ConfigService, getToolConfig } from "#config";
 import { renderCommandLine, tokenizeCommandLine } from "#shared/exec";
+import { unsafeOutboundTextReason } from "#shared/content-security";
 
 export class AzdoService extends Context.Service<
   AzdoService,
@@ -120,6 +121,14 @@ export class AzdoService extends Context.Service<
         );
 
         const cmdArgv = tokenizeCommandLine(cmd);
+        const unsafeReason = unsafeOutboundTextReason([...cmdArgv, projectName].join(" "));
+        if (unsafeReason !== null) {
+          return yield* new AzdoSecurityError({
+            message: `Refusing to send command containing ${unsafeReason}.`,
+            command: "[redacted]",
+          });
+        }
+
         const scopeArgv = [
           "--organization",
           azConfig.organization,
@@ -198,6 +207,14 @@ export class AzdoService extends Context.Service<
             "--query-parameters",
             ...Object.entries(params.queryParameters).map(([k, v]) => `${k}=${v}`),
           );
+        }
+
+        const unsafeReason = unsafeOutboundTextReason(argv.join(" "));
+        if (unsafeReason !== null) {
+          return yield* new AzdoSecurityError({
+            message: `Refusing to send invoke parameters containing ${unsafeReason}.`,
+            command: "invoke [redacted]",
+          });
         }
 
         argv.push("--organization", azConfig.organization, "--output", "json");

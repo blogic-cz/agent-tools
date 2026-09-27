@@ -6,6 +6,7 @@ import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./t
 import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { resolveEnvTemplate } from "#shared/env-template";
+import { unsafeOutboundTextReason } from "#shared/content-security";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
@@ -501,8 +502,18 @@ export class DbService extends Context.Service<
           readOnly: isFullyReadOnly(config),
         });
 
-        const runSql = (config: DbConfig, password: string, sql: string) =>
-          sqlClient.run(toConnection(config, password), sql);
+        const unsafeSqlError = (reason: string) =>
+          new DbQueryError({
+            message: `Refusing to send SQL containing ${reason}.`,
+            sql: "[redacted]",
+          });
+
+        const runSql = (config: DbConfig, password: string, sql: string) => {
+          const unsafeReason = unsafeOutboundTextReason(sql);
+          return unsafeReason === null
+            ? sqlClient.run(toConnection(config, password), sql)
+            : Effect.fail(unsafeSqlError(unsafeReason));
+        };
 
         const fetchSingleColumn = (config: DbConfig, password: string, sql: string) =>
           runSql(config, password, sql).pipe(
@@ -772,6 +783,11 @@ export class DbService extends Context.Service<
           sql: string,
           limit?: number,
         ) {
+          const unsafeReason = unsafeOutboundTextReason(sql);
+          if (unsafeReason !== null) {
+            return yield* unsafeSqlError(unsafeReason);
+          }
+
           const config = yield* getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
           const resolvedConfig = yield* resolveDbConfig(config, env);
@@ -827,6 +843,13 @@ export class DbService extends Context.Service<
           mode: SchemaMode,
           table?: string,
         ) {
+          if (table !== undefined) {
+            const unsafeReason = unsafeOutboundTextReason(table);
+            if (unsafeReason !== null) {
+              return yield* unsafeSqlError(unsafeReason);
+            }
+          }
+
           const config = yield* getConfigForEnv(env);
           const startTimeMs = yield* Clock.currentTimeMillis;
           const resolvedConfig = yield* resolveDbConfig(config, env);

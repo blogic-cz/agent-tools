@@ -139,6 +139,30 @@ const SECRET_PATTERNS = [
   },
 ];
 
+/** Return every recognized secret span without exposing the matched text. */
+export function findSecretMatches(
+  content: string,
+): Array<{ name: string; start: number; end: number }> {
+  const matches: Array<{ name: string; start: number; end: number }> = [];
+  for (const { name, pattern } of SECRET_PATTERNS) {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    const scanner = new RegExp(pattern.source, flags);
+    for (const match of content.matchAll(scanner)) {
+      const start = match.index;
+      let end = start + match[0].length;
+      // The original guard only needs to recognize a PEM header. Output redaction must remove
+      // the whole key block as well, through its matching end marker.
+      if (name === "Private Key") {
+        const remainder = content.slice(end);
+        const closing = /^\r?\n?[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/.exec(remainder);
+        end += closing?.[0].length ?? remainder.length;
+      }
+      matches.push({ name, start, end });
+    }
+  }
+  return matches;
+}
+
 /**
  * CLI tools that must use wrapper tools for security and audit.
  */

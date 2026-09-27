@@ -12,6 +12,7 @@ import {
   VERSION,
 } from "#shared";
 import { AuditService, AuditServiceLayer, withAudit } from "#shared/audit";
+import { withRedactedOutput } from "#shared/output-boundary";
 
 type AuditToolResult<T> = {
   success: boolean;
@@ -97,11 +98,12 @@ const mainCommand = Command.make("audit-tool", {}).pipe(
 
 const cli = Command.run(mainCommand, {
   version: VERSION,
+  renderErrors: false,
 });
 
 const MainLayer = AuditServiceLayer.pipe(Layer.provideMerge(BunServices.layer));
 
-const program = withAudit("audit", cli).pipe(
+const program = withRedactedOutput(withAudit("audit", cli)).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );

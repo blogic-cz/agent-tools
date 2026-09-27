@@ -158,6 +158,57 @@ console.log(JSON.stringify(await Effect.runPromise(program)));
     }
   });
 
+  it("redacts rejected arguments and errors before audit persistence and on legacy reads", () => {
+    const tempDir = createTempDir("audit-redaction");
+    const dbPath = join(tempDir, "audit.sqlite");
+    const token = `ghp_${"A".repeat(36)}`;
+
+    try {
+      const result = runBunScript(
+        `
+import { Database } from "bun:sqlite";
+import { Effect } from "effect";
+import { AuditService, makeAuditServiceLayer, withAudit } from "./src/shared/audit.ts";
+
+const dbPath = process.env.DB_PATH;
+const token = process.env.SYNTHETIC_TOKEN;
+process.argv = [process.argv[0], "synthetic-cli", token];
+const program = Effect.gen(function* () {
+  const audit = yield* AuditService;
+  yield* withAudit("gh", Effect.fail(new Error("Rejected " + token))).pipe(Effect.catch(() => Effect.void));
+  const legacyDb = new Database(dbPath, { strict: true });
+  legacyDb.run("INSERT INTO audit_log (tool, project, args, duration, success, error, exit_code) VALUES (?, ?, ?, ?, ?, ?, ?)", ["old", "/tmp/" + token, "old " + token, 1, 0, "legacy " + token, 1]);
+  legacyDb.close(false);
+  const db = new Database(dbPath, { strict: true });
+  const raw = db.query("SELECT tool, project, args, error FROM audit_log ORDER BY id").all();
+  db.close(false);
+  const entries = yield* audit.listRecent();
+  return { raw, entries };
+}).pipe(Effect.provide(makeAuditServiceLayer({ dbPath })));
+
+console.log(JSON.stringify(await Effect.runPromise(program)));
+        `.trim(),
+        { DB_PATH: dbPath, SYNTHETIC_TOKEN: token },
+      );
+
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        raw: Array<Record<string, string | null>>;
+        entries: Array<Record<string, string | null>>;
+      };
+      expect(JSON.stringify(parsed.raw[0])).not.toContain(token);
+      expect(JSON.stringify(parsed.raw[1])).toContain(token);
+      expect(JSON.stringify(parsed.entries)).not.toContain(token);
+      expect(parsed.entries[0]?.error).toContain("[REDACTED]");
+      expect(parsed.entries[0]?.args).toContain("[REDACTED]");
+      expect(parsed.entries[0]?.project).toContain("[REDACTED]");
+      expect(parsed.entries[1]?.error).toContain("[REDACTED]");
+      expect(parsed.entries[1]?.args).toContain("[REDACTED]");
+    } finally {
+      removeTempDir(tempDir);
+    }
+  });
+
   it("audit layer failures never change program behavior", () => {
     const result = runBunScript(
       `
