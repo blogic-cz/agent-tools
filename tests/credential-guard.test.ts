@@ -1,6 +1,7 @@
 import { describe, expect, it, test } from "vitest";
 import { spawnSync } from "node:child_process";
 import corpus from "./fixtures/credential-guard-corpus.json";
+import argvRoleCases from "./fixtures/credential-guard-argv-roles.json";
 
 import {
   createCredentialGuard,
@@ -829,6 +830,18 @@ describe("dangerous bash command evasion", () => {
     "for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done",
     "herdr agent prompt worker-a-guard \"Please check `for t in argo-tool env-tool db-tool; do bun run $t --help > /tmp/h-$t.txt 2>&1; done` and `jq '{dependencies, peerDependencies}' package.json`.\"",
   ])("denies dynamic loop operands and executable prompt substitutions: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "for n in safe; do n=.env; cat $n; done",
+    "for n in safe; do read n; cat $n; done",
+    "for IFS in /; do herdr agent get $IFS; done",
+    "for n in safe; do $n; done",
+    'for n in safe; do sh -c "echo $n"; done',
+    "for n in safe; do cat $n; done; cat .env",
+    "for n in safe; do herdr agent get $n; done; printenv",
+  ])("denies unsafe literal-list loop semantics: %s", (command) => {
     expect(isDangerousBashCommand(command)).toBe(true);
   });
 
@@ -1995,5 +2008,17 @@ describe("custom CLI names and wrapper file operands", () => {
       if (blocked) expect(invoke).toThrow();
       else expect(invoke).not.toThrow();
     }
+  });
+});
+
+describe("credential guard argument roles", () => {
+  it.each(argvRoleCases)("$id", ({ command, config, expected_allowed }) => {
+    const invoke = () =>
+      createCredentialGuard(config).handleToolExecuteBefore(
+        { tool: "Bash" },
+        { args: { command } },
+      );
+    if (expected_allowed) expect(invoke).not.toThrow();
+    else expect(invoke).toThrow();
   });
 });
