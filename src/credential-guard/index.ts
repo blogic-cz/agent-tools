@@ -414,6 +414,628 @@ function parseStaticShellCommands(
   return { pipelines, redirects };
 }
 
+/** A lexical binding proof, preserving shell quotes and rejecting every other expansion. */
+function literalBindingText(
+  command: string,
+  name: string,
+  value: string,
+): { text: string; syntax: string } | undefined {
+  let text = "";
+  let syntax = "";
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i] ?? "";
+    if (char === "\\" && quote !== "'") {
+      const next = command[++i];
+      if (next === undefined || /[\r\n]/.test(next)) return undefined;
+      text += char + next;
+      syntax += "  ";
+    } else if (quote === "'") {
+      text += char;
+      syntax += " ";
+      if (char === quote) quote = undefined;
+    } else if (char === "'" && !quote) {
+      quote = char;
+      text += char;
+      syntax += " ";
+    } else if (char === '"') {
+      quote = quote ? undefined : char;
+      text += char;
+      syntax += " ";
+    } else if (char === "$") {
+      const match = /^\$\{([A-Za-z_]\w*)\}|^\$([A-Za-z_]\w*)/.exec(command.slice(i));
+      if (!match || (match[1] ?? match[2]) !== name) return undefined;
+      text += value;
+      syntax += quote ? " ".repeat(value.length) : value;
+      i += match[0].length - 1;
+    } else {
+      if (char === "`" || (!quote && /[(){}*?[\]#]/.test(char))) return undefined;
+      text += char;
+      syntax += quote ? " " : char;
+    }
+  }
+  return quote ? undefined : { text, syntax };
+}
+
+/** These single-letter binders cannot name shell lookup, splitting or generated variables. */
+function isLiteralBinder(name: string): boolean {
+  return /^(?:[a-z]|T)$/.test(name);
+}
+
+function unwrapProofCommand(words: string[], marker: string): string[] | undefined {
+  let index = 0;
+  while (words[index] === "rtk" || words[index] === "command") {
+    if (words[index++] === "rtk") {
+      if (words[index++] !== "proxy") return undefined;
+    } else if (words[index] === "--") index++;
+  }
+  if (words.slice(0, index + 1).some((word) => word.includes(marker))) return undefined;
+  const argv = words.slice(index);
+  if (!argv.length || /^[A-Za-z_]\w*=/.test(argv[0] ?? "")) return undefined;
+  return argv;
+}
+
+function isLiteralLoopCommand(words: string[], marker: string, value: string): boolean {
+  const marked = unwrapProofCommand(words, marker);
+  if (!marked) return false;
+  const argv = marked.map((word) => word.replaceAll(marker, value));
+  const name = argv[0];
+  const uses = marked.flatMap((word, index) => (word.includes(marker) ? [index] : []));
+  if (name === "cat")
+    return (
+      argv.slice(1).every((word) => word === "--" || !word.startsWith("-")) &&
+      uses.every((index) => index > 0 && !argv[index]?.startsWith("-"))
+    );
+  if (name === "echo") return uses.every((index) => index > 0 && !argv[index]?.startsWith("-"));
+  if (name === "printf") {
+    const format = passivePrintfFormatIndex(argv);
+    return format !== undefined && uses.every((index) => index > format);
+  }
+  if (name === "herdr")
+    return (
+      argv.length === 4 &&
+      argv[1] === "agent" &&
+      argv[2] === "get" &&
+      /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "") &&
+      uses.every((index) => index === 3)
+    );
+  if (name === "bun")
+    return (
+      argv.length === 9 &&
+      argv.slice(0, 6).join(" ") === "bun run gh-tool pr review-triage --repo" &&
+      /^[A-Za-z0-9_.-]+$/.test(argv[6] ?? "") &&
+      argv[7] === "--pr" &&
+      /^\d+$/.test(argv[8] ?? "") &&
+      uses.every((index) => index === 8)
+    );
+  return (
+    ["grep", "head", "tail"].includes(name ?? "") && uses.length === 0 && isPassiveTextCommand(argv)
+  );
+}
+
+type LiteralShellProof = { command: string; paths: string[] };
+
+/** Bounded observed shell forms only; failure leaves the original command under normal policy. */
+function materializeLiteralShell(command: string): LiteralShellProof | undefined {
+  if (new TextEncoder().encode(command).byteLength > 65_536) return undefined;
+  const marker = "GUARDLITERALBINDING";
+  if (command.includes(marker)) return undefined;
+  let script = command.trim();
+  const wrapped = parseStaticShellCommands(script);
+  if (
+    wrapped &&
+    typeof wrapped !== "string" &&
+    wrapped.pipelines.length === 1 &&
+    wrapped.pipelines[0]?.length === 1 &&
+    wrapped.redirects.length === 0
+  ) {
+    const argv = unwrapProofCommand(wrapped.pipelines[0]?.[0] ?? [], marker);
+    if (argv?.[0] === "sh" && argv[1] === "-c" && argv.length === 3) script = argv[2] ?? "";
+  }
+  const loop =
+    /^for[ \t]+([A-Za-z_]\w*)[ \t]+in[ \t]+([^;\n]+);[ \t\r\n]*do[ \t\r\n]+([\s\S]*);[ \t\r\n]*done[ \t\r\n]*$/.exec(
+      script,
+    );
+  if (loop) {
+    const name = loop[1] ?? "";
+    if (!isLiteralBinder(name)) return undefined;
+    const items = loop[2] ?? "";
+    const rawValues = items.trim().split(/[ \t]+/);
+    if (
+      rawValues.some(
+        (item) =>
+          !/^(?:[A-Za-z0-9_./:][A-Za-z0-9_./:-]*|'[A-Za-z0-9_./:][A-Za-z0-9_./:-]*'|"[A-Za-z0-9_./:][A-Za-z0-9_./:-]*")$/.test(
+            item,
+          ),
+      )
+    )
+      return undefined;
+    const values = rawValues.map((item) => item.replace(/^['"]|['"]$/g, ""));
+    if (!values.length || values.length > 16) return undefined;
+    const marked = literalBindingText(loop[3] ?? "", name, marker);
+    if (!marked || /&&|\|\||[<>]|&/.test(marked.syntax.replace(/\b2>&1\b/g, ""))) return undefined;
+    const parsed = parseStaticShellCommands(marked.text);
+    if (
+      !parsed ||
+      typeof parsed === "string" ||
+      parsed.redirects.length ||
+      parsed.pipelines.flat().length > 16 ||
+      !parsed.pipelines.flat().length
+    )
+      return undefined;
+    if (
+      !values.every((value) =>
+        parsed.pipelines.flat().every((words) => isLiteralLoopCommand(words, marker, value)),
+      )
+    )
+      return undefined;
+    const size = values.reduce(
+      (total, value) =>
+        total +
+        new TextEncoder().encode(marked.text).byteLength +
+        (marked.text.split(marker).length - 1) * (value.length - marker.length) +
+        2,
+      0,
+    );
+    if (size > 65_536) return undefined;
+    return {
+      command: values.map((value) => marked.text.replaceAll(marker, value)).join(";\n"),
+      paths: [],
+    };
+  }
+  const assignment =
+    /^cd[ \t]+(~?\/?[A-Za-z0-9_./-]+)[ \t]+&&[ \t]+([A-Za-z_]\w*)=([A-Za-z0-9_./][A-Za-z0-9_./-]*)[ \t]+&&[ \t]+/.exec(
+      command,
+    );
+  if (assignment && isLiteralBinder(assignment[2] ?? "")) {
+    const rest = literalBindingText(
+      command.slice(assignment[0].length),
+      assignment[2] ?? "",
+      marker,
+    );
+    if (!rest) return undefined;
+    const end = rest.syntax.search(/[;&|\r\n]/);
+    const use = rest.text.slice(0, end < 0 ? undefined : end);
+    const suffix = end < 0 ? "" : rest.text.slice(end);
+    if (suffix.includes(marker)) return undefined;
+    const parsed = parseStaticShellCommands(use);
+    const argv =
+      parsed &&
+      typeof parsed !== "string" &&
+      parsed.pipelines.length === 1 &&
+      parsed.pipelines[0]?.length === 1 &&
+      parsed.redirects.length === 0
+        ? parsed.pipelines[0]?.[0]
+        : undefined;
+    if (
+      !argv ||
+      argv.length < 4 ||
+      argv.slice(0, 3).join(" ") !== "git add --" ||
+      argv.slice(3).some((word) => !/^[A-Za-z0-9_./-]+$/.test(word))
+    )
+      return undefined;
+    const value = assignment[3] ?? "";
+    const size =
+      new TextEncoder().encode(rest.text).byteLength +
+      (use.split(marker).length - 1) * (value.length - marker.length) +
+      (assignment[1]?.length ?? 0) +
+      7;
+    if (size > 65_536) return undefined;
+    const paths = argv.slice(3).map((word) => word.replaceAll(marker, value));
+    return { command: `cd ${assignment[1]} && ${use.replaceAll(marker, value)}${suffix}`, paths };
+  }
+  // Only the observed rg -n PATTERN PATH form; marker position proves a real file operand.
+  const brace =
+    /(?:^|\s)([A-Za-z0-9_./-]*\/[A-Za-z0-9_./-]*\{[A-Za-z_]\w*(?:,[A-Za-z_]\w*){1,7}\}[A-Za-z0-9_./-]*)$/.exec(
+      command,
+    );
+  if (!brace) return undefined;
+  const path = brace[1] ?? "";
+  const start = command.length - path.length;
+  const marked = command.slice(0, start) + marker;
+  const lexical = literalBindingText(marked, "", "");
+  const parsed = parseStaticShellCommands(marked);
+  if (
+    !lexical ||
+    /[;&|<>\r\n]/.test(lexical.syntax) ||
+    !parsed ||
+    typeof parsed === "string" ||
+    parsed.redirects.length ||
+    parsed.pipelines.length !== 1 ||
+    parsed.pipelines[0]?.length !== 1
+  )
+    return undefined;
+  const argv = unwrapProofCommand(parsed.pipelines[0]?.[0] ?? [], marker);
+  if (
+    !argv ||
+    argv.length !== 4 ||
+    argv[0] !== "rg" ||
+    argv[1] !== "-n" ||
+    argv[2]?.startsWith("-") ||
+    argv[3] !== marker
+  )
+    return undefined;
+  const members = /\{([^{}]+)\}/.exec(path);
+  if (!members) return undefined;
+  const values = (members[1] ?? "").split(",");
+  const size =
+    new TextEncoder().encode(command.slice(0, start)).byteLength +
+    values.reduce((total, value) => total + path.length - members[0].length + value.length + 1, -1);
+  if (size > 65_536) return undefined;
+  const paths = values.map((member) => path.replace(members[0], member));
+  return { command: command.slice(0, start) + paths.join(" "), paths };
+}
+
+/** Complete package metadata loops: no prelude, loader shadowing, mutation or arbitrary suffix. */
+function staticPackageInventory(program: string): string[] | undefined {
+  if (program.length > 65_536) return undefined;
+  const prefix =
+    /^for\s*\(\s*const\s+([a-z])\s+of\s+(\[\s*(?:"[A-Za-z0-9_./@-]+"|'[A-Za-z0-9_./@-]+')(?:\s*,\s*(?:"[A-Za-z0-9_./@-]+"|'[A-Za-z0-9_./@-]+'))*\s*\])\s*\)\s*\{\s*(try\s*\{\s*)?const\s+([a-z])\s*=\s*require\s*\(\s*(["'])\.\/\5\s*\+\s*\1\s*\)\s*;\s*/.exec(
+      program.trim(),
+    );
+  if (!prefix || prefix[1] === prefix[4]) return undefined;
+  const paths = [...(prefix[2] ?? "").matchAll(/["']([^"']+)["']/g)].map(
+    (match) => "./" + (match[1] ?? ""),
+  );
+  if (
+    !paths.length ||
+    paths.length > 16 ||
+    // Four bytes per character bounds encoded text and shell quote escaping before allocation.
+    (program.length + Math.max(...paths.map((path) => path.length)) + 64) * paths.length * 4 >
+      65_536 ||
+    paths.some((path) => !/(?:^|\/)package\.json$/.test(path))
+  )
+    return undefined;
+  const name = prefix[1];
+  const result = prefix[4];
+  const end = prefix[3] ? String.raw`\s*\}\s*catch\s*\{\s*\}\s*\}` : String.raw`\s*\}`;
+  const suffix = program.trim().slice(prefix[0].length);
+  const bin = new RegExp(
+    String.raw`^console\.log\(\s*${name}\s*,\s*${result}\.bin\s*\)\s*;?${end}\s*$`,
+  );
+  const scripts = new RegExp(
+    String.raw`^console\.log\(\s*${name}\s*,\s*Object\.entries\(\s*${result}\.scripts\s*\|\|\s*\{\}\s*\)\.filter\(\(\[n\]\)=>n\.endsWith\("-tool"\)\|\|n\.endsWith\(":cli"\)\|\|n\.endsWith\(":auth"\)\|\|n==="ui:check"\)\s*\)\s*;?${end}\s*$`,
+  );
+  return bin.test(suffix) || scripts.test(suffix) ? paths : undefined;
+}
+
+/** Shared identity for refusal paths, including versioned/free-threaded Python and Windows names. */
+function inlineRuntimeKind(executable: string | undefined): "python" | "node" | "bun" | undefined {
+  const name =
+    executable
+      ?.split(/[/\\]/)
+      .at(-1)
+      ?.replace(/\.exe$/i, "") ?? "";
+  if (/^python(?:\d+(?:\.\d+)*)?t?$/i.test(name)) return "python";
+  if (/^node$/i.test(name)) return "node";
+  if (/^bun$/i.test(name)) return "bun";
+  return undefined;
+}
+
+function mentionsInlineRuntime(command: string): boolean {
+  return command.split(/[\s'"`()<>;&|]+/).some((word) => inlineRuntimeKind(word) !== undefined);
+}
+
+/** Locate code only in an actual inline-program operand, after supported runtime flags. */
+function inlineProgramIndex(argv: string[]): number | undefined {
+  const executable = argv[0]?.split("/").at(-1) ?? "";
+  const name = inlineRuntimeKind(argv[0]);
+  // Other recognized runtime spellings retain conservative refusal; this exception is bounded.
+  if (!name || !["python", "python3", "node", "bun"].includes(executable)) return undefined;
+  const python = name === "python";
+  const flags = python ? ["-u", "-B", "-I", "-S"] : name === "bun" ? ["--no-env-file"] : [];
+  let index = 1;
+  while (flags.includes(argv[index] ?? "")) index++;
+  if (
+    !(python ? argv[index] === "-c" : ["-e", "--eval"].includes(argv[index] ?? "")) ||
+    argv[index + 1] === undefined
+  )
+    return undefined;
+  // Python consumes the remaining words as sys.argv. Node can still parse startup options
+  // after eval, until -- or an ordinary positional operand. Bun suffixes require explicit --.
+  const suffix = argv[index + 2];
+  if (name === "bun" && suffix !== undefined && suffix !== "--") return undefined;
+  if (name === "node" && suffix?.startsWith("-") && suffix !== "--") return undefined;
+  return index + 1;
+}
+
+function isUnsupportedInlineRuntime(argv: string[]): boolean {
+  if (!inlineRuntimeKind(argv[0])) return false;
+  if (inlineProgramIndex(argv) !== undefined) return false;
+  return argv
+    .slice(1)
+    .some((arg) =>
+      /^(?:-[A-Za-z]*[cep]|-[rmp]|--(?:eval|print|require|import|loader|preload|experimental-loader))(?:$|=|[^-])/.test(
+        arg,
+      ),
+    );
+}
+
+/** Move a complete, literal Python stdin program into the existing inline argv boundary. */
+function normalizeProgramHeredocs(command: string): string {
+  const heredoc = boundedHeredoc(command);
+  if (!heredoc || !heredoc.closed || (!heredoc.quoted && /[$`\\]/.test(heredoc.body)))
+    return command;
+  const parsed = parseStaticShellCommands(heredoc.header);
+  if (!parsed || typeof parsed === "string") return command;
+  const last = parsed.pipelines.at(-1)?.at(-1);
+  const argv = last ? unwrapStaticCommand(last) : [];
+  if (
+    inlineRuntimeKind(argv[0]) !== "python" ||
+    inlineProgramIndex([argv[0] ?? "", "-c", ""]) === undefined ||
+    argv.length !== 2 ||
+    argv[1] !== "-"
+  )
+    return command;
+  if (!/-\s*$/.test(heredoc.header)) return command;
+  const quoted = "'" + heredoc.body.replaceAll("'", "'\"'\"'") + "'";
+  return (
+    heredoc.header.replace(/-\s*$/, "-c " + quoted) +
+    "\n" +
+    normalizeProgramHeredocs(heredoc.following)
+  );
+}
+
+/** Strings are data in these languages; retain their values separately for path checks. */
+function programParts(
+  program: string,
+  python: boolean,
+):
+  | { code: string; literals: string[]; pathLiterals: string[]; loadedModules: string[] }
+  | undefined {
+  const literals: string[] = [];
+  const pathLiterals: string[] = [];
+  const loadedModules: string[] = [];
+  let code = "";
+  for (let i = 0; i < program.length; i++) {
+    const char = program[i] ?? "";
+    if ((python && char === "#") || (!python && program.startsWith("//", i))) {
+      const terminator = python ? /[\r\n]/ : /[\r\n\u2028\u2029]/;
+      while (i < program.length && !terminator.test(program[i] ?? "")) i++;
+      code += "\n";
+      continue;
+    }
+    if (!python && program.startsWith("/*", i)) {
+      const end = program.indexOf("*/", i + 2);
+      if (end < 0) return undefined;
+      i = end + 1;
+      code += " ";
+      continue;
+    }
+    if (!python && char === "/") {
+      // Recognize regex only at an expression start; ambiguous slash syntax stays closed.
+      if (!/[=(,:!&|?;[{]\s*$/.test(code) && !/\breturn\s+$/.test(code)) return undefined;
+      let inClass = false;
+      let closed = false;
+      for (i++; i < program.length; i++) {
+        const next = program[i];
+        if (next === "\\") {
+          i++;
+          continue;
+        }
+        if (next === "\n") return undefined;
+        if (next === "[") inClass = true;
+        else if (next === "]") inClass = false;
+        else if (next === "/" && !inClass) {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) return undefined;
+      code += " REGEX ";
+      continue;
+    }
+    if (char !== "'" && char !== '"' && char !== "`") {
+      code += char;
+      continue;
+    }
+    // Bun.write(PATH, TEXT) differs from file-object write(TEXT).
+    const literalTextArgument =
+      (/\.(?:write_text|write)\s*\(\s*$/.test(code) && !/\bBun\s*\.\s*write\s*\(\s*$/.test(code)) ||
+      /\bBun\s*\.\s*write\s*\(\s*STRING\s*,\s*$/.test(code);
+    const interpolated = python && /[fF]/.test(/[rRuUbBfF]+$/.exec(program.slice(0, i))?.[0] ?? "");
+    const delimiter = program.startsWith(char.repeat(3), i) ? char.repeat(3) : char;
+    i += delimiter.length;
+    let value = "";
+    let expressionDepth = 0;
+    while (i < program.length && !program.startsWith(delimiter, i)) {
+      if (program[i] === "\\") {
+        value += program[i] + (program[++i] ?? "");
+        i++;
+      } else {
+        const current = program[i];
+        if (expressionDepth > 0 && (current === "'" || current === '"')) {
+          if (program.startsWith(current.repeat(3), i)) return undefined;
+          let end = i + 1;
+          while (end < program.length && program[end] !== current) {
+            if (program[end] === "\\") end++;
+            end++;
+          }
+          if (end >= program.length) return undefined;
+          value += program.slice(i, end + 1);
+          i = end + 1;
+          continue;
+        }
+        if (
+          interpolated &&
+          expressionDepth === 0 &&
+          (program.startsWith("{{", i) || program.startsWith("}}", i))
+        ) {
+          value += program.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (
+          (interpolated && current === "{") ||
+          (char === "`" && current === "{" && (expressionDepth > 0 || program[i - 1] === "$"))
+        )
+          expressionDepth++;
+        if ((interpolated || char === "`") && current === "}" && expressionDepth > 0)
+          expressionDepth--;
+        value += program[i++];
+      }
+    }
+    if (i >= program.length || expressionDepth !== 0) return undefined;
+    // Path values need exact decoding. Other escapes (including continuations and
+    // identity escapes) remain unproved; payload strings do not require this proof.
+    if (
+      /\b(?:open|Path|readFile|readFileSync|writeFile|writeFileSync|file|Bun\s*\.\s*write)\s*\(\s*$/.test(
+        code,
+      ) &&
+      value.replace(/\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})/g, "").includes("\\")
+    )
+      return undefined;
+    value = value.replace(
+      /\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|([0-7]{1,3}))/g,
+      (_match, hex: string | undefined, unicode: string | undefined, octal: string | undefined) =>
+        String.fromCharCode(Number.parseInt(hex ?? unicode ?? octal ?? "0", octal ? 8 : 16)),
+    );
+    if (
+      !python &&
+      /\b(?:require|import)\s*\(\s*$|\bimport\s*$|\b(?:import|export)\s+[^;()\n]*\bfrom\s*$/.test(
+        code,
+      )
+    )
+      loadedModules.push(value);
+    literals.push(value);
+    if (!literalTextArgument) pathLiterals.push(value);
+    // Template expressions remain executable; do not use their quoted boundary as an exemption.
+    if (interpolated || (char === "`" && value.includes("${"))) code += value;
+    code += " STRING ";
+    i += delimiter.length - 1;
+  }
+  return { code, literals, pathLiterals, loadedModules };
+}
+
+/** One immutable literal argv list passed once to subprocess.run, without a shell. */
+function staticSubprocessCommand(program: string): string | undefined {
+  // The binding and use must be adjacent top-level statements at the start of the program.
+  // A literal-looking assignment in a string, branch, or imported scope proves nothing.
+  const prefix =
+    /^import subprocess[ \t]*\r?\n([A-Za-z_]\w*)[ \t]*=[ \t]*(\[\s*(?:"[^"\\]*"|'[^'\\]*')(?:\s*,\s*(?:"[^"\\]*"|'[^'\\]*'))*\s*,?\s*\])[ \t]*\r?\n(?:[A-Za-z_]\w*[ \t]*=[ \t]*)?subprocess\.run\(/.exec(
+      program.trimStart(),
+    );
+  if (!prefix) return undefined;
+  const variable = prefix[1] ?? "";
+  const rest = program.trimStart().slice(prefix[0].length);
+  const call = new RegExp(
+    `^${variable}\\s*(?:,\\s*(?:cwd\\s*=\\s*(?:"[^"\\\\]*"|'[^'\\\\]*')|(?:capture_output|text|check)\\s*=\\s*(?:True|False)|timeout\\s*=\\s*\\d+))*\\s*\\)`,
+  ).exec(rest);
+  if (!call) return undefined;
+  const parts = programParts(program, true);
+  if (
+    !parts ||
+    (parts.code.match(new RegExp(`\\b${variable}\\b`, "g"))?.length ?? 0) !== 2 ||
+    (parts.code.match(/\bsubprocess\b/g)?.length ?? 0) !== 2
+  )
+    return undefined;
+  const values = [...(prefix[2] ?? "").matchAll(/"([^"\\]*)"|'([^'\\]*)'/g)].map(
+    (match) => match[1] ?? match[2] ?? "",
+  );
+  if (!values.length) return undefined;
+  return values.map((value) => "'" + value.replaceAll("'", "'\"'\"'") + "'").join(" ");
+}
+
+function inlineSubprocessCommands(command: string): string[] {
+  const parsed = parseStaticShellCommands(command);
+  if (!parsed || typeof parsed === "string") return [];
+  return parsed.pipelines.flat().flatMap((words) => {
+    const argv = unwrapStaticCommand(words);
+    const index = inlineProgramIndex(argv);
+    const nested = index === undefined ? undefined : staticSubprocessCommand(argv[index] ?? "");
+    return nested ? [nested] : [];
+  });
+}
+
+/** The complete invocation must preserve the package loader's startup and lookup identity. */
+function hasProvedPackageInventoryInvocation(command: string): boolean {
+  if (hasEnvironmentMutationPrefix(command)) return false;
+  const parsed = parseStaticShellCommands(command);
+  if (!parsed || typeof parsed === "string") return false;
+  return parsed.pipelines.flat().every((words) => {
+    const argv = unwrapStaticCommand(words);
+    if (
+      argv[0]?.split("/").at(-1) === "cat" ||
+      isPassiveTextCommand(argv) ||
+      isLiteralInlineWriter(argv)
+    )
+      return true;
+    const index = inlineProgramIndex(argv);
+    return (
+      inlineRuntimeKind(argv[0]) === "node" &&
+      index !== undefined &&
+      staticPackageInventory(argv[index] ?? "") !== undefined
+    );
+  });
+}
+
+/** Replay each proved JSON loader operand through ordinary command policies as well. */
+function inlinePackageCommands(command: string, allowInventory: boolean): string[] {
+  if (!allowInventory) return [];
+  const parsed = parseStaticShellCommands(command);
+  if (!parsed || typeof parsed === "string") return [];
+  return parsed.pipelines.flat().flatMap((words) => {
+    const argv = unwrapStaticCommand(words);
+    const index = inlineProgramIndex(argv);
+    if (index === undefined || inlineRuntimeKind(argv[0]) !== "node") return [];
+    const program = argv[index] ?? "";
+    const paths = staticPackageInventory(program);
+    return (paths ?? []).map((path) =>
+      ["node", "-e", program]
+        .map((word, position) => {
+          const materialized =
+            position === 2
+              ? program.replace(
+                  /\brequire\s*\(\s*(["'])\.\/\1\s*\+\s*[a-z]\s*\)/,
+                  `require(${JSON.stringify(path)})`,
+                )
+              : word;
+          return "'" + materialized.replaceAll("'", "'\"'\"'") + "'";
+        })
+        .join(" "),
+    );
+  });
+}
+
+/** JSON values selected by arbitrary keys or printed wholesale have no metadata proof. */
+function hasUnverifiedJsonValueOutput(code: string): boolean {
+  if (!/\bjson\.loads?\s*\(/.test(code) || !/\bprint\s*\(/.test(code)) return false;
+  if (/\.items\s*\(/.test(code) || /\bprint\s*\(\s*json\.loads?\s*\(/.test(code)) return true;
+  const names = [...code.matchAll(/\b([A-Za-z_]\w*)\s*=\s*json\.loads?\s*\(/g)].map(
+    (match) => match[1] ?? "",
+  );
+  return names.some((name) =>
+    new RegExp(`\\bprint\\s*\\(\\s*(?:json\\.dumps\\s*\\(\\s*)?${name}\\s*[,)]`).test(code),
+  );
+}
+
+function hasInlineProgramExecution(
+  program: string,
+  python: boolean,
+  allowInventory = false,
+): boolean {
+  const parts = programParts(program, python);
+  if (!parts) return true;
+  if (python && hasUnverifiedJsonValueOutput(parts.code)) return true;
+  if (parts.loadedModules.some((name) => /^(?:node:)?vm$/.test(name))) return true;
+  // Dynamic loading and reflective access cannot establish a non-executing code operand.
+  if (
+    (/\b(?:require|import)\s*\((?!\s*STRING\s*\))/.test(parts.code) &&
+      (!allowInventory || !staticPackageInventory(program))) ||
+    /\[\s*STRING\s*\+/.test(parts.code) ||
+    /\b(?:process|os)\s*\[/.test(parts.code)
+  )
+    return true;
+  const code = staticSubprocessCommand(program)
+    ? parts.code.replace(/\bsubprocess\b/g, "")
+    : parts.code;
+  return (
+    /\b(?:subprocess|child_process|execSync|execFile|execFileSync|spawn|spawnSync|eval|exec|Function|Reflect|getattr|setattr|globals|locals|vars|compile|__import__)\b|\bos\s*\.\s*(?:system|popen)|\bBun\s*\.\s*(?:spawn|spawnSync)|\bDeno\s*\.\s*Command/.test(
+      code,
+    ) || parts.literals.some((value) => /^(?:node:)?child_process$/.test(value))
+  );
+}
+
 function mentionsEnvironmentRead(text: string): boolean {
   // `--env dev` is a flag of another command, not the env command.
   return /(?<![\w.-])printenv\b(?!-)|(?<![\w.-])-\w*Oprintenv\b|(?<![\w.-])\benv\b(?!-)/i.test(
@@ -487,6 +1109,7 @@ function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
   )
     return false;
   return (argv[0]?.split("/").at(-1) === "awk" && !isAwkExecution(argv)) ||
+    inlineProgramIndex(argv) !== undefined ||
     isJqObjectConstruction(argv)
     ? false
     : hasArgumentBraceExpansion(argv.join(" "));
@@ -540,6 +1163,11 @@ function isJqObjectConstruction(argv: string[]): boolean {
   if (argv[index] === "--") index++;
   const filter = argv[index] ?? "";
   if (argv.slice(index + 1).some((arg) => arg.startsWith("-"))) return false;
+  const expression = filter
+    .replace(/\.[A-Za-z_][A-Za-z0-9_.-]*/g, "FIELD")
+    .replace(/\b[A-Za-z_][A-Za-z0-9_-]*\s*:/g, ":");
+  if (/^\{[\s\S]*\}$/.test(filter) && /^(?:FIELD|length|map|[\s{}():,|>0-9])+$/.test(expression))
+    return true;
   return (
     /^\{\s*[A-Za-z_][A-Za-z0-9_-]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_-]*)*\s*\}$/.test(filter) ||
     /^\{\s*[A-Za-z_][A-Za-z0-9_-]*\s*:\s*\.[A-Za-z_][A-Za-z0-9_.-]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_-]*\s*:\s*\.[A-Za-z_][A-Za-z0-9_.-]*)*\s*\}$/.test(
@@ -694,7 +1322,7 @@ function isPassiveTextCommand(argv: string[]): boolean {
   const args = argv.slice(1);
   // These commands consume literal text. Execution options are not exceptions.
   if (name === "printf") return passivePrintfFormatIndex(argv) !== undefined;
-  if (["echo", "grep", "head"].includes(name)) {
+  if (["echo", "grep", "head", "tail"].includes(name)) {
     return true;
   }
   if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
@@ -708,7 +1336,11 @@ function isPassiveTextCommand(argv: string[]): boolean {
   );
 }
 
-function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
+function hasStaticEnvironmentRead(
+  argv: string[],
+  allowedNames: Set<string>,
+  allowInventory = false,
+): boolean {
   const name = argv[0]?.split("/").at(-1);
   if (
     ["sh", "bash", "zsh"].includes(name ?? "") &&
@@ -717,17 +1349,49 @@ function hasStaticEnvironmentRead(argv: string[], allowedNames: Set<string>): bo
   ) {
     return true;
   }
+  if (
+    name === "docker" &&
+    argv.some((arg) => ["sh", "bash", "zsh"].includes(arg)) &&
+    argv.some((arg) => /[$`]/.test(arg))
+  )
+    return true;
   if (name === "awk" && argv.slice(1).some((arg) => /\bENVIRON\b/.test(arg))) return true;
   if (name === "printenv") return !isAllowedEnvironmentRead(argv, allowedNames);
   if (name === "env") {
     const wrapped = unwrapEnvironmentCommand(argv);
     return wrapped === null
       ? isEnvironmentListing(argv)
-      : hasStaticEnvironmentRead(unwrapStaticCommand(wrapped), allowedNames);
+      : hasStaticEnvironmentRead(unwrapStaticCommand(wrapped), allowedNames, allowInventory);
   }
+  if (isUnsupportedInlineRuntime(argv)) return true;
+  const programIndex = inlineProgramIndex(argv);
+  if (programIndex !== undefined)
+    return hasInlineProgramExecution(
+      argv[programIndex] ?? "",
+      inlineRuntimeKind(argv[0]) === "python",
+      allowInventory && inlineRuntimeKind(argv[0]) === "node",
+    );
   if (isPassiveTextCommand(argv)) return false;
   // Any command may re-parse an argument as shell code (trap, find -exec, awk system()).
-  return hasCommandArgumentBraceExpansion(argv) || mentionsEnvironmentRead(argv.join(" "));
+  return (
+    hasCommandArgumentBraceExpansion(argv) ||
+    ([
+      "sh",
+      "bash",
+      "zsh",
+      "eval",
+      "source",
+      "find",
+      "xargs",
+      "trap",
+      "awk",
+      "git",
+      "sort",
+      "jq",
+      "docker",
+    ].includes(name ?? "") &&
+      mentionsEnvironmentRead(argv.join(" ")))
+  );
 }
 
 function isStaticHerdrPrompt(command: string): boolean {
@@ -751,7 +1415,11 @@ function isHerdrPrompt(command: string): boolean {
   return /^herdr\s+agent\s+prompt\b/.test(command.trim());
 }
 
-function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
+function hasEnvironmentRead(
+  command: string,
+  allowedNames: Set<string>,
+  allowInventory = hasProvedPackageInventoryInvocation(command),
+): boolean {
   if (isStaticHerdrPrompt(command)) return false;
   if (isHerdrPrompt(command)) return true;
   if (isLiteralTextWrite(command)) return false;
@@ -789,23 +1457,24 @@ function hasEnvironmentRead(command: string, allowedNames: Set<string>): boolean
   ) {
     return true;
   }
-  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames))) {
+  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames, allowInventory))) {
     return true;
   }
 
   // A literal producer can feed executable text to a shell, xargs, or an unknown consumer.
-  const result = pipelines.some(
-    (pipeline) =>
-      pipeline.length > 1 &&
-      pipeline.some(
-        (argv) =>
-          isAllowedEnvironmentRead(argv, allowedNames) ||
+  const result = pipelines.some((pipeline) =>
+    pipeline.some(
+      (argv, index) =>
+        (isAllowedEnvironmentRead(argv, allowedNames) ||
           (isLiteralTextProducer(argv) &&
-            (mentionsEnvironmentRead(argv.join(" ")) || hasCommandArgumentBraceExpansion(argv))),
-      ) &&
-      pipeline.some(
-        (argv) => !isPassiveTextCommand(argv) && !isAllowedEnvironmentRead(argv, allowedNames),
-      ),
+            (mentionsEnvironmentRead(argv.join(" ")) || hasCommandArgumentBraceExpansion(argv)))) &&
+        pipeline
+          .slice(index + 1)
+          .some(
+            (consumer) =>
+              !isPassiveTextCommand(consumer) && !isAllowedEnvironmentRead(consumer, allowedNames),
+          ),
+    ),
   );
   return result;
 }
@@ -897,8 +1566,21 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
   const isSensitivePath = (text: string) =>
     sensitivePath.test(text) ||
     sensitiveCamelCase.test(text) ||
-    (sensitiveName.test(text) && !/(?:^|\/)credential-guard(?:-[^/]+)?\.(?:ts|md)$/.test(text));
+    (sensitiveName.test(text) &&
+      !/(?:^|\/)credential-guard(?:(?:-[^/]+)?\.(?:ts|md|js)|\*|\/(?:index\.(?:ts|js)))?$/.test(
+        text,
+      ));
   if (/(?:^|[\s;&|])--env-file(?:=|\s)[^;&|]*\.env\b/i.test(command)) return true;
+  const heredoc = boundedHeredoc(command);
+  if (
+    heredoc &&
+    (isLiteralTextWrite(command) ||
+      (isLiteralTextWrite(command.slice(0, command.length - heredoc.following.length).trimEnd()) &&
+        !mentionsInlineRuntime(heredoc.following) &&
+        !/\b(?:sh|bash|zsh|eval|source|xargs)\b/.test(heredoc.following)))
+  ) {
+    return hasSensitiveFileRead(heredoc.header + "\n" + heredoc.following, isPathBlocked);
+  }
   if (/\bcat\b[^;&|]*<<-?\s*\S+[\s\S]*\b(?:secret|credential)\b/i.test(command)) return true;
   const parsed = parseStaticShellCommands(command);
   const readers =
@@ -922,13 +1604,47 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
           return path !== undefined && (isPathBlocked(path) || isSensitivePath(path));
         });
       }
+      const programIndex = inlineProgramIndex(inspected);
+      if (programIndex !== undefined) {
+        const parts = programParts(
+          inspected[programIndex] ?? "",
+          inlineRuntimeKind(inspected[0]) === "python",
+        );
+        if (!parts) return true;
+        const inventory = staticPackageInventory(inspected[programIndex] ?? "");
+        if (inventory?.some((path) => isPathBlocked(path) || isSensitivePath(path))) return true;
+        if (parts.code.split(/[\s'"`()<>;&|]+/).some(isPathBlocked)) return true;
+        const accessesFiles =
+          /\b(?:open|Path|read_text|read_bytes|readFile|readFileSync|file|write_text|writeFile|writeFileSync)\b/.test(
+            parts.code,
+          ) || /\bBun\s*\.\s*write\s*\(/.test(parts.code);
+        if (
+          accessesFiles &&
+          /\b(?:sys|process)\s*\.\s*argv\b/.test(parts.code) &&
+          inspected
+            .slice(programIndex + 1)
+            .some((arg) => isPathBlocked(arg) || isSensitivePath(arg))
+        )
+          return true;
+        // Interpolation expressions remain in code; inspect their nested literal operands too.
+        const expressionParts = /['"]/.test(parts.code)
+          ? programParts(parts.code, inlineRuntimeKind(inspected[0]) === "python")
+          : { pathLiterals: [] };
+        if (!expressionParts) return true;
+        return [...parts.pathLiterals, ...expressionParts.pathLiterals].some(
+          (value) =>
+            (accessesFiles && isPathBlocked(value)) ||
+            (!/\s/.test(value) && /[/.]/.test(value) && isSensitivePath(value)),
+        );
+      }
       if (!readers.test(name)) return false;
       if (name === "rg" || name === "grep") {
         const args = inspected.slice(1);
         const paths: string[] = [];
         let hasPattern = false;
         let options = true;
-        let filesOnly = false;
+        const enumeratesFiles = name === "rg" && args.includes("--files");
+        let filesOnly = enumeratesFiles;
         for (let i = 0; i < args.length; i++) {
           const arg = args[i] ?? "";
           if (options && arg === "--") {
@@ -966,7 +1682,11 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
                 : arg.startsWith("--glob=")
                   ? arg.slice(7)
                   : arg.slice(2);
-            if (isSensitivePath(glob)) paths.push(glob);
+            if (
+              !enumeratesFiles &&
+              (isSensitivePath(glob) || isPathBlocked(glob.replaceAll("*", "")))
+            )
+              paths.push(glob);
             continue;
           }
           if (
@@ -977,8 +1697,9 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
             if (arg === "-f" || arg === "--file") paths.push(value ?? "");
             if (
               (arg === "-g" || arg === "--glob" || arg === "--iglob" || arg === "--include") &&
+              !enumeratesFiles &&
               value &&
-              isSensitivePath(value)
+              (isSensitivePath(value) || isPathBlocked(value.replaceAll("*", "")))
             )
               paths.push(value);
             if (arg === "-e" || arg === "--regexp" || arg === "-f" || arg === "--file")
@@ -1029,7 +1750,7 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
     return true;
   if (readers.test(command) && command.split(/[\s'"`()<>;&|]+/).some(isPathBlocked)) return true;
   const unquoted = command.replace(/'(?:\\.|[^'])*'/g, " ").replace(/"(?:\\.|[^"$`])*"/g, " ");
-  if (/\b(?:bun|node|python3?|ruby)\b/i.test(command) && isSensitivePath(command)) {
+  if ((mentionsInlineRuntime(command) || /\bruby\b/i.test(command)) && isSensitivePath(command)) {
     return true;
   }
   return (
@@ -1051,7 +1772,7 @@ function hasEnvironmentVariableExpansionRead(
     command = [heredoc.header, heredoc.following].join("\n");
     heredoc = boundedHeredoc(command);
   }
-  if (!command.includes("$")) return false;
+  if (!command.includes("$") && !command.includes("`")) return false;
   let invalidExpansion = false;
   const assignments = getLeadingLiteralAssignments(command);
   const localValues = new Map<string, string>();
@@ -1087,6 +1808,7 @@ function hasEnvironmentVariableExpansionRead(
       quote = quote === '"' ? undefined : '"';
       continue;
     }
+    if (char === "`") return true;
     if (char !== "$") {
       normalized += char;
       continue;
@@ -1184,11 +1906,127 @@ function hasEnvironmentVariableExpansionRead(
   return hasSensitiveFileRead(materialized, isPathBlocked);
 }
 
-function hasEnvironmentSourceAccess(command: string): boolean {
-  return (
-    /\b(?:os\.environ|process\.env|Environment\.GetEnvironmentVariable)\b/.test(command) &&
-    /\b(?:python3?|node|bun)\b/.test(command)
+function mentionsEnvironmentSource(command: string): boolean {
+  return /\b(?:os\s*\.\s*(?:environ|getenv)|process\s*\.\s*env|Environment\s*\.\s*GetEnvironmentVariable)\b/.test(
+    command,
   );
+}
+
+/** Closed raw-source grammar: literal display/write only, without projection or evaluation. */
+function isLiteralInlineWriter(argv: string[]): boolean {
+  const index = inlineProgramIndex(argv);
+  if (index === undefined || argv.length !== index + 1) return false;
+  const kind = inlineRuntimeKind(argv[0]);
+  const python = kind === "python";
+  const program = (argv[index] ?? "").trim();
+  let position = 0;
+  const take = (pattern: RegExp): boolean => {
+    const match = pattern.exec(program.slice(position));
+    if (!match) return false;
+    position += match[0].length;
+    return true;
+  };
+  const literal = (): string | undefined => {
+    take(/^\s*/);
+    const start = position;
+    const quote = program[position];
+    if (quote !== "'" && quote !== '"') return undefined;
+    const delimiter =
+      python && program.startsWith(quote.repeat(3), position) ? quote.repeat(3) : quote;
+    position += delimiter.length;
+    while (position < program.length) {
+      if (program.startsWith(delimiter, position)) {
+        position += delimiter.length;
+        return program.slice(start, position);
+      }
+      if (program[position] === "\\") position += 2;
+      else if (delimiter.length === 1 && /[\r\n\u2028\u2029]/.test(program[position] ?? ""))
+        return undefined;
+      else position++;
+    }
+    return undefined;
+  };
+  let prefix: RegExp;
+  let middle: RegExp | undefined;
+  let mode = false;
+  if (python && /^print\s*\(/.test(program)) prefix = /^print\s*\(\s*/;
+  else if (!python && /^console\s*\.\s*log\s*\(/.test(program))
+    prefix = /^console\s*\.\s*log\s*\(\s*/;
+  else if (python && /^open\s*\(/.test(program)) {
+    prefix = /^open\s*\(\s*/;
+    mode = true;
+    middle = /^\s*\)\s*\.\s*write\s*\(\s*/;
+  } else if (kind === "bun" && /^Bun\s*\.\s*write\s*\(/.test(program)) {
+    prefix = /^Bun\s*\.\s*write\s*\(\s*/;
+    middle = /^\s*,\s*/;
+  } else if (python) {
+    prefix = /^from[ \t]+pathlib[ \t]+import[ \t]+Path[ \t]*(?:;|\r?\n)\s*Path\s*\(\s*/;
+    middle = /^\s*\)\s*\.\s*write_text\s*\(\s*/;
+  } else return false;
+  if (!take(prefix) || literal() === undefined) return false;
+  if (mode) {
+    if (!take(/^\s*,\s*/)) return false;
+    const value = literal();
+    if (value !== "'w'" && value !== '"w"') return false;
+  }
+  if (middle && (!take(middle) || literal() === undefined)) return false;
+  return take(/^\s*\)\s*;?\s*$/) && position === program.length;
+}
+
+/** Inert command identity is unproved after an explicit environment mutation. */
+function hasEnvironmentMutationPrefix(command: string): boolean {
+  const heredoc = boundedHeredoc(command);
+  if (heredoc) {
+    if (!heredoc.closed) return true;
+    return hasEnvironmentMutationPrefix(heredoc.header + "\n" + heredoc.following);
+  }
+  const parsed = parseStaticShellCommands(command);
+  if (!parsed || typeof parsed === "string") return true;
+  return parsed.pipelines.flat().some((words) => {
+    let index = 0;
+    while (index < words.length) {
+      const word = words[index] ?? "";
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) return true;
+      const name = word.split("/").at(-1);
+      if (name === "env") {
+        index++;
+        if (words[index] === "--") index++;
+        if (words[index]?.startsWith("-")) return true;
+      } else if (name === "rtk" || name === "command") {
+        index++;
+        if ((name === "rtk" && words[index] === "proxy") || words[index] === "--") index++;
+      } else return false;
+    }
+    return false;
+  });
+}
+
+function hasEnvironmentSourceAccess(command: string, rawTrigger: boolean): boolean {
+  if (rawTrigger && hasEnvironmentMutationPrefix(command)) return true;
+  if (isLiteralTextWrite(command) || isStaticHerdrPrompt(command)) return false;
+  const parsed = parseStaticShellCommands(command);
+  if (!parsed || typeof parsed === "string") return rawTrigger;
+  const commands = parsed.pipelines.flat().map(unwrapStaticCommand);
+  if (rawTrigger) {
+    // Original invocation-wide evidence survives split writers and inline quote projection.
+    return !commands.every(
+      (argv) =>
+        argv[0]?.split("/").at(-1) === "cat" ||
+        isPassiveTextCommand(argv) ||
+        isLiteralInlineWriter(argv),
+    );
+  }
+  return commands.some((argv) => {
+    const index = inlineProgramIndex(argv);
+    if (index === undefined) return false;
+    const parts = programParts(argv[index] ?? "", inlineRuntimeKind(argv[0]) === "python");
+    if (!parts) return true;
+    return (
+      mentionsEnvironmentSource(parts.code) ||
+      (/\b(?:os|process)\s*\[/.test(parts.code) &&
+        parts.literals.some((value) => /^(?:env|environ|getenv)$/.test(value)))
+    );
+  });
 }
 
 /** Extract file path from hook arguments. */
@@ -1294,6 +2132,29 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function getDangerousBashReason(command: string): string | null {
+    const originalCommand = command;
+    const allowPackageInventory = hasProvedPackageInventoryInvocation(originalCommand);
+    const rawEnvironmentSource =
+      mentionsEnvironmentSource(command) && mentionsInlineRuntime(command);
+    if (rawEnvironmentSource && hasEnvironmentMutationPrefix(originalCommand))
+      return "reads process environment after an unproved environment mutation";
+    command = normalizeProgramHeredocs(command);
+    const proof = materializeLiteralShell(command);
+    if (!proof && /^\s*for\b/.test(command)) return "cannot prove a bounded literal shell loop";
+    if (proof) {
+      if (proof.paths.some((path) => hasSensitiveFileRead("cat " + path, isPathBlocked)))
+        return "accesses a sensitive file path";
+      command = proof.command;
+      if (getBlockedCliTool(command)) return "invokes a blocked CLI from a literal expansion";
+    }
+    for (const nested of [
+      ...inlineSubprocessCommands(command),
+      ...inlinePackageCommands(command, allowPackageInventory),
+    ]) {
+      const reason = getDangerousBashReason(nested);
+      if (reason || getBlockedCliTool(nested))
+        return reason ?? "invokes a blocked CLI from a script";
+    }
     if (
       hasSensitiveFileRead(command, isPathBlocked) ||
       hasSensitivePathRedirect(command, isPathBlocked)
@@ -1306,11 +2167,16 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     ) {
       return "expands an unapproved or executable environment variable value";
     }
-    if (hasEnvironmentSourceAccess(command)) return "reads process environment from a script";
-    if (hasEnvironmentRead(command, allowedEnvironmentVariables)) {
+    if (hasEnvironmentSourceAccess(command, rawEnvironmentSource))
+      return "reads process environment from a script";
+    if (hasEnvironmentRead(command, allowedEnvironmentVariables, allowPackageInventory)) {
       return "reads environment variables or passes them to an executor";
     }
-    if (dangerousBashPatterns.some((pattern) => pattern.test(command))) {
+    if (
+      dangerousBashPatterns.some(
+        (pattern) => pattern.test(originalCommand) || pattern.test(command),
+      )
+    ) {
       return "matches a configured dangerous-command pattern";
     }
     return null;
@@ -1341,7 +2207,21 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     return null;
   }
 
-  function getBlockedCliTool(command: string): { name: string; wrapper: string } | null {
+  function getBlockedCliTool(
+    command: string,
+    expand = true,
+  ): { name: string; wrapper: string } | null {
+    command = normalizeProgramHeredocs(command);
+    const proof = expand ? materializeLiteralShell(command) : undefined;
+    if (proof) {
+      const originalBlocked = getBlockedCliTool(command, false);
+      if (originalBlocked) return originalBlocked;
+      command = proof.command;
+    }
+    for (const nested of inlineSubprocessCommands(command)) {
+      const blocked = getBlockedCliTool(nested);
+      if (blocked) return blocked;
+    }
     const staticCommands = parseStaticShellCommands(command);
     const parsed = staticCommands ?? parseStaticShellCommands(command, true);
     if (parsed && typeof parsed !== "string") {
