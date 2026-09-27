@@ -171,6 +171,10 @@ export const createRelease = Effect.fn("release.createRelease")(function* (opts:
 }) {
   const gh = yield* GitHubService;
 
+  if (opts.title !== null) {
+    yield* validateOutboundText(opts.title, "gh-tool release create");
+  }
+
   let body = opts.body;
   let title = opts.title;
   if (opts.generateNotes) {
@@ -204,10 +208,10 @@ export const createRelease = Effect.fn("release.createRelease")(function* (opts:
       );
     }
     yield* validateOutboundText(generated.body, "gh-tool release create");
-    if (opts.title === null || opts.title === "") {
+    if (title === null || title === "") {
       yield* validateOutboundText(generated.name, "gh-tool release create");
+      title = generated.name;
     }
-    title = title || generated.name;
     body = opts.body ? `${opts.body}\n${generated.body}` : generated.body;
     yield* validateOutboundText(body, "gh-tool release create");
   }
@@ -277,6 +281,10 @@ export const editRelease = Effect.fn("release.editRelease")(function* (opts: {
   repo: string | null;
 }) {
   const gh = yield* GitHubService;
+
+  if (opts.title !== null) {
+    yield* validateOutboundText(opts.title, "gh-tool release edit");
+  }
 
   if (opts.draft === false) {
     const current = yield* viewRelease({ tag: opts.tag, repo: opts.repo });

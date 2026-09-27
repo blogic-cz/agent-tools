@@ -685,6 +685,82 @@ describe("gist helpers", () => {
 });
 
 describe("release publication content", () => {
+  it.effect("rejects manual release titles before create I/O with or without generated notes", () =>
+    Effect.gen(function* () {
+      const token = `ghp_${"x".repeat(36)}`;
+      for (const generateNotes of [false, true]) {
+        let calls = 0;
+        const result = yield* createRelease({
+          tag: "v1.2.3",
+          title: token,
+          body: null,
+          draft: false,
+          prerelease: false,
+          generateNotes,
+          notesStartTag: null,
+          target: null,
+          verifyTag: false,
+          latest: null,
+          repo: null,
+        }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGh: () => {
+                calls += 1;
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+              runGhJson: () => {
+                calls += 1;
+                return Effect.succeed({ name: "Generated", body: "Safe notes" });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(calls).toBe(0);
+      }
+    }),
+  );
+
+  it.effect(
+    "rejects manual release edit titles before reads or writes at every draft setting",
+    () =>
+      Effect.gen(function* () {
+        const token = `ghp_${"x".repeat(36)}`;
+        for (const draft of [null, false, true]) {
+          let calls = 0;
+          const result = yield* editRelease({
+            tag: "v1.2.3",
+            title: token,
+            body: null,
+            draft,
+            prerelease: null,
+            latest: null,
+            repo: null,
+          }).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGh: () => {
+                  calls += 1;
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                },
+                runGhJson: () => {
+                  calls += 1;
+                  return Effect.succeed({});
+                },
+              }),
+            ),
+            Effect.result,
+          );
+
+          expect(Result.isFailure(result)).toBe(true);
+          expect(calls).toBe(0);
+        }
+      }),
+  );
+
   it.effect("resolves --notes-file through the outbound text validator", () =>
     Effect.gen(function* () {
       const originalBun = Reflect.get(globalThis, "Bun");
