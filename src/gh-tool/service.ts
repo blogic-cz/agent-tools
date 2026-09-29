@@ -5,6 +5,7 @@ import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "./types";
 
 import { GH_BINARY } from "./config";
+import { ghEnvironment } from "./environment";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { retryTransient } from "#shared/retry-transient";
 import { githubApi } from "./api";
@@ -165,7 +166,8 @@ export class GitHubService extends Context.Service<
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
-                ...(ghRepo ? { env: { GH_REPO: ghRepo }, extendEnv: true } : {}),
+                env: { ...ghEnvironment(), ...(ghRepo ? { GH_REPO: ghRepo } : {}) },
+                extendEnv: false,
               });
 
               const proc = yield* executor.spawn(command);

@@ -612,6 +612,10 @@ The guard blocks agents from accessing sensitive files, leaking secrets, and run
 
 GitHub text and file publication, database queries, Azure and Kubernetes command arguments, and observability requests are checked before execution. GitHub file uploads use snapshots of the inspected bytes. Generated release notes and existing pending reviews or draft releases are inspected before publication. Authentication headers and connection credentials remain inside the tools.
 
+GitHub API requests validate the serialized body that will be sent, including JSON keys and decoded string values. Serialization happens once, before authentication lookup or network access. File publication checks both the supplied path and its resolved target against known credential locations before reading content. This includes SSH, AWS, Kubernetes, Azure, and common CLI credential stores. An unknown filename can still contain credentials, so content checks also apply.
+
+The two direct GitHub CLI launch paths receive an explicit environment containing supported GitHub authentication, host/configuration, proxy/CA, and platform variables. Unrelated parent variables and runtime loader settings are not inherited. Other tools retain their own environment contracts; this does not isolate the parent agent or prevent GitHub CLI access to its configured credential files.
+
 Results retain their JSON or TOON structure, with detected credentials replaced by `[REDACTED]`. Audit records are sanitized before storage; reading older records also sanitizes the returned content but does not rewrite the database.
 
 These checks apply to these wrappers. They do not intercept arbitrary shell programs or other agent tools. GitHub does not offer an atomic content-version condition for submitting pending reviews or publishing existing drafts, so a concurrent remote edit between inspection and publication remains possible.
@@ -653,6 +657,8 @@ The guard recognizes `rtk`, `rtk proxy`, `command`, and supported `env` prefixes
 Paths are checked against sensitive filename patterns and configured path rules. Supported proofs apply those checks to their expanded operands. Ordinary parent-directory and absolute paths may be allowed; the guard does not resolve filesystem paths or symlinks, or enforce repository confinement.
 
 Single literal `echo`/`printf` writes with output redirection and single `cat`/`tee` heredoc writes are allowed. Heredoc braces are data. Use a quoted delimiter for literal code; unquoted heredocs containing `$`, backticks, or backslashes do not receive the literal-write exception. The exception permits only supported combinations with navigation or selected inspections; unsupported following commands remain outside it. Supported complete Python stdin heredocs are checked as inline programs, with the normal runtime-argument, path, execution, and environment checks.
+
+Python JSON parsing, dictionary iteration, and printing are not themselves evidence of credential access. They follow the same access and execution rules as other supported inline programs. This intentionally permits ordinary JSON output that older versions refused. Unknown secrets in ordinary files can therefore reach arbitrary shell output; wrapper content checks do not protect that output. A refusal caused by unsupported syntax means the guard could not establish its policy conditions, not that it observed a secret being read.
 
 A separate bounded Node proof supports literal `package.json` inventory loops that print `bin` metadata or use the supported scripts filter. The complete invocation must preserve loader identity through known passive commands, closed literal writers, or proved inventories. Startup/environment mutations, unknown commands, loader changes, and other dynamic loading remain unproved and are refused.
 

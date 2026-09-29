@@ -997,18 +997,6 @@ function inlinePackageCommands(command: string, allowInventory: boolean): string
   });
 }
 
-/** JSON values selected by arbitrary keys or printed wholesale have no metadata proof. */
-function hasUnverifiedJsonValueOutput(code: string): boolean {
-  if (!/\bjson\.loads?\s*\(/.test(code) || !/\bprint\s*\(/.test(code)) return false;
-  if (/\.items\s*\(/.test(code) || /\bprint\s*\(\s*json\.loads?\s*\(/.test(code)) return true;
-  const names = [...code.matchAll(/\b([A-Za-z_]\w*)\s*=\s*json\.loads?\s*\(/g)].map(
-    (match) => match[1] ?? "",
-  );
-  return names.some((name) =>
-    new RegExp(`\\bprint\\s*\\(\\s*(?:json\\.dumps\\s*\\(\\s*)?${name}\\s*[,)]`).test(code),
-  );
-}
-
 function hasInlineProgramExecution(
   program: string,
   python: boolean,
@@ -1016,7 +1004,6 @@ function hasInlineProgramExecution(
 ): boolean {
   const parts = programParts(program, python);
   if (!parts) return true;
-  if (python && hasUnverifiedJsonValueOutput(parts.code)) return true;
   if (parts.loadedModules.some((name) => /^(?:node:)?vm$/.test(name))) return true;
   // Dynamic loading and reflective access cannot establish a non-executing code operand.
   if (
@@ -2137,7 +2124,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     const rawEnvironmentSource =
       mentionsEnvironmentSource(command) && mentionsInlineRuntime(command);
     if (rawEnvironmentSource && hasEnvironmentMutationPrefix(originalCommand))
-      return "reads process environment after an unproved environment mutation";
+      return "blocked by the environment/execution policy after an unproved environment mutation";
     command = normalizeProgramHeredocs(command);
     const proof = materializeLiteralShell(command);
     if (!proof && /^\s*for\b/.test(command)) return "cannot prove a bounded literal shell loop";
@@ -2158,19 +2145,19 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     if (
       hasSensitiveFileRead(command, isPathBlocked) ||
       hasSensitivePathRedirect(command, isPathBlocked)
-    ) {
-      return "accesses a sensitive file path";
-    }
+    )
+      return "blocked by the file-access policy; a sensitive path matched or this command form could not be verified";
     if (
       !isLiteralTextWrite(command) &&
       hasEnvironmentVariableExpansionRead(command, allowedEnvironmentVariables, isPathBlocked)
     ) {
       return "expands an unapproved or executable environment variable value";
     }
-    if (hasEnvironmentSourceAccess(command, rawEnvironmentSource))
-      return "reads process environment from a script";
-    if (hasEnvironmentRead(command, allowedEnvironmentVariables, allowPackageInventory)) {
-      return "reads environment variables or passes them to an executor";
+    if (
+      hasEnvironmentSourceAccess(command, rawEnvironmentSource) ||
+      hasEnvironmentRead(command, allowedEnvironmentVariables, allowPackageInventory)
+    ) {
+      return "blocked by the environment/execution policy; permitted access or non-execution could not be established for this command form";
     }
     if (
       dangerousBashPatterns.some(
@@ -2319,7 +2306,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         throw new Error(
           `\u{1F6AB} Command blocked: ${dangerousReason}; this command might expose secrets.\n\n` +
             `Command: ${command}\n\n` +
-            `If you need environment info, ask the user directly.\n\n` +
+            `Use a supported command form or the appropriate wrapper tool.\n\n` +
             `Think this is wrong? Review the project repository, adjust the patterns, and submit a PR.`,
         );
       }

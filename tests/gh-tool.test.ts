@@ -3,9 +3,9 @@ import { Clock, Console, Effect, Fiber, Result, Layer, Schema, Sink, Stream } fr
 import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import type { MergeResult, MergeStrategy, PRInfo, ReviewComment, ReviewThread } from "#gh/types";
 import { FeedbackOrigin, LogDiagnosisCategory } from "#gh/types";
@@ -18,6 +18,7 @@ import {
 } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
+import { ghEnvironment } from "#gh/environment";
 import {
   closeIssue,
   commentOnIssue,
@@ -224,6 +225,8 @@ type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
 type ObservedGhCommand = {
   args: ReadonlyArray<string>;
   ghRepo: string | undefined;
+  env: Record<string, string | undefined> | undefined;
+  extendEnv: boolean | undefined;
 };
 
 function createMockProcess(result: { stdout: string; stderr: string; exitCode: number }) {
@@ -257,6 +260,8 @@ function createMockGhSpawnerLayer(observed: ObservedGhCommand[]) {
         observed.push({
           args: command.args,
           ghRepo: command.options.env?.GH_REPO,
+          env: command.options.env,
+          extendEnv: command.options.extendEnv,
         });
 
         if (command.args[0] === "repo" && command.args[1] === "view") {
@@ -464,6 +469,112 @@ describe("gist helpers", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       expect(invoked).toBe(false);
+    }),
+  );
+
+  it.effect("refuses credential paths and symlink targets before reading or sending", () =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-path-policy-")));
+      const originalBun = Reflect.get(globalThis, "Bun");
+      let reads = 0;
+      let sends = 0;
+      Reflect.set(globalThis, "Bun", {
+        file: (path: string) => ({
+          bytes: () => {
+            reads += 1;
+            return readFile(path);
+          },
+        }),
+      });
+      const paths = [
+        ".ssh/id_rsa",
+        ".aws/config",
+        ".kube/config",
+        ".azure/accessTokens.json",
+        "secret/data",
+        "secrets/data",
+        "credential/data",
+        "credentials/data",
+        ".npmrc",
+        ".netrc",
+        ".git-credentials",
+        ".sentryclirc",
+        ".pypirc",
+        ".pgpass",
+        ".docker/config.json",
+        ".config/gh/hosts.yml",
+        "GitHub CLI/hosts.yml",
+        "kubeconfig",
+        "kubeconfig.yaml",
+        "cluster.kubeconfig",
+        ".env.example",
+        "private.pem",
+        "private.key",
+        "private.p12",
+        "private.pfx",
+        "private.cer",
+        "private.crt",
+        "passwd",
+        "shadow",
+      ];
+      yield* Effect.gen(function* () {
+        for (const [index, path] of paths.entries()) {
+          const target = join(directory, path);
+          const aliasDirectory = join(directory, `alias-${index}`);
+          const alias =
+            process.platform === "win32"
+              ? join(aliasDirectory, basename(target))
+              : `${aliasDirectory}.txt`;
+          yield* Effect.promise(async () => {
+            await mkdir(join(target, ".."), { recursive: true });
+            await writeFile(target, "ordinary synthetic fixture text");
+            if (process.platform === "win32")
+              await symlink(dirname(target), aliasDirectory, "junction");
+            else await symlink(target, alias);
+          });
+          for (const fileValue of [target, alias]) {
+            const body = yield* resolveRequiredTextInput({
+              command: "gh-test",
+              value: null,
+              fileValue,
+              valueFlag: "--body",
+              fileFlag: "--body-file",
+              label: "body",
+            }).pipe(Effect.result);
+            expect(Result.isFailure(body)).toBe(true);
+            const gist = yield* createGist({
+              paths: [fileValue],
+              description: null,
+              public: false,
+            }).pipe(Effect.result);
+            expect(Result.isFailure(gist)).toBe(true);
+          }
+        }
+        const missing = yield* createGist({
+          paths: [join(directory, "missing.txt")],
+          description: null,
+          public: false,
+        }).pipe(Effect.result);
+        expect(Result.isFailure(missing)).toBe(true);
+        expect(reads).toBe(0);
+        expect(sends).toBe(0);
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () => {
+              sends += 1;
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(Effect.promise(() => rm(directory, { recursive: true, force: true }))),
+      );
     }),
   );
 
@@ -998,6 +1109,43 @@ describe("workflow dispatch", () => {
 });
 
 describe("GitHubService.runGh() error mapping", () => {
+  it.effect("gives gh only its explicit environment and overrides the selected repository", () => {
+    const originalEnvironment = process.env;
+    const environment = {
+      PATH: "/synthetic/bin",
+      HOME: "/synthetic/home",
+      GH_TOKEN: "synthetic-gh-auth",
+      GH_REPO: "parent/repo",
+      GH_HOST: "github.example.test",
+      GH_CONFIG_DIR: "/synthetic/gh",
+      HTTPS_PROXY: "http://proxy.example.test",
+      SSL_CERT_FILE: "/synthetic/ca.pem",
+      DATABASE_URL: "synthetic-db",
+      NOVEL_CREDENTIAL: "synthetic-unrelated",
+      NODE_OPTIONS: "--require=untrusted-loader",
+      GH_PAGER: "untrusted-pager",
+    };
+    const observed: ObservedGhCommand[] = [];
+    return Effect.gen(function* () {
+      process.env = environment;
+      const service = yield* GitHubService;
+      yield* service.runGh(["issue", "view", "1"]);
+      expect(observed[0]?.env).toEqual({ ...ghEnvironment(environment), GH_REPO: "selected/repo" });
+      expect(observed[0]?.extendEnv).toBe(false);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observed)),
+      Effect.provide(
+        Layer.succeed(ConfigService, { github: { default: { owner: "selected", repo: "repo" } } }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          process.env = originalEnvironment;
+        }),
+      ),
+    );
+  });
+
   it.effect("rejects a credential in a title before spawning gh", () => {
     const observedGhCommands: ObservedGhCommand[] = [];
     return Effect.gen(function* () {
@@ -1031,7 +1179,7 @@ describe("GitHubService.runGh() error mapping", () => {
       ),
       Effect.tap(() =>
         Effect.sync(() => {
-          expect(observedGhCommands).toEqual([
+          expect(observedGhCommands).toMatchObject([
             {
               args: ["issue", "view", "123"],
               ghRepo: "test-owner/test-repo",
@@ -1063,7 +1211,7 @@ describe("GitHubService.runGh() error mapping", () => {
       ),
       Effect.tap(() =>
         Effect.sync(() => {
-          expect(observedGhCommands).toEqual([
+          expect(observedGhCommands).toMatchObject([
             {
               args: ["pr", "view", "1"],
               ghRepo: "test-owner/test-be",
