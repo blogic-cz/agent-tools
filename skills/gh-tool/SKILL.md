@@ -32,6 +32,8 @@ bun gh-tool pr wait-mergeable --pr 123 # Poll until GitHub gives a definitive me
 bun gh-tool pr checks-failed --pr 123 --with-logs # Failure diagnosis + SHA evidence
 bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600 # Multi-PR transition stream
 bun gh-tool pr close --pr 123 --comment "Closing, no longer needed" --delete-branch
+bun gh-tool pr draft --pr 123            # Convert an open PR to draft
+bun gh-tool pr ready --pr 123            # Mark a draft PR ready for review
 bun gh-tool pr merge --pr 123 --strategy squash --delete-branch --confirm
 bun gh-tool pr stack view --pr 123    # Every PR in the GitHub stack containing this one, bottom-up
 bun gh-tool pr stack merge --pr 123 --strategy squash --confirm # Merge the whole stack in one request

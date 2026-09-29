@@ -34,6 +34,7 @@ import {
   closePR,
   collectWithStableState,
   createPR,
+  draftPR,
   detectPRStatus,
   editPR,
   fetchPRView,
@@ -783,6 +784,26 @@ export const prReadyCommand = Command.make(
     "Mark a draft PR as ready for review (no-op if it's already ready for review)",
   ),
 );
+
+export const prDraftCommand = Command.make(
+  "draft",
+  {
+    format: formatOption,
+    pr: Flag.Int("pr").pipe(
+      Flag.withDescription("PR number (default: current branch PR)"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+  },
+  ({ format, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* draftPR({ pr: Option.getOrNull(pr) });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(Command.withDescription("Convert an open PR to draft (no-op if it's already a draft)"));
 
 export const prChecksCommand = Command.make(
   "checks",
