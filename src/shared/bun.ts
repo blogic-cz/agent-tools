@@ -6,7 +6,7 @@ export function expandPath(path: string): string {
     if (!home || home.trim() === "") {
       throw new Error("HOME environment variable not set");
     }
-    return path.replace("~", home);
+    return home + path.slice(1);
   }
   return path;
 }
