@@ -428,6 +428,70 @@ describe("isGhCommandAllowed", () => {
 // ============================================================================
 
 describe("path traversal and evasion", () => {
+  it.each([
+    "/proc/self/environ",
+    "/proc/thread-self/environ",
+    "/proc/12345/environ",
+    "/proc/$$/environ",
+    "/proc/${$}/environ",
+    "/proc/self/task/23456/environ",
+    "/proc/self/task/$$/environ",
+    "/proc/${$}/task/12345/environ",
+    "/proc/12345/task/23456/environ",
+    "../../proc/self/environ",
+    "./proc/self/environ",
+    String.raw`\proc\self\environ`,
+  ])("blocks Linux process environment files: %s", (path) => {
+    expect(isPathBlocked(path)).toBe(true);
+  });
+
+  it("does not let configured allow paths permit process environment files", () => {
+    const guard = createCredentialGuard({
+      additionalAllowedPaths: [".*proc.*environ$"],
+    });
+    expect(guard.isPathAllowed("/proc/self/environ")).toBe(false);
+    expect(guard.isPathBlocked("/proc/self/environ")).toBe(true);
+    expect(guard.isPathBlocked("/proc/123/task/456/environ")).toBe(true);
+    expect(guard.isPathBlocked("/proc/$$/environ")).toBe(true);
+    expect(guard.isPathBlocked("/proc/self/task/$$/environ")).toBe(true);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Read" }, { args: { filePath: "/proc/self/environ" } }),
+    ).toThrow("Access blocked");
+    expect(guard.isDangerousBashCommand("cat /proc/$$/environ")).toBe(true);
+    expect(guard.isDangerousBashCommand("head -c 10 < /proc/self/task/$$/environ")).toBe(true);
+  });
+
+  it.each([
+    "cat /proc/self/environ",
+    "cat /proc/$$/environ",
+    "head -c 10 /proc/${$}/environ",
+    "head -c 10 < /proc/$$/environ",
+    "head -c 10 /proc/thread-self/environ",
+    "grep TOKEN /proc/123/environ",
+    "rg TOKEN /proc/123/task/456/environ",
+    "cat /proc/self/task/$$/environ",
+    "head -c 10 < /proc/$$/task/123/environ",
+    "cat /proc/$BASHPID/environ",
+    "cat /proc/${PPID}/environ",
+    `python -c 'from pathlib import Path; print(Path("/proc/self/environ").read_text())'`,
+    `node -e 'require("fs").readFileSync("/proc/thread-self/environ")'`,
+  ])("blocks process environment reads through Bash: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "cat /proc/self/status",
+    "cat /proc/123/environ.txt",
+    "cat /proc/self/environ/extra",
+    "cat /tmp/environ",
+    "cat workspace/proc/self/environ",
+    "echo '/proc/self/environ'",
+    "echo '/proc/$$/environ'",
+    "printf '%s\\n' environ > /tmp/environ",
+  ])("keeps benign proc paths and literal mentions allowed: %s", (command) => {
+    expect(isDangerousBashCommand(command)).toBe(false);
+  });
+
   it("blocks path traversal to .env", () => {
     expect(isPathBlocked("src/../../.env")).toBe(true);
   });
@@ -595,6 +659,156 @@ describe("dangerous bash command evasion", () => {
     expect(guard.isDangerousBashCommand(command) || guard.getBlockedCliTool(command) !== null).toBe(
       true,
     );
+  });
+
+  describe("approved Python environment display", () => {
+    const approvedNames = ["CODEX_SESSION_ID", "HERDR_ENV"];
+    const program =
+      "import os; print('CODEX_SESSION_ID='+os.environ.get('CODEX_SESSION_ID','<absent>')); print('HERDR_ENV='+os.environ.get('HERDR_ENV','<absent>'))";
+    const inline = (source: string, prefix = "") =>
+      `${prefix}python3 -c '${source.replaceAll("'", "'\"'\"'")}'`;
+
+    it("allows the reported two-name program only when both names are configured", () => {
+      for (const prefix of ["", "rtk proxy "]) {
+        const command = inline(program, prefix);
+        const heredoc = `${prefix}python3 - <<'PY'\n${program}\nPY`;
+        const fullyApproved = createCredentialGuard({ allowedEnvironmentVariables: approvedNames });
+        expect(fullyApproved.isDangerousBashCommand(command)).toBe(false);
+        expect(fullyApproved.isDangerousBashCommand(heredoc)).toBe(false);
+        expect(() =>
+          fullyApproved.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+        ).not.toThrow();
+        for (const allowedEnvironmentVariables of [[], ["CODEX_SESSION_ID"], ["HERDR_ENV"]]) {
+          expect(
+            createCredentialGuard({ allowedEnvironmentVariables }).isDangerousBashCommand(command),
+          ).toBe(true);
+        }
+      }
+      expect(isDangerousBashCommand(inline(program))).toBe(true);
+    });
+
+    it.each([
+      "import os; print(os.getenv('HERDR_ENV'))",
+      "import os; print(os.environ.get('HERDR_ENV','<absent>'))",
+      "import os; print(os.environ['HERDR_ENV'])",
+      "import os\nprint('value='+os.getenv('HERDR_ENV','<absent>'), 'label')",
+      "import os; print('a'+'b', os.getenv('HERDR_ENV'))",
+    ])("allows exact approved reads in the bounded print grammar: %s", (source) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      expect(guard.isDangerousBashCommand(inline(source))).toBe(false);
+    });
+
+    it.each([
+      "import os; print(os.environ)",
+      "import os; print(os.environ.items())",
+      "import os; print(os.environ.keys())",
+      "import os; print(os.environ.values())",
+      "import os; print(os.environ.get('NOT_APPROVED'))",
+      "import os; print(os.environ.get('HERDR_ENV'), os.getenv('NOT_APPROVED'))",
+      "import os; print(os.getenv(name))",
+      "import os; print(os.getenv('HERDR_'+'ENV'))",
+      "import os; print(os.getenv(*('HERDR_ENV',)))",
+      "import os; print(os.getenv(key='HERDR_ENV'))",
+      "import os as env; print(env.getenv('HERDR_ENV'))",
+      "from os import getenv; print(getenv('HERDR_ENV'))",
+      "import os; getenv = os.getenv; print(getenv('HERDR_ENV'))",
+      "import os; os = fake; print(os.getenv('HERDR_ENV'))",
+      "import os; print = fake; print(os.getenv('HERDR_ENV'))",
+      "import os; print(getattr(os, 'getenv')('HERDR_ENV'))",
+      "import os; print(os.getenv('HERDR_ENV')); exec('pass')",
+      "import os; print(f'{os.getenv(\"HERDR_ENV\")}')",
+      "import os; print(os.getenv('HERDR\\x5fENV'))",
+      "import os; print(os.getenv('HERDR_ENV', os.getenv('NOT_APPROVED'))) ",
+      "import os; print(os.getenv('HERDR_ENV', default='x'))",
+      "import os; print(os.getenv('HERDR_ENV')); print(open('.env').read())",
+      "import os; x = os.getenv('HERDR_ENV'); print(x)",
+      "import os; print(os.getenv('HERDR_ENV')); import sys",
+      "import os; print(os.getenv('HERDR_ENV', file=open('.env')))",
+      "import os; print(os.getenv('HERDR_ENV')) # trailing code",
+      "import os; print(os.getenv('HERDR_ENV'))\\\n; print('x')",
+    ])("denies Python outside the approved print grammar: %s", (source) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      expect(guard.isDangerousBashCommand(inline(source))).toBe(true);
+    });
+
+    it.each([
+      `${inline(program)} | sh`,
+      `${inline(program)} | xargs`,
+      `${inline(program)} | mystery-runner`,
+      `${inline(program)} |& sh`,
+      `${inline(program)} > /tmp/env-output`,
+      `${inline(program)} < /dev/null`,
+      `HERDR_ENV=changed ${inline(program)}`,
+      `${inline(program)}; cat .env`,
+    ])("keeps pipeline, redirect, mutation, and following-command policy: %s", (command) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: approvedNames });
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+    });
+
+    it("allows the proved display program through head", () => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: approvedNames });
+      expect(guard.isDangerousBashCommand(`${inline(program)} | head -c 100`)).toBe(false);
+    });
+
+    it.each([
+      {
+        label: ".pth startup file",
+        command: (writer: string, reader: string) => `${inline(writer)}; ${inline(reader)}`,
+        writerPath: "/tmp/probe-venv/lib/python3.11/site-packages/probe.pth",
+      },
+      {
+        label: "sitecustomize.py through rtk",
+        command: (writer: string, reader: string) =>
+          `rtk proxy ${inline(writer)}; /tmp/probe-venv/bin/${inline(reader)}`,
+        writerPath: "/tmp/probe-venv/lib/python3.11/site-packages/sitecustomize.py",
+      },
+      {
+        label: "usercustomize.py through a quoted heredoc",
+        command: (writer: string, reader: string) =>
+          `python3 - <<'PY'\n${writer}\nPY\n${inline(reader)}`,
+        writerPath: "/tmp/probe-venv/lib/python3.11/site-packages/usercustomize.py",
+      },
+    ])("denies a $label writer before an approved reader", ({ command, writerPath }) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      const writer = `open('${writerPath}', 'w').write('import os; print(os.environ)')`;
+      const reader = "import os; print(os.getenv('HERDR_ENV'))";
+      expect(guard.isDangerousBashCommand(command(writer, reader))).toBe(true);
+    });
+
+    it("checks startup mutation prefixes even when shell quote splitting hides os.getenv", () => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      const splitReader = `python3 -c 'import o''s; print(o''s.getenv("HERDR_ENV"))'`;
+      expect(guard.isDangerousBashCommand(splitReader)).toBe(false);
+      for (const command of [
+        `PYTHONPATH=/tmp/probe ${splitReader}`,
+        `env PYTHONPATH=/tmp/probe ${splitReader}`,
+        `PYTHONPATH=/tmp/probe pyth'on3' -c 'import os; print(os.getenv("HERDR_ENV"))'`,
+      ]) {
+        expect(guard.isDangerousBashCommand(command)).toBe(true);
+      }
+    });
+
+    it("keeps standalone literal writers and inert display siblings usable", () => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      const writer = "open('/tmp/literal-output.txt', 'w').write('static text')";
+      const reader = inline("import os; print(os.getenv('HERDR_ENV'))");
+      expect(guard.isDangerousBashCommand(inline(writer))).toBe(false);
+      for (const sibling of [
+        "echo static text",
+        inline("print('static text')"),
+        `node -e 'console.log("static text")'`,
+      ]) {
+        expect(guard.isDangerousBashCommand(`${sibling}; ${reader}`)).toBe(false);
+      }
+    });
+
+    it("keeps configured dangerous patterns active", () => {
+      const guard = createCredentialGuard({
+        allowedEnvironmentVariables: approvedNames,
+        additionalDangerousBashPatterns: ["CODEX_SESSION_ID"],
+      });
+      expect(guard.isDangerousBashCommand(inline(program))).toBe(true);
+    });
   });
 
   it.each([

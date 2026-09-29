@@ -17,6 +17,7 @@
 import type { CliToolOverride, CredentialGuardConfig } from "#config/types";
 import { redactSensitiveText } from "#shared/content-security";
 import { SECRET_PATTERNS } from "#shared/credential-patterns";
+import { posix } from "node:path";
 
 export { findSecretMatches } from "#shared/credential-patterns";
 export { redactSensitiveText } from "#shared/content-security";
@@ -88,6 +89,9 @@ const DEFAULT_ALLOWED_PATH_PATTERNS: RegExp[] = [
   /\.env\.template$/,
   /\.env\.sample$/,
 ];
+
+const PROCESS_ENVIRONMENT_PATH =
+  /^(?:\/|(?:\.\.\/)*)proc\/(?:self|thread-self|[0-9]+|\$\$|\$\{\$\})(?:\/task\/(?:[0-9]+|\$\$|\$\{\$\}))?\/environ$/;
 
 /**
  * CLI tools that must use wrapper tools for security and audit.
@@ -1263,10 +1267,142 @@ function unwrapStaticCommand(words: string[]): string[] {
 }
 
 function isAllowedEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
+  if (isAllowedPythonEnvironmentRead(argv, allowedNames)) return true;
   if (argv[0]?.split("/").at(-1) !== "printenv") return false;
   const args = argv.slice(1);
   if (args[0] === "--") args.shift();
   return args.length > 0 && args.every((name) => allowedNames.has(name));
+}
+
+/** Prove the complete, print-only Python program before treating its reads as approved. */
+function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string>): boolean {
+  const index = inlineProgramIndex(argv);
+  if (inlineRuntimeKind(argv[0]) !== "python" || index === undefined || argv.length !== index + 1)
+    return false;
+
+  const program = argv[index] ?? "";
+  let position = 0;
+  let foundRead = false;
+  const skipInlineWhitespace = () => {
+    while (/[\t ]/.test(program[position] ?? "")) position++;
+  };
+  const take = (value: string): boolean => {
+    if (!program.startsWith(value, position)) return false;
+    position += value.length;
+    return true;
+  };
+  const takeIdentifier = (value: string): boolean => {
+    if (!take(value) || /[A-Za-z0-9_]/.test(program[position] ?? "")) return false;
+    return true;
+  };
+  const takeString = (): string | undefined => {
+    skipInlineWhitespace();
+    const quote = program[position];
+    if ((quote !== "'" && quote !== '"') || program.startsWith(quote.repeat(3), position))
+      return undefined;
+    position++;
+    const start = position;
+    while (position < program.length && program[position] !== quote) {
+      if (/[\\\r\n]/.test(program[position] ?? "")) return undefined;
+      position++;
+    }
+    if (program[position] !== quote) return undefined;
+    const value = program.slice(start, position);
+    position++;
+    return value;
+  };
+  const takeEnvironmentRead = (): boolean => {
+    skipInlineWhitespace();
+    const start = position;
+    if (!takeIdentifier("os")) return false;
+    if (!take(".")) {
+      position = start;
+      return false;
+    }
+    if (takeIdentifier("getenv")) {
+      if (!take("(")) return false;
+      const name = takeString();
+      if (name === undefined || !allowedNames.has(name)) return false;
+      skipInlineWhitespace();
+      if (take(",")) {
+        if (takeString() === undefined) return false;
+        skipInlineWhitespace();
+      }
+      if (!take(")")) return false;
+      foundRead = true;
+      return true;
+    }
+    if (!takeIdentifier("environ")) return false;
+    if (take(".")) {
+      if (!takeIdentifier("get") || !take("(")) return false;
+      const name = takeString();
+      if (name === undefined || !allowedNames.has(name)) return false;
+      skipInlineWhitespace();
+      if (take(",")) {
+        if (takeString() === undefined) return false;
+        skipInlineWhitespace();
+      }
+      if (!take(")")) return false;
+      foundRead = true;
+      return true;
+    }
+    if (!take("[")) return false;
+    const name = takeString();
+    if (name === undefined || !allowedNames.has(name)) return false;
+    skipInlineWhitespace();
+    if (!take("]")) return false;
+    foundRead = true;
+    return true;
+  };
+  const takeExpression = (): boolean => {
+    const takeTerm = (): boolean => takeString() !== undefined || takeEnvironmentRead();
+    if (!takeTerm()) return false;
+    skipInlineWhitespace();
+    while (take("+")) {
+      if (!takeTerm()) return false;
+      skipInlineWhitespace();
+    }
+    return true;
+  };
+  const takePrint = (): boolean => {
+    skipInlineWhitespace();
+    if (!takeIdentifier("print")) return false;
+    skipInlineWhitespace();
+    if (!take("(")) return false;
+    skipInlineWhitespace();
+    if (take(")")) return true;
+    while (true) {
+      if (!takeExpression()) return false;
+      skipInlineWhitespace();
+      if (take(")")) return true;
+      if (!take(",")) return false;
+      skipInlineWhitespace();
+      if (take(")")) return true;
+    }
+  };
+  const skipSeparators = (): void => {
+    while (true) {
+      skipInlineWhitespace();
+      if (take(";") || take("\n") || take("\r\n")) continue;
+      break;
+    }
+  };
+
+  skipInlineWhitespace();
+  if (!takeIdentifier("import")) return false;
+  skipInlineWhitespace();
+  if (!takeIdentifier("os")) return false;
+  skipInlineWhitespace();
+  if (!(take(";") || take("\n") || take("\r\n"))) return false;
+  skipSeparators();
+  while (position < program.length) {
+    if (!takePrint()) return false;
+    skipInlineWhitespace();
+    if (position === program.length) break;
+    if (!(take(";") || take("\n") || take("\r\n"))) return false;
+    skipSeparators();
+  }
+  return foundRead;
 }
 
 function hasExecutionOption(args: string[], longOptions: string[], shortOption?: string): boolean {
@@ -1431,13 +1567,13 @@ function hasEnvironmentRead(
   const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
   const unwrapped = pipelines.flat();
   if (
-    command.includes(">") &&
+    parsed.redirects.length > 0 &&
     unwrapped.some((argv) => isAllowedEnvironmentRead(argv, allowedNames))
   ) {
     return true;
   }
   if (
-    command.includes(">") &&
+    parsed.redirects.length > 0 &&
     pipelines.some((pipeline) =>
       pipeline.some(
         (argv) => isLiteralTextProducer(argv) && mentionsEnvironmentRead(argv.join(" ")),
@@ -1963,6 +2099,28 @@ function isLiteralInlineWriter(argv: string[]): boolean {
   return take(/^\s*\)\s*;?\s*$/) && position === program.length;
 }
 
+/** Literal inline output can accompany a proved environment display; file writers cannot. */
+function isLiteralInlineDisplay(argv: string[]): boolean {
+  const index = inlineProgramIndex(argv);
+  if (index === undefined || !isLiteralInlineWriter(argv)) return false;
+  const kind = inlineRuntimeKind(argv[0]);
+  const program = argv[index] ?? "";
+  return (
+    (kind === "python" && /^\s*print\s*\(/.test(program)) ||
+    (kind === "node" && /^\s*console\s*\.\s*log\s*\(/.test(program))
+  );
+}
+
+/** Parse approved Python readers from the original shell shape, including quoted stdin heredocs. */
+function hasApprovedPythonEnvironmentRead(command: string, allowedNames: Set<string>): boolean {
+  const normalized = normalizeProgramHeredocs(command);
+  const parsed = parseStaticShellCommands(normalized);
+  if (!parsed || typeof parsed === "string") return false;
+  return parsed.pipelines
+    .flat()
+    .some((words) => isAllowedPythonEnvironmentRead(unwrapStaticCommand(words), allowedNames));
+}
+
 /** Inert command identity is unproved after an explicit environment mutation. */
 function hasEnvironmentMutationPrefix(command: string): boolean {
   const heredoc = boundedHeredoc(command);
@@ -1991,10 +2149,27 @@ function hasEnvironmentMutationPrefix(command: string): boolean {
   });
 }
 
-function hasEnvironmentSourceAccess(command: string, rawTrigger: boolean): boolean {
+function hasEnvironmentSourceAccess(
+  command: string,
+  rawTrigger: boolean,
+  allowedNames: Set<string>,
+): boolean {
   if (rawTrigger && hasEnvironmentMutationPrefix(command)) return true;
-  if (isLiteralTextWrite(command) || isStaticHerdrPrompt(command)) return false;
   const parsed = parseStaticShellCommands(command);
+  if (parsed && typeof parsed !== "string") {
+    const commands = parsed.pipelines.flat().map(unwrapStaticCommand);
+    if (commands.some((argv) => isAllowedPythonEnvironmentRead(argv, allowedNames))) {
+      if (hasEnvironmentMutationPrefix(command)) return true;
+      return !commands.every(
+        (argv) =>
+          argv[0]?.split("/").at(-1) === "cat" ||
+          isPassiveTextCommand(argv) ||
+          isAllowedPythonEnvironmentRead(argv, allowedNames) ||
+          isLiteralInlineDisplay(argv),
+      );
+    }
+  }
+  if (isLiteralTextWrite(command) || isStaticHerdrPrompt(command)) return false;
   if (!parsed || typeof parsed === "string") return rawTrigger;
   const commands = parsed.pipelines.flat().map(unwrapStaticCommand);
   if (rawTrigger) {
@@ -2007,12 +2182,15 @@ function hasEnvironmentSourceAccess(command: string, rawTrigger: boolean): boole
     );
   }
   return commands.some((argv) => {
+    if (isAllowedPythonEnvironmentRead(argv, allowedNames)) return false;
     const index = inlineProgramIndex(argv);
     if (index === undefined) return false;
-    const parts = programParts(argv[index] ?? "", inlineRuntimeKind(argv[0]) === "python");
+    const python = inlineRuntimeKind(argv[0]) === "python";
+    const parts = programParts(argv[index] ?? "", python);
     if (!parts) return true;
     return (
       mentionsEnvironmentSource(parts.code) ||
+      (python && /\b(?:environ|getenv)\b/.test(parts.code)) ||
       (/\b(?:os|process)\s*\[/.test(parts.code) &&
         parts.literals.some((value) => /^(?:env|environ|getenv)$/.test(value)))
     );
@@ -2085,11 +2263,16 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
 
   function isPathAllowed(filePath: string): boolean {
     const normalizedPath = filePath.replace(/\\/g, "/");
-    return allowedPathPatterns.some((pattern) => pattern.test(normalizedPath));
+    return (
+      !PROCESS_ENVIRONMENT_PATH.test(posix.normalize(normalizedPath)) &&
+      allowedPathPatterns.some((pattern) => pattern.test(normalizedPath))
+    );
   }
 
   function isPathBlocked(filePath: string): boolean {
     const normalizedPath = filePath.replace(/\\/g, "/");
+
+    if (PROCESS_ENVIRONMENT_PATH.test(posix.normalize(normalizedPath))) return true;
 
     for (const pattern of allowedPathPatterns) {
       if (pattern.test(normalizedPath)) {
@@ -2126,6 +2309,12 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     const allowPackageInventory = hasProvedPackageInventoryInvocation(originalCommand);
     const rawEnvironmentSource =
       mentionsEnvironmentSource(command) && mentionsInlineRuntime(command);
+    if (
+      hasApprovedPythonEnvironmentRead(originalCommand, allowedEnvironmentVariables) &&
+      hasEnvironmentMutationPrefix(normalizeProgramHeredocs(originalCommand))
+    ) {
+      return "blocked by the environment/execution policy after an unproved environment mutation";
+    }
     if (rawEnvironmentSource && hasEnvironmentMutationPrefix(originalCommand))
       return "blocked by the environment/execution policy after an unproved environment mutation";
     command = normalizeProgramHeredocs(command);
@@ -2157,7 +2346,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       return "expands an unapproved or executable environment variable value";
     }
     if (
-      hasEnvironmentSourceAccess(command, rawEnvironmentSource) ||
+      hasEnvironmentSourceAccess(command, rawEnvironmentSource, allowedEnvironmentVariables) ||
       hasEnvironmentRead(command, allowedEnvironmentVariables, allowPackageInventory)
     ) {
       return "blocked by the environment/execution policy; permitted access or non-execution could not be established for this command form";
