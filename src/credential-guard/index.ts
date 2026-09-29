@@ -478,7 +478,7 @@ function unwrapProofCommand(words: string[], marker: string): string[] | undefin
 function isLiteralLoopCommand(words: string[], marker: string, value: string): boolean {
   const marked = unwrapProofCommand(words, marker);
   if (!marked) return false;
-  const argv = marked.map((word) => word.replaceAll(marker, value));
+  const argv = marked.map((word) => word.replaceAll(marker, () => value));
   const name = argv[0];
   const uses = marked.flatMap((word, index) => (word.includes(marker) ? [index] : []));
   if (name === "cat")
@@ -579,7 +579,7 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
     );
     if (size > 65_536) return undefined;
     return {
-      command: values.map((value) => marked.text.replaceAll(marker, value)).join(";\n"),
+      command: values.map((value) => marked.text.replaceAll(marker, () => value)).join(";\n"),
       paths: [],
     };
   }
@@ -621,8 +621,11 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
       (assignment[1]?.length ?? 0) +
       7;
     if (size > 65_536) return undefined;
-    const paths = argv.slice(3).map((word) => word.replaceAll(marker, value));
-    return { command: `cd ${assignment[1]} && ${use.replaceAll(marker, value)}${suffix}`, paths };
+    const paths = argv.slice(3).map((word) => word.replaceAll(marker, () => value));
+    return {
+      command: `cd ${assignment[1]} && ${use.replaceAll(marker, () => value)}${suffix}`,
+      paths,
+    };
   }
   // Only the observed rg -n PATTERN PATH form; marker position proves a real file operand.
   const brace =
@@ -662,7 +665,7 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
     new TextEncoder().encode(command.slice(0, start)).byteLength +
     values.reduce((total, value) => total + path.length - members[0].length + value.length + 1, -1);
   if (size > 65_536) return undefined;
-  const paths = values.map((member) => path.replace(members[0], member));
+  const paths = values.map((member) => path.replace(members[0], () => member));
   return { command: command.slice(0, start) + paths.join(" "), paths };
 }
 
@@ -770,7 +773,7 @@ function normalizeProgramHeredocs(command: string): string {
   if (!/-\s*$/.test(heredoc.header)) return command;
   const quoted = "'" + heredoc.body.replaceAll("'", "'\"'\"'") + "'";
   return (
-    heredoc.header.replace(/-\s*$/, "-c " + quoted) +
+    heredoc.header.replace(/-\s*$/, () => "-c " + quoted) +
     "\n" +
     normalizeProgramHeredocs(heredoc.following)
   );
@@ -987,7 +990,7 @@ function inlinePackageCommands(command: string, allowInventory: boolean): string
             position === 2
               ? program.replace(
                   /\brequire\s*\(\s*(["'])\.\/\1\s*\+\s*[a-z]\s*\)/,
-                  `require(${JSON.stringify(path)})`,
+                  () => `require(${JSON.stringify(path)})`,
                 )
               : word;
           return "'" + materialized.replaceAll("'", "'\"'\"'") + "'";
@@ -1829,7 +1832,7 @@ function hasEnvironmentVariableExpansionRead(
   if (invalidExpansion) return true;
 
   const localMaterialized = [...localValues].reduce(
-    (text, [marker, value]) => text.replaceAll(marker, value),
+    (text, [marker, value]) => text.replaceAll(marker, () => value),
     normalized,
   );
   // Options must be checked after local literals become actual argv, never as placeholders.
@@ -1887,7 +1890,7 @@ function hasEnvironmentVariableExpansionRead(
     }
   }
   const materialized = [...localValues].reduce(
-    (text, [marker, value]) => text.replaceAll(marker, value),
+    (text, [marker, value]) => text.replaceAll(marker, () => value),
     normalized.replaceAll("ENVVALUE", "SAFEENVVALUE"),
   );
   return hasSensitiveFileRead(materialized, isPathBlocked);
@@ -2250,7 +2253,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       if (error instanceof Error) {
         if (sanitized !== message) {
           error.message = sanitized;
-          if (error.stack) error.stack = error.stack.replace(message, sanitized);
+          if (error.stack) error.stack = error.stack.replace(message, () => sanitized);
         }
         throw error;
       }

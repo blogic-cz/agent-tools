@@ -119,6 +119,34 @@ describe("credential guard handler error redaction", () => {
     expect(result.stderr).toContain("[REDACTED]");
     expect(result.stderr).not.toContain(SYNTHETIC_HANDLER_TOKEN);
   });
+
+  it.each(["$&", "$$", "$`", "$'", "$1", "$<name>"])(
+    "keeps literal replacement marker %s while redacting cached stacks",
+    (marker) => {
+      const original = new Error(`synthetic ${SYNTHETIC_HANDLER_TOKEN} literal ${marker} end`);
+      expect(original.stack).toContain(SYNTHETIC_HANDLER_TOKEN);
+      const args = {
+        get command(): string {
+          throw original;
+        },
+      };
+
+      let caught: unknown;
+      try {
+        createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBe(original);
+      expect(original.message).toContain("[REDACTED]");
+      expect(original.message).toContain(marker);
+      expect(original.message).not.toContain(SYNTHETIC_HANDLER_TOKEN);
+      expect(original.stack).toContain("[REDACTED]");
+      expect(original.stack).toContain(marker);
+      expect(original.stack).not.toContain(SYNTHETIC_HANDLER_TOKEN);
+    },
+  );
 });
 
 test("apps/web-app/.env.prod is NOT in default allowed paths", () => {
@@ -2053,6 +2081,34 @@ print(json.dumps({'sources':len(sources),'mismatches':wrong}))`;
           guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
         ).not.toThrow();
       }
+    }
+  });
+
+  it("preserves replacement tokens and quoting in quoted Python heredocs", () => {
+    const program = [
+      "import re",
+      "from pathlib import Path",
+      "text = \"\"\"$' $& $` $$ \\\"double\\\" 'single' and '''triple'''",
+      "Markdown `code` — café",
+      'updated: yesterday"""',
+      "updated = re.sub(r'^updated: .*$', 'updated: today', text, flags=re.M)",
+      "Path('/tmp/report.md').write_text(updated)",
+      "print(updated)",
+    ].join("\n");
+    for (const prefix of ["", "rtk proxy "]) {
+      const command = `${prefix}python3 - <<'PY'\n${program}\nPY`;
+      const inline = `${prefix}python3 -c '${program.replaceAll("'", "'\"'\"'")}'`;
+      for (const equivalent of [command, inline]) {
+        expect(guard.isDangerousBashCommand(equivalent)).toBe(false);
+        expect(() =>
+          guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: equivalent } }),
+        ).not.toThrow();
+      }
+      const withSensitiveRead = `${command}\ncat .env`;
+      expect(guard.isDangerousBashCommand(withSensitiveRead)).toBe(true);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: withSensitiveRead } }),
+      ).toThrow();
     }
   });
 
