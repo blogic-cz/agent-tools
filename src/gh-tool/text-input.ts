@@ -12,13 +12,19 @@ const SENSITIVE_PATH_PATTERNS = [
   /\.envrc$/,
   /\.(pem|key|p12|pfx|cer|crt)$/i,
   /(?:^|[\\/])(credentials?|passwd|shadow)$/i,
+  /(?:^|\/)(?:\.ssh|\.aws|\.kube|\.azure|secrets?|credentials?)(?:\/|$)/i,
+  /(?:^|\/)(?:\.npmrc|\.netrc|\.git-credentials|\.sentryclirc|\.pypirc|\.pgpass)$/i,
+  /(?:^|\/)\.docker\/config\.json$/i,
+  /(?:^|\/)\.config\/gh\/hosts\.yml$/i,
+  /(?:^|\/)GitHub CLI\/hosts\.yml$/i,
+  /(?:^|\/)(?:kubeconfig(?:[.-].+)?|[^/]+\.kubeconfig)$/i,
 ];
 const MissingMode = Schema.Literals(["error", "null", "default"]);
 
 const readTextFromStdin = () => Bun.stdin.text();
 
 export const isSensitivePath = (filePath: string) =>
-  SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
+  SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath.replaceAll("\\", "/")));
 
 export const validateOutboundText = (text: string, command: string) => {
   const reason = unsafeOutboundTextReason(text);

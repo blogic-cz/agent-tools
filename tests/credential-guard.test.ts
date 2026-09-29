@@ -2011,6 +2011,108 @@ describe("custom CLI names and wrapper file operands", () => {
   });
 });
 
+describe("ordinary Python JSON processing", () => {
+  const guard = createCredentialGuard();
+  // Reported hash comparison with an anonymized workspace path.
+  const hashProgram = `from pathlib import Path
+import json,hashlib
+root=Path('/workspace/example-app')
+sources={}
+for file in (root/'cli/checklists').glob('*.json'):
+ d=json.loads(file.read_text())
+ for g in d.get('groups',[]):
+  for src in g.get('sources',[]): sources[src['path']]=src['sha256']
+wrong=[p for p,h in sources.items() if hashlib.sha256((root/p).read_bytes()).hexdigest()!=h]
+print(json.dumps({'sources':len(sources),'mismatches':wrong}))`;
+
+  it.each([
+    { name: "reported hash comparison", program: hashProgram },
+    {
+      name: "same hash comparison with key iteration",
+      program: hashProgram
+        .replace("p,h in sources.items()", "p in sources")
+        .replace(".hexdigest()!=h", ".hexdigest()!=sources[p]"),
+    },
+    {
+      name: "unrelated dictionary items and scalar output",
+      program: "import json\nd=json.loads('{}')\nx={}\nfor k,v in x.items(): pass\nprint(1)",
+    },
+    {
+      name: "whole ordinary JSON output",
+      program: "import json\nd=json.load(open('settings.json'))\nprint(json.dumps(d))",
+    },
+  ])("allows $name through inline and stdin forms", ({ program }) => {
+    for (const prefix of ["", "rtk proxy "]) {
+      for (const command of [
+        `${prefix}python3 -c '${program.replaceAll("'", "'\"'\"'")}'`,
+        `${prefix}python3 - <<'PY'\n${program}\nPY`,
+        `${prefix}python3 - <<PY\n${program}\nPY`,
+      ]) {
+        expect(guard.isDangerousBashCommand(command)).toBe(false);
+        expect(() =>
+          guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it.each([
+    "import os; print(os.environ)",
+    'import os; print(os.getenv("TOKEN"))',
+    'print(Path(".env").read_text())',
+    'eval("1")',
+    'exec("print(1)")',
+    'getattr(json, "loads")("{}")',
+    'import subprocess; subprocess.run(["echo", "hello"], shell=True)',
+  ])("still refuses access or execution after JSON hashing: %s", (suffix) => {
+    const command = `rtk proxy python3 - <<'PY'\n${hashProgram}\n${suffix}\nPY`;
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each([
+    { config: { additionalBlockedPaths: ["settings[.]json$"] }, suffix: "" },
+    { config: { additionalDangerousBashPatterns: ["<<'PY'"] }, suffix: "" },
+    { config: {}, suffix: "\ncat .env" },
+    { config: {}, suffix: "\nprintf x > .env" },
+    { config: {}, suffix: '\necho "$TOKEN"' },
+  ])("retains original-command, path, and heredoc suffix checks: %j", ({ config, suffix }) => {
+    const configured = createCredentialGuard(config);
+    const command = `rtk proxy python3 - <<'PY'\nimport json\nprint(json.load(open("settings.json")))\nPY${suffix}`;
+    expect(configured.isDangerousBashCommand(command)).toBe(true);
+    expect(() =>
+      configured.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).toThrow();
+  });
+
+  it("replays a static nested CLI even when the script also hashes JSON", () => {
+    const command = `python3 - <<'PY'\nimport subprocess\nargv=["gh", "auth", "token"]\nsubprocess.run(argv)\n${hashProgram}\nPY`;
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow(
+      "blocked CLI from a script",
+    );
+  });
+
+  it.each([
+    { program: "import os; print(os.environ)", reason: "environment/execution policy" },
+    { program: 'print(r"os.environ")', reason: "environment/execution policy" },
+    { program: 'eval("1")', reason: "environment/execution policy" },
+    { program: 'print(open(".env").read())', reason: "file-access policy" },
+  ])("reports composite policy refusal honestly: $program", ({ program, reason }) => {
+    const command = `python3 -c '${program}'`;
+    let message = "";
+    try {
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(message).toContain(reason);
+    expect(message).not.toMatch(/reads (?:process environment|environment variables)/);
+    expect(message).not.toContain("If you need environment info");
+  });
+});
+
 describe("credential guard argument roles", () => {
   it.each(argvRoleCases)("$id", ({ command, config, expected_allowed }) => {
     const invoke = () =>

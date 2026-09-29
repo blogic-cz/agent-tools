@@ -4,6 +4,7 @@ import { retryTransient } from "#shared/retry-transient";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
 import type { GitHubApiError } from "./errors";
+import { ghEnvironment } from "./environment";
 import { validateOutboundText } from "./text-input";
 
 // Direct HTTP, not `gh api`: the CLI collapses every failure into a non-zero exit and
@@ -44,6 +45,7 @@ export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* (
       const proc = Bun.spawn(["gh", "auth", "token", "--hostname", "github.com"], {
         stdout: "pipe",
         stderr: "ignore",
+        env: ghEnvironment(),
       });
       const stdout = await new Response(proc.stdout).text();
       const exitCode = await proc.exited;
@@ -67,27 +69,22 @@ export type GitHubApiRequest = {
 
 const MAX_API_RETRIES = 2;
 
-const outboundBodyText = (value: unknown): string => {
+// Traverse only parsed JSON, never the caller's getters or toJSON hooks.
+const decodedBodyText = (value: unknown): string => {
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(outboundBodyText).join("\n");
+  if (Array.isArray(value)) return value.map(decodedBodyText).join("\n");
   if (value !== null && typeof value === "object")
-    return Object.values(value).map(outboundBodyText).join("\n");
+    return Object.entries(value)
+      .map(([key, item]) => `${key}\n${decodedBodyText(item)}`)
+      .join("\n");
   return "";
 };
 
-const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(opts: GitHubApiRequest) {
+const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
+  opts: GitHubApiRequest,
+  serializedBody: string | undefined,
+) {
   const method = opts.method ?? "GET";
-  const bodyText = yield* Effect.try({
-    try: () => outboundBodyText(opts.body),
-    catch: () =>
-      new GitHubCommandError({
-        command: `gh-tool ${method} ${opts.path}`,
-        exitCode: 1,
-        stderr: "Refusing to publish an invalid request body",
-        message: "Refusing to publish an invalid request body",
-      }),
-  });
-  yield* validateOutboundText(`${opts.path}\n${bodyText}`, `gh-tool ${method} ${opts.path}`);
   const token = yield* resolveGitHubToken();
   const url = `${GITHUB_API_ROOT}/${opts.path.replace(/^\//, "")}`;
 
@@ -99,9 +96,9 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(opts: Gi
           Accept: GITHUB_ACCEPT,
           Authorization: `Bearer ${token}`,
           "X-GitHub-Api-Version": GITHUB_API_VERSION,
-          ...(opts.body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(serializedBody === undefined ? {} : { "Content-Type": "application/json" }),
         },
-        ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
+        ...(serializedBody === undefined ? {} : { body: serializedBody }),
       }),
     catch: (cause) =>
       new GitHubCommandError({
@@ -158,13 +155,42 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(opts: Gi
 export const githubApi = <T>(
   opts: GitHubApiRequest,
 ): Effect.Effect<GitHubApiResponse<T>, GitHubApiError> =>
-  retryTransient({
-    attempt: () => githubApiAttempt<T>(opts),
-    isTransient: (error) =>
-      error._tag === "GitHubCommandError" &&
-      error.retryable === true &&
-      (opts.method ?? "GET") === "GET",
-    maxRetries: MAX_API_RETRIES,
+  Effect.gen(function* () {
+    const snapshot = yield* Effect.try({
+      try: () => {
+        const path = opts.path;
+        const method = opts.method ?? "GET";
+        const alsoAcceptStatus = opts.alsoAcceptStatus;
+        const request = {
+          path,
+          method,
+          ...(alsoAcceptStatus === undefined ? {} : { alsoAcceptStatus: [...alsoAcceptStatus] }),
+        };
+        const body = opts.body;
+        if (body === undefined) return { request, serialized: undefined, decoded: "" };
+        const serialized = JSON.stringify(body);
+        if (serialized === undefined) throw new Error("Body is not JSON serializable");
+        return { request, serialized, decoded: decodedBodyText(JSON.parse(serialized)) };
+      },
+      catch: () =>
+        new GitHubCommandError({
+          command: "gh-tool API",
+          exitCode: 1,
+          stderr: "Refusing to publish an invalid request body",
+          message: "Refusing to publish an invalid request body",
+        }),
+    });
+    const { request } = snapshot;
+    yield* validateOutboundText(
+      `${request.path}\n${snapshot.serialized ?? ""}\n${snapshot.decoded}`,
+      `gh-tool ${request.method} ${request.path}`,
+    );
+    return yield* retryTransient({
+      attempt: () => githubApiAttempt<T>(request, snapshot.serialized),
+      isTransient: (error) =>
+        error._tag === "GitHubCommandError" && error.retryable === true && request.method === "GET",
+      maxRetries: MAX_API_RETRIES,
+    });
   });
 
 const safeJsonParse = (text: string): unknown => {
