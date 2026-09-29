@@ -1220,6 +1220,21 @@ export const readyPR = Effect.fn("pr.readyPR")(function* (opts: { pr: number | n
   return { ...updated, wasAlreadyReady: false };
 });
 
+export const draftPR = Effect.fn("pr.draftPR")(function* (opts: { pr: number | null }) {
+  const gh = yield* GitHubService;
+
+  const info = yield* viewPR(opts.pr);
+
+  if (info.isDraft) {
+    return { ...info, wasAlreadyDraft: true };
+  }
+
+  yield* gh.runGh(["pr", "ready", String(info.number), "--undo"]);
+
+  const updated = yield* viewPR(info.number);
+  return { ...updated, wasAlreadyDraft: false };
+});
+
 export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   pr: number;
   title: string | null;

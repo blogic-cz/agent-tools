@@ -35,6 +35,7 @@ import {
 import {
   createPR,
   editPR,
+  draftPR,
   fetchChecksForCommand,
   fetchFailedChecks,
   mergePR,
@@ -2026,6 +2027,93 @@ describe("PR ready", () => {
       expect(ghCalls).toEqual([]);
       expect(result.isDraft).toBe(false);
       expect(result.wasAlreadyReady).toBe(true);
+    }),
+  );
+});
+
+describe("PR draft", () => {
+  it.effect("converts a ready PR to draft", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      let viewCount = 0;
+
+      const result = yield* draftPR({ pr: 123 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              if (args[0] === "api") {
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              }
+              ghCalls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: () => {
+              viewCount += 1;
+              return Effect.succeed({ ...mockPRInfo, isDraft: viewCount > 1 });
+            },
+          }),
+        ),
+      );
+
+      expect(ghCalls).toEqual([["pr", "ready", "123", "--undo"]]);
+      expect(result.isDraft).toBe(true);
+      expect(result.wasAlreadyDraft).toBe(false);
+    }),
+  );
+
+  it.effect("is a no-op when the PR is already a draft", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+
+      const result = yield* draftPR({ pr: 123 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              if (args[0] === "api") {
+                return Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 });
+              }
+              ghCalls.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+            runGhJson: () => Effect.succeed({ ...mockPRInfo, isDraft: true }),
+          }),
+        ),
+      );
+
+      expect(ghCalls).toEqual([]);
+      expect(result.isDraft).toBe(true);
+      expect(result.wasAlreadyDraft).toBe(true);
+    }),
+  );
+
+  it.effect("propagates a failed draft mutation", () =>
+    Effect.gen(function* () {
+      let viewCount = 0;
+      const result = yield* draftPR({ pr: 123 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) =>
+              args[0] === "api"
+                ? Effect.succeed({ stdout: "base-sha\n", stderr: "", exitCode: 0 })
+                : Effect.fail(
+                    new GitHubCommandError({
+                      command: "gh pr ready 123 --undo",
+                      exitCode: 1,
+                      stderr: "conversion failed",
+                      message: "conversion failed",
+                    }),
+                  ),
+            runGhJson: () => {
+              viewCount += 1;
+              return Effect.succeed({ ...mockPRInfo, isDraft: false });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(viewCount).toBe(1);
     }),
   );
 });
