@@ -2593,6 +2593,141 @@ describe("bounded literal path braces", () => {
 });
 
 // Hook inputs only: these shell commands are never executed.
+describe("bounded Herdr command composition", () => {
+  const guard = createCredentialGuard();
+  const prompt =
+    'herdr agent prompt worker-driver "[deploy] User asks for status. Please read the model policy, repeat the rehearsal, and send me the verdict."';
+  const reportedPrompt = `${prompt} 2>&1 | grep -o '"type":"[a-z_]*"'; cat /tmp/agent-memory/model-policy.md`;
+  const projection =
+    'import json,sys;d=json.load(sys.stdin);print(d["result"].get("text","") if isinstance(d.get("result"),dict) else d)';
+  const quote = (word: string) => "'" + word.replaceAll("'", "'\"'\"'") + "'";
+  const body = (program = projection) =>
+    `echo "== $p"; herdr pane read "$p" --source recent-unwrapped --lines 25 2>&1 | python3 -c ${quote(program)} | grep -v '^\\s*$' | tail -12`;
+  const loop = (commands = body(), items = "w1:p20 w1:p21", binder = "p") =>
+    `for ${binder} in ${items}; do ${commands}; done`;
+
+  it.each([
+    reportedPrompt,
+    `${prompt}; cat README.md`,
+    `cat README.md; ${prompt}`,
+    `${prompt}; rtk proxy cat -- README.md | head -1`,
+    `command -- ${prompt}; command cat README.md`,
+    `${prompt}; grep -n 'printenv TOKEN' README.md`,
+    loop(),
+    loop(body(projection.replace(/\bd\b/g, "x"))),
+    loop(
+      body(
+        projection
+          .replace("json,sys;d=", "json, sys\nx = ")
+          .replaceAll("d[", "x[")
+          .replaceAll("d.get", "x.get")
+          .replace("else d)", "else x)"),
+      ),
+    ),
+    loop("herdr pane read ${p} --source recent-unwrapped --lines 25"),
+    loop('rtk proxy herdr pane read "$p" --source recent-unwrapped --lines 25'),
+    loop('command -- herdr pane read "$p" --source recent-unwrapped --lines 25'),
+    loop(
+      'herdr pane read "$p" --source recent-unwrapped --lines 25',
+      Array.from({ length: 16 }, (_, i) => `w1:p${i}`).join(" "),
+    ),
+  ])("allows proved data composition: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(guard.getBlockedCliTool(command)).toBeNull();
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    `${prompt}; cat .env`,
+    `${prompt}; cat ~/.aws/credentials`,
+    `${prompt}; cat /proc/self/environ`,
+    `${prompt}; cat README.md > .env`,
+    `${prompt}; cat README.md < .env`,
+    `${prompt}; cat "$UNKNOWN"`,
+    `${prompt}; cat "$(cat .env)"`,
+    `${prompt}; cat README.md | sh`,
+    `${prompt} | bash`,
+    `${prompt} | xargs`,
+    `${prompt} | opaque-runner`,
+    `${prompt} | cat README.md`,
+    `${prompt}; echo 'printenv TOKEN' | sh`,
+    `${prompt}; printenv TOKEN`,
+    `${prompt}; python3 -c 'import os; print(os.environ)'`,
+    `${prompt}; rg --pre=printenv value README.md`,
+    `${prompt}; git grep -Oprintenv value`,
+    `${prompt}; env cat README.md`,
+    `PATH=/tmp ${prompt}; cat README.md`,
+    `env BASH_ENV=./startup ${prompt}; cat README.md`,
+    `rtk ${prompt}; cat README.md`,
+    `${prompt}; cat\u00a0README.md`,
+    loop(body(projection + ";print(1)")),
+    loop(body(projection.replace("import json,sys", "import json,sys,os"))),
+    loop(body(projection.replace("json.load(sys.stdin)", "eval(sys.stdin.read())"))),
+    loop(body(projection.replace("json.load(sys.stdin)", 'json.load(open(".env"))'))),
+    loop(body(projection.replace("print(d[", "exec(d["))),
+    loop(body(projection.replace("else d)", 'else getattr(d,"text"))'))),
+    loop(
+      body(
+        projection
+          .replace(";d=", ";data=")
+          .replaceAll("d[", "data[")
+          .replaceAll("d.get", "data.get")
+          .replace("else d)", "else data)"),
+      ),
+    ),
+    loop(body().replace("python3 -c", "python3 -I -c")),
+    loop(body().replace("python3 -c", "env python3 -c")),
+    loop(body().replace("python3 -c", "/tmp/python3 -c")),
+    loop(body().replace(`${quote(projection)} |`, `${quote(projection)} extra |`)),
+    loop(body().replace("| tail -12", "| sh")),
+    loop(body().replace("| tail -12", "| xargs")),
+    loop(body().replace("| tail -12", "| opaque-runner")),
+    loop(body().replace("--source recent-unwrapped", "--source $p")),
+    loop(body().replace("--lines 25", "--lines $p")),
+    loop(body().replace("--lines 25", "--lines 25 --lines 26")),
+    loop(body().replace("--lines 25", "--unknown 25")),
+    loop(body().replace("--lines 25", "--lines --source")),
+    loop(body().replace("2>&1", "2> /tmp/output")),
+    loop(body().replace("2>&1", "2>&3")),
+    loop(body().replace("2>&1", "< .env")),
+    loop(body() + "; cat .env"),
+    loop(body() + "; printenv TOKEN"),
+    loop(body() + "; p=.env"),
+    loop(body() + "; read p"),
+    loop(body() + "; printf -v p .env"),
+    loop(body().replace("herdr pane", "$p pane")),
+    loop(body().replace("herdr pane", "herdr\u00a0pane")),
+    loop(body().replaceAll("$p", "$IFS"), "/", "IFS"),
+    loop(body(), "-x"),
+    loop(body(), "w1:p20 $(cat .env)"),
+    loop(body(), Array.from({ length: 17 }, (_, i) => `w1:p${i}`).join(" ")),
+    loop(Array.from({ length: 17 }, () => 'echo "$p"').join("; ")),
+    loop(`echo "${"x".repeat(65_536)}$p"`),
+  ])("refuses unsafe or unproved composition: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it("keeps configured policies active after both proofs", () => {
+    for (const [command, config] of [
+      [reportedPrompt, { additionalBlockedPaths: ["model-policy"] }],
+      [reportedPrompt, { additionalDangerousBashPatterns: ["worker-driver"] }],
+      [loop(), { additionalDangerousBashPatterns: ["w1:p21"] }],
+      [loop(), { additionalDangerousBashPatterns: [String.raw`\$p`] }],
+    ] satisfies [string, Parameters<typeof createCredentialGuard>[0]][]) {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
+    }
+  });
+});
+
+// Hook inputs only: these shell commands are never executed.
 describe("bounded local literal path assignments", () => {
   const guard = createCredentialGuard();
   it.each([
