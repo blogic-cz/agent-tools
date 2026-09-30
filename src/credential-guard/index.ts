@@ -262,21 +262,12 @@ function isSafeLocalAssignmentCommand(words: string[]): boolean {
     return !argv.slice(1).some((arg) => /^-(?:exec|ok|delete|fprint|fprintf)/.test(arg));
   }
   if (name === "bun") return argv[1] === "run" && ["db-tool", "gh-tool"].includes(argv[2] ?? "");
+  if (name === "sed") return isReadonlySedPrint(argv);
   return (
     isPassiveTextCommand(argv) ||
     ["ls", "cat", "tail", "wc", "uniq", "cut", "mv"].includes(name) ||
     (name === "sort" &&
-      !hasExecutionOption(argv.slice(1), ["compress-program", "files0-from", "output"], "o")) ||
-    (name === "sed" &&
-      argv
-        .slice(1)
-        .every(
-          (arg) =>
-            /^-[En]+$/.test(arg) ||
-            /^s([/|]).*\1[^/|]*\1[gp]*$/.test(arg) ||
-            /^[A-Za-z0-9_./-]+$/.test(arg),
-        ) &&
-      !argv.includes("-f"))
+      !hasExecutionOption(argv.slice(1), ["compress-program", "files0-from", "output"], "o"))
   );
 }
 
@@ -502,13 +493,7 @@ function isLiteralLoopCommand(words: string[], marker: string, value: string): b
     const format = passivePrintfFormatIndex(argv);
     return format !== undefined && uses.every((index) => index > format);
   }
-  if (name === "herdr")
-    return (
-      ((argv.length === 4 && argv[1] === "agent" && argv[2] === "get") ||
-        isLiteralHerdrPaneRead(argv)) &&
-      /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "") &&
-      uses.every((index) => index === 3)
-    );
+  if (name === "herdr") return isLiteralHerdrRead(argv) && uses.every((index) => index === 3);
   if (name === "bun")
     return (
       argv.length === 9 &&
@@ -534,6 +519,14 @@ function isLiteralHerdrPaneRead(argv: string[]): boolean {
     argv[5] === "recent-unwrapped" &&
     argv[6] === "--lines" &&
     /^[1-9]\d*$/.test(argv[7] ?? "")
+  );
+}
+
+function isLiteralHerdrRead(argv: string[]): boolean {
+  return (
+    ((argv.length === 4 && argv.slice(0, 3).join(" ") === "herdr agent get") ||
+      isLiteralHerdrPaneRead(argv)) &&
+    /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "")
   );
 }
 
@@ -852,15 +845,54 @@ function inlineProgramIndex(argv: string[]): number | undefined {
 }
 
 function isUnsupportedInlineRuntime(argv: string[]): boolean {
-  if (!inlineRuntimeKind(argv[0])) return false;
+  const runtime = inlineRuntimeKind(argv[0]);
+  if (!runtime) return false;
   if (inlineProgramIndex(argv) !== undefined) return false;
-  return argv
-    .slice(1)
-    .some((arg) =>
+  let index = 1;
+  for (; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (arg === "--" || !arg.startsWith("-")) break;
+    if (
       /^(?:-[A-Za-z]*[cep]|-[rmp]|--(?:eval|print|require|import|loader|preload|experimental-loader))(?:$|=|[^-])/.test(
         arg,
-      ),
-    );
+      )
+    )
+      return true;
+    if (
+      (runtime === "python" && arg === "--check-hash-based-pycs") ||
+      (runtime === "node" &&
+        ["--conditions", "-C", "--icu-data-dir", "--dns-result-order"].includes(arg))
+    ) {
+      if (argv[index + 1] === undefined) return true;
+      index++;
+      continue;
+    }
+    // Unknown startup-option arity cannot establish where the script/tool begins.
+    if (
+      !(
+        (runtime === "python" && /^-[uBISsEOqvV]+$/.test(arg)) ||
+        (runtime === "node" &&
+          /^(?:--(?:trace-warnings|no-warnings|version|help)|--(?:conditions|icu-data-dir|dns-result-order)=.+)$/.test(
+            arg,
+          )) ||
+        (runtime === "bun" && ["--no-env-file", "--version", "--help"].includes(arg)) ||
+        ["--version", "--help", "-h"].includes(arg)
+      )
+    )
+      return true;
+  }
+  if (runtime === "bun" && ["exec", "repl"].includes(argv[index] ?? "")) return true;
+  // Bun retains eval/loader controls around its tool operand; only a later -c is tool data.
+  return (
+    runtime === "bun" &&
+    argv
+      .slice(index)
+      .some((arg) =>
+        /^(?:-[A-Za-z]*[ep]|-[rmp]|--(?:eval|print|require|import|loader|preload|experimental-loader))(?:$|=|[^-])/.test(
+          arg,
+        ),
+      )
+  );
 }
 
 /** Move a complete, literal Python stdin program into the existing inline argv boundary. */
@@ -1045,7 +1077,64 @@ function staticSubprocessCommand(program: string): string | undefined {
     (match) => match[1] ?? match[2] ?? "",
   );
   if (!values.length) return undefined;
-  return values.map((value) => "'" + value.replaceAll("'", "'\"'\"'") + "'").join(" ");
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  const command = values.map(quote).join(" ");
+  const directories = [...call[0].matchAll(/\bcwd\s*=\s*(?:"([^"\\]*)"|'([^'\\]*)')/g)];
+  if (!directories.length) return command;
+  const cwd = directories[0]?.[1] ?? directories[0]?.[2] ?? "";
+  // Never replay a cwd-bearing call as if it ran in the original shell directory.
+  if (directories.length !== 1 || !isStaticNavigationCommand(["cd", "--", cwd])) return undefined;
+  const argv = unwrapCwdSubprocessCommand(values);
+  if (!argv || !isProvedCwdSubprocessRole(argv)) return undefined;
+  // Keep wrapper assignments/options in policy replay after proving the nested command role.
+  const replay = `cd -- ${quote(cwd)} && ${command}`;
+  return hasProvedNavigationSequence(replay) ? replay : undefined;
+}
+
+function unwrapCwdSubprocessCommand(words: string[]): string[] | undefined {
+  let argv = words;
+  // Each successful wrapper removes words; the original word count bounds recursion.
+  for (let depth = 0; depth < words.length; depth++) {
+    const unwrapped = unwrapProofCommand(argv, "\0");
+    if (!unwrapped) return undefined;
+    argv = unwrapped;
+    if (argv[0]?.split("/").at(-1) !== "env") return argv;
+    const nested = unwrapEnvironmentCommand(argv);
+    if (!nested) return undefined;
+    // Inspect only env's prefix, not options belonging to its child command.
+    // env directory, split-string and unknown options do not preserve the proved context.
+    if (
+      argv
+        .slice(1, argv.length - nested.length)
+        .some(
+          (arg) =>
+            arg.startsWith("-") && arg !== "--" && arg !== "-i" && arg !== "--ignore-environment",
+        )
+    )
+      return undefined;
+    argv = nested;
+  }
+  return undefined;
+}
+
+function isProvedCwdSubprocessRole(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  if (inlineProgramIndex(argv) !== undefined || isUnsupportedInlineRuntime(argv)) return false;
+  if (isPassiveTextCommand(argv)) return true;
+  if (name === "find") return isSafeLocalAssignmentCommand(argv);
+  if (["ls", "cat", "uniq", "cut"].includes(name)) return true;
+  if (name === "wc") return !hasExecutionOption(argv.slice(1), ["files0-from"]);
+  if (name === "sort")
+    return !hasExecutionOption(argv.slice(1), ["compress-program", "files0-from"]);
+  if (name === "git") {
+    let index = 1;
+    while (argv[index] === "-C" && argv[index + 1]) index += 2;
+    return ["ls-files", "ls-tree", "status", "rev-parse", "rev-list"].includes(argv[index] ?? "");
+  }
+  // A literal Bun script keeps the existing supported test-runner route.
+  if (name === "bun") return /^[A-Za-z0-9_./-]+\.(?:[cm]?[jt]s)$/.test(argv[1] ?? "");
+  // Retain extraction so the nested CLI policy returns its ordinary descriptor.
+  return DEFAULT_BLOCKED_CLI_TOOLS.some((tool) => tool.name === name);
 }
 
 function inlineSubprocessCommands(command: string): string[] {
@@ -1207,11 +1296,40 @@ function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
     argv[4] === "query"
   )
     return false;
+  const sql = literalSqlArgumentIndex(argv);
+  if (sql !== undefined)
+    return argv.some((arg, index) => index !== sql && hasArgumentBraceExpansion(arg));
   return (argv[0]?.split("/").at(-1) === "awk" && !isAwkExecution(argv)) ||
     inlineProgramIndex(argv) !== undefined ||
     isJqObjectConstruction(argv)
     ? false
     : hasArgumentBraceExpansion(argv.join(" "));
+}
+
+function literalSqlArgumentIndex(argv: string[]): number | undefined {
+  if (
+    argv[0]?.split("/").at(-1) !== "bun" ||
+    argv[1] !== "run" ||
+    argv[2] !== "db-tool" ||
+    !["sql", "query"].includes(argv[3] ?? "")
+  )
+    return undefined;
+  let sql: number | undefined;
+  const seen = new Set<string>();
+  for (let index = 4; index < argv.length; index++) {
+    const [option = "", ...attached] = (argv[index] ?? "").split("=");
+    if (
+      !["--sql", "--env", "--profile", "--limit", "--format"].includes(option) ||
+      seen.has(option)
+    )
+      return undefined;
+    seen.add(option);
+    const value = attached.length ? attached.join("=") : argv[++index];
+    if (!value || value.startsWith("--")) return undefined;
+    if (option === "--sql") sql = index;
+    else if (!/^[A-Za-z0-9_./-]+$/.test(value)) return undefined;
+  }
+  return sql;
 }
 
 /** echo and printf print their arguments; grep -o, rg and git grep print matched pattern text. */
@@ -1584,7 +1702,8 @@ function hasProvedNavigationSequence(command: string): boolean {
     return false;
   if (!changesDirectory.length) return true;
   // Only the final AND list can use this directory. A failing cd never reaches its readers.
-  const syntax = literal.syntax.replace(/[ \t\n]+$/g, "");
+  // Trim real trailing whitespace, not the spaces masking final quoted argv words.
+  const syntax = literal.syntax.slice(0, command.replace(/[ \t\n]+$/g, "").length);
   const boundary = Math.max(syntax.lastIndexOf(";"), syntax.lastIndexOf("\n"));
   const tail = parseStaticShellCommands(command.slice(boundary + 1, syntax.length));
   if (!tail || typeof tail === "string" || tail.pipelines.length < 2) return false;
@@ -1608,12 +1727,26 @@ function isPassiveTextCommand(argv: string[]): boolean {
   }
   if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
   if (name === "awk") return !isAwkExecution(argv);
+  if (name === "sed") return isReadonlySedPrint(argv);
   if (name === "jq") return isJqObjectConstruction(argv);
   return (
     (name === "git" && args[0] === "status") ||
     (name === "git" &&
       args[0] === "grep" &&
       !hasExecutionOption(args, ["open-files-in-pager", "textconv"], "O"))
+  );
+}
+
+/** One print program with optional numeric or escaped-regex addresses; no callbacks. */
+function isReadonlySedPrint(argv: string[]): boolean {
+  if (argv[0]?.split("/").at(-1) !== "sed") return false;
+  let index = 1;
+  while (/^-[nE]+$/.test(argv[index] ?? "")) index++;
+  if (argv[index] === "--") index++;
+  const address = String.raw`(?:[0-9]+|\$|/(?:\\[^\r\n]|[^/\\\r\n])*/)`;
+  return (
+    new RegExp(`^(?:${address}(?:,${address})?)?p$`).test(argv[index] ?? "") &&
+    argv.slice(index + 1).every((arg) => !arg.startsWith("-"))
   );
 }
 
@@ -1702,6 +1835,7 @@ function isStaticHerdrPrompt(command: string): boolean {
             argv.slice(1).every((arg) => arg === "--" || !arg.startsWith("-"))
           );
         if (isPassiveTextCommand(argv)) return true;
+        if (isLiteralHerdrRead(argv)) return index === 0;
         if (isStaticNavigationCommand(argv))
           return index === 0 && (argv[0] !== "cd" || pipeline.length === 1);
         return false;
@@ -1732,6 +1866,26 @@ function hasEnvironmentRead(
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
   if (!parsed) {
+    const operands = parseStaticShellCommands(command, true);
+    if (
+      operands &&
+      typeof operands !== "string" &&
+      operands.pipelines.flat().some((words) => {
+        const argv = unwrapStaticCommand(words);
+        return (
+          argv[0]?.split("/").at(-1) === "bun" &&
+          argv[1] === "run" &&
+          argv[2] === "db-tool" &&
+          ["sql", "query"].includes(argv[3] ?? "") &&
+          argv.some(
+            (arg, index) =>
+              (arg === "--sql" && /\$\(|`/.test(argv[index + 1] ?? "")) ||
+              (arg.startsWith("--sql=") && /\$\(|`/.test(arg)),
+          )
+        );
+      })
+    )
+      return true;
     const unquoted = command.replace(/'(?:\\.|[^'])*'/g, " ").replace(/"(?:\\.|[^"$`])*"/g, " ");
     const hasExecutor =
       /\|\s*(?:sh|bash|zsh|xargs)|\b(?:sh|bash|zsh)\b|\$\(|`|\b(?:eval|source)\b|\bfind\b.*\b-exec\b/i.test(
@@ -1745,6 +1899,16 @@ function hasEnvironmentRead(
   }
   const pipelines = parsed.pipelines.map((commands) => commands.map(unwrapStaticCommand));
   const unwrapped = pipelines.flat();
+  if (
+    pipelines.some((pipeline) =>
+      pipeline.some(
+        (argv, index) =>
+          literalSqlArgumentIndex(argv) !== undefined &&
+          pipeline.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer)),
+      ),
+    )
+  )
+    return true;
   if (
     parsed.redirects.length > 0 &&
     unwrapped.some((argv) => isAllowedEnvironmentRead(argv, allowedNames))
@@ -2146,7 +2310,13 @@ function hasEnvironmentVariableExpansionRead(
       normalized += char;
       continue;
     }
-    const variable = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}|^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(
+    if (command[i + 1] === "?") {
+      expansions++;
+      normalized += "NUMERICSTATUSVALUE";
+      i++;
+      continue;
+    }
+    const variable = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-)?\}|^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(
       command.slice(i),
     );
     if (!variable) {
@@ -2157,7 +2327,13 @@ function hasEnvironmentVariableExpansionRead(
       continue;
     }
     expansions++;
-    const name = variable[1] ?? variable[2] ?? "";
+    const name = variable[1] ?? variable[3] ?? "";
+    if (variable[2]) {
+      if (quote !== '"' || !allowedNames.has(name)) invalidExpansion = true;
+      normalized += "ENVTESTVALUE";
+      i += variable[0].length - 1;
+      continue;
+    }
     const assignment = assignments.get(name);
     if (assignment && assignment.end >= i) invalidExpansion = true;
     if (assignment && assignment.end < i) {
@@ -2182,6 +2358,39 @@ function hasEnvironmentVariableExpansionRead(
   if (!hasSafeLocalAssignmentCommands(localMaterialized, assignments)) return true;
   const parsed = parseStaticShellCommands(localMaterialized);
   if (!parsed || typeof parsed === "string") return true;
+  for (const [index, pipeline] of parsed.pipelines.entries()) {
+    if (!pipeline.some((words) => words.some((arg) => arg.includes("NUMERICSTATUSVALUE"))))
+      continue;
+    if (parsed.redirects.some((redirect) => redirect.pipeline === index)) return true;
+    if (
+      pipeline.some((words) => {
+        const argv = unwrapStaticCommand(words);
+        if (!words.some((arg) => arg.includes("NUMERICSTATUSVALUE")))
+          return !isPassiveTextCommand(argv);
+        const name = argv[0]?.split("/").at(-1);
+        const format = name === "printf" ? passivePrintfFormatIndex(argv) : undefined;
+        return (
+          !["echo", "printf"].includes(name ?? "") ||
+          !isPassiveTextCommand(argv) ||
+          words
+            .slice(0, words.length - argv.length)
+            .some((arg) => arg.includes("NUMERICSTATUSVALUE")) ||
+          argv[0]?.includes("NUMERICSTATUSVALUE") === true ||
+          (name === "printf" &&
+            (format === undefined ||
+              argv.slice(0, format + 1).some((arg) => arg.includes("NUMERICSTATUSVALUE"))))
+        );
+      })
+    )
+      return true;
+  }
+  for (const words of parsed.pipelines.flat()) {
+    if (
+      words.some((arg) => arg.includes("ENVTESTVALUE")) &&
+      !isApprovedEnvironmentPredicate(unwrapStaticCommand(words))
+    )
+      return true;
+  }
   for (const words of parsed.pipelines.flat()) {
     if (!words.some((arg) => arg.includes("UNKNOWNVALUE"))) continue;
     if (words.some((arg) => arg.includes("UNKNOWNVALUEUNQUOTED"))) return true;
@@ -2192,7 +2401,7 @@ function hasEnvironmentVariableExpansionRead(
     )
       return true;
   }
-  if (!localMaterialized.includes("ENVVALUE")) {
+  if (!localMaterialized.includes("ENVVALUE") && !localMaterialized.includes("ENVTESTVALUE")) {
     return (
       hasSensitiveFileRead(localMaterialized, isPathBlocked) ||
       hasSensitivePathRedirect(localMaterialized, isPathBlocked) ||
@@ -2202,7 +2411,7 @@ function hasEnvironmentVariableExpansionRead(
 
   for (const [index, pipeline] of parsed.pipelines.entries()) {
     const hasEnvironmentValue = pipeline.some((argv) =>
-      argv.some((arg) => arg.includes("ENVVALUE")),
+      argv.some((arg) => arg.includes("ENVVALUE") || arg.includes("ENVTESTVALUE")),
     );
     if (!hasEnvironmentValue) continue;
     if (parsed.redirects.some((redirect) => redirect.pipeline === index)) return true;
@@ -2210,9 +2419,14 @@ function hasEnvironmentVariableExpansionRead(
       pipeline.some((argv) => {
         const unwrapped = unwrapStaticCommand(argv);
         const name = unwrapped[0]?.split("/").at(-1) ?? "";
-        if (argv.some((arg) => arg.includes("ENVVALUE"))) {
-          if (argv.slice(0, argv.length - unwrapped.length).some((arg) => arg.includes("ENVVALUE")))
+        if (argv.some((arg) => arg.includes("ENVVALUE") || arg.includes("ENVTESTVALUE"))) {
+          if (
+            argv
+              .slice(0, argv.length - unwrapped.length)
+              .some((arg) => arg.includes("ENVVALUE") || arg.includes("ENVTESTVALUE"))
+          )
             return true;
+          if (isApprovedEnvironmentPredicate(unwrapped)) return false;
           if (isNavigationOperand(unwrapped, "ENVVALUE")) {
             return unwrapped.some((arg) => arg.includes("ENVVALUEUNQUOTED"));
           }
@@ -2237,6 +2451,24 @@ function hasEnvironmentVariableExpansionRead(
     normalized.replaceAll("ENVVALUE", "SAFEENVVALUE"),
   );
   return hasSensitiveFileRead(materialized, isPathBlocked);
+}
+
+/** Quoted approved metadata can be compared or checked for blankness, never evaluated. */
+function isApprovedEnvironmentPredicate(argv: string[]): boolean {
+  let args = argv.slice(1);
+  if (argv[0] === "[") {
+    if (args.at(-1) !== "]") return false;
+    args = args.slice(0, -1);
+  } else if (argv[0] !== "test") return false;
+  const value = (arg: string | undefined) => arg === "ENVVALUE" || arg === "ENVTESTVALUE";
+  const literal = (arg: string | undefined) =>
+    /^[A-Za-z0-9_.:-]*$/.test(arg ?? "") && arg !== undefined;
+  return (
+    (args.length === 2 && ["-n", "-z"].includes(args[0] ?? "") && value(args[1])) ||
+    (args.length === 3 &&
+      args[1] === "=" &&
+      ((value(args[0]) && literal(args[2])) || (literal(args[0]) && value(args[2]))))
+  );
 }
 
 function mentionsEnvironmentSource(command: string): boolean {

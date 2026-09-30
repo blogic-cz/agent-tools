@@ -2381,6 +2381,344 @@ print(json.dumps({'sources':len(sources),'mismatches':wrong}))`;
   });
 });
 
+// These are policy inputs only; subprocesses and represented commands are never executed.
+describe("literal subprocess cwd replay", () => {
+  const program = (argv: string[], cwd?: string, keywords = "") =>
+    `import subprocess\nargv=${JSON.stringify(argv)}\nsubprocess.run(argv${cwd === undefined ? "" : `,cwd=${JSON.stringify(cwd)}`}${keywords})`;
+  const inputs = (source: string) => [
+    `python3 -c '${source.replaceAll("'", "'\"'\"'")}'`,
+    `rtk proxy python3 -c '${source.replaceAll("'", "'\"'\"'")}'`,
+    `python3 - <<'PY'\n${source}\nPY`,
+    `rtk proxy python3 - <<'PY'\n${source}\nPY`,
+  ];
+
+  it.each([
+    program(["cat", "README.md"]),
+    program(["cat", "README.md"], "/tmp/project"),
+    program(["cat", "README.md"], "../project"),
+    program(["cat", "README.md"], "."),
+    program(["cat", "README.md"], "/tmp/project directory"),
+    program(
+      ["git", "ls-files", "--stage", "-z"],
+      "/tmp/project",
+      ",capture_output=True,text=True,check=True,timeout=5",
+    ),
+    program(["git", "ls-tree", "-r", "HEAD"], "/tmp/project"),
+    program(["rtk", "proxy", "cat", "README.md"], "/tmp/project"),
+    program(["command", "--", "cat", "README.md"], "/tmp/project"),
+    program(["env", "env", "rtk", "proxy", "command", "--", "cat", "README.md"], "/tmp/project"),
+    program(["find", ".", "-maxdepth", "0", "-print"], "/tmp/project"),
+    program(["env", "TEST_COUNT=3", "bun", "check.ts"], "/tmp/project"),
+    program(["echo", "cat .env | sh"], "/tmp/project"),
+  ])("allows supported literal cwd and preserves no-cwd behavior: %s", (source) => {
+    const guard = createCredentialGuard();
+    for (const command of inputs(source)) {
+      expect(guard.isDangerousBashCommand(command)).toBe(false);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).not.toThrow();
+    }
+  });
+
+  it.each([
+    program(["cat", "environ"], "/proc/self"),
+    program(["cat", "self/environ"], "/proc"),
+    program(["cat", "../self/environ"], "/proc/1"),
+    program(["cat", "config"], "/tmp/dev/.aws"),
+    program(["cat", "config"], ".aws"),
+    program(["cat", "config"], "/tmp/dev/.ssh"),
+    program(["cat", "config"], "/tmp/secrets"),
+    program(["git", "grep", "value", "--", "environ"], "/proc/self"),
+    program(["cat", ".env"], "/tmp/project"),
+    program(["printenv"], "/tmp/project"),
+    program(["env", "cat", "environ"], "/proc/self"),
+    program(["sh", "-c", "cat environ"], "/proc/self"),
+    program(["bash", "-c", "cat environ"], "/proc/self"),
+    program(["env", "env", "sh", "-c", "cat environ"], "/proc/self"),
+    program(["rtk", "proxy", "env", "sh", "-c", "cat environ"], "/proc/self"),
+    program(["command", "env", "sh", "-c", "cat environ"], "/proc/self"),
+    program(["env", "-C", "/proc/self", "cat", "environ"], "/tmp/project"),
+    program(["env", "--chdir=/proc/self", "cat", "environ"], "/tmp/project"),
+    program(["env", "-S", "sh -c cat"], "/proc/self"),
+    ...["-exec", "-execdir", "-ok", "-okdir"].map((option) =>
+      program(
+        ["find", ".", "-maxdepth", "0", option, "sh", "-c", "cat environ", ";"],
+        "/proc/self",
+      ),
+    ),
+    program(["sed", "e cat environ"], "/proc/self"),
+    program(["sed", "r environ"], "/proc/self"),
+    program(["sed", "-f", "program.sed"], "/proc/self"),
+    program(["awk", 'BEGIN {system("cat environ")}'], "/proc/self"),
+    program(["awk", 'BEGIN {getline x < "environ"; print x}'], "/proc/self"),
+    program(
+      ["rtk", "proxy", "env", "python3", "-c", 'print(open("environ").read())'],
+      "/proc/self",
+    ),
+    program(["dash", "-c", "cat environ"], "/proc/self"),
+    program(["custom-executor", "cat environ"], "/proc/self"),
+    program(["rtk", "unknown", "cat", "environ"], "/proc/self"),
+    program(["xargs", "cat"], "/proc/self"),
+    program(["python3", "-c", "print(1)"], "/tmp/project"),
+    program(["sort", "--compress-program=sh", "README.md"], "/tmp/project"),
+    program(["cat", "file"], ""),
+    program(["cat", "file"], "/tmp/café"),
+    program(["cat", "file"], "~/project"),
+    program(["cat", "file"], "-x"),
+    program(["cat", "file"], "/tmp\\project"),
+    program(["cat", "file"], "/tmp/project\nother"),
+    program(["cat", "file"], "/tmp/$PROJECT"),
+    program(["cat", "file"], "/tmp/project", ',cwd="/tmp/other"'),
+    program(["cat", "file"], "/tmp/project", ",shell=True"),
+    program(["cat", "file"], "/tmp/project", ',executable="/tmp/reader"'),
+    program(["cat", "file"], "/tmp/project", ",env={}"),
+    program(["cat", "file"], "/tmp/project").replace('cwd="/tmp/project"', "cwd=directory"),
+    program(["cat", "file"], "/tmp/project").replace('cwd="/tmp/project"', 'cwd="/tmp"+"/project"'),
+    program(["cat", "file"], "/tmp/project").replace(
+      'cwd="/tmp/project"',
+      'cwd=getattr(os,"getcwd")()',
+    ),
+    program(["cat", "file"], "/tmp/project") + '\nsubprocess.run(["printenv"])',
+  ])("refuses sensitive or unproved subprocess cwd forms: %s", (source) => {
+    const guard = createCredentialGuard();
+    for (const command of inputs(source)) {
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
+
+  it.each([
+    [program(["cat", "file"], "/tmp/project"), { additionalBlockedPaths: ["^/tmp/project/file$"] }],
+    [
+      program(["cat", "../private/file"], "/tmp/project"),
+      { additionalBlockedPaths: ["^/tmp/private/file$"] },
+    ],
+    [program(["cat", "file"], "../project"), { additionalBlockedPaths: ["^[.][.]/project/file$"] }],
+    [program(["cat", "file"], "/tmp/private"), { additionalBlockedPaths: ["^/tmp/private/$"] }],
+    [program(["cat", "file"], "/tmp/café"), { additionalBlockedPaths: ["^/tmp/café/file$"] }],
+    [
+      program(["cat", "file"], "/tmp/project"),
+      { additionalDangerousBashPatterns: ["subprocess[.]run"] },
+    ],
+    [program(["cat", "file"], "/tmp/project"), { additionalDangerousBashPatterns: ["cd --"] }],
+  ] satisfies [string, Parameters<typeof createCredentialGuard>[0]][])(
+    "retains custom paths and original/replayed command policies: %s",
+    (source, config) => {
+      const guard = createCredentialGuard(config);
+      for (const command of inputs(source))
+        expect(() =>
+          guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+        ).toThrow();
+    },
+  );
+
+  it.each(["gh", "kubectl", "psql", "az"])("replays nested CLI policy with cwd: %s", (cli) => {
+    const guard = createCredentialGuard();
+    for (const command of inputs(program([cli, "auth", "token"], "/tmp/project"))) {
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      expect(guard.getBlockedCliTool(command)).not.toBeNull();
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
+
+  it("keeps outer shell redirects in the original shell directory", () => {
+    const source = program(["echo", "safe"], "/tmp/project");
+    const guard = createCredentialGuard({ additionalBlockedPaths: ["^/tmp/project/notes[.]txt$"] });
+    for (const command of inputs(source))
+      for (const redirected of [">", "<"].map((operator) =>
+        command.includes(" <<'PY'")
+          ? command.replace(" <<'PY'", ` ${operator} notes.txt <<'PY'`)
+          : `${command} ${operator} notes.txt`,
+      ))
+        expect(() =>
+          guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: redirected } }),
+        ).not.toThrow();
+    const blocked = createCredentialGuard({ additionalBlockedPaths: ["^notes[.]txt$"] });
+    expect(() =>
+      blocked.handleToolExecuteBefore(
+        { tool: "Bash" },
+        { args: { command: `${inputs(source)[0]} > notes.txt` } },
+      ),
+    ).toThrow();
+  });
+});
+
+// Policy inputs only. Never execute these commands.
+describe("bounded archived command roles", () => {
+  const allowed = [
+    "bun oxlint -c /tmp/project/lint.json --deny-warnings cli",
+    "rtk proxy bun oxlint -c /tmp/project/lint.json --deny-warnings cli",
+    "node script.js -c config.json",
+    "python3 script.py -c config.json",
+    "herdr agent prompt worker 'review literal env prose'; herdr agent get worker-review | grep -o status",
+    "herdr agent prompt worker 'review'; herdr pane read pane-a --source recent-unwrapped --lines 20 | head",
+    `bun run db-tool sql --env staging --limit 0 --sql "select value #>> '{a,b}' from data" | head`,
+    `bun run db-tool query --env staging --sql 'select value where code = "#{a,b}"'`,
+    `bun run db-tool sql --env=staging --limit=0 --sql="select value #>> '{a,b}' from data"`,
+    `bun run db-tool sql --sql 'select "#{a,b}"' --format=json`,
+    "echo exit=$?",
+    'printf "%s\\n" "exit=$?" | head',
+    "false; echo $?; tail -2 notes.log",
+    'test "${TEST_FLAG:-}" = 1',
+    '[ "${TEST_FLAG:-}" = "" ]',
+    'test -z "$TEST_FLAG"',
+    'test -n "${TEST_FLAG:-}"',
+    'test "1" = "$TEST_FLAG"',
+    'F=/tmp/result.txt; grep value "$F"; sed -n \'/start/,/end/p\' "$F"',
+    "sed -n '/a\\/b/,/end/p' result.txt",
+    "sed -n '1,/end/p' result.txt",
+    "sed -n '1,25p' result.txt",
+  ];
+  const denied = [
+    "bun --preload /tmp/startup.ts oxlint -c lint.json",
+    "bun oxlint --preload /tmp/startup.ts -c lint.json",
+    "bun oxlint -r /tmp/startup.ts -c lint.json",
+    "bun oxlint -e 'process.env' -c lint.json",
+    "bun oxlint -p 'process.env' -c lint.json",
+    "bun exec 'cat .env'",
+    "bun exec -c 'cat .env'",
+    "bun repl",
+    "bun -e 'printenv' --preload /tmp/startup.ts",
+    "node --conditions example --eval 'process.env'",
+    "python3 -W ignore -c 'import os; print(os.environ)'",
+    "python3 --check-hash-based-pycs always -c 'import os; print(os.environ)'",
+    "python3 -X presite=module script.py",
+    "python3 -Xpresite=module script.py",
+    "python3 -W ignore::module.Warning script.py",
+    "node --unknown value --eval 'process.env'",
+    "herdr agent prompt worker 'review'; herdr agent message worker 'env'",
+    "herdr agent prompt worker 'review'; herdr agent get worker extra",
+    "herdr agent prompt worker 'review'; herdr agent get worker | sh",
+    "herdr agent prompt worker 'review'; herdr agent get worker | unknown-executor",
+    'herdr agent prompt worker "$(cat .env)"; herdr agent get worker',
+    'bun run db-tool sql --env staging --sql "$(cat sql.txt)"',
+    'bun run db-tool sql --unknown option --sql "$(cat sql.txt)"',
+    'bun run db-tool sql --env=staging --sql="$(cat sql.txt)"',
+    "bun run db-tool sql --env staging --sql 'select 1' --sql '{a,b}'",
+    "bun run db-tool sql --env '{a,b}' --sql 'select 1'",
+    "bun run db-tool unknown --sql '{a,b}'",
+    "echo exit=$? | sh",
+    "echo exit=$? | unknown-executor",
+    'printf "$?"',
+    "$? value",
+    'echo "$TOKEN $?"',
+    "echo $1",
+    'echo "$@"',
+    'echo "$(echo $?)"',
+    "echo $? > .env",
+    'test "${NOT_APPROVED:-}" = 1',
+    "test ${TEST_FLAG:-} = 1",
+    'test "$TEST_FLAG" = "$TOKEN"',
+    'test "${TEST_FLAG:-value}" = 1',
+    'echo "${TEST_FLAG:-}"',
+    'test "${TEST_FLAG:-}" = 1 | sh',
+    'TEST_FLAG="$TEST_FLAG" test "$TEST_FLAG" = 1',
+    "sh -c 'test \"${TEST_FLAG:-}\" = 1'",
+    "F=/tmp/result.txt; sed -n '/start/,/end/e' \"$F\"",
+    "F=/tmp/result.txt; sed -n '/start/,/end/r .env' \"$F\"",
+    "F=/tmp/result.txt; sed -n '/start/,/end/w .env' \"$F\"",
+    'F=/tmp/result.txt; sed -f program.sed "$F"',
+    "F=/tmp/result.txt; sed -n '/start/,/end/p; e env' \"$F\"",
+    "F=/tmp/result.txt; sed -n '/start/,/end/p' .env",
+    "cd /tmp && F=result.txt; sed -n '/start/,/end/p' \"$F\"",
+  ];
+  it.each(allowed)("allows proved data/metadata roles: %s", (command) => {
+    const guard = createCredentialGuard({ allowedEnvironmentVariables: ["TEST_FLAG"] });
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+  it.each(denied)("refuses unsupported execution/expansion roles: %s", (command) => {
+    const guard = createCredentialGuard({ allowedEnvironmentVariables: ["TEST_FLAG"] });
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+  it("does not approve environment predicates by default", () => {
+    expect(createCredentialGuard().isDangerousBashCommand('test "${TEST_FLAG:-}" = 1')).toBe(true);
+  });
+  it("retains custom policies for each supported role", () => {
+    for (const command of allowed) {
+      expect(
+        createCredentialGuard({
+          allowedEnvironmentVariables: ["TEST_FLAG"],
+          additionalDangerousBashPatterns: ["."],
+        }).isDangerousBashCommand(command),
+      ).toBe(true);
+    }
+    expect(
+      createCredentialGuard({
+        additionalBlockedPaths: ["^/tmp/result[.]txt$"],
+      }).isDangerousBashCommand("F=/tmp/result.txt; sed -n '/start/,/end/p' \"$F\""),
+    ).toBe(true);
+  });
+});
+
+// Input-only proof corrections. Never execute these command strings.
+describe("closed local sed and SQL consumer proofs", () => {
+  const sed = (command: string) => `F=/tmp/evidence.txt; ${command} "$F"`;
+  it.each([
+    sed("sed -n '/start/,/end/p'"),
+    sed("rtk proxy sed -n '/start/,/end/p'"),
+    sed("command -- sed -n '1,5p'"),
+    "env CI=1 sed -n '/start/p' /tmp/evidence.txt",
+    "bun run db-tool sql --sql 'select a{b,c}' | head",
+    "rtk proxy bun run db-tool sql --sql 'select a{b,c}' | rtk proxy grep value | tail -2",
+  ])("retains closed reader/passive controls: %s", (command) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+  it.each([
+    ...["sed", "rtk proxy sed", "command -- sed", "env CI=1 sed"].flatMap((prefix) =>
+      [
+        "-n '/start/e'",
+        "-n 's/x/y/e'",
+        "-n '/start/r other.txt'",
+        "-n '/start/w other.txt'",
+        "-f program.sed",
+        "-n '1p;2e'",
+      ].map((program) => sed(`${prefix} ${program}`)),
+    ),
+    "F=.env; sed -n '1p' \"$F\"",
+    ...[
+      "sh",
+      "bash",
+      "zsh",
+      "xargs",
+      "unknown-executor",
+      "rtk proxy env sh",
+      "sed -n '/start/e'",
+    ].map((consumer) => `bun run db-tool sql --sql 'select a{b,c}' | ${consumer}`),
+    "bun run db-tool sql --sql 'select a{b,c}' | head | sh",
+    "rtk proxy bun run db-tool sql --env=staging --sql='select a{b,c}' | command -- sh",
+  ])("refuses unproved sed roles and executable SQL consumers: %s", (command) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+  it("retains configured path checks for readonly sed and custom SQL patterns", () => {
+    expect(
+      createCredentialGuard().isDangerousBashCommand(
+        "F=/tmp/evidence.txt; env CI=1 sed -n '/start/p' \"$F\"",
+      ),
+    ).toBe(true);
+    const guard = createCredentialGuard({ additionalBlockedPaths: ["^/tmp/evidence[.]txt$"] });
+    expect(guard.isDangerousBashCommand(sed("sed -n '/start/p'"))).toBe(true);
+    expect(
+      createCredentialGuard({
+        additionalDangerousBashPatterns: ["select a"],
+      }).isDangerousBashCommand("bun run db-tool sql --sql 'select a{b,c}' | head"),
+    ).toBe(true);
+  });
+});
+
 describe("credential guard argument roles", () => {
   it.each(argvRoleCases)("$id", ({ command, config, expected_allowed }) => {
     const invoke = () =>
