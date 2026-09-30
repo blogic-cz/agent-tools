@@ -530,6 +530,114 @@ function isLiteralHerdrRead(argv: string[]): boolean {
   );
 }
 
+/** Conventional platform shell names and numeric versions; not arbitrary renamed executables. */
+function isShellWord(word: string): boolean {
+  return /^(?:sh|bash|rbash|zsh|dash|ash|ksh|rksh|csh|tcsh|fish)(?:[.-]?[0-9]+(?:[.][0-9]+)*)?$/.test(
+    word.split("/").at(-1) ?? "",
+  );
+}
+
+/** Shell-named operands are data only under an existing non-executing argument role. */
+function hasProvedShellDataOperands(argv: string[]): boolean {
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  if (isPassiveTextCommand(argv) || isLiteralHerdrRead(argv) || isStaticNavigationCommand(argv))
+    return true;
+  if (["cat", "ls", "uniq", "cut"].includes(name)) return true;
+  if (["find", "wc", "sort"].includes(name)) return isProvedCwdSubprocessRole(argv);
+  return name === "test" && argv.length === 3 && argv[1] === "-e" && !/[$`]/.test(argv[2] ?? "");
+}
+
+const SHELL_IDENTITIES = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "/bin/sh",
+  "/usr/bin/sh",
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/bin/zsh",
+  "/usr/bin/zsh",
+]);
+
+/** Literal argv only. Undefined means a shell was found without a complete invocation proof. */
+function literalShellBodies(command: string): string[] | undefined {
+  const parsed = parseStaticShellCommands(command);
+  const operands = parsed ?? parseStaticShellCommands(command, true);
+  if (!operands || typeof operands === "string") return [];
+  const commands = operands.pipelines.flat();
+  if (
+    commands.some((words) =>
+      ["exec", "nohup", "sudo"].includes(unwrapStaticCommand(words)[0]?.split("/").at(-1) ?? ""),
+    )
+  )
+    return undefined;
+  for (const words of commands) {
+    const argv = unwrapStaticCommand(words);
+    if (
+      !isShellWord(argv[0] ?? "") &&
+      argv.some(
+        (word, index) =>
+          index !== inlineProgramIndex(argv) &&
+          (isShellWord(word) ||
+            (/^--?[A-Za-z0-9-]+=/.test(word) && isShellWord(word.slice(word.indexOf("=") + 1)))),
+      ) &&
+      !hasProvedShellDataOperands(argv) &&
+      !isStaticHerdrPrompt(command)
+    )
+      return undefined;
+  }
+  const shells = commands.filter((words) => isShellWord(unwrapStaticCommand(words)[0] ?? ""));
+  if (!shells.length) return [];
+  if (
+    !parsed ||
+    typeof parsed === "string" ||
+    !literalBindingText(command, "", "") ||
+    new TextEncoder().encode(command).byteLength > 65_536 ||
+    commands.some((words) => unwrapStaticCommand(words)[0]?.split("/").at(-1) === "cd")
+  )
+    return undefined;
+  const bodies: string[] = [];
+  for (const words of shells) {
+    const argv = unwrapProofCommand(words, "\0");
+    if (!argv || !SHELL_IDENTITIES.has(argv[0] ?? "")) return undefined;
+    const name = argv[0]?.split("/").at(-1);
+    if (argv.length === 2 && ["--version", "--help"].includes(argv[1] ?? "")) continue;
+    const index = name === "zsh" && argv[1] === "-f" ? 2 : 1;
+    if ((name === "zsh" && index !== 2) || argv[index] !== "-c" || argv.length !== index + 2)
+      return undefined;
+    bodies.push(argv[index + 1] ?? "");
+  }
+  return bodies;
+}
+
+function isProvedLiteralShellBody(body: string): boolean {
+  if (!body.trim()) return true;
+  const materialized = materializeLiteralShell(body)?.command ?? body;
+  const parsed = parseStaticShellCommands(materialized);
+  if (!parsed || typeof parsed === "string" || !hasProvedNavigationSequence(materialized))
+    return false;
+  if (isStaticHerdrPrompt(materialized)) return true;
+  return parsed.pipelines.flat().every((words) => {
+    const argv = unwrapProofCommand(words, "\0");
+    if (!argv) return false;
+    if (argv[0]?.split("/").at(-1) === "env") return false;
+    const name = unwrapStaticCommand(argv)[0]?.split("/").at(-1) ?? "";
+    if (isShellWord(name))
+      return (
+        literalShellBodies(
+          words.map((word) => "'" + word.replaceAll("'", "'\"'\"'") + "'").join(" "),
+        ) !== undefined
+      );
+    return (
+      isProvedCwdSubprocessRole(unwrapStaticCommand(argv)) ||
+      (name === "bun" && isSafeLocalAssignmentCommand(argv) && !isUnsupportedInlineRuntime(argv)) ||
+      isStaticNavigationCommand(argv) ||
+      isLiteralHerdrRead(argv) ||
+      (argv.length === 1 && ["true", "false", "pwd"].includes(name))
+    );
+  });
+}
+
 /** A complete stdin-only JSON projection, with no suffix, imports or executable input. */
 function isLiteralStdinJsonDisplay(argv: string[]): boolean {
   if (argv.length !== 3 || !["python", "python3"].includes(argv[0] ?? "") || argv[1] !== "-c")
@@ -1858,6 +1966,7 @@ function hasEnvironmentRead(
   command: string,
   allowedNames: Set<string>,
   allowInventory = hasProvedPackageInventoryInvocation(command),
+  replayedShellBodies: string[] = [],
 ): boolean {
   if (isStaticHerdrPrompt(command)) return false;
   if (isHerdrPrompt(command)) return true;
@@ -1926,7 +2035,13 @@ function hasEnvironmentRead(
   ) {
     return true;
   }
-  if (unwrapped.some((argv) => hasStaticEnvironmentRead(argv, allowedNames, allowInventory))) {
+  if (
+    unwrapped.some(
+      (argv) =>
+        !(SHELL_IDENTITIES.has(argv[0] ?? "") && replayedShellBodies.includes(argv.at(-1) ?? "")) &&
+        hasStaticEnvironmentRead(argv, allowedNames, allowInventory),
+    )
+  ) {
     return true;
   }
 
@@ -2743,7 +2858,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     return getDangerousBashReason(command) !== null;
   }
 
-  function getDangerousBashReason(command: string): string | null {
+  function getDangerousBashReason(command: string, shellDepth = 0): string | null {
     const originalCommand = command;
     const allowPackageInventory = hasProvedPackageInventoryInvocation(originalCommand);
     const rawEnvironmentSource =
@@ -2757,20 +2872,30 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     if (rawEnvironmentSource && hasEnvironmentMutationPrefix(originalCommand))
       return "blocked by the environment/execution policy after an unproved environment mutation";
     command = normalizeProgramHeredocs(command);
+    const shellBodies = literalShellBodies(command);
+    if (!shellBodies || (shellBodies.length && shellDepth >= 8))
+      return "cannot prove a bounded literal shell invocation";
+    for (const body of shellBodies) {
+      const reason = getDangerousBashReason(body, shellDepth + 1);
+      if (reason || getBlockedCliTool(body, true, shellDepth + 1))
+        return reason ?? "invokes a blocked CLI from a shell body";
+      if (!isProvedLiteralShellBody(body)) return "cannot prove a closed literal shell body";
+    }
     const proof = materializeLiteralShell(command);
     if (!proof && /^\s*for\b/.test(command)) return "cannot prove a bounded literal shell loop";
     if (proof) {
       if (proof.paths.some((path) => hasSensitiveFileRead("cat " + path, isPathBlocked)))
         return "accesses a sensitive file path";
       command = proof.command;
-      if (getBlockedCliTool(command)) return "invokes a blocked CLI from a literal expansion";
+      if (getBlockedCliTool(command, true, shellDepth))
+        return "invokes a blocked CLI from a literal expansion";
     }
     for (const nested of [
       ...inlineSubprocessCommands(command),
       ...inlinePackageCommands(command, allowPackageInventory),
     ]) {
-      const reason = getDangerousBashReason(nested);
-      if (reason || getBlockedCliTool(nested))
+      const reason = getDangerousBashReason(nested, shellDepth);
+      if (reason || getBlockedCliTool(nested, true, shellDepth))
         return reason ?? "invokes a blocked CLI from a script";
     }
     if (
@@ -2786,7 +2911,21 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     }
     if (
       hasEnvironmentSourceAccess(command, rawEnvironmentSource, allowedEnvironmentVariables) ||
-      hasEnvironmentRead(command, allowedEnvironmentVariables, allowPackageInventory)
+      hasEnvironmentRead(
+        command,
+        allowedEnvironmentVariables,
+        allowPackageInventory,
+        shellBodies.filter((body) => {
+          const parsed = parseStaticShellCommands(body);
+          return (
+            parsed &&
+            typeof parsed !== "string" &&
+            parsed.pipelines
+              .flat()
+              .every((words) => isPassiveTextCommand(unwrapStaticCommand(words)))
+          );
+        }),
+      )
     ) {
       return "blocked by the environment/execution policy; permitted access or non-execution could not be established for this command form";
     }
@@ -2828,16 +2967,24 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   function getBlockedCliTool(
     command: string,
     expand = true,
+    shellDepth = 0,
   ): { name: string; wrapper: string } | null {
     command = normalizeProgramHeredocs(command);
+    const shellBodies = literalShellBodies(command);
+    if (shellBodies && shellDepth < 8) {
+      for (const body of shellBodies) {
+        const blocked = getBlockedCliTool(body, true, shellDepth + 1);
+        if (blocked) return blocked;
+      }
+    }
     const proof = expand ? materializeLiteralShell(command) : undefined;
     if (proof) {
-      const originalBlocked = getBlockedCliTool(command, false);
+      const originalBlocked = getBlockedCliTool(command, false, shellDepth);
       if (originalBlocked) return originalBlocked;
       command = proof.command;
     }
     for (const nested of inlineSubprocessCommands(command)) {
-      const blocked = getBlockedCliTool(nested);
+      const blocked = getBlockedCliTool(nested, true, shellDepth);
       if (blocked) return blocked;
     }
     const staticCommands = parseStaticShellCommands(command);
