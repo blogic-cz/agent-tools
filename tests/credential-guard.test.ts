@@ -2719,6 +2719,234 @@ describe("closed local sed and SQL consumer proofs", () => {
   });
 });
 
+// These are guard inputs only. Never execute shell bodies or speedtest commands.
+describe("bounded literal shell body replay", () => {
+  const quote = (body: string) => "'" + body.replaceAll("'", "'\"'\"'") + "'";
+  const wrappers = [
+    "sh -c ",
+    "/bin/sh -c ",
+    "bash -c ",
+    "/bin/zsh -f -c ",
+    "rtk proxy /bin/zsh -f -c ",
+  ];
+  const nested = (count: number, body: string) => {
+    for (let i = 0; i < count; i++) body = "sh -c " + quote(body);
+    return body;
+  };
+  it.each([
+    "echo safe",
+    "echo 'exec sh -c cat .env; nohup; sudo; env -i'",
+    "printf '%s' 'exec sh -c cat .env; nohup; sudo; env -i'",
+    "cat README.md",
+    "ls -l README.md",
+    "pwd",
+    "true",
+    "false",
+    "grep 'env' README.md | head -n 2",
+    "sed -n '/start/,/end/p' README.md",
+    "cd /tmp/project && cat README.md",
+    "echo safe; cat README.md",
+    "bun run db-tool sql --env staging --sql 'select 1' | head",
+  ])("retains fully proved ordinary bodies: %s", (body) => {
+    for (const prefix of wrappers) {
+      const command = prefix + quote(body);
+      const guard = createCredentialGuard();
+      expect(guard.isDangerousBashCommand(command)).toBe(false);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).not.toThrow();
+    }
+  });
+  it.each([
+    "cat .env",
+    "cat /proc/self/environ",
+    "cat /tmp/.aws/config",
+    "cat /tmp/.ssh/config",
+    "printenv",
+    'echo "$TOKEN"',
+    "env",
+    "gh auth token",
+    "cd /proc/self && cat environ",
+    "cd /proc/self; cat environ",
+    "cd /tmp/.aws && cat config",
+    "sed -n '/start/e' README.md",
+    "find . -exec sh -c 'cat .env' ;",
+    "echo env | sh",
+    "unknown-executor data",
+    "env PATH=/tmp cat README.md",
+    "BASH_ENV=/tmp/startup bash -c 'echo safe'",
+    "if true; then cat .env; fi",
+    'for p in /tmp/tool; do "$p" --version; done',
+  ])("replays protected or unsupported bodies: %s", (body) => {
+    for (const prefix of wrappers) {
+      const command = prefix + quote(body);
+      const guard = createCredentialGuard();
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
+  it.each([
+    "exec /bin/sh -c 'cat .env'",
+    "env -i sh -c 'cat .env'",
+    "/usr/bin/env sh -c 'cat .env'",
+    "nohup sh -c 'cat .env'",
+    "sudo sh -c 'cat .env'",
+    "rtk proxy exec sh -c 'cat .env'",
+    "command -- nohup sh -c 'cat .env'",
+    "sudo --unknown sh -c 'cat .env'",
+    "sh -c 'exec sh -c cat'",
+    "cd /proc/self && sh -c 'cat environ'",
+    "cd /tmp/.aws && /bin/zsh -f -c 'cat config'",
+    "cd /tmp/project && sh -c 'cat README.md'",
+    "cd /proc/self; sh -c 'cat environ'",
+    "env -C /proc/self sh -c 'cat environ'",
+    "env --chdir=/proc/self sh -c 'cat environ'",
+    "env CI=1 sh -c 'echo safe'",
+    "PATH=/tmp sh -c 'echo safe'",
+    "sh -c 'echo safe' positional",
+    "sh -lc 'echo safe'",
+    "zsh -c 'echo safe'",
+    "bash --unknown -c 'echo safe'",
+    "/tmp/sh -c 'echo safe'",
+    "dash -c 'echo safe'",
+    "sh script.sh",
+    "sh <<'EOF'\ncat .env\nEOF",
+    'sh -c "$SCRIPT"',
+    "sh -c 'echo safe' < .env",
+  ])("refuses unproved wrapper identity/context: %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+  });
+  it.each(["gh", "kubectl", "psql", "az"])("preserves nested blocked CLI descriptor: %s", (cli) => {
+    for (const prefix of wrappers) {
+      const command = prefix + quote(`${cli} auth token`);
+      const guard = createCredentialGuard();
+      expect(guard.getBlockedCliTool(command)?.name).toBe(cli);
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
+  it("retains custom body and original wrapper policies", () => {
+    for (const prefix of wrappers) {
+      expect(
+        createCredentialGuard({
+          additionalBlockedPaths: ["^/tmp/private-report$"],
+        }).isDangerousBashCommand(prefix + quote("cat /tmp/private-report")),
+      ).toBe(true);
+      expect(
+        createCredentialGuard({
+          additionalBlockedPaths: ["^/tmp/project/report$"],
+        }).isDangerousBashCommand(prefix + quote("cd /tmp/project && cat report")),
+      ).toBe(true);
+      expect(
+        createCredentialGuard({
+          additionalDangerousBashPatterns: ["echo safe"],
+        }).isDangerousBashCommand(prefix + quote("echo safe")),
+      ).toBe(true);
+      expect(
+        createCredentialGuard({
+          additionalDangerousBashPatterns: ["sh -c|zsh -f"],
+        }).isDangerousBashCommand(prefix + quote("echo safe")),
+      ).toBe(true);
+    }
+  });
+  it("preserves raw configured patterns across materialized shell loops", () => {
+    const command = "sh -c " + quote('for p in README.md; do cat "$p"; done');
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(false);
+    expect(
+      createCredentialGuard({ additionalDangerousBashPatterns: ["^sh -c"] }).isDangerousBashCommand(
+        command,
+      ),
+    ).toBe(true);
+  });
+  it("keeps shell body cwd distinct from outer redirect cwd", () => {
+    const command = "sh -c " + quote("cd /tmp/project && echo safe") + " > notes.txt";
+    expect(
+      createCredentialGuard({
+        additionalBlockedPaths: ["^/tmp/project/notes[.]txt$"],
+      }).isDangerousBashCommand(command),
+    ).toBe(false);
+    expect(
+      createCredentialGuard({ additionalBlockedPaths: ["^notes[.]txt$"] }).isDangerousBashCommand(
+        command,
+      ),
+    ).toBe(true);
+    expect(
+      createCredentialGuard().isDangerousBashCommand("sh -c " + quote("echo safe > .env")),
+    ).toBe(true);
+  });
+  it.each([
+    "nice sh -c 'cat /proc/self/environ'",
+    "nice -n 5 sh -c 'cat /proc/self/environ'",
+    "timeout 1 sh -c 'cat /proc/self/environ'",
+    "/usr/bin/time sh -c 'cat /proc/self/environ'",
+    "time sh -c 'cat /proc/self/environ'",
+    "stdbuf -oL sh -c 'cat /proc/self/environ'",
+    "setsid sh -c 'cat /proc/self/environ'",
+    "command -p sh -c 'cat /proc/self/environ'",
+    "rtk unknown sh -c 'cat /proc/self/environ'",
+    "opaque-launcher --argument sh -c 'cat /proc/self/environ'",
+    "opaque-launcher --shell=sh -c 'cat /proc/self/environ'",
+    "if true; then sh -c 'cat /proc/self/environ'; fi",
+    "! sh -c 'cat /proc/self/environ'",
+    "xargs sh -c 'cat /proc/self/environ'",
+    "find . -exec sh -c 'cat /proc/self/environ' {} +",
+    "find . -execdir sh -c 'cat /proc/self/environ' {} +",
+    "busybox sh -c 'cat /proc/self/environ'",
+    "rbash -c 'cat /proc/self/environ'",
+    "rksh -c 'cat /proc/self/environ'",
+    "ksh93 -c 'cat /proc/self/environ'",
+    "zsh5 -c 'cat /proc/self/environ'",
+    "/bin/bash5.2 -c 'cat /proc/self/environ'",
+    "timeout 1 zsh5 -c 'cat /proc/self/environ'",
+    "rtk proxy opaque-launcher /bin/sh -c 'cat .env'",
+    "grep sh README.md | xargs sh -c 'cat .env'",
+  ])("refuses shell words in unproved executor/control roles: %s", (command) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+  it.each([
+    "python3 -c sh",
+    "node -e sh",
+    "python3 -c \"print('sh')\"",
+    "node -e \"console.log('sh')\"",
+    "echo sh bash rbash rksh ksh93 zsh5",
+    "printf '%s' sh /bin/sh rbash",
+    "echo 'nice sh -c cat .env; timeout; xargs; if; then'",
+    "grep sh README.md",
+    "rg sh README.md",
+    "rg --glob=sh pattern README.md",
+    "cat /bin/sh",
+    "ls -l /bin/sh",
+    "test -e /bin/sh",
+    "find . -name sh",
+    "sed -n '/sh/p' README.md",
+  ])("retains proved shell-named data and metadata operands: %s", (command) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+  it("accepts the eight-wrapper nesting bound", () => {
+    expect(createCredentialGuard().isDangerousBashCommand(nested(8, "echo safe"))).toBe(false);
+  });
+  it("refuses the ninth wrapper", () => {
+    expect(createCredentialGuard().isDangerousBashCommand(nested(9, "echo safe"))).toBe(true);
+  });
+  it("refuses shell invocations exceeding the byte bound", () => {
+    expect(
+      createCredentialGuard().isDangerousBashCommand(
+        "sh -c " + quote("echo " + "a".repeat(65_536)),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("credential guard argument roles", () => {
   it.each(argvRoleCases)("$id", ({ command, config, expected_allowed }) => {
     const invoke = () =>
