@@ -2728,6 +2728,160 @@ describe("bounded Herdr command composition", () => {
 });
 
 // Hook inputs only: these shell commands are never executed.
+describe("bounded Herdr literal navigation", () => {
+  const guard = createCredentialGuard();
+  const prompt =
+    'herdr agent prompt worker-driver "[deploy] Please review the fix and send the verdict."';
+  const search =
+    'git grep -n -E "Error|Failed|Fail\\(|Issues" -- src/domain/Item.cs src/domain/Batch.cs | head -30';
+  const compose = (suffix: string) => `${prompt} 2>&1 | grep -o '"type":"[a-z_]*"'; ${suffix}`;
+
+  it.each([
+    compose(`cd /tmp/worktrees/project/rehearsal && ${search}`),
+    compose(`cd -- /tmp/worktrees/project && ${search}`),
+    compose(`cd ../project && ${search}`),
+    compose(`cd './project directory' && ${search}`),
+    compose(`cd project && echo note && ${search}`),
+    `cd /tmp/worktrees/project && ${prompt} && ${search}`,
+    compose(`command -- cd project && ${search}`),
+    compose(`cd project && rtk proxy ${search}`),
+    compose("git -C /tmp/worktrees/project grep -n error -- src/index.ts | head -3"),
+    compose("git -C ../project -C ./subdir grep -n error -- src/index.ts"),
+    compose("git -C ./project status --short | head -3"),
+    compose("git -C ./project rev-parse HEAD"),
+    compose("git -C ./project rev-list --count HEAD"),
+    compose("git rev-parse HEAD"),
+    compose('cd project && git grep -n ".env" -- README.md'),
+    compose("cd project && git grep -e printenv -- README.md"),
+    compose("cd project && cat README.md"),
+    compose("git status || echo unavailable"),
+    compose("echo note | git status --short"),
+    compose("git -C /tmp/private status; cat config"),
+    compose("cd project && cat README.md > /tmp/report.txt"),
+  ])("allows literal navigation and passive inspection: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    compose('cd "$HOME" && git status'),
+    compose('cd "$UNKNOWN" && git status'),
+    compose("cd $(cat .env) && git status"),
+    compose("cd `cat .env` && git status"),
+    compose("cd ~/project && git status"),
+    compose("cd - && git status"),
+    compose("cd && git status"),
+    compose('cd "" && git status'),
+    compose("cd -P project && git status"),
+    compose("cd -L project && git status"),
+    compose("cd -- project extra && git status"),
+    compose("cd project || git status"),
+    compose(`cd .; ${search}`),
+    compose(`cd project\n${search}`),
+    `cd /tmp/worktrees/project && ${prompt}; ${search}`,
+    compose("cd /proc/self && cd /tmp/nonexistent; cat environ"),
+    compose("cd /proc/self && cd /tmp/nonexistent && cat environ"),
+    compose("cd /proc/self && head < environ"),
+    compose("cd /proc/self && cat README.md < environ"),
+    compose("cd project && echo hi > config"),
+    compose("cd project && cat README.md >> config"),
+    compose("cd project < config && cat README.md"),
+    compose("git -C project status < config"),
+    compose("cd /proc/self && head; echo safe"),
+    compose("cd /tmp/project && echo safe; cat README.md"),
+    compose("cd project & git status"),
+    compose("cd project | git grep value"),
+    compose("echo project | cd project"),
+    compose("(cd project) && git status"),
+    compose("cd\u00a0project && git status"),
+    compose("PATH=/tmp cd project && git status"),
+    compose("env CDPATH=/tmp cd project && git status"),
+    compose("export CDPATH=/tmp; cd project && git status"),
+    compose("cd project && git grep value | sh"),
+    compose("cd project && git grep value | xargs"),
+    compose("cd project && git grep value | opaque-runner"),
+    compose("cd project && git grep -Oprintenv value"),
+    compose("cd project && git grep --open-files-in-pager=printenv value"),
+    compose("cd project && git grep --textconv value"),
+    compose("cd project && cat .env"),
+    compose("cd project && git grep value -- .env"),
+    compose("cd project && git grep -f .env"),
+    compose("cd project && git grep -e value -- config/.env.local"),
+    compose("cd project && git grep value -- /proc/self/environ"),
+    compose("cd project && git grep value -- ~/.aws/credentials"),
+    compose("cd project && git grep value -- src/index.ts > .env"),
+    compose("cd /tmp/dev/.aws && cat config"),
+    compose("cd /tmp/dev/.ssh && git grep value -- config"),
+    compose("cd /tmp/secrets && cat notes.txt"),
+    compose("cd /proc/self && cat environ"),
+    compose("cd /proc && cat self/environ"),
+    compose('git -C "$UNKNOWN" status'),
+    compose("git -C ~/project status"),
+    compose('git -C "" status'),
+    compose("git -C -x status"),
+    compose("git -c core.pager=printenv status"),
+    compose("git -C project grep -Oprintenv value"),
+    compose("git -C project grep value -- .env"),
+    compose("git -C /tmp/dev/.aws grep value -- config"),
+    compose("git -C project -C /tmp/dev/.ssh status"),
+    compose("git -C project grep value | sh"),
+    compose("git -C project checkout main"),
+    compose("cd project && printenv"),
+  ])("refuses unproved or sensitive navigation: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each([
+    [
+      compose("cd /tmp/private-worktree && git status"),
+      { additionalBlockedPaths: ["^/tmp/private-worktree$"] },
+    ],
+    [
+      compose("git -C /tmp/private-worktree status"),
+      { additionalBlockedPaths: ["^/tmp/private-worktree/$"] },
+    ],
+    [
+      compose("cd project && git grep value -- private.dat"),
+      { additionalBlockedPaths: ["^private[.]dat$"] },
+    ],
+    [
+      compose("git -C project grep value -- private.dat"),
+      { additionalBlockedPaths: ["^private[.]dat$"] },
+    ],
+    [
+      compose("cd /tmp/project && git grep value -- private.dat"),
+      { additionalBlockedPaths: ["^/tmp/project/private[.]dat$"] },
+    ],
+    [
+      compose("git -C /tmp/project grep value -- private.dat"),
+      { additionalBlockedPaths: ["^/tmp/project/private[.]dat$"] },
+    ],
+    [
+      compose("cd /tmp/private && cd ../public; cat config"),
+      { additionalBlockedPaths: ["^/tmp/private/config$"] },
+    ],
+    [
+      compose("cd /tmp/private && echo hi > config"),
+      { additionalBlockedPaths: ["^/tmp/private/config$"] },
+    ],
+    [compose("cd project && git status"), { additionalDangerousBashPatterns: ["cd project"] }],
+  ] satisfies [string, Parameters<typeof createCredentialGuard>[0]][])(
+    "keeps configured directory, reader and command policies: %s",
+    (command, config) => {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
+    },
+  );
+});
+
+// Hook inputs only: these shell commands are never executed.
 describe("bounded local literal path assignments", () => {
   const guard = createCredentialGuard();
   it.each([

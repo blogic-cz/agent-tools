@@ -1548,6 +1548,56 @@ function isNavigationOperand(argv: string[], marker: string): boolean {
   );
 }
 
+/** Literal directory operands only; navigation is never a pipeline consumer. */
+function isStaticNavigationCommand(argv: string[]): boolean {
+  const path = (value: string | undefined) => /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*$/.test(value ?? "");
+  if (argv[0] === "cd")
+    return isNavigationOperand(argv, "\0") && path(argv[argv[1] === "--" ? 2 : 1]);
+  if (argv[0] !== "git") return false;
+  let index = 1;
+  while (argv[index] === "-C") {
+    if (!path(argv[index + 1])) return false;
+    index += 2;
+  }
+  return (
+    isNavigationOperand(argv, "\0") ||
+    (index > 1 && isPassiveTextCommand(["git", ...argv.slice(index)]))
+  );
+}
+
+/** Prove a single cd whose uses are gated on success, without simulating shell state. */
+function hasProvedNavigationSequence(command: string): boolean {
+  const literal = literalBindingText(command, "", "");
+  const parsed = parseStaticShellCommands(command);
+  if (!literal || !parsed || typeof parsed === "string") return false;
+  const commands = parsed.pipelines.flat().map((words) => unwrapProofCommand(words, "\0"));
+  const changesDirectory = commands.filter((argv) => argv?.[0] === "cd");
+  if (
+    !commands.some((argv) => argv && (argv[0] === "cd" || (argv[0] === "git" && argv[1] === "-C")))
+  )
+    return true;
+  if (
+    /\|\||(^|[^&])&(?!&)/.test(literal.syntax.replace(/[<>]&[0-9-]+/g, "")) ||
+    parsed.redirects.some(({ target }) => !target.startsWith("/")) ||
+    changesDirectory.length > 1
+  )
+    return false;
+  if (!changesDirectory.length) return true;
+  // Only the final AND list can use this directory. A failing cd never reaches its readers.
+  const syntax = literal.syntax.replace(/[ \t\n]+$/g, "");
+  const boundary = Math.max(syntax.lastIndexOf(";"), syntax.lastIndexOf("\n"));
+  const tail = parseStaticShellCommands(command.slice(boundary + 1, syntax.length));
+  if (!tail || typeof tail === "string" || tail.pipelines.length < 2) return false;
+  const first = tail.pipelines[0];
+  const argv = unwrapProofCommand(first?.[0] ?? [], "\0");
+  return (
+    first?.length === 1 &&
+    argv?.[0] === "cd" &&
+    isStaticNavigationCommand(argv) &&
+    syntax.slice(boundary + 1).match(/&&|[;&|\n]/)?.[0] === "&&"
+  );
+}
+
 function isPassiveTextCommand(argv: string[]): boolean {
   const name = argv[0]?.split("/").at(-1) ?? "";
   const args = argv.slice(1);
@@ -1627,13 +1677,15 @@ function hasStaticEnvironmentRead(
 
 function isStaticHerdrPrompt(command: string): boolean {
   // Preserve shell word boundaries and executable identity before proving composition.
-  if (!literalBindingText(command, "", "")) return false;
+  const literal = literalBindingText(command, "", "");
+  if (!literal) return false;
   const parsed = parseStaticShellCommands(command);
   if (!parsed || typeof parsed === "string") return false;
   const commands = parsed.pipelines.flat().map((words) => unwrapProofCommand(words, "\0"));
   const prompts = commands.filter(
     (argv) => argv?.[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt",
   );
+  if (!hasProvedNavigationSequence(command)) return false;
   return (
     prompts.length > 0 &&
     parsed.pipelines.every((pipeline) =>
@@ -1649,7 +1701,10 @@ function isStaticHerdrPrompt(command: string): boolean {
             argv.length > 1 &&
             argv.slice(1).every((arg) => arg === "--" || !arg.startsWith("-"))
           );
-        return isPassiveTextCommand(argv);
+        if (isPassiveTextCommand(argv)) return true;
+        if (isStaticNavigationCommand(argv))
+          return index === 0 && (argv[0] !== "cd" || pipeline.length === 1);
+        return false;
       }),
     )
   );
@@ -1836,13 +1891,41 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
   const readers =
     /\b(?:cat|cp|grep|rg|sed|awk|jq|head|tail|less|more|source|ls|sort|uniq|cut|wc|mv|find|shasum|sha1sum|sha256sum|sha512sum|md5sum|cksum)\b/i;
   if (parsed && parsed !== "brace-expansion") {
+    let directory = "";
+    const trackDirectory = hasProvedNavigationSequence(command);
     return parsed.pipelines.flat().some((words) => {
       const argv = unwrapStaticCommand(words);
       const inspectedArgv =
         argv[0]?.split("/").at(-1) === "env" ? unwrapEnvironmentCommand(argv) : argv;
       if (inspectedArgv === null) return false;
-      const inspected = unwrapStaticCommand(inspectedArgv);
-      const name = inspected[0]?.split("/").at(-1) ?? "";
+      let inspected = unwrapStaticCommand(inspectedArgv);
+      let name = inspected[0]?.split("/").at(-1) ?? "";
+      let commandDirectory = directory;
+      const inDirectory = (path: string) =>
+        path.startsWith("/") ? posix.normalize(path) : posix.join(commandDirectory, path);
+      const blockedOperand = (path: string) =>
+        [path, inDirectory(path)].some((value) => isPathBlocked(value) || isSensitivePath(value));
+      const blockedDirectory = (path: string) => blockedOperand(path) || blockedOperand(path + "/");
+      if (name === "cd") {
+        const path = inspected[inspected[1] === "--" ? 2 : 1];
+        if (path === undefined) return false;
+        if (blockedDirectory(path)) return true;
+        if (trackDirectory && isStaticNavigationCommand(inspected)) directory = inDirectory(path);
+        return false;
+      }
+      if (name === "git") {
+        let index = 1;
+        while (inspected[index] === "-C" && inspected[index + 1]) {
+          if (blockedDirectory(inspected[index + 1] ?? "")) return true;
+          commandDirectory = inDirectory(inspected[index + 1] ?? "");
+          index += 2;
+        }
+        // Git grep has the same pattern-versus-file roles as grep below.
+        if (inspected[index] === "grep") {
+          inspected = ["grep", ...inspected.slice(index + 1)];
+          name = "grep";
+        }
+      }
       if (name === "bun" && inspected[1] === "run" && inspected[2] === "gh-tool") {
         return inspected.some((arg, index) => {
           const path =
@@ -1982,10 +2065,10 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
           }
           paths.push(arg);
         }
-        return paths.some((path) => isPathBlocked(path) || isSensitivePath(path));
+        return paths.some(blockedOperand);
       }
       const paths = name === "jq" ? jqFileArguments(inspected) : inspected.slice(1);
-      return paths.some((path) => isPathBlocked(path) || isSensitivePath(path));
+      return paths.some(blockedOperand);
     });
   }
   const operands = parseStaticShellCommands(command, true);
