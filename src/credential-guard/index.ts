@@ -504,9 +504,8 @@ function isLiteralLoopCommand(words: string[], marker: string, value: string): b
   }
   if (name === "herdr")
     return (
-      argv.length === 4 &&
-      argv[1] === "agent" &&
-      argv[2] === "get" &&
+      ((argv.length === 4 && argv[1] === "agent" && argv[2] === "get") ||
+        isLiteralHerdrPaneRead(argv)) &&
       /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "") &&
       uses.every((index) => index === 3)
     );
@@ -520,7 +519,36 @@ function isLiteralLoopCommand(words: string[], marker: string, value: string): b
       uses.every((index) => index === 8)
     );
   return (
-    ["grep", "head", "tail"].includes(name ?? "") && uses.length === 0 && isPassiveTextCommand(argv)
+    uses.length === 0 &&
+    ((["grep", "head", "tail"].includes(name ?? "") && isPassiveTextCommand(argv)) ||
+      isLiteralStdinJsonDisplay(argv))
+  );
+}
+
+function isLiteralHerdrPaneRead(argv: string[]): boolean {
+  return (
+    argv.length === 8 &&
+    argv.slice(0, 3).join(" ") === "herdr pane read" &&
+    /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "") &&
+    argv[4] === "--source" &&
+    argv[5] === "recent-unwrapped" &&
+    argv[6] === "--lines" &&
+    /^[1-9]\d*$/.test(argv[7] ?? "")
+  );
+}
+
+/** A complete stdin-only JSON projection, with no suffix, imports or executable input. */
+function isLiteralStdinJsonDisplay(argv: string[]): boolean {
+  if (argv.length !== 3 || !["python", "python3"].includes(argv[0] ?? "") || argv[1] !== "-c")
+    return false;
+  const program = argv[2] ?? "";
+  if (program.length > 65_536) return false;
+  const parts = programParts(program, true);
+  if (!parts || parts.literals.join("\0") !== "result\0text\0\0result") return false;
+  // ponytail: one JSON projection with a single-letter local; extend only with another complete grammar.
+  const code = parts.code.replace(/[ \t]+/g, " ").trim();
+  return /^import json\s*,\s*sys\s*(?:;|\r?\n)\s*([a-z])\s*=\s*json\s*\.\s*load\s*\(\s*sys\s*\.\s*stdin\s*\)\s*(?:;|\r?\n)\s*print\s*\(\s*\1\s*\[\s*STRING\s*\]\s*\.\s*get\s*\(\s*STRING\s*,\s*STRING\s*\)\s+if isinstance\s*\(\s*\1\s*\.\s*get\s*\(\s*STRING\s*\)\s*,\s*dict\s*\)\s+else \1\s*\)\s*;?$/.test(
+    code,
   );
 }
 
@@ -567,7 +595,8 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
     const values = rawValues.map((item) => item.replace(/^['"]|['"]$/g, ""));
     if (!values.length || values.length > 16) return undefined;
     const marked = literalBindingText(loop[3] ?? "", name, marker);
-    if (!marked || /&&|\|\||[<>]|&/.test(marked.syntax.replace(/\b2>&1\b/g, ""))) return undefined;
+    if (!marked || /&&|\|\||[<>]|&/.test(marked.syntax.replace(/\b2>&1(?=[ \t\n;|]|$)/g, "")))
+      return undefined;
     const parsed = parseStaticShellCommands(marked.text);
     if (
       !parsed ||
@@ -1597,24 +1626,43 @@ function hasStaticEnvironmentRead(
 }
 
 function isStaticHerdrPrompt(command: string): boolean {
+  // Preserve shell word boundaries and executable identity before proving composition.
+  if (!literalBindingText(command, "", "")) return false;
   const parsed = parseStaticShellCommands(command);
   if (!parsed || typeof parsed === "string") return false;
-  const commands = parsed.pipelines.flat().map(unwrapStaticCommand);
+  const commands = parsed.pipelines.flat().map((words) => unwrapProofCommand(words, "\0"));
   const prompts = commands.filter(
-    (argv) => argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt",
+    (argv) => argv?.[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt",
   );
   return (
     prompts.length > 0 &&
-    commands.every((argv) =>
-      argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt"
-        ? argv.length >= 5
-        : isPassiveTextCommand(argv),
+    parsed.pipelines.every((pipeline) =>
+      pipeline.every((words, index) => {
+        const argv = unwrapProofCommand(words, "\0");
+        if (!argv) return false;
+        if (argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt")
+          return index === 0 && argv.length >= 5;
+        // cat is a reader at the start of an independent pipeline, never a consumer.
+        if (argv[0] === "cat")
+          return (
+            index === 0 &&
+            argv.length > 1 &&
+            argv.slice(1).every((arg) => arg === "--" || !arg.startsWith("-"))
+          );
+        return isPassiveTextCommand(argv);
+      }),
     )
   );
 }
 
 function isHerdrPrompt(command: string): boolean {
-  return /^herdr\s+agent\s+prompt\b/.test(command.trim());
+  if (/^herdr\s+agent\s+prompt\b/.test(command.trim())) return true;
+  const parsed = parseStaticShellCommands(command, true);
+  if (!parsed || typeof parsed === "string") return false;
+  return parsed.pipelines.flat().some((words) => {
+    const argv = unwrapStaticCommand(words);
+    return argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt";
+  });
 }
 
 function hasEnvironmentRead(
