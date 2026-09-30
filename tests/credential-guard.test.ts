@@ -1023,8 +1023,6 @@ describe("dangerous bash command evasion", () => {
     "F=x; bash -c 'cat .e{0,}nv' $F",
     "F=x; bash -c 'cat .e{,}nv' $F",
     "echo 'cat .e{0,}nv' | sh",
-    "F=/tmp/x; grep -o -E 'a{2,}' $F",
-    "F=/tmp/x; grep -o -E 'a{,5}' $F",
     "grep 'printenv TOKEN' | sh",
     "git grep 'printenv TOKEN' | sh",
     "rg 'printenv TOKEN' | sh",
@@ -2591,5 +2589,130 @@ describe("bounded literal path braces", () => {
     expect(() =>
       custom.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: "cat src/{a,b}.ts" } }),
     ).toThrow();
+  });
+});
+
+// Hook inputs only: these shell commands are never executed.
+describe("bounded local literal path assignments", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "F=/tmp/x; grep -o -E 'a{,5}' $F",
+    "F=/tmp/x; grep -o -E 'a{2,}' $F",
+    'cd /tmp && A=docs/report.md && shasum -a 256 "$A" | grep -q hash',
+    'cd /tmp && B=docs/report.md && sha256sum "${B}" | head',
+    'cd /tmp && Z=docs && cat "$Z/report.md" && wc -c "$Z/report.md"',
+    'cd /tmp; C=README.md; shasum -a 256 "$C"',
+    'D=README.md && sha512sum "$D"',
+    'E=README.md; md5sum "$E"',
+    'F=README.md\ncksum "$F"',
+    'G=docs; cat "$G/a.md"; head -1 "$G/b.md"',
+    'H=docs/report.md; rtk proxy shasum -a 256 "$H"',
+    'I=docs/report.md; command shasum -a 256 "$I"',
+    'J=README.md; shasum -a256 "$J"; git status --short',
+    "K=README.md; cat \"$K\" | python3 -c 'import json,sys; print(json.load(sys.stdin))'",
+    "L=README.md; shasum \"$L\"; printf '%s\\n' '$L'",
+    'M=README.md; shasum "$M"; python3 -c \'print("$M")\'',
+    'cd /tmp && T=src && git add -- "$T/a.ts" && git commit -m update',
+    'cd /tmp && A=docs/report.md && shasum -a 256 "$A" | grep -q \'^abc \' && bun run gh-tool pr review-triage --pr 42 --format json 2>/dev/null | python3 -c \'\nimport json,sys\nd=json.loads(sys.stdin.read().split("\\n",1)[1] if sys.stdin else "")\n\' 2>/dev/null; bun run gh-tool pr review-triage --pr 42 2>&1 | grep -E "headSha|threadId|isResolved|replyCount|commentId" | head',
+  ])("proves local file operands: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    'cd /missing && A=README.md; shasum "$A"',
+    'cd /missing && A=README.md\nshasum "$A"',
+    'cd /missing && A=README.md && shasum "$A"; cat "$A"',
+    'cd /missing && A=README.md && shasum "$A"\ncat "$A"',
+    'cd /missing || A=README.md && shasum "$A"',
+    'A=README.md || shasum "$A"',
+    'A=README.md & shasum "$A"',
+    'A=README.md | shasum "$A"',
+    '(A=README.md); shasum "$A"',
+    'A=README.md; A=.env; shasum "$A"',
+    'A=README.md; read A; shasum "$A"',
+    'A=README.md; unset A; shasum "$A"',
+    'A=README.md; export A=.env; shasum "$A"',
+    'A=README.md; printf -v A .en%s v; shasum "$A"',
+    "A=README.md; eval 'A=.env'; shasum \"$A\"",
+    'A=README.md; . ./setup.sh; shasum "$A"',
+    'A="$TOKEN"; shasum "$A"',
+    'A=$(printenv TOKEN); shasum "$A"',
+    'A=printenv; "$A" TOKEN',
+    'A=printenv; command "$A" TOKEN',
+    'A=printenv; rtk proxy "$A" TOKEN',
+    'A=README.md; shasum "--$A"',
+    'A=check; shasum "--$A" README.md',
+    'A=README.md; shasum --check "$A"',
+    'A=README.md; sha256sum -c "$A"',
+    'A=README.md; rg --pre "$A" pattern src',
+    'A=README.md; sort --compress-program="$A" input.txt',
+    'A=README.md; python3 -c "print(\\"$A\\")"',
+    "A=README.md; sh -c 'cat \"$A\"'",
+    'A=README.md; cat "$A" | sh',
+    'A=README.md; shasum "$A"; echo "$TOKEN"',
+    "A=README.md; shasum \"$A\"; python3 -c 'import os; print(os.environ)'",
+    'A=.env; shasum "$A"',
+    'A=README.md; shasum "$A" .env',
+    'A=README.md; sort -o "$A" input.txt',
+    'A=README.md; sort --files0-from "$A"',
+    'A=README.md; sort --files0-f "$A"',
+    'A=README.md; wc --files0-from "$A"',
+    'cd /tmp && A=README.md && wc --files0-from="$A"',
+    'cd /tmp && A=README.md && wc --files0-f "$A"',
+    'cd /tmp && A=README.md && rtk proxy wc --files0-from "$A"',
+    'A=README.md; cat "$A" | unknown-runner',
+    "A=README.md; cat \"$A\"; BASH_ENV=./startup bash -c 'true'",
+    "A=README.md; cat \"$A\"; export BASH_ENV=./startup; bash -c 'true'",
+    'A=README.md; cat "$A"; source ./startup',
+    'A=README.md; cat "$A"; opaque-runner',
+
+    'A=docs; shasum "$A/.env"',
+    'A=/proc/self/environ; shasum "$A"',
+    'A=README.md; shasum "$A" > .env',
+    'A=README.md; shasum "$A"; cat .env',
+    'A=README.md; shasum "$A"; gh auth token',
+    'PATH=README.md; shasum "$PATH"',
+    'IFS=README.md; shasum "$IFS"',
+    'BASH_ENV=README.md; shasum "$BASH_ENV"',
+    'artifact=README.md; shasum "$artifact"',
+    'cd /tmp && A=README.md && shasum\u00a0"$A"',
+  ])("refuses unproved or unsafe local bindings: %s", (command) => {
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each(["\u00a0", "\v", "\f", "\r", "\u2028"])(
+    "preserves unsupported shell word whitespace %j around bindings and wrappers",
+    (space) => {
+      for (const command of [
+        `${space}A=README.md; cat "$A"`,
+        `${space}A=README.md; shasum "$A"`,
+        ` ${space}A=README.md; cat "$A"`,
+        `A=README.md${space}; cat "$A"`,
+        `${space}sh -c 'A=README.md; cat "$A"'`,
+      ]) {
+        expect(() =>
+          guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+        ).toThrow();
+      }
+    },
+  );
+
+  it("checks every materialized path and both original and materialized command patterns", () => {
+    const command = 'cd /tmp && A=docs && shasum "$A/a.md" "$A/b.md"';
+    for (const config of [
+      { additionalBlockedPaths: ["^docs/b[.]md$"] },
+      { additionalDangerousBashPatterns: ["A=docs"] },
+      { additionalDangerousBashPatterns: ["docs/a[.]md"] },
+    ]) {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
+    }
   });
 });

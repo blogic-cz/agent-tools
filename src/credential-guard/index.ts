@@ -190,11 +190,11 @@ function getLeadingLiteralAssignments(
   const assignments = new Map<string, { value: string; end: number }>();
   let offset = 0;
   while (offset === 0 || command[offset - 1] === ";" || command[offset - 1] === "\n") {
-    while (/\s/.test(command[offset] ?? "")) offset++;
+    while (/[ \t\n]/.test(command[offset] ?? "")) offset++;
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./-]+)/.exec(command.slice(offset));
     if (!assignment) break;
     const end = offset + assignment[0].length;
-    const next = command.slice(end).match(/^\s*/)?.[0].length ?? 0;
+    const next = command.slice(end).match(/^[ \t]*/)?.[0].length ?? 0;
     const separator = command[end + next];
     if (separator !== ";" && separator !== "\n") break;
     assignments.set(assignment[1] ?? "", { value: assignment[2] ?? "", end });
@@ -239,39 +239,45 @@ function hasSafeLocalAssignmentCommands(
         assignments.get(assignment[1] ?? "")?.value === assignment[2]
       );
     }
-    const argv = unwrapStaticCommand(words);
-    if (isSafeHerdrTabCreate(argv)) return true;
-    const name = argv[0]?.split("/").at(-1) ?? "";
-    if (name === "cd") return isNavigationOperand(argv, "LOCALVALUE");
-    if (name === "git") {
-      let index = 1;
-      while (argv[index] === "-C" && argv[index + 1]) index += 2;
-      return (
-        ["branch", "diff", "log", "rev-parse", "rev-list", "show", "status"].includes(
-          argv[index] ?? "",
-        ) && !hasExecutionOption(argv.slice(index + 1), ["exec", "ext-diff", "textconv"])
-      );
-    }
-    if (name === "find") {
-      return !argv.slice(1).some((arg) => /^-(?:exec|ok|delete|fprint|fprintf)/.test(arg));
-    }
-    if (name === "bun") return argv[1] === "run" && ["db-tool", "gh-tool"].includes(argv[2] ?? "");
-    return (
-      isPassiveTextCommand(argv) ||
-      ["ls", "cat", "tail", "wc", "uniq", "cut", "mv"].includes(name) ||
-      (name === "sort" && !hasExecutionOption(argv.slice(1), ["compress-program"])) ||
-      (name === "sed" &&
-        argv
-          .slice(1)
-          .every(
-            (arg) =>
-              /^-[En]+$/.test(arg) ||
-              /^s([/|]).*\1[^/|]*\1[gp]*$/.test(arg) ||
-              /^[A-Za-z0-9_./-]+$/.test(arg),
-          ) &&
-        !argv.includes("-f"))
-    );
+    return isSafeLocalAssignmentCommand(words);
   });
+}
+
+function isSafeLocalAssignmentCommand(words: string[]): boolean {
+  const argv = unwrapStaticCommand(words);
+  if (isSafeHerdrTabCreate(argv)) return true;
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  if (name === "wc" && hasExecutionOption(argv.slice(1), ["files0-from"])) return false;
+  if (name === "cd") return isNavigationOperand(argv, "LOCALVALUE");
+  if (name === "git") {
+    let index = 1;
+    while (argv[index] === "-C" && argv[index + 1]) index += 2;
+    return (
+      ["branch", "diff", "log", "rev-parse", "rev-list", "show", "status"].includes(
+        argv[index] ?? "",
+      ) && !hasExecutionOption(argv.slice(index + 1), ["exec", "ext-diff", "textconv"])
+    );
+  }
+  if (name === "find") {
+    return !argv.slice(1).some((arg) => /^-(?:exec|ok|delete|fprint|fprintf)/.test(arg));
+  }
+  if (name === "bun") return argv[1] === "run" && ["db-tool", "gh-tool"].includes(argv[2] ?? "");
+  return (
+    isPassiveTextCommand(argv) ||
+    ["ls", "cat", "tail", "wc", "uniq", "cut", "mv"].includes(name) ||
+    (name === "sort" &&
+      !hasExecutionOption(argv.slice(1), ["compress-program", "files0-from", "output"], "o")) ||
+    (name === "sed" &&
+      argv
+        .slice(1)
+        .every(
+          (arg) =>
+            /^-[En]+$/.test(arg) ||
+            /^s([/|]).*\1[^/|]*\1[gp]*$/.test(arg) ||
+            /^[A-Za-z0-9_./-]+$/.test(arg),
+        ) &&
+      !argv.includes("-f"))
+  );
 }
 
 function hasSensitivePathRedirect(
@@ -429,6 +435,7 @@ function literalBindingText(
   let quote: "'" | '"' | undefined;
   for (let i = 0; i < command.length; i++) {
     const char = command[i] ?? "";
+    if (!quote && /[^\S \t\n]/.test(char)) return undefined;
     if (char === "\\" && quote !== "'") {
       const next = command[++i];
       if (next === undefined || /[\r\n]/.test(next)) return undefined;
@@ -524,7 +531,7 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
   if (new TextEncoder().encode(command).byteLength > 65_536) return undefined;
   const marker = "GUARDLITERALBINDING";
   if (command.includes(marker)) return undefined;
-  let script = command.trim();
+  let script = command.replace(/^[ \t\n]+|[ \t\n]+$/g, "");
   const wrapped = parseStaticShellCommands(script);
   if (
     wrapped &&
@@ -534,7 +541,10 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
     wrapped.redirects.length === 0
   ) {
     const argv = unwrapProofCommand(wrapped.pipelines[0]?.[0] ?? [], marker);
-    if (argv?.[0] === "sh" && argv[1] === "-c" && argv.length === 3) script = argv[2] ?? "";
+    if (argv?.[0] === "sh" && argv[1] === "-c" && argv.length === 3) {
+      if (!literalBindingText(script, "", "")) return undefined;
+      script = argv[2] ?? "";
+    }
   }
   const loop =
     /^for[ \t]+([A-Za-z_]\w*)[ \t]+in[ \t]+([^;\n]+);[ \t\r\n]*do[ \t\r\n]+([\s\S]*);[ \t\r\n]*done[ \t\r\n]*$/.exec(
@@ -587,49 +597,76 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
       paths: [],
     };
   }
+  // Single ASCII-letter names avoid shell startup/special variables such as PATH and IFS.
   const assignment =
-    /^cd[ \t]+(~?\/?[A-Za-z0-9_./-]+)[ \t]+&&[ \t]+([A-Za-z_]\w*)=([A-Za-z0-9_./][A-Za-z0-9_./-]*)[ \t]+&&[ \t]+/.exec(
-      command,
+    /^(?:cd[ \t]+(~?\/?[A-Za-z0-9_./-]+)[ \t]*(;|\n|&&)[ \t]*)?([A-Za-z])=([A-Za-z0-9_./][A-Za-z0-9_./-]*)[ \t]*(;|\n|&&)[ \t]*/.exec(
+      script,
     );
-  if (assignment && isLiteralBinder(assignment[2] ?? "")) {
+  if (assignment) {
     const rest = literalBindingText(
-      command.slice(assignment[0].length),
-      assignment[2] ?? "",
+      script.slice(assignment[0].length),
+      assignment[3] ?? "",
       marker,
     );
-    if (!rest) return undefined;
-    const end = rest.syntax.search(/[;&|\r\n]/);
-    const use = rest.text.slice(0, end < 0 ? undefined : end);
-    const suffix = end < 0 ? "" : rest.text.slice(end);
-    if (suffix.includes(marker)) return undefined;
-    const parsed = parseStaticShellCommands(use);
-    const argv =
-      parsed &&
-      typeof parsed !== "string" &&
-      parsed.pipelines.length === 1 &&
-      parsed.pipelines[0]?.length === 1 &&
-      parsed.redirects.length === 0
-        ? parsed.pipelines[0]?.[0]
-        : undefined;
+    if (!rest || !rest.text.includes(marker)) return undefined;
+    // No branches, background jobs or pipeline-local state. FD duplication stays inert.
+    const syntax = rest.syntax.replace(/[<>]&[0-9-]+/g, "");
+    if (/\|\||(^|[^&])&(?!&)|[^\S \t\n]/.test(syntax)) return undefined;
+    if (assignment[2] === "&&") {
+      if (assignment[5] !== "&&") return undefined;
+      const boundary = rest.syntax.search(/[;\r\n]/);
+      if (boundary >= 0 && rest.text.slice(boundary).includes(marker)) return undefined;
+    }
+    const parsed = parseStaticShellCommands(rest.text);
     if (
-      !argv ||
-      argv.length < 4 ||
-      argv.slice(0, 3).join(" ") !== "git add --" ||
-      argv.slice(3).some((word) => !/^[A-Za-z0-9_./-]+$/.test(word))
+      !parsed ||
+      typeof parsed === "string" ||
+      parsed.redirects.some(({ target }) => target.includes(marker)) ||
+      !parsed.pipelines.flat().length ||
+      parsed.pipelines.flat().length > 32
     )
       return undefined;
-    const value = assignment[3] ?? "";
+    const value = assignment[4] ?? "";
+    const paths: string[] = [];
+    for (const words of parsed.pipelines.flat()) {
+      const marked = unwrapProofCommand(words, marker);
+      if (!marked) return undefined;
+      const argv = marked.map((word) => word.replaceAll(marker, () => value));
+      const name = argv[0]?.split("/").at(-1) ?? "";
+      const uses = marked.flatMap((word, index) => (word.includes(marker) ? [index] : []));
+      const checksum =
+        ["shasum", "sha1sum", "sha256sum", "sha512sum", "md5sum", "cksum"].includes(name) &&
+        !hasExecutionOption(argv.slice(1), ["check"], "c");
+      if (!uses.length) {
+        if (
+          !isSafeLocalAssignmentCommand(argv) &&
+          inlineProgramIndex(argv) === undefined &&
+          !(argv[0] === "git" && argv[1] === "commit") &&
+          !checksum
+        )
+          return undefined;
+        continue;
+      }
+      if (
+        uses.some(
+          (index) => index === 0 || !/^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(argv[index] ?? ""),
+        )
+      )
+        return undefined;
+      const gitAdd =
+        argv.slice(0, 3).join(" ") === "git add --" && uses.every((index) => index >= 3);
+      const reader =
+        ["cat", "ls", "head", "tail", "wc", "uniq", "cut", "sort", "grep", "rg"].includes(name) &&
+        isSafeLocalAssignmentCommand(argv);
+      if (!gitAdd && !reader && !checksum) return undefined;
+      paths.push(...uses.map((index) => argv[index] ?? ""));
+    }
+    const prefix = assignment[1] ? `cd ${assignment[1]}${assignment[2]} ` : "";
     const size =
-      new TextEncoder().encode(rest.text).byteLength +
-      (use.split(marker).length - 1) * (value.length - marker.length) +
-      (assignment[1]?.length ?? 0) +
-      7;
-    if (size > 65_536) return undefined;
-    const paths = argv.slice(3).map((word) => word.replaceAll(marker, () => value));
-    return {
-      command: `cd ${assignment[1]} && ${use.replaceAll(marker, () => value)}${suffix}`,
-      paths,
-    };
+      new TextEncoder().encode(prefix + rest.text).byteLength +
+      (rest.text.split(marker).length - 1) * (value.length - marker.length);
+    if (paths.length > 32 || size > 65_536) return undefined;
+    return { command: prefix + rest.text.replaceAll(marker, () => value), paths };
   }
   // Expand only complete, unquoted path words. Keep all other source text intact.
   const paths: string[] = [];
@@ -1749,7 +1786,7 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
   if (/\bcat\b[^;&|]*<<-?\s*\S+[\s\S]*\b(?:secret|credential)\b/i.test(command)) return true;
   const parsed = parseStaticShellCommands(command);
   const readers =
-    /\b(?:cat|cp|grep|rg|sed|awk|jq|head|tail|less|more|source|ls|sort|uniq|cut|wc|mv|find)\b/i;
+    /\b(?:cat|cp|grep|rg|sed|awk|jq|head|tail|less|more|source|ls|sort|uniq|cut|wc|mv|find|shasum|sha1sum|sha256sum|sha512sum|md5sum|cksum)\b/i;
   if (parsed && parsed !== "brace-expansion") {
     return parsed.pipelines.flat().some((words) => {
       const argv = unwrapStaticCommand(words);
