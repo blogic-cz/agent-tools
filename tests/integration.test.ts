@@ -1667,7 +1667,11 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
     const paths = createVpnTestPaths();
     mkdirSync(paths.testDir, { recursive: true });
     writeFileSync(paths.commandLog, "");
-    const processA = spawnVpnRuntimeProcess("A", paths, undefined, { idleDisconnectMs: 500 });
+    // Cross-process module/guardian startup must fit inside the idle grace on loaded hosts.
+    const idleGraceMs = 5000;
+    const processA = spawnVpnRuntimeProcess("A", paths, undefined, {
+      idleDisconnectMs: idleGraceMs,
+    });
     const children: Array<ReturnType<typeof Bun.spawn>> = [];
 
     try {
@@ -1680,7 +1684,8 @@ Effect.runPromise(runWithProfilePrerequisites(config, profile, runCommand, work)
       const processB = spawnVpnRuntimeProcess("B", paths, undefined, { idleDisconnectMs: 100 });
       children.push(processB);
       await waitForFile(paths.BActive, processB);
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      // Wait beyond the whole former grace window so an uncanceled stop cannot hide.
+      await new Promise((resolve) => setTimeout(resolve, idleGraceMs + 100));
       expect(existsSync(paths.vpnReady)).toBe(true);
 
       writeFileSync(paths.BRelease, "release");
