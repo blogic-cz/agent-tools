@@ -2394,3 +2394,202 @@ describe("credential guard argument roles", () => {
     else expect(invoke).toThrow();
   });
 });
+
+// These are hook inputs only. Never execute the represented commands.
+describe("bounded literal path braces", () => {
+  const guard = createCredentialGuard();
+  const members = (count: number) => Array.from({ length: count }, (_, i) => `file${i}`).join(",");
+  it.each([
+    {
+      case: "reported search shape with options, trailing paths and a glob",
+      command:
+        "rtk proxy rg -n -i 'alpha|beta|gamma|delta|model famil|cross.model|harness|native subagent' .agents/skills/{delegate,playbook,driver,worker,advisor,scout} cli/README.md cli/*.ts",
+      blocked: false,
+    },
+    {
+      case: "several path lists",
+      command: "rg -ni value src/{a,b} docs/{c,d}.md README.md",
+      blocked: false,
+    },
+    { case: "shared path handling for cat", command: "cat docs/{guide,api}.md", blocked: false },
+    {
+      case: "shared path handling for grep",
+      command: "grep -n value src/{a,b}.ts",
+      blocked: false,
+    },
+    {
+      case: "quoted regex braces",
+      command: "rg -n 'a{1,3}|(env|printenv)' src/{a,b}",
+      blocked: false,
+    },
+    {
+      case: "quoted literal path remains data",
+      command: "rg -n 'src/{a,b}' docs/{guide,api}",
+      blocked: false,
+    },
+    {
+      case: "escaped braces remain data",
+      command: String.raw`rg -n a\{1,3\} src/{a,b}`,
+      blocked: false,
+    },
+    {
+      case: "quoted spaces remain one pattern",
+      command: 'rg -n "env value" src/{a,b}',
+      blocked: false,
+    },
+    {
+      case: "escaped space remains one pattern",
+      command: String.raw`rg -n env\ value src/{a,b}`,
+      blocked: false,
+    },
+    { case: "sixteen list members", command: `cat docs/{${members(16)}}`, blocked: false },
+    { case: "seventeen list members", command: `cat docs/{${members(17)}}`, blocked: true },
+    {
+      case: "thirty-two generated paths",
+      command: `cat src/{${members(16)}} docs/{${members(16)}}`,
+      blocked: false,
+    },
+    {
+      case: "thirty-three generated paths",
+      command: `cat src/{${members(16)}} docs/{${members(15)}} test/{a,b}`,
+      blocked: true,
+    },
+    {
+      case: "bounded output size",
+      command: `cat ${"a".repeat(4000)}/{${members(16)}}`,
+      blocked: false,
+    },
+    {
+      case: "oversized output",
+      command: `cat ${"a".repeat(4200)}/{${members(16)}}`,
+      blocked: true,
+    },
+    { case: "oversized input", command: `cat docs/{a,b} ${"x".repeat(65_536)}`, blocked: true },
+    { case: "sensitive env member", command: "rg -n value config/{README.md,.env}", blocked: true },
+    { case: "sensitive suffix", command: "cat config/{dev,prod}/.env", blocked: true },
+    {
+      case: "sensitive secret member",
+      command: "cat config/{README.md,secrets.json}",
+      blocked: true,
+    },
+    { case: "sensitive proc member", command: "cat /proc/{self,1}/environ", blocked: true },
+    {
+      case: "sensitive later brace word",
+      command: "rg -n value src/{a,b} config/{README.md,.env}",
+      blocked: true,
+    },
+    { case: "sensitive trailing operand", command: "rg -n value src/{a,b} .env", blocked: true },
+    {
+      case: "sensitive pattern-file operand",
+      command: "rg -n -f config/{README.md,.env}",
+      blocked: true,
+    },
+    {
+      case: "unknown command still checks expanded paths",
+      command: "inspect config/{README.md,.env}",
+      blocked: true,
+    },
+    { case: "command name expansion", command: "/usr/bin/{env,printenv}", blocked: true },
+    {
+      case: "wrapped command name expansion",
+      command: "rtk proxy /usr/bin/{gh,echo} auth token",
+      blocked: true,
+    },
+    {
+      case: "environment wrapper command expansion",
+      command: "env /usr/bin/{printenv,echo}",
+      blocked: true,
+    },
+    {
+      case: "environment wrapper blocked cli expansion",
+      command: "env /usr/bin/{gh,echo} auth token",
+      blocked: true,
+    },
+    { case: "hidden env command", command: "e{,}nv src/{a,b}", blocked: true },
+    { case: "hidden gh command", command: "g{,}h auth token src/{a,b}", blocked: true },
+    {
+      case: "exec command position",
+      command: "exec /usr/bin/{printenv,printf} TOKEN",
+      blocked: true,
+    },
+    { case: "exec argv zero", command: "exec -a /usr/bin/{printenv,printenv}", blocked: true },
+    { case: "exec hidden cli", command: "exec -a /usr/bin/{gh,gh} auth token", blocked: true },
+    { case: "timeout executor", command: "timeout 10 /usr/bin/{printenv,printf}", blocked: true },
+    { case: "xargs executor", command: "xargs /usr/bin/{printenv,printf}", blocked: true },
+    { case: "glob executable", command: "p[r]intenv ./x{a,b} TOKEN", blocked: true },
+    { case: "opaque command", command: "inspect src/{a,b}", blocked: true },
+    {
+      case: "expanded git pager option",
+      command: "git grep -O/bin/{sh,sh} pattern",
+      blocked: true,
+    },
+    {
+      case: "expanded git pager environment command",
+      command: "git grep -O/usr/bin/{env,printenv} pattern",
+      blocked: true,
+    },
+    { case: "executor option", command: "rg --pre src/{cat,sh} value README.md", blocked: true },
+    { case: "quoted hidden executor", command: "sh -c 'e{,}nv' src/{a,b}", blocked: true },
+    { case: "executor in second command", command: "cat src/{a,b}; env", blocked: true },
+    { case: "executor consumer", command: "echo src/{a,b} | sh", blocked: true },
+    { case: "sensitive redirection", command: "cat src/{a,b} > .env", blocked: true },
+    { case: "literal braces in text", command: "echo foo{bar}", blocked: false },
+    { case: "literal brace filename", command: "rg -n token src/{literal}", blocked: false },
+    {
+      case: "literal closing brace filename",
+      command: "rg -n token src/name}suffix",
+      blocked: false,
+    },
+    {
+      case: "malformed outer brace with real inner expansion",
+      command: "cat src/{broken{a,b}",
+      blocked: true,
+    },
+    { case: "nested lists", command: "cat src/{a,{b,c}}", blocked: true },
+    { case: "multiple lists in one path", command: "cat src/{a,b}/{c,d}", blocked: true },
+    { case: "range", command: "cat src/{1..3}", blocked: true },
+    { case: "empty member", command: "cat src/{,a}", blocked: true },
+    { case: "literal unclosed brace", command: "cat src/{a,b", blocked: false },
+    { case: "literal closing brace", command: "cat src/a,b}", blocked: false },
+    { case: "mixed quoting", command: "cat 'src/'{a,b}", blocked: true },
+    { case: "escaped separator", command: String.raw`cat src/{a\,b,c}`, blocked: true },
+    { case: "variable expansion", command: "cat $ROOT/{a,b}", blocked: true },
+    { case: "command substitution", command: "cat src/{a,b} $(env)", blocked: true },
+    { case: "unclosed quote", command: "cat src/{a,b} 'open", blocked: true },
+  ])("$case", ({ command, blocked }) => {
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (blocked) expect(invoke).toThrow();
+    else expect(invoke).not.toThrow();
+  });
+
+  it.each(["\u00a0", "\v", "\f", "\r", "\u2028"])(
+    "refuses unsupported unquoted whitespace %j without losing path prefixes or suffixes",
+    (space) => {
+      const custom = createCredentialGuard({
+        additionalBlockedPaths: [`^foo${space}src/b$`, `^src/b${space}$`],
+      });
+      for (const command of [`cat foo${space}src/{a,b}`, `cat src/{a,b}${space}`]) {
+        expect(() =>
+          custom.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+        ).toThrow();
+      }
+    },
+  );
+
+  it("checks every expanded path against custom rules", () => {
+    const custom = createCredentialGuard({ additionalBlockedPaths: ["^docs/api[.]md$"] });
+    expect(() =>
+      custom.handleToolExecuteBefore(
+        { tool: "Bash" },
+        { args: { command: "cat src/{a,b}.ts docs/{guide,api}.md" } },
+      ),
+    ).toThrow();
+  });
+
+  it.each(["\\{a,b\\}", "src/b[.]ts"])("retains configured command rule %s", (pattern) => {
+    const custom = createCredentialGuard({ additionalDangerousBashPatterns: [pattern] });
+    expect(() =>
+      custom.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: "cat src/{a,b}.ts" } }),
+    ).toThrow();
+  });
+});

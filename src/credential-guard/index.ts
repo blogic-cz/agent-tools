@@ -631,20 +631,64 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
       paths,
     };
   }
-  // Only the observed rg -n PATTERN PATH form; marker position proves a real file operand.
-  const brace =
-    /(?:^|\s)([A-Za-z0-9_./-]*\/[A-Za-z0-9_./-]*\{[A-Za-z_]\w*(?:,[A-Za-z_]\w*){1,7}\}[A-Za-z0-9_./-]*)$/.exec(
-      command,
-    );
-  if (!brace) return undefined;
-  const path = brace[1] ?? "";
-  const start = command.length - path.length;
-  const marked = command.slice(0, start) + marker;
-  const lexical = literalBindingText(marked, "", "");
+  // Expand only complete, unquoted path words. Keep all other source text intact.
+  const paths: string[] = [];
+  let expanded = "";
+  let marked = "";
+  let start = 0;
+  let quote: "'" | '"' | undefined;
+  let braces = false;
+  const finishWord = (end: number): boolean => {
+    const word = command.slice(start, end);
+    if (!braces) {
+      expanded += word;
+      marked += word;
+      return true;
+    }
+    // ponytail: one comma-list per path, no nesting; extend only with a bounded shell parser.
+    const match =
+      /^([A-Za-z0-9_./-]*\/[A-Za-z0-9_./-]*)\{([A-Za-z0-9_./-]+(?:,[A-Za-z0-9_./-]+)+)\}([A-Za-z0-9_./-]*)$/.exec(
+        word,
+      );
+    if (!match) return false;
+    const members = (match[2] ?? "").split(",");
+    if (members.length > 16 || paths.length + members.length > 32) return false;
+    const values = members.map((member) => (match[1] ?? "") + member + (match[3] ?? ""));
+    const text = values.join(" ");
+    if (expanded.length + text.length + command.length - end > 65_536) return false;
+    paths.push(...values);
+    expanded += text;
+    marked += marker;
+    return true;
+  };
+  for (let i = 0; i <= command.length; i++) {
+    const char = command[i];
+    if (quote === "'") {
+      if (char === quote) quote = undefined;
+    } else if (char === "\\") {
+      if (command[i + 1] === undefined || /[\r\n]/.test(command[i + 1] ?? "")) return undefined;
+      i++;
+    } else if (quote === '"') {
+      if (char === quote) quote = undefined;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === "{" || char === "}") {
+      braces = true;
+    } else if (char === undefined || /[ \t\n]/.test(char)) {
+      if (!finishWord(i)) return undefined;
+      expanded += char ?? "";
+      marked += char ?? "";
+      start = i + 1;
+      braces = false;
+    } else if (/[\s;&|<>#]/.test(char)) {
+      // Other JS whitespace is a literal shell word character, not a token boundary.
+      return undefined;
+    }
+  }
+  if (quote || !paths.length || new TextEncoder().encode(expanded).byteLength > 65_536)
+    return undefined;
   const parsed = parseStaticShellCommands(marked);
   if (
-    !lexical ||
-    /[;&|<>\r\n]/.test(lexical.syntax) ||
     !parsed ||
     typeof parsed === "string" ||
     parsed.redirects.length ||
@@ -653,24 +697,19 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
   )
     return undefined;
   const argv = unwrapProofCommand(parsed.pipelines[0]?.[0] ?? [], marker);
+  const expandedCommands = parseStaticShellCommands(expanded);
+  const expandedArgv =
+    expandedCommands && typeof expandedCommands !== "string"
+      ? unwrapProofCommand(expandedCommands.pipelines[0]?.[0] ?? [], marker)
+      : undefined;
+  // Classify actual options too: a marked path can hide an executor such as git grep -O/path.
   if (
     !argv ||
-    argv.length !== 4 ||
-    argv[0] !== "rg" ||
-    argv[1] !== "-n" ||
-    argv[2]?.startsWith("-") ||
-    argv[3] !== marker
+    !expandedArgv ||
+    (!isPassiveTextCommand(expandedArgv) && expandedArgv[0]?.split("/").at(-1) !== "cat")
   )
     return undefined;
-  const members = /\{([^{}]+)\}/.exec(path);
-  if (!members) return undefined;
-  const values = (members[1] ?? "").split(",");
-  const size =
-    new TextEncoder().encode(command.slice(0, start)).byteLength +
-    values.reduce((total, value) => total + path.length - members[0].length + value.length + 1, -1);
-  if (size > 65_536) return undefined;
-  const paths = values.map((member) => path.replace(members[0], () => member));
-  return { command: command.slice(0, start) + paths.join(" "), paths };
+  return { command: expanded, paths };
 }
 
 /** Complete package metadata loops: no prelude, loader shadowing, mutation or arbitrary suffix. */
