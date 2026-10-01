@@ -2820,6 +2820,34 @@ describe("shared passive cut consumer proof", () => {
 // These are guard inputs only. Never execute shell bodies or speedtest commands.
 describe("bounded literal shell body replay", () => {
   const quote = (body: string) => "'" + body.replaceAll("'", "'\"'\"'") + "'";
+  it("refuses the reported login shell even when both metadata names are approved", () => {
+    const guard = createCredentialGuard({
+      allowedEnvironmentVariables: ["HERDR_ENV", "CODEX_SESSION_ID"],
+    });
+    const body =
+      'printf "HERDR_ENV=%s CODEX_SESSION_ID=%s\\n" "$HERDR_ENV" "$CODEX_SESSION_ID"; herdr pane current --current';
+    for (const command of [body, "herdr pane current --current"]) {
+      expect(guard.isDangerousBashCommand(command)).toBe(false);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).not.toThrow();
+    }
+    const loginShell = `rtk proxy sh -lc ${quote(body)}`;
+    expect(guard.isDangerousBashCommand(loginShell)).toBe(true);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: loginShell } }),
+    ).toThrow("cannot prove a bounded literal shell invocation");
+    for (const command of [
+      body.replaceAll("CODEX_SESSION_ID", "UNKNOWN_METADATA"),
+      body.replaceAll("CODEX_SESSION_ID", "TOKEN"),
+      `${body} | sh`,
+    ]) {
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
   const wrappers = [
     "sh -c ",
     "/bin/sh -c ",
