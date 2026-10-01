@@ -3685,3 +3685,82 @@ describe("literal Herdr agent read and delay composition", () => {
     }
   });
 });
+
+// Partial reconstruction of the visible excerpt, not evidence of the unseen original script.
+// Policy inputs only. Never execute these commands or read the represented compose file.
+describe("partial visible Python compose edit reconstruction", () => {
+  const guard = createCredentialGuard();
+  const heredoc = (program: string) => `python3 - <<'PY'\n${program}\nPY`;
+  const body = `p='docker-compose.yml'
+s=open(p).read()
+s=s.replace("""      - ASPNETCORE_ENVIRONMENT=Production
+      - SHARED_FEED_PASSWORD=REDACTED
+""", """      - ASPNETCORE_ENVIRONMENT=Development
+      - SHARED_FEED_PASSWORD=REDACTED
+""")
+open(p,'w').write(s)`;
+
+  it.each([
+    { name: "anonymous visible compose edit", command: heredoc(body), allowed: true },
+    {
+      name: "literal environment names in replacement text",
+      command: heredoc(body.replaceAll("REDACTED", "REDACTED_ENV_TEXT")),
+      allowed: true,
+    },
+    {
+      name: "literal sensitive-looking replacement text",
+      command: heredoc(body.replaceAll("REDACTED", ".env")),
+      allowed: true,
+    },
+    {
+      name: "protected env read and write",
+      command: heredoc(body.replace("docker-compose.yml", ".env")),
+      allowed: false,
+    },
+    {
+      name: "protected credentials read and write",
+      command: heredoc(body.replace("docker-compose.yml", "/workspace/.aws/credentials")),
+      allowed: false,
+    },
+    {
+      name: "additional protected read",
+      command: heredoc(body + "\nprint(open('.env').read())"),
+      allowed: false,
+    },
+    {
+      name: "additional protected write",
+      command: heredoc(body + "\nopen('.env','w').write('REDACTED')"),
+      allowed: false,
+    },
+    {
+      name: "environment inventory",
+      command: heredoc(body + "\nimport os\nprint(os.environ)"),
+      allowed: false,
+    },
+    {
+      name: "environment lookup",
+      command: heredoc(body + "\nimport os\nprint(os.getenv('TOKEN'))"),
+      allowed: false,
+    },
+    {
+      name: "subprocess shell execution",
+      command: heredoc(body + "\nimport subprocess\nsubprocess.run(['sh','-c','printenv'])"),
+      allowed: false,
+    },
+    {
+      name: "os shell execution",
+      command: heredoc(body + "\nimport os\nos.system('printenv')"),
+      allowed: false,
+    },
+    {
+      name: "unclosed heredoc",
+      command: heredoc(body).slice(0, -3),
+      allowed: false,
+    },
+  ])("$name", ({ command, allowed }) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(!allowed);
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (allowed) expect(invoke).not.toThrow();
+    else expect(invoke).toThrow();
+  });
+});
