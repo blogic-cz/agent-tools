@@ -510,23 +510,19 @@ function isLiteralLoopCommand(words: string[], marker: string, value: string): b
   );
 }
 
-function isLiteralHerdrPaneRead(argv: string[]): boolean {
-  return (
-    argv.length === 8 &&
-    argv.slice(0, 3).join(" ") === "herdr pane read" &&
-    /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "") &&
-    argv[4] === "--source" &&
-    argv[5] === "recent-unwrapped" &&
-    argv[6] === "--lines" &&
-    /^[1-9]\d*$/.test(argv[7] ?? "")
-  );
-}
-
 function isLiteralHerdrRead(argv: string[]): boolean {
   return (
-    ((argv.length === 4 && argv.slice(0, 3).join(" ") === "herdr agent get") ||
-      isLiteralHerdrPaneRead(argv)) &&
-    /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "")
+    argv[0] === "herdr" &&
+    !argv[3]?.startsWith("-") &&
+    /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "") &&
+    ((argv.length === 4 && argv[1] === "agent" && argv[2] === "get") ||
+      (argv.length === 8 &&
+        ["pane", "agent"].includes(argv[1] ?? "") &&
+        argv[2] === "read" &&
+        argv[4] === "--source" &&
+        argv[5] === "recent-unwrapped" &&
+        argv[6] === "--lines" &&
+        /^[1-9]\d*$/.test(argv[7] ?? "")))
   );
 }
 
@@ -1944,6 +1940,13 @@ function isStaticHerdrPrompt(command: string): boolean {
           );
         if (isPassiveTextCommand(argv)) return true;
         if (isLiteralHerdrRead(argv)) return index === 0;
+        if (argv[0] === "sleep")
+          return (
+            index === 0 &&
+            pipeline.length === 1 &&
+            argv.length === 2 &&
+            /^\d+(?:\.\d+)?$/.test(argv[1] ?? "")
+          );
         if (isStaticNavigationCommand(argv))
           return index === 0 && (argv[0] !== "cd" || pipeline.length === 1);
         return false;
