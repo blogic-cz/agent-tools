@@ -1826,7 +1826,8 @@ function isPassiveTextCommand(argv: string[]): boolean {
   const args = argv.slice(1);
   // These commands consume literal text. Execution options are not exceptions.
   if (name === "printf") return passivePrintfFormatIndex(argv) !== undefined;
-  if (["echo", "grep", "head", "tail"].includes(name)) {
+  // Native cut only selects input data; its file operands still receive shared path checks.
+  if (["echo", "grep", "head", "tail", "cut"].includes(name)) {
     return true;
   }
   if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
