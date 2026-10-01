@@ -295,6 +295,14 @@ bun gh-tool gist delete --id <gist-id> --confirm
 
 Gists are secret by default. `gist delete` prints a dry run unless `--confirm` is passed. `gist edit` requires a content or mutation flag and never opens an editor.
 
+`pr create` refuses when an open PR already matches the head and base branches. Pass
+`--update-if-exists` to update that open PR explicitly. Output includes `updated: true`
+for an update and `updated: false` for a new PR. Only open PRs are selected, and their
+state is rechecked before editing. A concurrent close or merge after that read can still
+race with the edit. Bare or current heads match the selected repository owner's PRs;
+use `--head owner:branch` to opt into updating a fork's PR. `pr edit --body ""` clears
+the body; `pr view` always includes `body`.
+
 ### Stacked pull requests
 
 GitHub's native stacked PRs refuse the GraphQL merge and require the asynchronous REST

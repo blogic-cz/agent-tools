@@ -1,5 +1,20 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, Console, Effect, Fiber, Result, Layer, Schema, Sink, Stream } from "effect";
+import {
+  Clock,
+  Console,
+  Effect,
+  Fiber,
+  Result,
+  Layer,
+  Schema,
+  Sink,
+  Stream,
+  FileSystem,
+  Path,
+  Stdio,
+  Terminal,
+} from "effect";
+import { Command } from "effect/unstable/cli";
 import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/unstable/process";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -84,6 +99,8 @@ import {
 import type { GitHubPrTitlePolicy, GitHubRepoConfig } from "#config";
 import { ConfigService } from "#config";
 import {
+  prCreateCommand,
+  prEditCommand,
   classifyReviewTriage,
   fetchCurrentComments,
   fetchCurrentFeedback,
@@ -6853,7 +6870,7 @@ describe("PR composite commands", () => {
         body: inventedShellSensitiveText,
         draft: false,
         head: "feat/demo-body-file",
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(layer), Effect.provide(createMockGhSpawnerLayer([])));
 
       expect(result.title).toBe("Demo PR");
       expect(forwardedArgs).toEqual([
@@ -6900,6 +6917,7 @@ describe("PR composite commands", () => {
             },
           }),
         ),
+        Effect.provide(createMockGhSpawnerLayer([])),
         Effect.result,
       );
 
@@ -8330,4 +8348,665 @@ describe("review-triage section omission", () => {
     });
     expect(result.ready).toEqual(triage.ready);
   });
+});
+
+describe("PR creation safety", () => {
+  const ownedPRInfo = { ...mockPRInfo, headRepositoryOwner: { login: "test-owner" } };
+  const branchLayer = Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      expect(command._tag).toBe("StandardCommand");
+      if (command._tag === "StandardCommand") {
+        expect(command.command).toBe("git");
+        expect(command.args).toEqual(["symbolic-ref", "--short", "HEAD"]);
+      }
+      return Effect.succeed(createMockProcess({ stdout: "feat/test\n", stderr: "", exitCode: 0 }));
+    }),
+  );
+  const cliLayer = Layer.mergeAll(
+    FileSystem.layerNoop({}),
+    Path.layer,
+    Stdio.layerTest({}),
+    branchLayer,
+    Layer.succeed(
+      Terminal.Terminal,
+      Terminal.make({
+        columns: Effect.succeed(80),
+        rows: Effect.succeed(24),
+        readInput: Effect.die("unused"),
+        readLine: Effect.die("unused"),
+        display: () => Effect.void,
+      }),
+    ),
+  );
+  const options = {
+    base: null,
+    title: "New PR",
+    body: inventedShellSensitiveText,
+    draft: false,
+    head: "feat/test",
+  };
+
+  for (const head of [null, "feat/test"]) {
+    for (const state of ["MERGED", "CLOSED"]) {
+      it.effect(`creates without editing ${state} history, head=${head}`, () =>
+        Effect.gen(function* () {
+          const mutations: string[][] = [];
+          let lookup: string[] = [];
+          const layer = createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "list") {
+                lookup = args;
+                return Effect.succeed([{ ...ownedPRInfo, state }]);
+              }
+              return Effect.succeed({ ...ownedPRInfo, number: 456, body: "" });
+            },
+            runGh: (args) => {
+              if (args[0] === "pr" || args.includes("PATCH")) mutations.push(args);
+              return Effect.succeed({
+                stdout: "https://github.com/test-owner/test-repo/pull/456",
+                stderr: "",
+                exitCode: 0,
+              });
+            },
+          });
+          const result = yield* createPR({ ...options, head, updateIfExists: true }).pipe(
+            Effect.provide(Layer.merge(layer, branchLayer)),
+          );
+          expect(result.number).toBe(456);
+          expect(result.updated).toBe(false);
+          expect(mutations).toHaveLength(1);
+          expect(mutations[0]?.slice(0, 2)).toEqual(["pr", "create"]);
+          expect(lookup).toEqual([
+            "pr",
+            "list",
+            "--repo",
+            "test-owner/test-repo",
+            "--state",
+            "open",
+            "--head",
+            "feat/test",
+            "--base",
+            "main",
+            "--json",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRepositoryOwner",
+            "--limit",
+            "2",
+          ]);
+        }),
+      );
+    }
+    it.effect(`refuses an existing open PR by default, head=${head}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* createPR({ ...options, head }).pipe(
+          Effect.provide(
+            Layer.merge(
+              createMockGhLayer({
+                runGhJson: () => Effect.succeed([ownedPRInfo]),
+                runGh: (args) => {
+                  mutations.push(args);
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                },
+              }),
+              branchLayer,
+            ),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.message).toContain("Open PR #123 already exists");
+          expect(result.failure._tag === "GitHubCommandError" && result.failure.hint).toContain(
+            "--update-if-exists",
+          );
+        }
+        expect(mutations).toEqual([]);
+      }),
+    );
+    it.effect(`explicitly updates only an open PR and reports it, head=${head}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* createPR({ ...options, head, updateIfExists: true }).pipe(
+          Effect.provide(
+            Layer.merge(
+              createMockGhLayer({
+                runGhJson: (args) =>
+                  Effect.succeed(
+                    args[1] === "list"
+                      ? [ownedPRInfo]
+                      : { ...ownedPRInfo, body: inventedShellSensitiveText },
+                  ),
+                runGh: (args) => {
+                  if (args.includes("PATCH")) mutations.push(args);
+                  return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+                },
+              }),
+              branchLayer,
+            ),
+          ),
+        );
+        expect(result.updated).toBe(true);
+        expect(result.number).toBe(123);
+        expect(mutations).toEqual([
+          [
+            "api",
+            "--method",
+            "PATCH",
+            "repos/test-owner/test-repo/pulls/123",
+            "-f",
+            "title=New PR",
+            "-f",
+            `body=${inventedShellSensitiveText}`,
+          ],
+        ]);
+      }),
+    );
+  }
+
+  for (const candidates of [
+    [],
+    [{ ...ownedPRInfo, baseRefName: "prod" }],
+    [{ ...ownedPRInfo, headRefName: "another" }],
+  ]) {
+    it.effect(`creates when no open PR matches both branches: ${JSON.stringify(candidates)}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* createPR(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) =>
+                Effect.succeed(args[1] === "list" ? candidates : { ...ownedPRInfo, number: 456 }),
+              runGh: (args) => {
+                if (args[0] === "pr" || args.includes("PATCH")) mutations.push(args);
+                return Effect.succeed({
+                  stdout: "https://github.com/test-owner/test-repo/pull/456",
+                  stderr: "",
+                  exitCode: 0,
+                });
+              },
+            }),
+          ),
+          Effect.provide(branchLayer),
+        );
+        expect(result.updated).toBe(false);
+        expect(mutations).toHaveLength(1);
+        expect(mutations[0]?.slice(0, 2)).toEqual(["pr", "create"]);
+      }),
+    );
+  }
+
+  it.effect("refuses ambiguous open matches without mutation", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      const result = yield* createPR({ ...options, updateIfExists: true }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () => Effect.succeed([ownedPRInfo, { ...ownedPRInfo, number: 456 }]),
+            runGh: (args) => {
+              mutations.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.provide(branchLayer),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(mutations).toEqual([]);
+    }),
+  );
+
+  for (const head of [null, "feat/test"]) {
+    for (const error of [
+      new GitHubCommandError({
+        command: "pr list",
+        exitCode: 1,
+        stderr: "HTTP 502",
+        message: "HTTP 502",
+      }),
+      new GitHubAuthError({ message: "authentication failed" }),
+      new GitHubNotFoundError({
+        message: "repository not found",
+        resource: "repository",
+        identifier: "test-owner/test-repo",
+      }),
+    ]) {
+      it.effect(`propagates ${error._tag} without mutation, head=${head}`, () =>
+        Effect.gen(function* () {
+          const mutations: string[][] = [];
+          const result = yield* createPR({ ...options, head, updateIfExists: true }).pipe(
+            Effect.provide(
+              Layer.merge(
+                createMockGhLayer({
+                  runGhJson: () => Effect.fail(error),
+                  runGh: (args) => {
+                    mutations.push(args);
+                    return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                  },
+                }),
+                branchLayer,
+              ),
+            ),
+            Effect.result,
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) expect(result.failure).toBe(error);
+          expect(mutations).toEqual([]);
+        }),
+      );
+    }
+  }
+
+  it.effect("pr edit parses an explicit empty body and sends it through REST", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* Command.runWith(prEditCommand, { version: "test" })([
+        "--pr",
+        "123",
+        "--body",
+        "",
+      ]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+              },
+              runGhJson: (args) => {
+                calls.push(args);
+                return Effect.succeed({ ...ownedPRInfo, body: "" });
+              },
+              runGraphQL: () => Effect.die("edit must not use GraphQL"),
+            }),
+            cliLayer,
+          ),
+        ),
+        Effect.result,
+      );
+      expect(Result.isSuccess(result)).toBe(true);
+      expect(calls).toContainEqual([
+        "api",
+        "--method",
+        "PATCH",
+        "repos/test-owner/test-repo/pulls/123",
+        "-f",
+        "body=",
+      ]);
+      expect(
+        calls.some(
+          (args) =>
+            args.join(" ").includes("baseRefOid") || args.join(" ").includes("projectCards"),
+        ),
+      ).toBe(false);
+    }),
+  );
+
+  it.effect("pr create command forwards explicit update opt-in", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      yield* Command.runWith(prCreateCommand, { version: "test" })([
+        "--head",
+        "feat/test",
+        "--title",
+        "New PR",
+        "--body",
+        inventedShellSensitiveText,
+        "--update-if-exists",
+      ]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGhJson: (args) =>
+                Effect.succeed(args[1] === "list" ? [ownedPRInfo] : { ...ownedPRInfo, body: "" }),
+              runGh: (args) => {
+                if (args.includes("PATCH")) mutations.push(args);
+                return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+      );
+      expect(mutations).toHaveLength(1);
+    }),
+  );
+
+  for (const state of ["MERGED", "CLOSED"]) {
+    it.effect(`refuses a PR that became ${state} after the lookup`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* createPR({ ...options, updateIfExists: true }).pipe(
+          Effect.provide(
+            Layer.merge(
+              createMockGhLayer({
+                runGhJson: (args) =>
+                  Effect.succeed(args[1] === "list" ? [ownedPRInfo] : { ...ownedPRInfo, state }),
+                runGh: (args) => {
+                  mutations.push(args);
+                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                },
+              }),
+              branchLayer,
+            ),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        expect(mutations).toEqual([]);
+      }),
+    );
+  }
+
+  it.effect("scopes owner-qualified heads without passing the owner to gh pr list", () =>
+    Effect.gen(function* () {
+      const queries: string[][] = [];
+      const mutations: string[][] = [];
+      const result = yield* createPR({
+        ...options,
+        head: "fork-owner:feat/test",
+        updateIfExists: true,
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                queries.push(args);
+                return Effect.succeed(
+                  args[1] === "list"
+                    ? [{ ...ownedPRInfo, headRepositoryOwner: { login: "fork-owner" } }]
+                    : ownedPRInfo,
+                );
+              },
+              runGh: (args) => {
+                if (args.includes("PATCH")) mutations.push(args);
+                return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+              },
+            }),
+            branchLayer,
+          ),
+        ),
+      );
+      expect(result.updated).toBe(true);
+      expect(queries[0]).toContain("feat/test");
+      expect(queries[0]).not.toContain("fork-owner:feat/test");
+      expect(mutations).toHaveLength(1);
+    }),
+  );
+
+  it.effect("fails current-branch discovery without any GitHub mutation", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const failingBranchLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(createMockProcess({ stdout: "", stderr: "detached HEAD", exitCode: 1 })),
+        ),
+      );
+      const result = yield* createPR({ ...options, head: null }).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                calls.push(args);
+                return Effect.succeed([]);
+              },
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+            failingBranchLayer,
+          ),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses an owner-qualified lookup when the returned owner is unknown", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      const result = yield* createPR({
+        ...options,
+        head: "fork-owner:feat/test",
+        updateIfExists: true,
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGhJson: () => Effect.succeed([{ ...ownedPRInfo, headRepositoryOwner: undefined }]),
+              runGh: (args) => {
+                mutations.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+            branchLayer,
+          ),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(mutations).toEqual([]);
+    }),
+  );
+
+  it.effect("does not update another owner's branch with the same name", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      const result = yield* createPR({
+        ...options,
+        head: "fork-owner:feat/test",
+        updateIfExists: true,
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGhJson: (args) =>
+                Effect.succeed(
+                  args[1] === "list"
+                    ? [{ ...ownedPRInfo, headRepositoryOwner: { login: "other-owner" } }]
+                    : { ...ownedPRInfo, number: 456 },
+                ),
+              runGh: (args) => {
+                if (args[0] === "pr" || args.includes("PATCH")) mutations.push(args);
+                return Effect.succeed({
+                  stdout: "https://github.com/test-owner/test-repo/pull/456",
+                  stderr: "",
+                  exitCode: 0,
+                });
+              },
+            }),
+            branchLayer,
+          ),
+        ),
+      );
+      expect(result.updated).toBe(false);
+      expect(mutations).toHaveLength(1);
+      expect(mutations[0]).toContain("fork-owner:feat/test");
+    }),
+  );
+
+  for (const head of [null, "feat/test"]) {
+    for (const owner of ["another-owner", undefined]) {
+      it.effect(`refuses uncertain or different ownership for head=${head}, owner=${owner}`, () =>
+        Effect.gen(function* () {
+          const mutations: string[][] = [];
+          const result = yield* createPR({ ...options, head, updateIfExists: true }).pipe(
+            Effect.provide(
+              Layer.merge(
+                createMockGhLayer({
+                  runGhJson: () =>
+                    Effect.succeed([
+                      {
+                        ...ownedPRInfo,
+                        headRepositoryOwner: owner === undefined ? undefined : { login: owner },
+                      },
+                    ]),
+                  runGh: (args) => {
+                    mutations.push(args);
+                    return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                  },
+                }),
+                branchLayer,
+              ),
+            ),
+            Effect.result,
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          expect(mutations).toEqual([]);
+        }),
+      );
+    }
+  }
+
+  for (const head of [null, "feat/test", "TEST-OWNER:feat/test"]) {
+    it.effect(`matches owner identity case-insensitively, head=${head}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* createPR({ ...options, head, updateIfExists: true }).pipe(
+          Effect.provide(
+            Layer.merge(
+              createMockGhLayer({
+                runGhJson: (args) =>
+                  Effect.succeed(
+                    args[1] === "list"
+                      ? [{ ...ownedPRInfo, headRepositoryOwner: { login: "Test-Owner" } }]
+                      : ownedPRInfo,
+                  ),
+                runGh: (args) => {
+                  if (args.includes("PATCH")) mutations.push(args);
+                  return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+                },
+              }),
+              branchLayer,
+            ),
+          ),
+        );
+        expect(result.updated).toBe(true);
+        expect(mutations).toHaveLength(1);
+      }),
+    );
+  }
+
+  for (const error of [
+    new GitHubCommandError({
+      command: "stack lookup",
+      exitCode: 1,
+      stderr: "HTTP 502",
+      message: "HTTP 502",
+    }),
+    new GitHubAuthError({ message: "authentication failed" }),
+    new GitHubCommandError({
+      command: "stack lookup",
+      exitCode: 1,
+      stderr: "unknown membership",
+      message: "unknown membership",
+    }),
+  ]) {
+    it.effect(`base edit refuses unknown stack membership: ${error.message}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* editPR({ pr: 123, title: null, body: null, base: "release" }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.fail(error),
+              runGh: (args) => {
+                mutations.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure).toBe(error);
+        expect(mutations).toEqual([]);
+      }),
+    );
+  }
+
+  for (const noStacks of ["empty", "404"]) {
+    it.effect(`base edit permits confirmed unstacked membership: ${noStacks}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* editPR({ pr: 123, title: null, body: null, base: "release" }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () =>
+                noStacks === "404"
+                  ? Effect.fail(
+                      new GitHubNotFoundError({
+                        message: "no stacks surface",
+                        resource: "stacks",
+                        identifier: "test-owner/test-repo",
+                      }),
+                    )
+                  : Effect.succeed({ status: 200, body: [] }),
+              runGhJson: () => Effect.succeed(ownedPRInfo),
+              runGh: (args) => {
+                if (args.includes("PATCH")) mutations.push(args);
+                return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        );
+        expect(result.number).toBe(123);
+        expect(mutations).toEqual([
+          [
+            "api",
+            "--method",
+            "PATCH",
+            "repos/test-owner/test-repo/pulls/123",
+            "-f",
+            "base=release",
+          ],
+        ]);
+      }),
+    );
+  }
+
+  it.effect("base edit refuses a confirmed stacked PR", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      const result = yield* editPR({ pr: 123, title: null, body: null, base: "release" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: (opts) =>
+              Effect.succeed({
+                status: 200,
+                body: opts.path.includes("?")
+                  ? [{ number: 42 }]
+                  : { number: 42, base: { ref: "main" }, open: true, pull_requests: [] },
+              }),
+            runGh: (args) => {
+              mutations.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result))
+        expect(result.failure.message).toContain("belongs to GitHub stack #42");
+      expect(mutations).toEqual([]);
+    }),
+  );
+
+  it.effect("view always includes an empty body", () =>
+    Effect.gen(function* () {
+      for (const body of ["", undefined]) {
+        const result = yield* viewPR(123).pipe(
+          Effect.provide(
+            createMockGhLayer({ runGhJson: () => Effect.succeed({ ...ownedPRInfo, body }) }),
+          ),
+        );
+        expect(result).toHaveProperty("body", "");
+      }
+    }),
+  );
 });
