@@ -437,6 +437,7 @@ export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: numb
   const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string }>(args);
   return {
     ...info,
+    body: info.body ?? "",
     headSha: info.headRefOid ?? info.headSha ?? null,
     baseSha: info.baseSha ?? null,
   };
@@ -687,45 +688,114 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
   body: string;
   draft: boolean;
   head: string | null;
+  updateIfExists?: boolean;
 }) {
   const gh = yield* GitHubService;
   yield* validatePRTitle(opts.title);
 
   // Default to the repo's real default branch instead of a hardcoded "test" — an omitted --base
   // must never silently open a PR against the wrong trunk (L1).
-  const baseBranch = opts.base ?? (yield* gh.getRepoInfo()).defaultBranch;
-
-  // When --head is provided (e.g. GitButler workspace), use `gh pr list --head`
-  // to find existing PR since `gh pr view` relies on the current git branch.
-  const existing = yield* opts.head !== null
-    ? gh
-        .runGhJson<PRInfo[]>([
-          "pr",
-          "list",
-          "--head",
-          opts.head,
-          "--json",
-          "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
-          "--limit",
-          "1",
-        ])
-        .pipe(
-          Effect.map((prs) =>
-            prs.length > 0 ? Option.some(prs[0] as PRInfo) : Option.none<PRInfo>(),
-          ),
-        )
-    : gh
-        .runGhJson<{ number: number; url: string }>(["pr", "view", "--json", "number,url"])
-        .pipe(Effect.option);
-
-  if (Option.isSome(existing)) {
-    const pr = existing.value;
-    return yield* editPR({
-      pr: pr.number,
+  const repo = yield* gh.getRepoInfo();
+  const baseBranch = opts.base ?? repo.defaultBranch;
+  const head =
+    opts.head ?? (yield* runLocalCommand("git", ["symbolic-ref", "--short", "HEAD"])).stdout;
+  const headSeparator = head.indexOf(":");
+  const headOwner = (
+    headSeparator === -1 ? repo.owner : head.slice(0, headSeparator)
+  ).toLowerCase();
+  const headBranch = headSeparator === -1 ? head : head.slice(headSeparator + 1);
+  const lookupArgs = [
+    "pr",
+    "list",
+    "--repo",
+    `${repo.owner}/${repo.name}`,
+    "--state",
+    "open",
+    "--head",
+    headBranch,
+    "--base",
+    baseBranch,
+    "--json",
+    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRepositoryOwner",
+    "--limit",
+    "2",
+  ];
+  type Candidate = PRInfo & { headRepositoryOwner?: { login: string } };
+  const candidates = yield* gh.runGhJson<Candidate[]>(lookupArgs);
+  // The limited query may include another fork's branch. Refuse a saturated result
+  // rather than assuming an owner-filtered match beyond the limit does not exist.
+  if (candidates.length > 1) {
+    return yield* new GitHubCommandError({
+      command: "pr create",
+      exitCode: 1,
+      stderr: "Multiple open pull requests match the head and base branches.",
+      message: "Multiple open pull requests match the head and base branches.",
+      hint: "Select the intended PR with 'pr edit --pr <number>'.",
+    });
+  }
+  const branchCandidate = candidates.find(
+    (pr) => pr.state === "OPEN" && pr.headRefName === headBranch && pr.baseRefName === baseBranch,
+  );
+  if (branchCandidate !== undefined && !branchCandidate.headRepositoryOwner?.login) {
+    return yield* new GitHubCommandError({
+      command: "pr create",
+      exitCode: 1,
+      stderr: "Cannot establish the existing PR's head repository owner.",
+      message: "Cannot establish the existing PR's head repository owner.",
+    });
+  }
+  if (
+    opts.updateIfExists === true &&
+    headSeparator === -1 &&
+    branchCandidate !== undefined &&
+    branchCandidate.headRepositoryOwner?.login.toLowerCase() !== headOwner
+  ) {
+    return yield* new GitHubCommandError({
+      command: "pr create",
+      exitCode: 1,
+      stderr: `PR #${branchCandidate.number} belongs to a different head repository owner.`,
+      message: `PR #${branchCandidate.number} belongs to a different head repository owner.`,
+      hint: "Use --head owner:branch to explicitly select a fork's PR, or 'pr edit --pr <number>'.",
+    });
+  }
+  const existing = candidates.find(
+    (pr) =>
+      pr.state === "OPEN" &&
+      pr.headRefName === headBranch &&
+      pr.baseRefName === baseBranch &&
+      pr.headRepositoryOwner?.login.toLowerCase() === headOwner,
+  );
+  if (existing !== undefined) {
+    if (opts.updateIfExists !== true) {
+      return yield* new GitHubCommandError({
+        command: "pr create",
+        exitCode: 1,
+        stderr: `Open PR #${existing.number} already exists for ${headBranch} -> ${baseBranch}.`,
+        message: `Open PR #${existing.number} already exists for ${headBranch} -> ${baseBranch}.`,
+        hint: "Use --update-if-exists to update it, or 'pr edit --pr <number>'.",
+      });
+    }
+    const current = yield* fetchPRView(existing.number);
+    if (
+      current.state !== "OPEN" ||
+      current.headRefName !== headBranch ||
+      current.baseRefName !== baseBranch
+    ) {
+      return yield* new GitHubCommandError({
+        command: "pr create",
+        exitCode: 1,
+        stderr: `PR #${existing.number} no longer matches an open PR for the requested branches.`,
+        message: `PR #${existing.number} no longer matches an open PR for the requested branches.`,
+        hint: "Refresh the PR state before retrying.",
+      });
+    }
+    const info = yield* editPR({
+      pr: existing.number,
       title: opts.title,
       body: opts.body,
       base: null,
     });
+    return { ...info, updated: true };
   }
 
   const createArgs = [
@@ -749,32 +819,25 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
 
   const createResult = yield* gh.runGh(createArgs);
 
-  if (opts.head === null) {
-    return yield* viewPR(null);
-  }
-
   const urlMatch = createResult.stdout.match(/\/pull\/(\d+)/);
   if (urlMatch?.[1]) {
-    return yield* viewPR(Number(urlMatch[1]));
+    return { ...(yield* viewPR(Number(urlMatch[1]))), updated: false };
   }
 
-  const prs = yield* gh.runGhJson<PRInfo[]>([
-    "pr",
-    "list",
-    "--head",
-    opts.head,
-    "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
-    "--limit",
-    "1",
-  ]);
-  if (prs.length > 0) {
-    return prs[0] as PRInfo;
+  const prs = yield* gh.runGhJson<Candidate[]>(lookupArgs);
+  if (
+    prs.length === 1 &&
+    prs[0]?.state === "OPEN" &&
+    prs[0].headRefName === headBranch &&
+    prs[0].baseRefName === baseBranch &&
+    prs[0].headRepositoryOwner?.login.toLowerCase() === headOwner
+  ) {
+    return { ...(yield* viewPR(prs[0].number)), updated: false };
   }
 
   return yield* Effect.fail(
     new GitHubCommandError({
-      command: `gh pr create --head ${opts.head}`,
+      command: `gh pr create --head ${headBranch}`,
       exitCode: 0,
       stderr: "Pull request was created but could not be resolved by head branch.",
       message: "Pull request was created but could not be resolved by head branch.",
@@ -1241,7 +1304,7 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   body: string | null;
   base: string | null;
 }) {
-  if (!opts.title && !opts.body && !opts.base) {
+  if (opts.title === null && opts.body === null && opts.base === null) {
     return yield* Effect.fail(
       new GitHubCommandError({
         command: "pr edit",
@@ -1262,10 +1325,8 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
   // GitHub rejects a base change on a stacked PR with a bare 422. Say what the state is and
   // which operation changes it, rather than letting the validation error through.
   if (opts.base !== null) {
-    const stackView = yield* readStack({ pr: opts.pr }).pipe(
-      Effect.catch(() => Effect.succeed(null)),
-    );
-    if (stackView?.isStacked === true) {
+    const stackView = yield* readStack({ pr: opts.pr });
+    if (stackView.isStacked === true) {
       return yield* new GitHubCommandError({
         command: "pr edit --base",
         exitCode: 1,
@@ -1284,13 +1345,13 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
     `repos/${repo.owner}/${repo.name}/pulls/${opts.pr}`,
   ];
 
-  if (opts.title) {
+  if (opts.title !== null) {
     editArgs.push("-f", `title=${opts.title}`);
   }
-  if (opts.body) {
+  if (opts.body !== null) {
     editArgs.push("-f", `body=${opts.body}`);
   }
-  if (opts.base) {
+  if (opts.base !== null) {
     editArgs.push("-f", `base=${opts.base}`);
   }
 

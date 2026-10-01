@@ -610,8 +610,12 @@ export const prCreateCommand = Command.make(
     ),
     repo: repoOption,
     title: Flag.String("title").pipe(Flag.withDescription("PR title")),
+    updateIfExists: Flag.Boolean("update-if-exists").pipe(
+      Flag.withDescription("Update an existing open PR matching the head and base branches"),
+      Flag.withDefault(false),
+    ),
   },
-  ({ base, body, bodyFile, bodyStdin, draft, format, head, repo, title }) =>
+  ({ base, body, bodyFile, bodyStdin, draft, format, head, repo, title, updateIfExists }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
@@ -633,11 +637,14 @@ export const prCreateCommand = Command.make(
           draft,
           head: Option.getOrNull(head),
           title,
+          updateIfExists,
         });
         yield* logFormatted(info, format);
       }),
     ),
-).pipe(Command.withDescription("Create or update a PR for current branch"));
+).pipe(
+  Command.withDescription("Create a PR; updating an existing open PR requires --update-if-exists"),
+);
 
 export const prEditCommand = Command.make(
   "edit",
