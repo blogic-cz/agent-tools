@@ -5,10 +5,10 @@ import history from "./fixtures/credential-guard-history.json";
 // These strings are policy inputs. Never execute the represented commands.
 describe("credential guard archived command history", () => {
   it("keeps every authoritative case exactly once", () => {
-    expect(history).toHaveLength(44);
-    expect(new Set(history.map(({ command }) => command)).size).toBe(44);
+    expect(history).toHaveLength(45);
+    expect(new Set(history.map(({ command }) => command)).size).toBe(45);
     expect(history.map(({ id }) => id)).toEqual(
-      Array.from({ length: 44 }, (_, index) => `history${String(index + 1).padStart(2, "0")}`),
+      Array.from({ length: 45 }, (_, index) => `history${String(index + 1).padStart(2, "0")}`),
     );
   });
 

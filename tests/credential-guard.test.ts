@@ -3571,3 +3571,196 @@ describe("bounded local literal path assignments", () => {
     }
   });
 });
+
+// Policy inputs only. Never execute these commands or wait for the represented delay.
+describe("literal Herdr agent read and delay composition", () => {
+  const guard = createCredentialGuard();
+  const prompt = "herdr agent prompt reviewer-a 'Read literal env prose'";
+  const read = "herdr agent read reviewer-b --source recent-unwrapped --lines 8";
+  const composition = `${prompt} 2>&1 | head -c 300; sleep 20; ${read} | grep -oE 'gpt-[0-9a-z.-]+ (high|xhigh|medium|low)' | head -1`;
+
+  it.each([
+    composition,
+    `${prompt}; ${read}`,
+    `${prompt}; sleep 0; ${read}`,
+    `${prompt}; sleep 0.25; ${read}`,
+    `${prompt}; sleep 2 2>/dev/null; ${read}`,
+    `${prompt}; sleep 2 > /tmp/delay-output; ${read}`,
+    `${prompt}; sleep 999999; ${read}`,
+    `sleep 2; ${read} | head; ${prompt}`,
+    `${prompt}; command -- sleep 2; rtk proxy ${read} | tail -2`,
+    `${prompt}; herdr agent read other:agent --source recent-unwrapped --lines 12`,
+    "for a in reviewer-a reviewer-b; do herdr agent read $a --source recent-unwrapped --lines 8; done",
+  ])("allows literal read/delay roles: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(guard.getBlockedCliTool(command)).toBeNull();
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    `${prompt}; ${read} extra`,
+    `${prompt}; ${read} --lines 9`,
+    `${prompt}; ${read} --source recent-unwrapped`,
+    `${prompt}; ${read} --unknown value`,
+    `${prompt}; ${read.replace("recent-unwrapped", "raw")}`,
+    `${prompt}; ${read.replace("--lines 8", "--lines 0")}`,
+    `${prompt}; ${read.replace("--lines 8", "--lines -1")}`,
+    `${prompt}; ${read.replace("--lines 8", "--lines 1.5")}`,
+    `${prompt}; ${read.replace("--lines 8", "--lines=8")}`,
+    `${prompt}; herdr agent read reviewer-b`,
+    `${prompt}; ${read.replace("reviewer-b", "--all")}`,
+    `${prompt}; ${read.replace("--source recent-unwrapped --lines 8", "--lines 8 --source recent-unwrapped")}`,
+    `${prompt}; ${read} | sh`,
+    `${prompt}; ${read} | xargs`,
+    `${prompt}; ${read} | opaque-runner`,
+    `${prompt}; ${read} > .env`,
+    `${prompt}; ${read} < ~/.aws/credentials`,
+    `${prompt}; ${read}; opaque-runner`,
+    `${prompt}; ${read}; herdr agent message reviewer-b env`,
+    `${prompt}; sleep`,
+    `${prompt}; sleep -1; ${read}`,
+    `${prompt}; sleep 1s; ${read}`,
+    `${prompt}; sleep 1 2; ${read}`,
+    `${prompt}; sleep 1 --unknown; ${read}`,
+    `${prompt}; sleep NaN; ${read}`,
+    `${prompt}; sleep Infinity; ${read}`,
+    `${prompt}; sleep 1e3; ${read}`,
+    `${prompt}; sleep 2 > .env; ${read}`,
+    `${prompt}; sleep 2 2> ~/.aws/credentials; ${read}`,
+    `${prompt}; sleep 2 < .env; ${read}`,
+    "for a in reviewer-a reviewer-b; do herdr agent read reviewer-b --source $a --lines 8; done",
+    "for a in 8 9; do herdr agent read reviewer-b --source recent-unwrapped --lines $a; done",
+    "for a in reviewer-a; do herdr agent read $a --source recent-unwrapped --lines 8 --lines 9; done",
+    `${prompt} | sleep 2; ${read}`,
+    `${prompt}; sleep 2 | head; ${read}`,
+    `${prompt}; sleep 2 | sh; ${read}`,
+    `${prompt}; /tmp/sleep 2; ${read}`,
+    `${prompt}; env sleep 2; ${read}`,
+    `${prompt}; sleep python3 -c 'print(1)'; ${read}`,
+    `${prompt}; sleep 2; ${read} | node -e 'eval(process.stdin)'`,
+    `${prompt}; sleep 2; ${read} | bash -c 'printenv'`,
+    `${prompt}; sleep 2; ${read} | grep --pre=sh value`,
+    `PATH=/tmp ${composition}`,
+    `env BASH_ENV=./startup ${composition}`,
+    `herdr agent prompt reviewer-a "$(cat .env)"; sleep 2; ${read}`,
+    `herdr agent prompt reviewer-a "$TOKEN"; sleep 2; ${read}`,
+    `${prompt}; sleep "$SECONDS"; ${read}`,
+    `${prompt}; sleep "$(echo 2)"; ${read}`,
+    `${prompt}; ${read.replace("reviewer-b", "$AGENT")}`,
+    `${prompt}; ${read.replace("--lines 8", "--lines $LINES")}`,
+    `sh -c '${prompt}' extra`,
+    `zsh -c '${composition}'`,
+    `bash --unknown -c '${composition}'`,
+  ])("refuses unproved read/delay roles: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it("keeps custom path and command policies active", () => {
+    for (const config of [
+      { additionalBlockedPaths: ["notes[.]txt"] },
+      { additionalDangerousBashPatterns: ["reviewer-b"] },
+    ]) {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command: `${composition} > notes.txt` } },
+        ),
+      ).toThrow();
+    }
+  });
+
+  it("still refuses known wrapper sleep polling", () => {
+    for (const command of [
+      "sleep 20; bun agent-tools-gh workflow list --limit 4",
+      "sleep 20; bun agent-tools-gh pr checks --pr 12",
+      "sleep 20; bun agent-tools-k8s kubectl --env test --cmd 'get pods'",
+    ]) {
+      expect(guard.detectSleepPolling(command)).not.toBeNull();
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
+});
+
+// Partial reconstruction of the visible excerpt, not evidence of the unseen original script.
+// Policy inputs only. Never execute these commands or read the represented compose file.
+describe("partial visible Python compose edit reconstruction", () => {
+  const guard = createCredentialGuard();
+  const heredoc = (program: string) => `python3 - <<'PY'\n${program}\nPY`;
+  const body = `p='docker-compose.yml'
+s=open(p).read()
+s=s.replace("""      - ASPNETCORE_ENVIRONMENT=Production
+      - SHARED_FEED_PASSWORD=REDACTED
+""", """      - ASPNETCORE_ENVIRONMENT=Development
+      - SHARED_FEED_PASSWORD=REDACTED
+""")
+open(p,'w').write(s)`;
+
+  it.each([
+    { name: "anonymous visible compose edit", command: heredoc(body), allowed: true },
+    {
+      name: "literal environment names in replacement text",
+      command: heredoc(body.replaceAll("REDACTED", "REDACTED_ENV_TEXT")),
+      allowed: true,
+    },
+    {
+      name: "literal sensitive-looking replacement text",
+      command: heredoc(body.replaceAll("REDACTED", ".env")),
+      allowed: true,
+    },
+    {
+      name: "protected env read and write",
+      command: heredoc(body.replace("docker-compose.yml", ".env")),
+      allowed: false,
+    },
+    {
+      name: "protected credentials read and write",
+      command: heredoc(body.replace("docker-compose.yml", "/workspace/.aws/credentials")),
+      allowed: false,
+    },
+    {
+      name: "additional protected read",
+      command: heredoc(body + "\nprint(open('.env').read())"),
+      allowed: false,
+    },
+    {
+      name: "additional protected write",
+      command: heredoc(body + "\nopen('.env','w').write('REDACTED')"),
+      allowed: false,
+    },
+    {
+      name: "environment inventory",
+      command: heredoc(body + "\nimport os\nprint(os.environ)"),
+      allowed: false,
+    },
+    {
+      name: "environment lookup",
+      command: heredoc(body + "\nimport os\nprint(os.getenv('TOKEN'))"),
+      allowed: false,
+    },
+    {
+      name: "subprocess shell execution",
+      command: heredoc(body + "\nimport subprocess\nsubprocess.run(['sh','-c','printenv'])"),
+      allowed: false,
+    },
+    {
+      name: "os shell execution",
+      command: heredoc(body + "\nimport os\nos.system('printenv')"),
+      allowed: false,
+    },
+    {
+      name: "unclosed heredoc",
+      command: heredoc(body).slice(0, -3),
+      allowed: false,
+    },
+  ])("$name", ({ command, allowed }) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(!allowed);
+    const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
+    if (allowed) expect(invoke).not.toThrow();
+    else expect(invoke).toThrow();
+  });
+});
