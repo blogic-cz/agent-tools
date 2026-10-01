@@ -668,6 +668,129 @@ describe("dangerous bash command evasion", () => {
     const inline = (source: string, prefix = "") =>
       `${prefix}python3 -c '${source.replaceAll("'", "'\"'\"'")}'`;
 
+    const jsonNames = [
+      "HERDR_ENV",
+      "CODEX_SESSION_ID",
+      "HERDR_WORKSPACE_ID",
+      "HERDR_TAB_ID",
+      "HERDR_PANE_ID",
+    ];
+    const jsonProgram =
+      'import os,json; print(json.dumps({k:os.environ.get(k) for k in ["HERDR_ENV","CODEX_SESSION_ID","HERDR_WORKSPACE_ID","HERDR_TAB_ID","HERDR_PANE_ID"]}))';
+
+    it("allows the reported JSON projection only with every name approved", () => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: jsonNames });
+      for (const prefix of ["", "rtk proxy "]) {
+        for (const command of [
+          inline(jsonProgram, prefix),
+          `${prefix}python3 - <<'PY'\n${jsonProgram}\nPY`,
+        ]) {
+          expect(guard.isDangerousBashCommand(command)).toBe(false);
+          expect(() =>
+            guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+          ).not.toThrow();
+          for (const allowedEnvironmentVariables of [
+            [],
+            jsonNames.filter((name) => name !== "HERDR_TAB_ID"),
+            ...jsonNames.map((missing) => jsonNames.filter((name) => name !== missing)),
+          ]) {
+            expect(
+              createCredentialGuard({ allowedEnvironmentVariables }).isDangerousBashCommand(
+                command,
+              ),
+            ).toBe(true);
+          }
+        }
+      }
+      expect(isDangerousBashCommand(inline(jsonProgram))).toBe(true);
+    });
+
+    it.each([
+      "import os,json; print(json.dumps({name:os.getenv(name) for name in ['WORKSPACE_LABEL','TEST_FLAG']}))",
+      "import json,os; print(json.dumps([os.environ[name] for name in ['TEST_FLAG','WORKSPACE_LABEL']]))",
+      "import os; import json; print(json.dumps([os.environ.get(key, '<absent>') for key in ['TEST_FLAG']]))",
+      "import os\nimport json\nprint(json.dumps({'TEST_FLAG':os.getenv('TEST_FLAG'), 'WORKSPACE_LABEL':os.environ['WORKSPACE_LABEL']}))",
+      "import os,json; print(json.dumps([os.getenv('TEST_FLAG'), os.environ.get('WORKSPACE_LABEL')]))",
+      "import os,json; print(json.dumps({key:os.environ[key] for key in ['TEST_FLAG',]}))",
+    ])("allows generic literal JSON projections: %s", (source) => {
+      const guard = createCredentialGuard({
+        allowedEnvironmentVariables: ["TEST_FLAG", "WORKSPACE_LABEL"],
+      });
+      expect(guard.isDangerousBashCommand(inline(source))).toBe(false);
+    });
+
+    it.each([
+      "import jsonos; print(os.getenv('HERDR_ENV'))",
+      "import os,jsonos; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}))",
+      "import os,json; print(json.dumps(os.environ))",
+      "import os,json; print(json.dumps(dict(os.environ)))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in os.environ}))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in ['HERDR_ENV','NOT_APPROVED']}))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in []}))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in names}))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in ['HERDR_'+'ENV']}))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in [*['HERDR_ENV']]}))",
+      "import os,json; print(json.dumps({k:os.environ.get(k) for k in ['HERDR_ENV'] if k}))",
+      "import os,json; print(json.dumps({k.upper():os.environ.get(k) for k in ['HERDR_ENV']}))",
+      "import os,json; print(json.dumps({k:os.environ.get(other) for k in ['HERDR_ENV']}))",
+      "import os,json; print(json.dumps({'NOT_APPROVED':os.getenv('HERDR_ENV')}))",
+      "import os,json; print(json.dumps({'HERDR_ENV':os.getenv('NOT_APPROVED')}))",
+      "import os,json; print(json.dumps([os.getenv('HERDR_ENV'), os.getenv('NOT_APPROVED')]))",
+      "import os,json; print(json.dumps({os:os.environ.get(os) for os in ['HERDR_ENV']}))",
+      "import os,json; print(json.dumps({json:os.getenv(json) for json in ['HERDR_ENV']}))",
+      "import os,json; print(json.dumps([os.getenv(print) for print in ['HERDR_ENV']]))",
+      "import os,json as j; print(j.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}))",
+      "import os as env,json; print(json.dumps({'HERDR_ENV':env.getenv('HERDR_ENV')}))",
+      "import os,json; json=fake; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}))",
+      "import os,json; os=fake; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}))",
+      "import os,json; print=fake; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}))",
+      "import os; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}))",
+      "import os,json; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')}, default=eval))",
+      "import os,json; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')})); exec('pass')",
+      "import os,json; print(json.dumps({'HERDR_ENV':eval('os.getenv(\"HERDR_ENV\")')}))",
+      "import os,json; print(json.dumps({'HERDR_ENV':open('.env').read()}))",
+      "import os,json,subprocess; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')})); subprocess.run('env')",
+      "import os,json; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')})) trailing",
+      "import os,json; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')})) # trailing",
+      "import os,json; print(json.dumps({'HERDR_ENV':os.getenv('HERDR_ENV')})",
+    ])("denies JSON outside the approved projection grammar: %s", (source) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      expect(guard.isDangerousBashCommand(inline(source))).toBe(true);
+    });
+
+    it("bounds literal projections to sixteen entries", () => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      for (const count of [16, 17]) {
+        for (const projection of [
+          `{k:os.getenv(k) for k in [${Array(count).fill("'HERDR_ENV'").join(",")}]}`,
+          `[os.getenv(k) for k in [${Array(count).fill("'HERDR_ENV'").join(",")}]]`,
+          `{${Array(count).fill("'HERDR_ENV':os.getenv('HERDR_ENV')").join(",")}}`,
+          `[${Array(count).fill("os.getenv('HERDR_ENV')").join(",")}]`,
+        ]) {
+          expect(
+            guard.isDangerousBashCommand(
+              inline(`import os,json; print(json.dumps(${projection}))`),
+            ),
+          ).toBe(count > 16);
+        }
+      }
+    });
+
+    it.each([
+      `${inline(jsonProgram)} | sh`,
+      `${inline(jsonProgram)} | xargs`,
+      `${inline(jsonProgram)} | mystery-runner`,
+      `${inline(jsonProgram)} > /tmp/env-output`,
+      `${inline(jsonProgram)} < /dev/null`,
+      `PYTHONPATH=/tmp/probe ${inline(jsonProgram)}`,
+      `env PYTHONPATH=/tmp/probe ${inline(jsonProgram)}`,
+      `${inline("open('/tmp/probe/sitecustomize.py','w').write('import os; print(os.environ)')")}; ${inline(jsonProgram)}`,
+      `${inline("open('/tmp/probe/json.py','w').write('import os; print(os.environ)')")}; ${inline(jsonProgram)}`,
+    ])("keeps JSON executor, redirect, and startup mutation boundaries: %s", (command) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: jsonNames });
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+    });
+
     it("allows the reported two-name program only when both names are configured", () => {
       for (const prefix of ["", "rtk proxy "]) {
         const command = inline(program, prefix);

@@ -1608,8 +1608,10 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
     return false;
 
   const program = argv[index] ?? "";
+  if (program.length > 65_536) return false;
   let position = 0;
   let foundRead = false;
+  let importedJson = false;
   const skipInlineWhitespace = () => {
     while (/[\t ]/.test(program[position] ?? "")) position++;
   };
@@ -1619,7 +1621,12 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
     return true;
   };
   const takeIdentifier = (value: string): boolean => {
-    if (!take(value) || /[A-Za-z0-9_]/.test(program[position] ?? "")) return false;
+    if (
+      !program.startsWith(value, position) ||
+      /[A-Za-z0-9_]/.test(program[position + value.length] ?? "")
+    )
+      return false;
+    position += value.length;
     return true;
   };
   const takeString = (): string | undefined => {
@@ -1638,8 +1645,14 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
     position++;
     return value;
   };
-  const takeEnvironmentRead = (): boolean => {
+  const takeEnvironmentRead = (variable?: string): boolean => {
     skipInlineWhitespace();
+    const takeName = (): boolean => {
+      skipInlineWhitespace();
+      if (variable !== undefined) return takeIdentifier(variable);
+      const name = takeString();
+      return name !== undefined && allowedNames.has(name);
+    };
     const start = position;
     if (!takeIdentifier("os")) return false;
     if (!take(".")) {
@@ -1648,8 +1661,7 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
     }
     if (takeIdentifier("getenv")) {
       if (!take("(")) return false;
-      const name = takeString();
-      if (name === undefined || !allowedNames.has(name)) return false;
+      if (!takeName()) return false;
       skipInlineWhitespace();
       if (take(",")) {
         if (takeString() === undefined) return false;
@@ -1662,8 +1674,7 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
     if (!takeIdentifier("environ")) return false;
     if (take(".")) {
       if (!takeIdentifier("get") || !take("(")) return false;
-      const name = takeString();
-      if (name === undefined || !allowedNames.has(name)) return false;
+      if (!takeName()) return false;
       skipInlineWhitespace();
       if (take(",")) {
         if (takeString() === undefined) return false;
@@ -1674,15 +1685,91 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
       return true;
     }
     if (!take("[")) return false;
-    const name = takeString();
-    if (name === undefined || !allowedNames.has(name)) return false;
+    if (!takeName()) return false;
     skipInlineWhitespace();
     if (!take("]")) return false;
     foundRead = true;
     return true;
   };
+  const takeApprovedNames = (): boolean => {
+    if (!take("[")) return false;
+    for (let count = 0; count < 16; count++) {
+      const name = takeString();
+      if (name === undefined || !allowedNames.has(name)) return false;
+      skipInlineWhitespace();
+      if (take("]")) return true;
+      if (!take(",")) return false;
+      skipInlineWhitespace();
+      if (take("]")) return true;
+    }
+    return false;
+  };
+  const takeComprehension = (): boolean => {
+    const dictionary = take("{");
+    if (!dictionary && !take("[")) return false;
+    skipInlineWhitespace();
+    const variable = dictionary
+      ? /^[A-Za-z_][A-Za-z0-9_]*/.exec(program.slice(position))?.[0]
+      : /^os\.(?:getenv\(|environ(?:\.get\(|\[))[\t ]*([A-Za-z_][A-Za-z0-9_]*)/.exec(
+          program.slice(position),
+        )?.[1];
+    if (!variable || ["os", "json", "print"].includes(variable)) return false;
+    if (dictionary) {
+      if (!takeIdentifier(variable)) return false;
+      skipInlineWhitespace();
+      if (!take(":")) return false;
+    }
+    if (!takeEnvironmentRead(variable)) return false;
+    const loop = new RegExp(`[\\t ]+for[\\t ]+${variable}[\\t ]+in[\\t ]+`, "y");
+    loop.lastIndex = position;
+    const match = loop.exec(program);
+    if (!match) return false;
+    position = loop.lastIndex;
+    if (!takeApprovedNames()) return false;
+    skipInlineWhitespace();
+    return take(dictionary ? "}" : "]");
+  };
+  const takeProjection = (): boolean => {
+    const start = position;
+    const previousRead = foundRead;
+    if (takeComprehension()) return true;
+    position = start;
+    foundRead = previousRead;
+    const dictionary = take("{");
+    if (!dictionary && !take("[")) return false;
+    const close = dictionary ? "}" : "]";
+    for (let count = 0; count < 16; count++) {
+      if (dictionary) {
+        const key = takeString();
+        if (key === undefined || !allowedNames.has(key)) return false;
+        skipInlineWhitespace();
+        if (!take(":")) return false;
+      }
+      if (!takeEnvironmentRead()) return false;
+      skipInlineWhitespace();
+      if (take(close)) return true;
+      if (!take(",")) return false;
+      skipInlineWhitespace();
+      if (take(close)) return true;
+    }
+    return false;
+  };
+  const takeJsonDisplay = (): boolean => {
+    if (!importedJson || !takeIdentifier("json") || !take(".dumps")) return false;
+    skipInlineWhitespace();
+    if (!take("(")) return false;
+    skipInlineWhitespace();
+    if (!takeProjection()) return false;
+    skipInlineWhitespace();
+    return take(")");
+  };
   const takeExpression = (): boolean => {
-    const takeTerm = (): boolean => takeString() !== undefined || takeEnvironmentRead();
+    const takeTerm = (): boolean => {
+      skipInlineWhitespace();
+      return program.startsWith("json", position)
+        ? takeJsonDisplay()
+        : takeString() !== undefined || takeEnvironmentRead();
+    };
     if (!takeTerm()) return false;
     skipInlineWhitespace();
     while (take("+")) {
@@ -1718,10 +1805,26 @@ function isAllowedPythonEnvironmentRead(argv: string[], allowedNames: Set<string
   skipInlineWhitespace();
   if (!takeIdentifier("import")) return false;
   skipInlineWhitespace();
-  if (!takeIdentifier("os")) return false;
+  const jsonFirst = takeIdentifier("json");
+  if (!jsonFirst && !takeIdentifier("os")) return false;
+  importedJson = jsonFirst;
+  skipInlineWhitespace();
+  if (take(",")) {
+    skipInlineWhitespace();
+    if (!takeIdentifier(jsonFirst ? "os" : "json")) return false;
+    importedJson = true;
+  } else if (jsonFirst) return false;
   skipInlineWhitespace();
   if (!(take(";") || take("\n") || take("\r\n"))) return false;
   skipSeparators();
+  if (!importedJson && takeIdentifier("import")) {
+    skipInlineWhitespace();
+    if (!takeIdentifier("json")) return false;
+    importedJson = true;
+    skipInlineWhitespace();
+    if (!(take(";") || take("\n") || take("\r\n"))) return false;
+    skipSeparators();
+  }
   while (position < program.length) {
     if (!takePrint()) return false;
     skipInlineWhitespace();
