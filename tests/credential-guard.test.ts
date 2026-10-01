@@ -2719,6 +2719,104 @@ describe("closed local sed and SQL consumer proofs", () => {
   });
 });
 
+// Policy inputs only. No represented SQL or shell commands are executed.
+describe("shared passive cut consumer proof", () => {
+  const sql =
+    "bun run db-tool sql --env dev --sql 'SELECT payload #>> \"{item,value}\" FROM records'";
+  const quote = (body: string) => "'" + body.replaceAll("'", "'\"'\"'") + "'";
+  const allowed = (command: string) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(guard.getBlockedCliTool(command)).toBeNull();
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  };
+
+  it("admits cut after literal SQL output", () => {
+    allowed(`${sql} 2>&1 | sed -n '/data/,/rowCount/p' | cut -c1-700`);
+  });
+  it.each(
+    [
+      "bun run db-tool sql",
+      "bun run db-tool query",
+      "rtk bun run db-tool sql",
+      "rtk proxy bun run db-tool query",
+      "command -- bun run db-tool sql",
+    ].flatMap((producer) =>
+      ["cut -b 1-8", "cut -c1-40", "cut -d ',' -f 1,3", "cut --fields=2 --delimiter=,"].map(
+        (consumer) =>
+          `${producer} --sql 'SELECT payload #>> "{item,value}" FROM records' | sed -n '1,5p' | ${consumer}`,
+      ),
+    ),
+  )("allows closed SQL pipeline: %s", allowed);
+  it.each([
+    "cut -c1-8 README.md",
+    "cat README.md | cut -b1-4",
+    "printf '%s' 'printenv' | cut -c1-40",
+    "echo exit=$? | cut -d= -f2",
+    "herdr agent prompt example-reviewer 'Inspect records' | cut -c1-32; herdr agent read example-reviewer --source recent-unwrapped --lines 8 | cut -b1-32",
+    "herdr agent prompt example-reviewer 'Inspect records' | cut -c1-32; sleep 1; herdr agent get example-reviewer | cut -c1-32",
+    `sh -c ${quote("cat README.md | cut -c1-32")}`,
+    `rtk proxy /bin/zsh -f -c ${quote("cat README.md | sed -n '1p' | command -- cut -f1")}`,
+  ])("allows other shared passive roles: %s", allowed);
+  it.each([
+    ...[".env", "/proc/self/environ", "config.pem"].flatMap((path) => [
+      `${sql} | cut -c1-32 ${path}`,
+      `${sql} | cut -c1-32 < ${path}`,
+      `${sql} | cut -c1-32 > ${path}`,
+    ]),
+    `${sql} | cut -c1-32 "$SECRET"`,
+    `${sql} | cut -c1-32 $(cat .env)`,
+    `${sql} | cut -c1-32 \`cat .env\``,
+    `${sql} | cut -c1-32 | sh`,
+    `${sql} | cut -c1-32 | xargs`,
+    `${sql} | cut -c1-32 | unknown-executor`,
+    `${sql} | sed -n '1e' | cut -c1-32`,
+    `${sql} | sed -f program.sed | cut -c1-32`,
+    `${sql} | env -S 'sh -c printenv' | cut -c1-32`,
+    `bun run unknown-tool --sql 'SELECT a{b,c}' | cut -c1-32`,
+    `bun run db-tool sql --sql 'SELECT a{b,c}' --unknown option | cut -c1-32`,
+    `bun run db-tool sql --sql 'SELECT a{b,c}' --sql 'SELECT 1' | cut -c1-32`,
+    `bun run db-tool sql --sql "$(cat query.sql)" | cut -c1-32`,
+    // SQL braces inside these shell bodies already refuse with head on the old guard.
+    `sh -c ${quote(`${sql} | cut -c1-32`)}`,
+    `rtk proxy /bin/zsh -f -c ${quote(`${sql} | sed -n '1p' | command -- cut -f1`)}`,
+    `sh -c ${quote(`${sql} | cut -c1-32 .env`)}`,
+    `bash -c ${quote(`${sql} | cut -c1-32 | xargs`)}`,
+    `sh -c ${quote(`gh api user | cut -c1-32`)}`,
+  ])("retains refusal after cut: %s", (command) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+  it("retains path, command, environment and exact CLI policies", () => {
+    const pipeline = `${sql} | cut -c1-32`;
+    const pathGuard = createCredentialGuard({ additionalBlockedPaths: ["^private[.]txt$"] });
+    expect(pathGuard.isDangerousBashCommand(`${pipeline} private.txt`)).toBe(true);
+    const commandGuard = createCredentialGuard({ additionalDangerousBashPatterns: ["cut -c1-32"] });
+    expect(commandGuard.isDangerousBashCommand(pipeline)).toBe(true);
+    const cliGuard = createCredentialGuard({
+      additionalBlockedCliTools: [{ tool: "cut", suggestion: "approved-reader" }],
+    });
+    expect(cliGuard.getBlockedCliTool(pipeline)?.name).toBe("cut");
+    expect(() =>
+      cliGuard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: pipeline } }),
+    ).toThrow();
+    const envGuard = createCredentialGuard({ allowedEnvironmentVariables: ["WORKSPACE_LABEL"] });
+    expect(envGuard.isDangerousBashCommand('echo "$WORKSPACE_LABEL" | cut -c1-8')).toBe(false);
+    expect(envGuard.isDangerousBashCommand('cut -c1-8 "$WORKSPACE_LABEL"')).toBe(true);
+    expect(
+      envGuard.isDangerousBashCommand(
+        "NODE_OPTIONS=--require=loader.js python3 -c 'import os; print(os.environ[\"WORKSPACE_LABEL\"])' | cut -c1-8",
+      ),
+    ).toBe(true);
+    expect(createCredentialGuard().getBlockedCliTool(`${pipeline} | psql example`)?.name).toBe(
+      "psql",
+    );
+  });
+});
+
 // These are guard inputs only. Never execute shell bodies or speedtest commands.
 describe("bounded literal shell body replay", () => {
   const quote = (body: string) => "'" + body.replaceAll("'", "'\"'\"'") + "'";
