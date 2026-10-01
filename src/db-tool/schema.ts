@@ -42,14 +42,15 @@ export const SCHEMA_QUERIES = {
       c.data_type as type,
       c.is_nullable = 'YES' as nullable,
       c.column_default as default_value,
-      COALESCE(
-        (SELECT true FROM information_schema.table_constraints tc
-         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-         WHERE tc.table_name = c.table_name
-         AND tc.table_schema = c.table_schema
-         AND kcu.column_name = c.column_name
-         AND tc.constraint_type = 'PRIMARY KEY'),
-        false
+      EXISTS (
+        SELECT 1 FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_schema = tc.constraint_schema
+          AND kcu.constraint_name = tc.constraint_name
+        WHERE tc.table_schema = c.table_schema
+        AND tc.table_name = c.table_name
+        AND kcu.column_name = c.column_name
+        AND tc.constraint_type = 'PRIMARY KEY'
       ) as is_primary_key
     FROM information_schema.columns c
     WHERE c.table_name = '${escapedTableName}'

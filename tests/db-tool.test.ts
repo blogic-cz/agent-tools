@@ -242,6 +242,14 @@ describe("db schema introspection SQL", () => {
     expect(sql).toContain("c.table_schema = 'core_business_partners'");
   });
 
+  it("scopes the primary-key lookup by constraint schema so duplicate table names stay scalar", () => {
+    const sql = getColumns("contract_import_items");
+
+    expect(sql).toContain("EXISTS (");
+    expect(sql).toContain("kcu.constraint_schema = tc.constraint_schema");
+    expect(sql).not.toContain("COALESCE(");
+  });
+
   it("shows relationships across all non-system schemas", () => {
     const sql = getRelationships();
 
