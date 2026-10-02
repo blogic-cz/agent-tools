@@ -226,11 +226,13 @@ function isSafeHerdrTabCreate(argv: string[]): boolean {
 function hasSafeLocalAssignmentCommands(
   command: string,
   assignments: Map<string, { value: string; end: number }>,
+  statusCaptures: Set<string>,
 ): boolean {
   if (!assignments.size) return true;
   const parsed = parseStaticShellCommands(command);
   if (!parsed || typeof parsed === "string") return false;
   return parsed.pipelines.flat().every((words) => {
+    if (words.length === 1 && statusCaptures.has(words[0] ?? "")) return true;
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./-]+)$/.exec(words[0] ?? "");
     if (assignment) {
       return (
@@ -2532,6 +2534,7 @@ function hasEnvironmentVariableExpansionRead(
   command: string,
   allowedNames: Set<string>,
   isPathBlocked: (path: string) => boolean,
+  onProvedStatus?: (command: string) => void,
 ): boolean {
   let heredoc = boundedHeredoc(command);
   while (heredoc) {
@@ -2543,8 +2546,15 @@ function hasEnvironmentVariableExpansionRead(
   if (!command.includes("$") && !command.includes("`")) return false;
   let invalidExpansion = false;
   const assignments = getLeadingLiteralAssignments(command);
-  const localValues = new Map<string, string>();
   let localIndex = 0;
+  const directCaptures = new Map<string, string>();
+  const statusReferences = new Map<string, { name: string; fallback: string }>();
+  const marker = (prefix: string): string => {
+    let value: string;
+    do value = `${prefix}${localIndex++}END`;
+    while (command.includes(value));
+    return value;
+  };
   let expansions = 0;
   let normalized = "";
   let quote: "'" | '"' | undefined;
@@ -2583,7 +2593,18 @@ function hasEnvironmentVariableExpansionRead(
     }
     if (command[i + 1] === "?") {
       expansions++;
-      normalized += "NUMERICSTATUSVALUE";
+      const value = marker("NUMERICSTATUSVALUE");
+      // Only an exact standalone assignment token captures in the parent shell.
+      // Quoting/escaping the name can instead produce an executable command word.
+      const capture = /(?:^|[;\n])[ \t]*([A-Za-z_][A-Za-z0-9_]*)=("?)$/.exec(command.slice(0, i));
+      const ending = capture?.[2] === '"' ? '"' : "";
+      if (
+        capture &&
+        command.slice(i + 2).startsWith(ending) &&
+        /^[ \t]*(?:[;\n]|$)/.test(command.slice(i + 2 + ending.length))
+      )
+        directCaptures.set(value, capture[1] ?? "");
+      normalized += value;
       i++;
       continue;
     }
@@ -2607,26 +2628,101 @@ function hasEnvironmentVariableExpansionRead(
     }
     const assignment = assignments.get(name);
     if (assignment && assignment.end >= i) invalidExpansion = true;
-    if (assignment && assignment.end < i) {
-      const marker = `LOCALVALUE${localIndex++}`;
-      localValues.set(marker, assignment.value);
-      normalized += marker;
-    } else if (allowedNames.has(name)) {
-      normalized += quote ? "ENVVALUE" : "ENVVALUEUNQUOTED";
-    } else {
-      normalized += quote ? "UNKNOWNVALUE" : "UNKNOWNVALUEUNQUOTED";
-    }
+    const reference = marker("STATUSREFERENCE");
+    const fallback =
+      assignment && assignment.end < i
+        ? assignment.value
+        : allowedNames.has(name)
+          ? quote
+            ? "ENVVALUE"
+            : "ENVVALUEUNQUOTED"
+          : quote
+            ? "UNKNOWNVALUE"
+            : "UNKNOWNVALUEUNQUOTED";
+    statusReferences.set(reference, { name, fallback });
+    normalized += reference;
     i += variable[0].length - 1;
   }
   if (!expansions) return invalidExpansion;
   if (invalidExpansion) return true;
 
-  const localMaterialized = [...localValues].reduce(
-    (text, [marker, value]) => text.replaceAll(marker, () => value),
-    normalized,
-  );
+  // Resolve every reference at its command position; a later capture cannot prove
+  // an earlier read, and only proved passive intermediates preserve the binding.
+  const initial = parseStaticShellCommands(normalized);
+  if (!initial || typeof initial === "string") return true;
+  const captures = new Map<string, string>();
+  for (const words of initial.pipelines.flat()) {
+    const capture = /^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(words[0] ?? "");
+    if (capture && directCaptures.get(capture[2] ?? "") === capture[1])
+      captures.set(words[0] ?? "", capture[1] ?? "");
+  }
+  const statusCaptures = new Set<string>();
+  const localStatuses = new Set<string>();
+  const resolutions = new Map<string, string>();
+  const capturedNames = new Set(captures.values());
+  const bound = new Set<string>();
+  if (captures.size) {
+    const syntax = literalBindingText(normalized, "", "")?.syntax;
+    if (syntax === undefined || /&&|\|\||&/.test(syntax.replace(/[<>]&[0-9-]+/g, ""))) return true;
+  }
+  for (const [index, pipeline] of initial.pipelines.entries()) {
+    for (const words of pipeline) {
+      for (const arg of words) {
+        for (const [reference, { name, fallback }] of statusReferences) {
+          if (!arg.includes(reference)) continue;
+          if (bound.has(name)) {
+            const value = marker("NUMERICSTATUSVALUE");
+            localStatuses.add(value);
+            resolutions.set(reference, value);
+          } else {
+            if (capturedNames.has(name)) return true;
+            resolutions.set(reference, fallback);
+          }
+        }
+      }
+      const capture = captures.get(words[0] ?? "");
+      if (capture) {
+        if (
+          pipeline.length !== 1 ||
+          words.length !== 1 ||
+          initial.redirects.some((redirect) => redirect.pipeline === index) ||
+          // Inherited export attributes can make a numeric value select code or paths.
+          /^(?:LD_|DYLD_|_RLD_|LDR_|GIT_CONFIG_(?:KEY|VALUE)_)/.test(capture) ||
+          /^(?:PATH|IFS|CDPATH|BASH_ENV|ENV|FPATH|ZDOTDIR|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|PS[0-4]|GLOBIGNORE|RANDOM|SECONDS|PIPESTATUS|UID|EUID|BASH_XTRACEFD|HOME|XDG_CONFIG_HOME|LIBPATH|SHLIB_PATH|NODE_OPTIONS|NODE_PATH|BUN_OPTIONS|BUN_PRELOAD|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|RUBYOPT|RUBYLIB|GEM_HOME|GEM_PATH|PERL5OPT|PERL5LIB|PERLLIB|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|CLASSPATH|_JAVA_OPTIONS|JAVA_HOME|GIT_SSH_COMMAND|GIT_SSH|GIT_PROXY_COMMAND|GIT_EXEC_PATH|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_ASKPASS|SSH_ASKPASS|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|PAGER|EDITOR|VISUAL)$/.test(
+            capture,
+          )
+        )
+          return true;
+        bound.add(capture);
+        statusCaptures.add(words[0] ?? "");
+        continue;
+      }
+      const argv = unwrapStaticCommand(words);
+      const name = argv[0]?.split("/").at(-1) ?? "";
+      if (
+        captures.size &&
+        /^(?:alias|unalias|readonly|declare|typeset|local|export|eval|source|\.|trap|set|read|unset|let)$/.test(
+          name,
+        )
+      )
+        return true;
+      if (!isPassiveTextCommand(argv) && name !== "cat") bound.clear();
+    }
+    for (const redirect of initial.redirects.filter((value) => value.pipeline === index)) {
+      if (
+        [...statusReferences].some(
+          ([reference, { name }]) => capturedNames.has(name) && redirect.target.includes(reference),
+        )
+      )
+        return true;
+    }
+  }
+  for (const [reference, { fallback }] of statusReferences) {
+    normalized = normalized.replaceAll(reference, () => resolutions.get(reference) ?? fallback);
+  }
+  const localMaterialized = normalized;
   // Options must be checked after local literals become actual argv, never as placeholders.
-  if (!hasSafeLocalAssignmentCommands(localMaterialized, assignments)) return true;
+  if (!hasSafeLocalAssignmentCommands(localMaterialized, assignments, statusCaptures)) return true;
   const parsed = parseStaticShellCommands(localMaterialized);
   if (!parsed || typeof parsed === "string") return true;
   for (const [index, pipeline] of parsed.pipelines.entries()) {
@@ -2635,6 +2731,7 @@ function hasEnvironmentVariableExpansionRead(
     if (parsed.redirects.some((redirect) => redirect.pipeline === index)) return true;
     if (
       pipeline.some((words) => {
+        if (words.length === 1 && statusCaptures.has(words[0] ?? "")) return false;
         const argv = unwrapStaticCommand(words);
         if (!words.some((arg) => arg.includes("NUMERICSTATUSVALUE")))
           return !isPassiveTextCommand(argv);
@@ -2643,6 +2740,9 @@ function hasEnvironmentVariableExpansionRead(
         return (
           !["echo", "printf"].includes(name ?? "") ||
           !isPassiveTextCommand(argv) ||
+          argv.some(
+            (arg) => arg.startsWith("-") && [...localStatuses].some((value) => arg.includes(value)),
+          ) ||
           words
             .slice(0, words.length - argv.length)
             .some((arg) => arg.includes("NUMERICSTATUSVALUE")) ||
@@ -2666,11 +2766,12 @@ function hasEnvironmentVariableExpansionRead(
       return true;
   }
   if (!localMaterialized.includes("ENVVALUE")) {
-    return (
+    const blocked =
       hasSensitiveFileRead(localMaterialized, isPathBlocked) ||
       hasSensitivePathRedirect(localMaterialized, isPathBlocked) ||
-      hasEnvironmentRead(localMaterialized, allowedNames)
-    );
+      hasEnvironmentRead(localMaterialized, allowedNames);
+    if (!blocked && statusCaptures.size) onProvedStatus?.(localMaterialized);
+    return blocked;
   }
 
   for (const [index, pipeline] of parsed.pipelines.entries()) {
@@ -2706,11 +2807,10 @@ function hasEnvironmentVariableExpansionRead(
       return true;
     }
   }
-  const materialized = [...localValues].reduce(
-    (text, [marker, value]) => text.replaceAll(marker, () => value),
-    normalized.replaceAll("ENVVALUE", "SAFEENVVALUE"),
-  );
-  return hasSensitiveFileRead(materialized, isPathBlocked);
+  const materialized = normalized.replaceAll("ENVVALUE", "SAFEENVVALUE");
+  const blocked = hasSensitiveFileRead(materialized, isPathBlocked);
+  if (!blocked && statusCaptures.size) onProvedStatus?.(materialized);
+  return blocked;
 }
 
 /** Quoted approved metadata can be compared or checked for blankness, never evaluated. */
@@ -3048,16 +3148,24 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       hasSensitivePathRedirect(command, isPathBlocked)
     )
       return "blocked by the file-access policy; a sensitive path matched or this command form could not be verified";
+    let environmentCommand = command;
     if (
       !isLiteralTextWrite(command) &&
-      hasEnvironmentVariableExpansionRead(command, allowedEnvironmentVariables, isPathBlocked)
+      hasEnvironmentVariableExpansionRead(
+        command,
+        allowedEnvironmentVariables,
+        isPathBlocked,
+        (proved) => {
+          environmentCommand = proved;
+        },
+      )
     ) {
       return "expands an unapproved or executable environment variable value";
     }
     if (
       hasEnvironmentSourceAccess(command, rawEnvironmentSource, allowedEnvironmentVariables) ||
       hasEnvironmentRead(
-        command,
+        environmentCommand,
         allowedEnvironmentVariables,
         allowPackageInventory,
         shellBodies.filter((body) => {
