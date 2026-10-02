@@ -3625,6 +3625,119 @@ describe("bounded Herdr command composition", () => {
 });
 
 // Hook inputs only: these shell commands are never executed.
+describe("literal working-directory operands", () => {
+  const guard = createCredentialGuard();
+  const directory = "/tmp/worktrees/credential-guard-boundaries";
+
+  it.each(
+    ["git", "rtk git", "rtk proxy git"].flatMap((git) => [
+      `${git} -C ${directory} fetch origin main`,
+      `${git} -C ${directory} fetch origin`,
+      `${git} -C ${directory} fetch origin main | head -1`,
+      `${git} -C ${directory} fetch origin main | cat notes.txt`,
+      `${git} -C ${directory} fetch origin main; git rev-parse --show-toplevel`,
+      `${git} -C '${directory} directory' status --short`,
+      `${git} -C ./credential-guard-awk-update fetch origin main`,
+      `${git} -C ${directory} rev-parse HEAD`,
+      `${git} -C ${directory} rev-list --count HEAD`,
+      `${git} -C /tmp/worktrees -C credential-guard-boundaries -C ../secret-feature fetch origin main`,
+      `cd ${directory} && ${git} fetch origin main`,
+      `cd -- './secret-feature directory' && ${git} status --short`,
+    ]),
+  )("allows literal navigation without classifying directory names as files: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "git -C /tmp/credential-backups config --list",
+    "git -C /tmp/credential-backups -c core.pager='cat .env' log",
+    "git -C /tmp/credential-backups --exec-path=/tmp/custom-tools status",
+    "git -C /tmp/credential-backups fetch --upload-pack='cat .env' origin main",
+    `cd /tmp/credential-backups && python -c 'print(open("notes.txt").read())'`,
+    `cd /tmp/credential-backups && node -e 'console.log(require("fs").readFileSync("notes.txt", "utf8"))'`,
+    "cd /tmp/credential-backups && bun run gh-tool pr create --title review --repo example/repo --body-file notes.txt",
+    "cd /tmp/credential-backups && rtk proxy bun run gh-tool pr create --title review --repo example/repo --body-file notes.txt",
+    "cd /tmp/credential-backups && bun run gh-tool pr create --title review --repo example/repo --body-file=notes.txt",
+    "git -C /tmp/credential-backups show HEAD:notes.txt",
+    "git -C /tmp/credential-backups show HEAD:.env",
+    "rtk git -C /tmp/credential-backups show HEAD:.env",
+    "rtk proxy git -C /tmp/credential-backups show HEAD:.env",
+    "cd /tmp/credential-backups && git show HEAD:notes.txt",
+    ...["git", "rtk git", "rtk proxy git"].flatMap((git) => [
+      `${git} -C ${directory} fetch --upload=printenv origin main`,
+      `${git} -C ${directory} fetch origin main --upload-pack=printenv`,
+      `${git} -C ${directory} fetch origin main --u=printenv`,
+      `${git} -C ${directory} fetch -u origin main`,
+      `${git} -C ${directory} --paginate status`,
+      `${git} -C ${directory} status --exec-path=/tmp/tools`,
+      `${git} -C ${directory} custom-command`,
+      `${git} -C ${directory} 'rev-parse HEAD'`,
+      `${git} -C ${directory} 'rev-list --count HEAD'`,
+      `${git} -C ${directory} -c core.pager=printenv -C ../credential-data status`,
+      `${git} -C ${directory} fetch origin main | cat .env`,
+      `${git} -C ${directory} fetch origin main; printenv`,
+      `${git} -C ${directory} fetch origin main; ${git} -C ${directory} show HEAD:.env`,
+      `cd ${directory} && ${git} status --short | cat notes.txt`,
+    ]),
+    'D=/tmp/credential-backups; git -C "$D" show HEAD:.env',
+    `git -C ${directory} grep value -- .env`,
+    `git -C ${directory} grep value -- credentials.json`,
+    `cat ${directory}/credentials.json`,
+    `cd ${directory} && cat credentials.json`,
+    `git -C ${directory} status > .env`,
+    `git -C ${directory} status >> /tmp/.aws/config`,
+    "git -C /tmp/.aws fetch origin main",
+    "git -C /tmp/.ssh fetch origin main",
+    "git -C /tmp/.kube fetch origin main",
+    "git -C /tmp/secrets fetch origin main",
+    "git -C /tmp/credentials fetch origin main",
+    "git -C /proc/self/environ fetch origin main",
+    "git -C /tmp/worktrees -C ../../.aws fetch origin main",
+    "cd /tmp/.aws && git fetch origin main",
+    "cd /tmp/credential-backups && cat notes.txt",
+    "cd /tmp/credential-backups; cat notes.txt",
+    "cd /tmp/credential-guard; cat notes.txt",
+    "cd /tmp/credential-guard-policy.ts; cat notes.txt",
+    "cd /tmp/credential-backups || cat notes.txt",
+    "cd /tmp/credential-backups && cd /tmp/missing; cat notes.txt",
+    "cd /tmp/credential-backups && cd /tmp/missing && cat notes.txt",
+    'git -C "$UNKNOWN" fetch origin main',
+    'git -C "$(cat .env)" fetch origin main',
+    "git -C `cat .env` fetch origin main",
+  ])("keeps sensitive operands, secret stores and unsafe expansions blocked: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each([
+    [`git -C ${directory} fetch origin main`, { additionalBlockedPaths: [directory + "$"] }],
+    [`git -C ${directory} fetch origin main`, { additionalBlockedPaths: [directory + "/$"] }],
+    [
+      "git -C /tmp/worktrees -C credential-guard-boundaries fetch origin main",
+      { additionalBlockedPaths: ["^" + directory + "/$"] },
+    ],
+    [`cd ${directory} && git status`, { additionalBlockedPaths: ["^" + directory + "$"] }],
+    [
+      `git -C ${directory} fetch origin main`,
+      { additionalDangerousBashPatterns: ["fetch origin main"] },
+    ],
+  ] satisfies [string, Parameters<typeof createCredentialGuard>[0]][])(
+    "keeps configured directory and command policies active: %s",
+    (command, config) => {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
+    },
+  );
+});
+
+// Hook inputs only: these shell commands are never executed.
 describe("bounded Herdr literal navigation", () => {
   const guard = createCredentialGuard();
   const prompt =

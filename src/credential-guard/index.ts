@@ -1890,6 +1890,37 @@ function isStaticNavigationCommand(argv: string[]): boolean {
   );
 }
 
+/** Literal wrappers and exact directory-operation roles; unknown consumers keep refusal. */
+function isProvedDirectoryCommand(words: string[]): boolean {
+  const argv = unwrapStaticCommand(words);
+  if (
+    !words
+      .slice(0, words.length - argv.length)
+      .every((word) => ["rtk", "proxy", "command", "--"].includes(word))
+  )
+    return false;
+  if (argv[0] === "cd") return isStaticNavigationCommand(argv);
+  if (argv[0] !== "git") return false;
+  let index = 1;
+  while (argv[index] === "-C") {
+    if (!isStaticNavigationCommand(["cd", argv[index + 1] ?? ""])) return false;
+    index += 2;
+  }
+  const args = argv.slice(index);
+  if (args[0] === "status")
+    return args.length === 1 || (args.length === 2 && args[1] === "--short");
+  if (args[0] === "fetch")
+    return (
+      args.length >= 2 &&
+      args.length <= 3 &&
+      args.slice(1).every((arg) => /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(arg))
+    );
+  return (
+    (args.length === 2 && args[0] === "rev-parse" && args[1] === "HEAD") ||
+    (args.length === 3 && args[0] === "rev-list" && args[1] === "--count" && args[2] === "HEAD")
+  );
+}
+
 /** Prove a single cd whose uses are gated on success, without simulating shell state. */
 function hasProvedNavigationSequence(command: string): boolean {
   const literal = literalBindingText(command, "", "");
@@ -2279,6 +2310,7 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
   if (parsed && parsed !== "brace-expansion") {
     let directory = "";
     const trackDirectory = hasProvedNavigationSequence(command);
+    const safeDirectorySequence = parsed.pipelines.flat().every(isProvedDirectoryCommand);
     return parsed.pipelines.flat().some((words) => {
       const argv = unwrapStaticCommand(words);
       const inspectedArgv =
@@ -2291,19 +2323,36 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
         path.startsWith("/") ? posix.normalize(path) : posix.join(commandDirectory, path);
       const blockedOperand = (path: string) =>
         [path, inDirectory(path)].some((value) => isPathBlocked(value) || isSensitivePath(value));
-      const blockedDirectory = (path: string) => blockedOperand(path) || blockedOperand(path + "/");
+      // Directory slots use path policies, not the broad credential-file name heuristic.
+      const blockedDirectory = (path: string) =>
+        [path, inDirectory(path)].some(
+          (value) => isPathBlocked(value) || isPathBlocked(value + "/"),
+        );
       if (name === "cd") {
         const path = inspected[inspected[1] === "--" ? 2 : 1];
         if (path === undefined) return false;
         if (blockedDirectory(path)) return true;
+        // A successful cd alone proves neither its later readers nor pipeline consumers safe.
+        if (
+          (!trackDirectory || !safeDirectorySequence) &&
+          (blockedOperand(path) || blockedOperand(path + "/"))
+        )
+          return true;
         if (trackDirectory && isStaticNavigationCommand(inspected)) directory = inDirectory(path);
         return false;
       }
       if (name === "git") {
         let index = 1;
         while (inspected[index] === "-C" && inspected[index + 1]) {
-          if (blockedDirectory(inspected[index + 1] ?? "")) return true;
-          commandDirectory = inDirectory(inspected[index + 1] ?? "");
+          const path = inspected[index + 1] ?? "";
+          if (blockedDirectory(path)) return true;
+          // Git -C affects this command only; following consumers keep the shell directory.
+          if (
+            !isProvedDirectoryCommand(words) &&
+            (blockedOperand(path) || blockedOperand(path + "/"))
+          )
+            return true;
+          commandDirectory = inDirectory(path);
           index += 2;
         }
         // Git grep has the same pattern-versus-file roles as grep below.
