@@ -1319,7 +1319,7 @@ describe("runWithProfilePrerequisites", () => {
 
     const value = await Effect.runPromise(
       runWithProfilePrerequisites(
-        runtimeConfig(0),
+        runtimeConfig(0, 5_000),
         { vpn: "work" },
         () => Effect.succeed({ stdout: connectedOutput(), stderr: "", exitCode: 0 }),
         Effect.promise(async () => {
