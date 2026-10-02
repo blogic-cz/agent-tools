@@ -661,6 +661,88 @@ describe("dangerous bash command evasion", () => {
     );
   });
 
+  describe("approved shell empty default display", () => {
+    const exactCommand =
+      'echo "HERDR_ENV=${HERDR_ENV:-}"; herdr workspace list 2>&1 | head -60; herdr agent list 2>&1 | head -80';
+
+    it.each([
+      exactCommand,
+      'echo "${HERDR_ENV:-}"',
+      'echo "prefix=${HERDR_ENV:-}" | head -c 60',
+      'printf "%s\\n" "${HERDR_ENV:-}" | cut -c 1-60',
+      'rtk proxy printf -- "%s" "HERDR_ENV=${HERDR_ENV:-}" | head',
+      'test "${HERDR_ENV:-}" = 1',
+      '[ "${HERDR_ENV:-}" = "" ]',
+      'test -n "${HERDR_ENV:-}"',
+      'echo "$HERDR_ENV ${HERDR_ENV:-}"',
+    ])("allows quoted approved empty defaults in data roles: %s", (command) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      expect(guard.isDangerousBashCommand(command)).toBe(false);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).not.toThrow();
+    });
+
+    it.each([undefined, [], ["OTHER_NAME"], ["HERDR_ENV_OTHER"], ["herdr_env"]])(
+      "requires the exact approved name under policy %j",
+      (allowedEnvironmentVariables) => {
+        expect(
+          createCredentialGuard({ allowedEnvironmentVariables }).isDangerousBashCommand(
+            exactCommand,
+          ),
+        ).toBe(true);
+      },
+    );
+
+    it.each([
+      "echo ${HERDR_ENV:-}",
+      'echo "${NOT_APPROVED:-}"',
+      'echo "${HERDR_ENV:-fallback}"',
+      'echo "${HERDR_ENV:-$HERDR_ENV}"',
+      'echo "${HERDR_ENV:-${HERDR_ENV:-}}"',
+      'echo "${HERDR_ENV:-$(echo fallback)}"',
+      'echo "${!HERDR_ENV:-}"',
+      'echo "${HERDR_ENV-}"',
+      'echo "${HERDR_ENV:=}"',
+      'echo "${HERDR_ENV:+}"',
+      'echo "${HERDR_ENV:?}"',
+      'echo "${HERDR_ENV:-}',
+      '"${HERDR_ENV:-}" argument',
+      'printf "${HERDR_ENV:-}"',
+      'printf -- "${HERDR_ENV:-}" value',
+      'printf -v "${HERDR_ENV:-}" "%s" value',
+      'printf "%n" "${HERDR_ENV:-}"',
+      'eval "${HERDR_ENV:-}"',
+      'sh -c "${HERDR_ENV:-}"',
+      'node -e "${HERDR_ENV:-}"',
+      'echo "$(echo "${HERDR_ENV:-}")"',
+      'echo "${HERDR_ENV:-}" | sh',
+      'echo "${HERDR_ENV:-}" | xargs',
+      'echo "${HERDR_ENV:-}" | unknown-runner',
+      'echo "${HERDR_ENV:-}" > /tmp/env-output',
+      'echo static > "${HERDR_ENV:-}"',
+      'BASH_ENV="${HERDR_ENV:-}" bash script.sh',
+      'HERDR_ENV="${HERDR_ENV:-}" echo static',
+      'echo "${HERDR_ENV:-}"; cat .env',
+      'echo "${HERDR_ENV:-}"; echo "$NOT_APPROVED"',
+    ])("keeps unsafe defaults and executable roles blocked: %s", (command) => {
+      const guard = createCredentialGuard({ allowedEnvironmentVariables: ["HERDR_ENV"] });
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    });
+
+    it("keeps configured command policies active", () => {
+      expect(
+        createCredentialGuard({
+          allowedEnvironmentVariables: ["HERDR_ENV"],
+          additionalDangerousBashPatterns: ["HERDR_ENV"],
+        }).isDangerousBashCommand(exactCommand),
+      ).toBe(true);
+    });
+  });
+
   describe("approved Python environment display", () => {
     const approvedNames = ["CODEX_SESSION_ID", "HERDR_ENV"];
     const program =
@@ -2691,6 +2773,7 @@ describe("bounded archived command roles", () => {
     'test -z "$TEST_FLAG"',
     'test -n "${TEST_FLAG:-}"',
     'test "1" = "$TEST_FLAG"',
+    'echo "${TEST_FLAG:-}"',
     'F=/tmp/result.txt; grep value "$F"; sed -n \'/start/,/end/p\' "$F"',
     "sed -n '/a\\/b/,/end/p' result.txt",
     "sed -n '1,/end/p' result.txt",
@@ -2737,7 +2820,6 @@ describe("bounded archived command roles", () => {
     "test ${TEST_FLAG:-} = 1",
     'test "$TEST_FLAG" = "$TOKEN"',
     'test "${TEST_FLAG:-value}" = 1',
-    'echo "${TEST_FLAG:-}"',
     'test "${TEST_FLAG:-}" = 1 | sh',
     'TEST_FLAG="$TEST_FLAG" test "$TEST_FLAG" = 1',
     "sh -c 'test \"${TEST_FLAG:-}\" = 1'",
