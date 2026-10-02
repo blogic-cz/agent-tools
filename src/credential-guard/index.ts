@@ -422,6 +422,7 @@ function literalBindingText(
   command: string,
   name: string,
   value: string,
+  allowBrackets = false,
 ): { text: string; syntax: string } | undefined {
   let text = "";
   let syntax = "";
@@ -453,7 +454,11 @@ function literalBindingText(
       syntax += quote ? " ".repeat(value.length) : value;
       i += match[0].length - 1;
     } else {
-      if (char === "`" || (!quote && /[(){}*?[\]#]/.test(char))) return undefined;
+      if (
+        char === "`" ||
+        (!quote && (/[(){}*?#]/.test(char) || (!allowBrackets && (char === "[" || char === "]"))))
+      )
+        return undefined;
       text += char;
       syntax += quote ? " " : char;
     }
@@ -608,24 +613,45 @@ function literalShellBodies(command: string): string[] | undefined {
   return bodies;
 }
 
-function isProvedLiteralShellBody(body: string): boolean {
+function isProvedLiteralShellBody(
+  body: string,
+  allowedNames: Set<string>,
+  isPathBlocked: (path: string) => boolean,
+  onProvedPredicate: () => void,
+): boolean {
   if (!body.trim()) return true;
   const materialized = materializeLiteralShell(body)?.command ?? body;
   const parsed = parseStaticShellCommands(materialized);
-  if (!parsed || typeof parsed === "string" || !hasProvedNavigationSequence(materialized))
-    return false;
+  if (!parsed || typeof parsed === "string") {
+    let proved = false;
+    if (
+      hasEnvironmentVariableExpansionRead(body, allowedNames, isPathBlocked, undefined, () => {
+        proved = true;
+      }) ||
+      !proved
+    )
+      return false;
+    onProvedPredicate();
+    return true;
+  }
+  if (!hasProvedNavigationSequence(materialized)) return false;
   if (isStaticHerdrPrompt(materialized)) return true;
   return parsed.pipelines.flat().every((words) => {
     const argv = unwrapProofCommand(words, "\0");
     if (!argv) return false;
     if (argv[0]?.split("/").at(-1) === "env") return false;
     const name = unwrapStaticCommand(argv)[0]?.split("/").at(-1) ?? "";
-    if (isShellWord(name))
-      return (
-        literalShellBodies(
-          words.map((word) => "'" + word.replaceAll("'", "'\"'\"'") + "'").join(" "),
-        ) !== undefined
+    if (isShellWord(name)) {
+      const nested = literalShellBodies(
+        words.map((word) => "'" + word.replaceAll("'", "'\"'\"'") + "'").join(" "),
       );
+      return (
+        nested !== undefined &&
+        nested.every((inner) =>
+          isProvedLiteralShellBody(inner, allowedNames, isPathBlocked, onProvedPredicate),
+        )
+      );
+    }
     return (
       isProvedCwdSubprocessRole(unwrapStaticCommand(argv)) ||
       (name === "bun" && isSafeLocalAssignmentCommand(argv) && !isUnsupportedInlineRuntime(argv)) ||
@@ -2535,7 +2561,9 @@ function hasEnvironmentVariableExpansionRead(
   allowedNames: Set<string>,
   isPathBlocked: (path: string) => boolean,
   onProvedStatus?: (command: string) => void,
+  onProvedPredicate?: () => void,
 ): boolean {
+  const originalCommand = command;
   let heredoc = boundedHeredoc(command);
   while (heredoc) {
     // In an unquoted heredoc, # and quote characters are data, not shell syntax.
@@ -2544,6 +2572,7 @@ function hasEnvironmentVariableExpansionRead(
     heredoc = boundedHeredoc(command);
   }
   if (!command.includes("$") && !command.includes("`")) return false;
+  let predicateSyntaxIntact = command === originalCommand;
   let invalidExpansion = false;
   const assignments = getLeadingLiteralAssignments(command);
   let localIndex = 0;
@@ -2562,6 +2591,7 @@ function hasEnvironmentVariableExpansionRead(
   for (let i = 0; i < command.length; i++) {
     const char = command[i] ?? "";
     if (!quote && char === "#" && !wordStarted) {
+      predicateSyntaxIntact = false;
       while (i + 1 < command.length && command[i + 1] !== "\n") i++;
       continue;
     }
@@ -2810,6 +2840,21 @@ function hasEnvironmentVariableExpansionRead(
   const materialized = normalized.replaceAll("ENVVALUE", "SAFEENVVALUE");
   const blocked = hasSensitiveFileRead(materialized, isPathBlocked);
   if (!blocked && statusCaptures.size) onProvedStatus?.(materialized);
+  // This is a complete command proof, not merely a recursively safe shell body.
+  if (
+    !blocked &&
+    parsed.pipelines.length === 1 &&
+    parsed.pipelines[0]?.length === 1 &&
+    !parsed.redirects.length
+  ) {
+    const argv = unwrapProofCommand(parsed.pipelines[0]?.[0] ?? [], "ENVVALUE");
+    if (argv && isApprovedEnvironmentPredicate(argv) && predicateSyntaxIntact) {
+      // Roles alone cannot prove original shell boundaries or discarded controls.
+      // Brackets are enabled only for the completely proved bracket builtin.
+      const binding = literalBindingText(normalized, "", "", argv[0] === "[");
+      if (binding && !/[;&|<>\r\n]/.test(binding.syntax.trim())) onProvedPredicate?.();
+    }
+  }
   return blocked;
 }
 
@@ -3120,11 +3165,37 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     const shellBodies = literalShellBodies(command);
     if (!shellBodies || (shellBodies.length && shellDepth >= 8))
       return "cannot prove a bounded literal shell invocation";
+    const provedPredicateShellBodies: string[] = [];
     for (const body of shellBodies) {
       const reason = getDangerousBashReason(body, shellDepth + 1);
       if (reason || getBlockedCliTool(body, true, shellDepth + 1))
         return reason ?? "invokes a blocked CLI from a shell body";
-      if (!isProvedLiteralShellBody(body)) return "cannot prove a closed literal shell body";
+      if (
+        !isProvedLiteralShellBody(body, allowedEnvironmentVariables, isPathBlocked, () => {
+          provedPredicateShellBodies.push(body);
+        })
+      )
+        return "cannot prove a closed literal shell body";
+    }
+    if (provedPredicateShellBodies.length) {
+      const context = parseStaticShellCommands(command);
+      const binding = literalBindingText(command, "", "");
+      const argv =
+        context && typeof context !== "string"
+          ? unwrapProofCommand(context.pipelines[0]?.[0] ?? [], "\0")
+          : undefined;
+      if (
+        !context ||
+        typeof context === "string" ||
+        context.pipelines.length !== 1 ||
+        context.pipelines[0]?.length !== 1 ||
+        context.redirects.length !== 0 ||
+        !binding ||
+        /[;&|<>\r\n]/.test(binding.syntax.trim()) ||
+        !argv ||
+        !SHELL_IDENTITIES.has(argv[0] ?? "")
+      )
+        return "cannot prove a single literal shell predicate invocation";
     }
     const proof = materializeLiteralShell(command);
     if (!proof && /^\s*for\b/.test(command)) return "cannot prove a bounded literal shell loop";
@@ -3169,6 +3240,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         allowedEnvironmentVariables,
         allowPackageInventory,
         shellBodies.filter((body) => {
+          if (provedPredicateShellBodies.includes(body)) return true;
           const parsed = parseStaticShellCommands(body);
           return (
             parsed &&
