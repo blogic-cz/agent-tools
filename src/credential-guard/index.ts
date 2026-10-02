@@ -2552,7 +2552,7 @@ function hasEnvironmentVariableExpansionRead(
     const name = variable[1] ?? variable[3] ?? "";
     if (variable[2]) {
       if (quote !== '"' || !allowedNames.has(name)) invalidExpansion = true;
-      normalized += "ENVTESTVALUE";
+      normalized += "ENVVALUE";
       i += variable[0].length - 1;
       continue;
     }
@@ -2607,13 +2607,6 @@ function hasEnvironmentVariableExpansionRead(
       return true;
   }
   for (const words of parsed.pipelines.flat()) {
-    if (
-      words.some((arg) => arg.includes("ENVTESTVALUE")) &&
-      !isApprovedEnvironmentPredicate(unwrapStaticCommand(words))
-    )
-      return true;
-  }
-  for (const words of parsed.pipelines.flat()) {
     if (!words.some((arg) => arg.includes("UNKNOWNVALUE"))) continue;
     if (words.some((arg) => arg.includes("UNKNOWNVALUEUNQUOTED"))) return true;
     const argv = unwrapStaticCommand(words);
@@ -2623,7 +2616,7 @@ function hasEnvironmentVariableExpansionRead(
     )
       return true;
   }
-  if (!localMaterialized.includes("ENVVALUE") && !localMaterialized.includes("ENVTESTVALUE")) {
+  if (!localMaterialized.includes("ENVVALUE")) {
     return (
       hasSensitiveFileRead(localMaterialized, isPathBlocked) ||
       hasSensitivePathRedirect(localMaterialized, isPathBlocked) ||
@@ -2633,7 +2626,7 @@ function hasEnvironmentVariableExpansionRead(
 
   for (const [index, pipeline] of parsed.pipelines.entries()) {
     const hasEnvironmentValue = pipeline.some((argv) =>
-      argv.some((arg) => arg.includes("ENVVALUE") || arg.includes("ENVTESTVALUE")),
+      argv.some((arg) => arg.includes("ENVVALUE")),
     );
     if (!hasEnvironmentValue) continue;
     if (parsed.redirects.some((redirect) => redirect.pipeline === index)) return true;
@@ -2641,12 +2634,8 @@ function hasEnvironmentVariableExpansionRead(
       pipeline.some((argv) => {
         const unwrapped = unwrapStaticCommand(argv);
         const name = unwrapped[0]?.split("/").at(-1) ?? "";
-        if (argv.some((arg) => arg.includes("ENVVALUE") || arg.includes("ENVTESTVALUE"))) {
-          if (
-            argv
-              .slice(0, argv.length - unwrapped.length)
-              .some((arg) => arg.includes("ENVVALUE") || arg.includes("ENVTESTVALUE"))
-          )
+        if (argv.some((arg) => arg.includes("ENVVALUE"))) {
+          if (argv.slice(0, argv.length - unwrapped.length).some((arg) => arg.includes("ENVVALUE")))
             return true;
           if (isApprovedEnvironmentPredicate(unwrapped)) return false;
           if (isNavigationOperand(unwrapped, "ENVVALUE")) {
@@ -2682,7 +2671,7 @@ function isApprovedEnvironmentPredicate(argv: string[]): boolean {
     if (args.at(-1) !== "]") return false;
     args = args.slice(0, -1);
   } else if (argv[0] !== "test") return false;
-  const value = (arg: string | undefined) => arg === "ENVVALUE" || arg === "ENVTESTVALUE";
+  const value = (arg: string | undefined) => arg === "ENVVALUE";
   const literal = (arg: string | undefined) =>
     /^[A-Za-z0-9_.:-]*$/.test(arg ?? "") && arg !== undefined;
   return (
