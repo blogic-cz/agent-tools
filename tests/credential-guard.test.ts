@@ -2753,6 +2753,221 @@ describe("literal subprocess cwd replay", () => {
 });
 
 // Policy inputs only. Never execute these commands.
+describe("local exit-status provenance", () => {
+  const guard = createCredentialGuard();
+  const reported = String.raw`rtk proxy env EXAMPLE_CHECK_QUEUE_DIR=/private/tmp/example-queue-tests/queue-red-tail bun test check/queue-cli.test.ts --test-name-pattern 'recent history' > /private/tmp/example-queue-tests/red-tail.log 2>&1; status=$?; cat /private/tmp/example-queue-tests/red-tail.log; printf '\nEXIT=%s\n' "$status"; exit 0`;
+
+  it.each([
+    reported,
+    ...["status", "result", "arbitrary_flag", "_outcome", "RUN_RESULT"].flatMap((name) => [
+      `${name}=$?; echo "$${name}"`,
+      `${name}=$?; echo $${name}`,
+      `${name}="$?"; printf '%s\\n' "\${${name}}" | head -1`,
+    ]),
+    'false; result=$?\nprintf "EXIT=%s\\n" "$result"',
+    'result=$?; cat /tmp/result.log; echo "exit=$result"',
+    'result=$?; printf "%s\\n" "$result"; result=$?; echo "$result"',
+  ])("allows proved status captures and passive displays: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+
+  it.each([
+    'echo "$result"; result=$?',
+    'cd "$result"; result=$?; echo "$result"',
+    'result=$?; result=.env; echo "$result"',
+    'result=1; result=$?; cat "$result"',
+    'result=$?; result="$TOKEN"; echo "$result"',
+    'result=$?; read result; echo "$result"',
+    'result=$?; unset result; echo "$result"',
+    'result=$?; printf -v result .env; echo "$result"',
+    'false && result=$?; echo "$result"',
+    'false || result=$?; echo "$result"',
+    'result=$? && echo "$result"',
+    'result=$? | cat; echo "$result"',
+    'result=$? & echo "$result"',
+    '(result=$?); echo "$result"',
+    'result=$? echo "$result"',
+    String.raw`r"esult"=$?; echo "$result"`,
+    String.raw`res\ult=$?; echo "$result"`,
+    'result=$?; result=NUMERICSTATUSVALUE0END; echo "$result"',
+    'result=$?; "$result"',
+    'result=$?; rtk proxy "$result"',
+    'result=$?; bash -c "$result"',
+    'result=$?; python -c "$result"',
+    'result=$?; node -e "$result"',
+    'result=$?; printf "$result"',
+    'result=$?; printf -v target "%s" "$result"',
+    "result=$?; echo --$result",
+    'result=$?; head -n "$result" notes.txt',
+    'result=$?; cat "$result"',
+    'result=$?; cd "$result"',
+    'result=$?; git -C "$result" status',
+    'result=$?; echo safe > "$result"',
+    'result=$?; echo "$result" > .env',
+    'result=$?; TARGET="$result" echo safe',
+    'result=$?; env TARGET="$result" echo safe',
+    'result=$?; other="$result"; echo "$other"',
+    'result=$?; echo "$result" | sh',
+    'result=$?; echo "$result" | opaque-runner',
+    'result=$(printenv); printf "%s" "$result"',
+    'result=$?; echo "$(echo "$result")"',
+    'result=$?; echo "${result:-}"',
+    'result=$?; echo "${result:-fallback}"',
+    'result=${?}; echo "$result"',
+    'result=$?; echo "$PIPESTATUS"',
+    'result=$?; echo "$((result))"',
+    'result=$?; opaque-runner; echo "$result"',
+    "alias printf='cat .env'; result=$?; printf '%s' \"$result\"",
+    'readonly result=previous; result=$?; echo "$result"',
+    'result=NUMERICSTATUSVALUE; echo "$result"',
+    'result=NUMERICSTATUSVALUE0; echo "$result"',
+    'result=$?; result=NUMERICSTATUSVALUE0; echo "$result"',
+    ...["PATH", "IFS", "CDPATH", "BASH_ENV", "ENV", "FPATH", "PROMPT_COMMAND"].map(
+      (name) => `${name}=$?; echo "$${name}"`,
+    ),
+  ])("refuses unproved provenance or unsafe status sinks: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+
+  it.each([
+    ['result=$?; cat "$result"', { additionalBlockedPaths: ["^0$"] }],
+    [
+      'result=$?; echo "$result"; cat /tmp/private/report.txt',
+      { additionalBlockedPaths: ["^/tmp/private/report[.]txt$"] },
+    ],
+    [
+      'result=$?; echo "$result" > /tmp/private/report.txt',
+      { additionalBlockedPaths: ["^/tmp/private/report[.]txt$"] },
+    ],
+    [
+      'result=$?; git -C /tmp/private status; echo "$result"',
+      { additionalBlockedPaths: ["^/tmp/private/$"] },
+    ],
+    ['result=$?; echo "$result"', { additionalDangerousBashPatterns: ["result="] }],
+  ] satisfies [string, Parameters<typeof createCredentialGuard>[0]][])(
+    "keeps configured path and command policies active: %s",
+    (command, config) => {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
+    },
+  );
+});
+
+// Policy inputs only. Never execute these commands.
+describe("exit-status capture runtime controls", () => {
+  const guard = createCredentialGuard();
+  const controls = [
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "LD_DEBUG_OUTPUT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "_RLD_LIST",
+    "LDR_PRELOAD",
+    "LIBPATH",
+    "SHLIB_PATH",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "BUN_OPTIONS",
+    "BUN_PRELOAD",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONHOME",
+    "RUBYOPT",
+    "RUBYLIB",
+    "PERL5OPT",
+    "PERL5LIB",
+    "JAVA_TOOL_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "CLASSPATH",
+    "_JAVA_OPTIONS",
+    "BASH_XTRACEFD",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "GIT_SSH_COMMAND",
+    "GIT_SSH",
+    "GIT_PROXY_COMMAND",
+    "GIT_EXEC_PATH",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_PAGER",
+    "PAGER",
+    "EDITOR",
+    "VISUAL",
+    "JAVA_HOME",
+    "GEM_HOME",
+    "GEM_PATH",
+    "PERLLIB",
+  ];
+
+  it.each(
+    controls.flatMap((name) => {
+      const cases = [
+        `${name}=$?; cat /tmp/report.txt`,
+        `${name}=$?; rtk proxy cat /tmp/report.txt`,
+        `${name}="$?"; cat /tmp/report.txt; printf '%s' "$${name}"`,
+        `${name}=$?; command printf '%s' "$${name}"; rtk proxy cat /tmp/report.txt`,
+      ];
+      if (name.startsWith("GIT_"))
+        cases.push(
+          `${name}=$?; git fetch origin main`,
+          `${name}=$?; printf '%s' "$${name}"; rtk proxy git fetch origin main`,
+        );
+      return cases;
+    }),
+  )("refuses numeric captures into execution-control targets: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+
+  it.each(
+    [
+      "ordinary_status",
+      "capture_123",
+      "userLocal",
+      "ld_result",
+      "dyld_result",
+      "git_result",
+      "GIT_EXIT_CODE",
+      "NODE_RESULT",
+      "PYTHON_STATUS",
+      "BUN_RESULT",
+      "RUBY_STATUS",
+      "PERL_RESULT",
+      "JAVA_RESULT",
+      "JDK_STATUS",
+    ].map((name) => `${name}=$?; cat /tmp/report.txt; printf '%s' "$${name}"`),
+  )("keeps ordinary local captures generic: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+});
+
+// Policy inputs only. Never execute these commands.
 describe("bounded archived command roles", () => {
   const allowed = [
     "bun oxlint -c /tmp/project/lint.json --deny-warnings cli",
@@ -3622,6 +3837,119 @@ describe("bounded Herdr command composition", () => {
       ).toThrow();
     }
   });
+});
+
+// Hook inputs only: these shell commands are never executed.
+describe("literal working-directory operands", () => {
+  const guard = createCredentialGuard();
+  const directory = "/tmp/worktrees/credential-guard-boundaries";
+
+  it.each(
+    ["git", "rtk git", "rtk proxy git"].flatMap((git) => [
+      `${git} -C ${directory} fetch origin main`,
+      `${git} -C ${directory} fetch origin`,
+      `${git} -C ${directory} fetch origin main | head -1`,
+      `${git} -C ${directory} fetch origin main | cat notes.txt`,
+      `${git} -C ${directory} fetch origin main; git rev-parse --show-toplevel`,
+      `${git} -C '${directory} directory' status --short`,
+      `${git} -C ./credential-guard-awk-update fetch origin main`,
+      `${git} -C ${directory} rev-parse HEAD`,
+      `${git} -C ${directory} rev-list --count HEAD`,
+      `${git} -C /tmp/worktrees -C credential-guard-boundaries -C ../secret-feature fetch origin main`,
+      `cd ${directory} && ${git} fetch origin main`,
+      `cd -- './secret-feature directory' && ${git} status --short`,
+    ]),
+  )("allows literal navigation without classifying directory names as files: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "git -C /tmp/credential-backups config --list",
+    "git -C /tmp/credential-backups -c core.pager='cat .env' log",
+    "git -C /tmp/credential-backups --exec-path=/tmp/custom-tools status",
+    "git -C /tmp/credential-backups fetch --upload-pack='cat .env' origin main",
+    `cd /tmp/credential-backups && python -c 'print(open("notes.txt").read())'`,
+    `cd /tmp/credential-backups && node -e 'console.log(require("fs").readFileSync("notes.txt", "utf8"))'`,
+    "cd /tmp/credential-backups && bun run gh-tool pr create --title review --repo example/repo --body-file notes.txt",
+    "cd /tmp/credential-backups && rtk proxy bun run gh-tool pr create --title review --repo example/repo --body-file notes.txt",
+    "cd /tmp/credential-backups && bun run gh-tool pr create --title review --repo example/repo --body-file=notes.txt",
+    "git -C /tmp/credential-backups show HEAD:notes.txt",
+    "git -C /tmp/credential-backups show HEAD:.env",
+    "rtk git -C /tmp/credential-backups show HEAD:.env",
+    "rtk proxy git -C /tmp/credential-backups show HEAD:.env",
+    "cd /tmp/credential-backups && git show HEAD:notes.txt",
+    ...["git", "rtk git", "rtk proxy git"].flatMap((git) => [
+      `${git} -C ${directory} fetch --upload=printenv origin main`,
+      `${git} -C ${directory} fetch origin main --upload-pack=printenv`,
+      `${git} -C ${directory} fetch origin main --u=printenv`,
+      `${git} -C ${directory} fetch -u origin main`,
+      `${git} -C ${directory} --paginate status`,
+      `${git} -C ${directory} status --exec-path=/tmp/tools`,
+      `${git} -C ${directory} custom-command`,
+      `${git} -C ${directory} 'rev-parse HEAD'`,
+      `${git} -C ${directory} 'rev-list --count HEAD'`,
+      `${git} -C ${directory} -c core.pager=printenv -C ../credential-data status`,
+      `${git} -C ${directory} fetch origin main | cat .env`,
+      `${git} -C ${directory} fetch origin main; printenv`,
+      `${git} -C ${directory} fetch origin main; ${git} -C ${directory} show HEAD:.env`,
+      `cd ${directory} && ${git} status --short | cat notes.txt`,
+    ]),
+    'D=/tmp/credential-backups; git -C "$D" show HEAD:.env',
+    `git -C ${directory} grep value -- .env`,
+    `git -C ${directory} grep value -- credentials.json`,
+    `cat ${directory}/credentials.json`,
+    `cd ${directory} && cat credentials.json`,
+    `git -C ${directory} status > .env`,
+    `git -C ${directory} status >> /tmp/.aws/config`,
+    "git -C /tmp/.aws fetch origin main",
+    "git -C /tmp/.ssh fetch origin main",
+    "git -C /tmp/.kube fetch origin main",
+    "git -C /tmp/secrets fetch origin main",
+    "git -C /tmp/credentials fetch origin main",
+    "git -C /proc/self/environ fetch origin main",
+    "git -C /tmp/worktrees -C ../../.aws fetch origin main",
+    "cd /tmp/.aws && git fetch origin main",
+    "cd /tmp/credential-backups && cat notes.txt",
+    "cd /tmp/credential-backups; cat notes.txt",
+    "cd /tmp/credential-guard; cat notes.txt",
+    "cd /tmp/credential-guard-policy.ts; cat notes.txt",
+    "cd /tmp/credential-backups || cat notes.txt",
+    "cd /tmp/credential-backups && cd /tmp/missing; cat notes.txt",
+    "cd /tmp/credential-backups && cd /tmp/missing && cat notes.txt",
+    'git -C "$UNKNOWN" fetch origin main',
+    'git -C "$(cat .env)" fetch origin main',
+    "git -C `cat .env` fetch origin main",
+  ])("keeps sensitive operands, secret stores and unsafe expansions blocked: %s", (command) => {
+    expect(guard.isDangerousBashCommand(command)).toBe(true);
+    expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow();
+  });
+
+  it.each([
+    [`git -C ${directory} fetch origin main`, { additionalBlockedPaths: [directory + "$"] }],
+    [`git -C ${directory} fetch origin main`, { additionalBlockedPaths: [directory + "/$"] }],
+    [
+      "git -C /tmp/worktrees -C credential-guard-boundaries fetch origin main",
+      { additionalBlockedPaths: ["^" + directory + "/$"] },
+    ],
+    [`cd ${directory} && git status`, { additionalBlockedPaths: ["^" + directory + "$"] }],
+    [
+      `git -C ${directory} fetch origin main`,
+      { additionalDangerousBashPatterns: ["fetch origin main"] },
+    ],
+  ] satisfies [string, Parameters<typeof createCredentialGuard>[0]][])(
+    "keeps configured directory and command policies active: %s",
+    (command, config) => {
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
+    },
+  );
 });
 
 // Hook inputs only: these shell commands are never executed.
