@@ -36,10 +36,9 @@ const GENERIC_SECRET_VALUE = "my-super-" + "secret-password-12345-abcdef";
 const CREDENTIAL_GUARD_HOOK_PATH = ".agent/hooks/credential-guard.ts";
 
 describe("credential guard corpus", () => {
-  const guard = createCredentialGuard();
-
-  it.each(corpus)("$label: $command", ({ command, label }) => {
-    expect(guard.isDangerousBashCommand(command)).toBe(label !== "FP");
+  it.each(corpus)("$label: $command", (entry) => {
+    const guard = createCredentialGuard("config" in entry ? entry.config : undefined);
+    expect(guard.isDangerousBashCommand(entry.command)).toBe(entry.label !== "FP");
   });
 });
 
@@ -2970,6 +2969,7 @@ describe("exit-status capture runtime controls", () => {
 // Policy inputs only. Never execute these commands.
 describe("bounded archived command roles", () => {
   const allowed = [
+    "sh -c 'test \"${TEST_FLAG:-}\" = 1'",
     "bun oxlint -c /tmp/project/lint.json --deny-warnings cli",
     "rtk proxy bun oxlint -c /tmp/project/lint.json --deny-warnings cli",
     "node script.js -c config.json",
@@ -3037,7 +3037,6 @@ describe("bounded archived command roles", () => {
     'test "${TEST_FLAG:-value}" = 1',
     'test "${TEST_FLAG:-}" = 1 | sh',
     'TEST_FLAG="$TEST_FLAG" test "$TEST_FLAG" = 1',
-    "sh -c 'test \"${TEST_FLAG:-}\" = 1'",
     "F=/tmp/result.txt; sed -n '/start/,/end/e' \"$F\"",
     "F=/tmp/result.txt; sed -n '/start/,/end/r .env' \"$F\"",
     "F=/tmp/result.txt; sed -n '/start/,/end/w .env' \"$F\"",
@@ -4421,5 +4420,435 @@ open(p,'w').write(s)`;
     const invoke = () => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } });
     if (allowed) expect(invoke).not.toThrow();
     else expect(invoke).toThrow();
+  });
+});
+
+// Policy inputs only. Never execute represented shell bodies.
+describe("approved metadata shell predicates", () => {
+  const quote = (body: string) => "'" + body.replaceAll("'", "'\"'\"'") + "'";
+  const prefixes = [
+    "sh -c ",
+    "bash -c ",
+    "/bin/sh -c ",
+    "/usr/bin/sh -c ",
+    "/bin/bash -c ",
+    "/usr/bin/bash -c ",
+    "zsh -f -c ",
+    "/bin/zsh -f -c ",
+    "rtk proxy sh -c ",
+    "command -- sh -c ",
+  ];
+  const guard = createCredentialGuard({
+    allowedEnvironmentVariables: ["HERDR_ENV", "EXAMPLE_SESSION_FLAG"],
+  });
+  const predicate = 'test "${HERDR_ENV:-}" = 1';
+  const bodies = [
+    predicate,
+    '[ "${HERDR_ENV:-}" = "" ]',
+    'test -n "$HERDR_ENV"',
+    'test -z "${EXAMPLE_SESSION_FLAG:-}"',
+  ];
+  it.each(bodies.flatMap((body) => [body].concat(prefixes.map((prefix) => prefix + quote(body)))))(
+    "allows configured metadata only in proved predicates: %s",
+    (command) => {
+      expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+      expect
+        .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+        .not.toThrow();
+    },
+  );
+  const nested = (count: number) => {
+    let body = predicate;
+    for (let i = 0; i < count; i++) body = "sh -c " + quote(body);
+    return body;
+  };
+  it.each([2, 3, 8])("keeps existing predicate recursion bound: %s", (count) => {
+    const command = nested(count);
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each(prefixes)("refuses default and unapproved names under %s", (prefix) => {
+    const command = prefix + quote(predicate);
+    expect.soft(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() =>
+        createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      )
+      .toThrow();
+    const unknown = prefix + quote(predicate.replaceAll("HERDR_ENV", "UNKNOWN_METADATA"));
+    expect.soft(guard.isDangerousBashCommand(unknown)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command: unknown } }))
+      .toThrow();
+  });
+  it.each(
+    [
+      "test ${HERDR_ENV:-} = 1",
+      'test "${HERDR_ENV:-fallback}" = 1',
+      'test "${HERDR_ENV:-$HERDR_ENV}" = 1',
+      'test "${HERDR_ENV:-${HERDR_ENV:-}}" = 1',
+      'test "${HERDR_ENV:-$(echo fallback)}" = 1',
+      'test "$HERDR_ENV" = "$TOKEN"',
+      '"${HERDR_ENV:-}" argument',
+      'eval "${HERDR_ENV:-}"',
+      'sh -c "${HERDR_ENV:-}"',
+      'printf "${HERDR_ENV:-}"',
+      'printf -v target "%s" "$HERDR_ENV"',
+      'cat "${HERDR_ENV:-}"',
+      'cd "${HERDR_ENV:-}"',
+      'head -n "$HERDR_ENV" README.md',
+      'test "${HERDR_ENV:-}" = 1 | sh',
+      'test "${HERDR_ENV:-}" = 1 | xargs',
+      'test "${HERDR_ENV:-}" = 1 | unknown-runner',
+      'test "${HERDR_ENV:-}" = 1 > .env',
+      'test "${HERDR_ENV:-}" = 1 > /tmp/output',
+      'test "${HERDR_ENV:-}" = 1; cat .env',
+      'test "${HERDR_ENV:-}" = 1; opaque-command',
+      'HERDR_ENV=1; test "${HERDR_ENV:-}" = 1',
+      'LD_PRELOAD=$?; test "${HERDR_ENV:-}" = 1',
+      'alias test="cat .env"; test "${HERDR_ENV:-}" = 1',
+    ].flatMap((body) => ["sh -c " + quote(body), "rtk proxy /bin/sh -c " + quote(body)]),
+  )("refuses unsupported complete bodies and sinks: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+  it.each([
+    "sh -lc " + quote(predicate),
+    "sh --command " + quote(predicate),
+    "sh -c " + quote(predicate) + " extra",
+    "zsh -c " + quote(predicate),
+    "env sh -c " + quote(predicate),
+    "PATH=/tmp sh -c " + quote(predicate),
+    "BASH_ENV=/tmp/startup sh -c " + quote(predicate),
+    "LD_PRELOAD=/tmp/loader sh -c " + quote(predicate),
+    "NODE_OPTIONS=--require=loader sh -c " + quote(predicate),
+    nested(9),
+    "sh -c " + quote(predicate) + " | sh",
+    "sh -c " + quote(predicate) + " < .env",
+    "LD_PRELOAD=0; sh -c " + quote(predicate),
+    "HERDR_ENV=1; sh -c " + quote(predicate),
+    "alias sh='cat .env'; sh -c " + quote(predicate),
+    "alias test='cat .env'; sh -c " + quote(predicate),
+    "readonly HERDR_ENV=1; sh -c " + quote(predicate),
+    "sh -c " + quote(predicate) + " | unknown-runner",
+    "sh -c " + quote(predicate) + " | head",
+  ])("retains exact shell invocation and outer policy: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+  it.each([
+    "builtin export BASH_ENV=/tmp/startup; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin export BASH_ENV=/tmp/startup\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin export BASH_ENV=/tmp/startup && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin export BASH_ENV=/tmp/startup || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin alias sh='cat .env'; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin alias sh='cat .env'\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin alias sh='cat .env' && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin alias sh='cat .env' || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin eval 'export BASH_ENV=/tmp/startup'; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin eval 'export BASH_ENV=/tmp/startup'\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin eval 'export BASH_ENV=/tmp/startup' && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin eval 'export BASH_ENV=/tmp/startup' || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin unset HERDR_ENV; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin unset HERDR_ENV\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin unset HERDR_ENV && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "builtin unset HERDR_ENV || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command export BASH_ENV=/tmp/startup; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command export BASH_ENV=/tmp/startup\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command export BASH_ENV=/tmp/startup && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command export BASH_ENV=/tmp/startup || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command -- builtin export BASH_ENV=/tmp/startup; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command -- builtin export BASH_ENV=/tmp/startup\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command -- builtin export BASH_ENV=/tmp/startup && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "command -- builtin export BASH_ENV=/tmp/startup || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy builtin unset HERDR_ENV; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy builtin unset HERDR_ENV\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy builtin unset HERDR_ENV && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy builtin unset HERDR_ENV || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "true; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "true\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "true && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "true || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "pwd; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "pwd\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "pwd && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "pwd || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "echo complete; sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "echo complete\nsh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "echo complete && sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "echo complete || sh -c 'test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1'; true",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1'\ntrue",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1' && true",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1' || true",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1';",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1' &",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1' > /tmp/output",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1' 2>&1",
+    "sh -c 'true; sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'true\nsh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'true && sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'true || sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+  ])("refuses compound predicate startup contexts: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+  it.each([
+    "sh -c 'test\u00a0\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u00a0\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u00a0\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u00a0\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u00a0\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u00a0\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u00a0test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u00a0test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u00a0test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u00a0test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u00a0test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u00a0test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u00a0= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u00a0= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u00a0= 1'\"'\"''",
+    "sh -c 'test\u000b\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u000b\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u000b\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u000b\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u000b\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u000b\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u000btest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u000btest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u000btest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u000btest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u000btest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u000btest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u000b= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u000b= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u000b= 1'\"'\"''",
+    "sh -c 'test\f\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\f\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\f\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \f\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \f\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \f\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\ftest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\ftest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\ftest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\ftest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\ftest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\ftest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\f= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\f= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\f= 1'\"'\"''",
+    "sh -c 'test\u2003\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u2003\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u2003\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u2003\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u2003\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u2003\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u2003test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u2003test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u2003test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u2003test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u2003test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u2003test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u2003= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u2003= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u2003= 1'\"'\"''",
+    "sh -c 'test\r\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\r\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\r\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \r\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \r\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \r\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\rtest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\rtest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\rtest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\rtest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\rtest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\rtest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\r= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\r= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\r= 1'\"'\"''",
+    "sh -c 'test\u1680\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u1680\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u1680\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u1680\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u1680\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u1680\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u1680test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u1680test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u1680test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u1680test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u1680test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u1680test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u1680= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u1680= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u1680= 1'\"'\"''",
+    "sh -c 'test\u2028\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u2028\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u2028\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u2028\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u2028\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u2028\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u2028test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u2028test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u2028test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u2028test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u2028test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u2028test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u2028= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u2028= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u2028= 1'\"'\"''",
+    "sh -c 'test\u2029\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u2029\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u2029\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u2029\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u2029\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u2029\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u2029test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u2029test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u2029test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u2029test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u2029test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u2029test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u2029= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u2029= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u2029= 1'\"'\"''",
+    "sh -c 'test\u202f\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u202f\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u202f\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u202f\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u202f\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u202f\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u202ftest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u202ftest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u202ftest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u202ftest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u202ftest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u202ftest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u202f= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u202f= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u202f= 1'\"'\"''",
+    "sh -c 'test\u205f\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u205f\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u205f\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u205f\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u205f\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u205f\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u205ftest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u205ftest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u205ftest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u205ftest \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u205ftest \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u205ftest \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u205f= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u205f= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u205f= 1'\"'\"''",
+    "sh -c 'test\u3000\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test\u3000\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test\u3000\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \u3000\"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'test \u3000\"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'test \u3000\"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c '\u3000test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c '\u3000test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'\u3000test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'command\u3000test \"${HERDR_ENV:-}\" = 1'",
+    "rtk proxy /bin/sh -c 'command\u3000test \"${HERDR_ENV:-}\" = 1'",
+    "sh -c 'sh -c '\"'\"'command\u3000test \"${HERDR_ENV:-}\" = 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\"\u3000= 1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\"\u3000= 1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\"\u3000= 1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 &'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 &'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 &'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1;'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1;'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1;'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 &&'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 &&'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 &&'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 ||'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 ||'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 ||'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 |'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 |'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 |'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 2>&1'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 2>&1'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 2>&1'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 2>&-'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 2>&-'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 2>&-'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 > /tmp/output'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 > /tmp/output'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 > /tmp/output'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 < /tmp/input'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 < /tmp/input'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 < /tmp/input'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 <<'\"'\"'EOF'\"'\"'\nplain data\nEOF'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 <<'\"'\"'EOF'\"'\"'\nplain data\nEOF'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 <<'\"'\"'\"'\"'\"'\"'\"'\"'EOF'\"'\"'\"'\"'\"'\"'\"'\"'\nplain data\nEOF'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 <<EOF\nplain data\nEOF'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 <<EOF\nplain data\nEOF'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 <<EOF\nplain data\nEOF'\"'\"''",
+    "sh -c 'test \"${HERDR_ENV:-}\" = 1 # comment'",
+    "rtk proxy /bin/sh -c 'test \"${HERDR_ENV:-}\" = 1 # comment'",
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = 1 # comment'\"'\"''",
+  ])("refuses unproved original predicate lexical syntax: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+  it.each([
+    "sh -c 'test\t\"${HERDR_ENV:-}\"\t=\t1'",
+    "rtk proxy /bin/sh -c 'test\t\"${HERDR_ENV:-}\"\t=\t1'",
+    "sh -c 'sh -c '\"'\"'test\t\"${HERDR_ENV:-}\"\t=\t1'\"'\"''",
+    "sh -c '[\t\"${HERDR_ENV:-}\"\t=\t1\t]'",
+    "rtk proxy /bin/sh -c '[\t\"${HERDR_ENV:-}\"\t=\t1\t]'",
+    "sh -c 'sh -c '\"'\"'[\t\"${HERDR_ENV:-}\"\t=\t1\t]'\"'\"''",
+    'sh -c \'test "${HERDR_ENV:-}" = "1"\'',
+    'rtk proxy /bin/sh -c \'test "${HERDR_ENV:-}" = "1"\'',
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = \"1\"'\"'\"''",
+    'sh -c \'test "${HERDR_ENV:-}" = ""\'',
+    'rtk proxy /bin/sh -c \'test "${HERDR_ENV:-}" = ""\'',
+    "sh -c 'sh -c '\"'\"'test \"${HERDR_ENV:-}\" = \"\"'\"'\"''",
+    "sh -c '\tcommand -- test \"${HERDR_ENV:-}\" = 1\t'",
+    "rtk proxy /bin/sh -c '\tcommand -- test \"${HERDR_ENV:-}\" = 1\t'",
+    "sh -c 'sh -c '\"'\"'\tcommand -- test \"${HERDR_ENV:-}\" = 1\t'\"'\"''",
+  ])("preserves exact ASCII predicate boundaries: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it("preserves configured command and CLI policies", () => {
+    const command = "rtk proxy sh -c " + quote(predicate);
+    for (const config of [
+      { allowedEnvironmentVariables: ["HERDR_ENV"], additionalDangerousBashPatterns: ["^test"] },
+      {
+        allowedEnvironmentVariables: ["HERDR_ENV"],
+        additionalDangerousBashPatterns: ["^rtk proxy sh"],
+      },
+      {
+        allowedEnvironmentVariables: ["HERDR_ENV"],
+        additionalBlockedCliTools: [{ tool: "test", suggestion: "approved-predicate" }],
+      },
+    ])
+      expect(() =>
+        createCredentialGuard(config).handleToolExecuteBefore(
+          { tool: "Bash" },
+          { args: { command } },
+        ),
+      ).toThrow();
   });
 });
