@@ -2029,8 +2029,38 @@ function isReadonlyJqConsumer(argv: string[]): boolean {
         (arg) =>
           !arg.startsWith("-") || arg === "-" || arg === "--" || /^-[bdfgMhnRruVszcC]+$/.test(arg),
       );
-  if (["cat", "uniq", "wc"].includes(name)) return isProvedCwdSubprocessRole(argv);
+  if (name === "uniq") return isReadonlyUniqConsumer(argv);
+  if (["cat", "wc"].includes(name)) return isProvedCwdSubprocessRole(argv);
   return name === "tr";
+}
+
+/** uniq INPUT is a read; uniq INPUT OUTPUT is a write and cannot acquire this proof. */
+function isReadonlyUniqConsumer(argv: string[]): boolean {
+  let operands = 0;
+  let options = true;
+  for (let index = 1; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (options && arg === "--") {
+      options = false;
+      continue;
+    }
+    if (options) {
+      if (/^-[cduiz]+$|^--(?:count|repeated|unique|ignore-case|zero-terminated)$/.test(arg))
+        continue;
+      const short = /^-[fsw]([0-9]*)$/.exec(arg);
+      const long = /^--(?:skip-fields|skip-chars|check-chars)(?:=(.*))?$/.exec(arg);
+      if (short || long) {
+        const attached = short ? short[1] || undefined : long?.[1];
+        const value = attached === undefined ? argv[++index] : attached;
+        if (!/^[0-9]+$/.test(value ?? "")) return false;
+        continue;
+      }
+      if (arg.startsWith("-") && arg !== "-") return false;
+    }
+    options = false;
+    if (++operands > 1) return false;
+  }
+  return true;
 }
 
 /** One print program with optional numeric or escaped-regex addresses; no callbacks. */

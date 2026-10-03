@@ -5026,3 +5026,97 @@ describe("bounded nested jq object maps", () => {
       .toThrow();
   });
 });
+
+// Policy-only uniq INPUT/OUTPUT argument-role witnesses.
+describe("readonly jq uniq operand roles", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "jq '{a,b}' r.json | uniq",
+    "jq '{a,b}' r.json | uniq -c",
+    "jq '{a,b}' r.json | rtk uniq -c",
+    "jq '{a,b}' r.json | uniq -",
+    "jq '{a,b}' r.json | uniq input.txt",
+    "jq '{a,b}' r.json | uniq -ci input.txt",
+    "jq '{a,b}' r.json | uniq -f 2 -s3 -w 8 input.txt",
+    "jq '{a,b}' r.json | uniq -f2 -s 3 -w8 -",
+    "jq '{a,b}' r.json | uniq --skip-fields=2 --skip-chars 3 --check-chars=8 input.txt",
+    "jq '{a,b}' r.json | uniq --count --unique -- input.txt",
+    "jq '{a,b}' r.json | uniq -- -",
+    "jq '{a,b}' r.json | uniq -- -named-input",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -c",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | rtk uniq -c",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -ci input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f 2 -s3 -w 8 input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f2 -s 3 -w8 -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --skip-fields=2 --skip-chars 3 --check-chars=8 input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --count --unique -- input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- -named-input",
+  ])("allows flags and at most one input: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq '{a,b}' r.json | uniq - package.json",
+    "jq '{a,b}' r.json | uniq - ~/.bashrc",
+    "jq '{a,b}' r.json | uniq input.txt output.txt",
+    "jq '{a,b}' r.json | uniq -c - package.json",
+    "jq '{a,b}' r.json | uniq -f 2 - package.json",
+    "jq '{a,b}' r.json | uniq -f2 - package.json",
+    "jq '{a,b}' r.json | uniq --skip-fields 2 -- - package.json",
+    "jq '{a,b}' r.json | uniq --check-chars=8 - package.json",
+    "jq '{a,b}' r.json | uniq -- - package.json",
+    "jq '{a,b}' r.json | uniq -- input.txt output.txt",
+    "jq '{a,b}' r.json | uniq -f package.json",
+    "jq '{a,b}' r.json | uniq -s",
+    "jq '{a,b}' r.json | uniq --skip-fields=invalid",
+    "jq '{a,b}' r.json | uniq --unknown-option",
+    "jq '{a,b}' r.json | uniq -x",
+    "jq '{a,b}' r.json | uniq input.txt -c",
+    "jq '{a,b}' r.json | uniq .env",
+    "jq '{a,b}' r.json | uniq -w \"$TOKEN\" -",
+    "jq '{a,b}' r.json | uniq - > .env",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq - ~/.bashrc",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq input.txt output.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -c - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f 2 - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f2 - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --skip-fields 2 -- - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --check-chars=8 - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- input.txt output.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -s",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --skip-fields=invalid",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --unknown-option",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -x",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq input.txt -c",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq .env",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -w \"$TOKEN\" -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq - > .env",
+  ])("refuses output operands and unproved flags: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only explicit empty numeric option values.
+it.each([
+  "jq '{a,b}' r.json | uniq --skip-fields= 0 input.txt",
+  "jq '{a,b}' r.json | uniq --skip-chars= 0 -",
+  "jq '{a,b}' r.json | uniq --check-chars= 0 input.txt",
+])("refuses empty attached uniq numeric values: %s", (command) => {
+  const guard = createCredentialGuard();
+  expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+  expect
+    .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+    .toThrow();
+});
