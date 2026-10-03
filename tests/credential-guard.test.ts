@@ -4852,3 +4852,128 @@ describe("approved metadata shell predicates", () => {
       ).toThrow();
   });
 });
+
+// Policy input only; represented jq and external shell commands are never executed.
+describe("bounded readonly jq projections", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "rtk shasum -a 256 /private/tmp/example-measurement/run.ts /private/tmp/example-measurement/control.json /private/tmp/example-measurement/evidence.md && rtk cat /private/tmp/example-measurement/control.json | rtk jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}'",
+    "rtk jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' /private/tmp/example-measurement/dimension.json",
+    "jq '{control,base:.base,delta}' report.json",
+    "jq '.jobs[] | {id,status}' report.json",
+    "jq '.items | {id,value:.data}' report.json",
+    "jq '.items[] | select(.name | contains(\"example\")) | {name,score:.score}' report.json",
+    "jq '{a:.x,b:.y}' report.json",
+    "jq '{dependencies, peerDependencies}' report.json",
+    "jq '{a: .items | map(.value) | length}' report.json",
+    "jq '.a > .b' report.json",
+    "jq 'map(select(.status == \"passed\"))' report.json",
+    "cat report.json | rtk jq '.jobs[] | {id,status}'",
+    "jq -rc -- '{a,base:.base}' report.json",
+    "jq '.env' settings.json",
+  ])("allows literal data projections: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq env",
+    "jq '$ENV' report.json",
+    "jq '{a:env,b:.b}' report.json",
+    "jq '{a:$ENV,b:.b}' report.json",
+    "jq 'import \"module\" as m; {a,b}' report.json",
+    "jq 'include \"module\"; {a,b}' report.json",
+    "jq -f /tmp/program '{a,b}' report.json",
+    "jq --from-file /tmp/program '{a,b}' report.json",
+    "jq -L /tmp/modules '{a,b}' report.json",
+    "jq --arg value env '{a,b}' report.json",
+    "jq '{a,b}' --from-file /tmp/program",
+    "jq '{a,b}' .env",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' ~/.kube/config",
+    "jq --rawfile value .env '{a,b}' report.json",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json > .env",
+    "rtk proxy bash /private/tmp/example-measurement/run-once.sh",
+    "jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}' report.json | sh",
+    "jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}' report.json | xargs",
+    "jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}' report.json | opaque-consumer",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json | sh",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json | xargs",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json | opaque-consumer",
+    "jq '.items[] | select(.name|contains(\"\\(env)\")) | {a,b}' report.json",
+    "jq '.items[] | select(.name|contains(env)) | {a,b}' report.json",
+    "jq '.items[] | select(.name|contains(\"x\")) | {a,b}; env' report.json",
+  ])("refuses executable or sensitive jq roles: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only jq consumer compatibility witnesses.
+describe("readonly jq consumer chains", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "jq '{a,b}' report.json | cat",
+    "jq '{a,b}' report.json | rtk cat",
+    "jq '{a,b}' report.json | sort",
+    "jq '{a,b}' report.json | sort -rn",
+    "jq '{a,b}' report.json | wc -l",
+    "jq '{a,b}' report.json | uniq",
+    "jq '{a,b}' report.json | uniq -c",
+    "jq '{a,b}' report.json | tr -d '\\r'",
+    "jq '{a,b}' report.json | tr 'a-z' 'A-Z'",
+    "jq '{a,b}' report.json | cat | sort | uniq -c | wc -l",
+    "jq '{a,b}' report.json | sort | cat notes.txt",
+    "jq '{a,b}' report.json | cat | rtk jq '{a,b}' | sort | wc -l",
+  ])("allows native data consumers: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq '{a,b}' report.json | sort --compress-program=sh",
+    "jq '{a,b}' report.json | sort --compress-program sh",
+    "jq '{a,b}' report.json | sort --compress=sh",
+    "jq '{a,b}' report.json | sort --comp=sh",
+    "jq '{a,b}' report.json | sort --files0-from=.env",
+    "jq '{a,b}' report.json | wc --files0-from=.env",
+    "jq '{a,b}' report.json | cat .env",
+    "jq '{a,b}' report.json | sort .env",
+    "jq '{a,b}' report.json | uniq .env",
+    "jq '{a,b}' report.json | wc -l .env",
+    "jq '{a,b}' report.json | cat > .env",
+    "jq '{a,b}' report.json | sort | opaque-consumer",
+    "jq '{a,b}' report.json | cat | xargs",
+    "jq '{a,b}' report.json | tr a b | sh",
+    "jq '{a,b}' report.json | sort | jq env",
+    "jq '{a,b}' report.json | sort | jq '$ENV'",
+    "jq '{a,b}' report.json | opaque-consumer",
+    "bun run db-tool query --sql 'select 1' | cat",
+    "bun run db-tool query --sql 'select 1' | sort",
+    "bun run db-tool query --sql 'select 1' | wc -l",
+  ])("refuses execution and protected consumer paths: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only native sort option boundary.
+it.each([
+  "jq '{a,b}' report.json | sort --files0-from=-",
+  "jq '{a,b}' report.json | sort --random-source=/tmp/random",
+  "jq '{a,b}' report.json | sort --random-source /tmp/random",
+  "jq '{a,b}' report.json | sort --unknown-option",
+  "jq '{a,b}' report.json | sort -o /tmp/output",
+  "jq '{a,b}' report.json | sort -T /tmp",
+])("refuses unproved jq sort consumer options: %s", (command) => {
+  const guard = createCredentialGuard();
+  expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+  expect
+    .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+    .toThrow();
+});

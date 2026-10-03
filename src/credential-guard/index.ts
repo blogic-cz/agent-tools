@@ -1512,6 +1512,15 @@ function isJqObjectConstruction(argv: string[]): boolean {
   if (argv[index] === "--") index++;
   const filter = argv[index] ?? "";
   if (argv.slice(index + 1).some((arg) => arg.startsWith("-"))) return false;
+  // ponytail: flat field projections and one literal contains selector; no jq evaluator.
+  const field = String.raw`\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*`;
+  const entry = String.raw`[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*${field})?`;
+  const object = String.raw`\{\s*${entry}(?:\s*,\s*${entry})*\s*\}`;
+  // JSON string escapes exclude jq interpolation, which starts with \(.
+  const string = String.raw`"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
+  const selector = String.raw`select\(\s*${field}\s*\|\s*contains\(\s*${string}\s*\)\s*\)`;
+  const traversal = String.raw`${field}(?:\[\])?\s*\|\s*(?:${selector}\s*\|\s*)?`;
+  if (new RegExp(String.raw`^(?:${traversal})?${object}$`).test(filter)) return true;
   const expression = filter
     .replace(/\.[A-Za-z_][A-Za-z0-9_.-]*/g, "FIELD")
     .replace(/\b[A-Za-z_][A-Za-z0-9_-]*\s*:/g, ":");
@@ -2004,6 +2013,21 @@ function isPassiveTextCommand(argv: string[]): boolean {
   );
 }
 
+/** Native data consumers only; ordinary path, expansion and redirect checks still apply. */
+function isReadonlyJqConsumer(argv: string[]): boolean {
+  if (isPassiveTextCommand(argv)) return true;
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  if (name === "sort")
+    return argv
+      .slice(1)
+      .every(
+        (arg) =>
+          !arg.startsWith("-") || arg === "-" || arg === "--" || /^-[bdfgMhnRruVszcC]+$/.test(arg),
+      );
+  if (["cat", "uniq", "wc"].includes(name)) return isProvedCwdSubprocessRole(argv);
+  return name === "tr";
+}
+
 /** One print program with optional numeric or escaped-regex addresses; no callbacks. */
 function isReadonlySedPrint(argv: string[]): boolean {
   if (argv[0]?.split("/").at(-1) !== "sed") return false;
@@ -2178,8 +2202,10 @@ function hasEnvironmentRead(
     pipelines.some((pipeline) =>
       pipeline.some(
         (argv, index) =>
-          literalSqlArgumentIndex(argv) !== undefined &&
-          pipeline.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer)),
+          (literalSqlArgumentIndex(argv) !== undefined &&
+            pipeline.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer))) ||
+          (isJqObjectConstruction(argv) &&
+            pipeline.slice(index + 1).some((consumer) => !isReadonlyJqConsumer(consumer))),
       ),
     )
   )
