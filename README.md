@@ -355,6 +355,8 @@ bun gh-tool pr checks-failed --pr 123 --with-logs --format json # includes diagn
 bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600
 bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # only when zero checks reported
 bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600
+bun gh-tool pr edit-comment --comment-id 456 --body-file correction.md # Edit your own review comment
+bun gh-tool pr edit-comment --comment-id 789 --kind issue --pr 123 --body "Corrected detail"
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # infers PR and thread
 bun gh-tool pr request-review --repo be --pr 123 --reviewers alice,bob
 bun gh-tool pr review --pr 123 --event comment --body "Notes, no verdict"
@@ -364,6 +366,10 @@ EOF
 bun gh-tool pr review --pr 123 --event approve --confirm
 # Optional --pr/--thread-id retain legacy flow and are validated before either mutation.
 ```
+
+`pr edit-comment` defaults to inline review comments; pass `--kind issue` for PR discussion
+comments. It checks the authenticated GitHub user owns the comment before editing, and `--pr`
+also verifies the comment belongs to that pull request.
 
 `pr review` creates and submits a review in one call, for a verdict reached from a diff with no pending review to submit. `pr submit-review` takes the same `--event` for a review that is already pending. `--event approve` and `--event request-changes` change whether the PR can merge, so both require `--confirm`, the same gate `pr merge` uses; `--event comment` carries no verdict and needs none. `--event comment` and `--event request-changes` require a non-empty body — GitHub rejects a bodyless one. GitHub also refuses a verdict on your own PR; that failure returns a hint pointing at `--event comment` instead of the raw API error.
 

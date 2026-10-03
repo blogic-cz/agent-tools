@@ -41,6 +41,8 @@ bun gh-tool pr stack unstack --pr 123 --confirm # Dissolve the stack, removing e
 bun gh-tool pr threads --pr 123 --unresolved-only  # Review comments
 bun gh-tool pr request-review --repo be --pr 123 --reviewers alice,bob # Request/re-request review; newlyRequested vs alreadyPending tells whether a fresh request was created
 bun gh-tool pr reply --pr 123 --comment-id 456 --body "Fixed"
+bun gh-tool pr edit-comment --comment-id 456 --body-file correction.md # Edit your own inline review comment
+bun gh-tool pr edit-comment --comment-id 789 --kind issue --pr 123 --body "Corrected detail"
 bun gh-tool pr resolve --thread-id 789
 bun gh-tool pr create --repo be --title "feat: X" --body-stdin <<'EOF'
 ## Summary

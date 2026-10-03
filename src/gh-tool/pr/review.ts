@@ -299,6 +299,15 @@ type ReviewCommentById = {
   pull_request_url: string;
 };
 
+type EditableComment = {
+  id: number;
+  user: { login: string };
+  html_url: string;
+  updated_at: string;
+  pull_request_url?: string;
+  issue_url?: string;
+};
+
 const REST_PAGE_SIZE = 100;
 
 const feedbackOrigin = (commitSha: string | null, currentHeadSha: string | null): FeedbackOrigin =>
@@ -799,6 +808,107 @@ const fetchReviewCommentById = Effect.fn("pr.fetchReviewCommentById")(function* 
   ]);
 
   return comment;
+});
+
+export const editComment = Effect.fn("pr.editComment")(function* (
+  commentId: number,
+  body: string,
+  kind: "review" | "issue",
+  pr: number | null,
+) {
+  const service = yield* GitHubService;
+  const repoInfo = yield* service.getRepoInfo();
+  const command = "gh-tool pr edit-comment";
+  if (
+    !Number.isInteger(commentId) ||
+    commentId <= 0 ||
+    (pr !== null && (!Number.isInteger(pr) || pr <= 0))
+  ) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command,
+        exitCode: 1,
+        stderr: "--comment-id and --pr must be positive integers",
+        message: "--comment-id and --pr must be positive integers",
+        hint: "Pass a positive comment ID and, when supplied, a positive PR number.",
+      }),
+    );
+  }
+  if (body.trim().length === 0) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command,
+        exitCode: 1,
+        stderr: "Comment body cannot be empty",
+        message: "Comment body cannot be empty",
+        hint: "Pass non-empty comment text with --body or --body-file.",
+      }),
+    );
+  }
+
+  const endpoint = `repos/${repoInfo.owner}/${repoInfo.name}/${kind === "review" ? "pulls" : "issues"}/comments/${commentId}`;
+  const target = yield* service.runGhJson<EditableComment>(["api", endpoint]);
+  const viewer = yield* service.runGhJson<{ login: string }>(["api", "user"]);
+  if (target.user.login.toLowerCase() !== viewer.login.toLowerCase()) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command,
+        exitCode: 1,
+        stderr: `Comment ${commentId} was written by ${target.user.login}; only your own comments can be edited`,
+        message: `Comment ${commentId} was written by ${target.user.login}; only your own comments can be edited`,
+        hint: "Edit only comments authored by the authenticated GitHub user.",
+      }),
+    );
+  }
+
+  const commentPrUrl = kind === "review" ? target.pull_request_url : target.issue_url;
+  if (pr !== null && !commentPrUrl?.endsWith(`/${kind === "review" ? "pulls" : "issues"}/${pr}`)) {
+    return yield* Effect.fail(
+      new GitHubCommandError({
+        command,
+        exitCode: 1,
+        stderr: `Comment ${commentId} does not belong to PR #${pr}`,
+        message: `Comment ${commentId} does not belong to PR #${pr}`,
+        hint: "Pass the PR that owns this comment, or omit --pr to edit by comment ID.",
+      }),
+    );
+  }
+  if (kind === "issue" && pr !== null) {
+    const pullRequest = yield* service.runGhJson<{ number: number }>([
+      "api",
+      `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${pr}`,
+    ]);
+    if (pullRequest.number !== pr) {
+      return yield* Effect.fail(
+        new GitHubCommandError({
+          command,
+          exitCode: 1,
+          stderr: `Comment ${commentId} does not belong to PR #${pr}`,
+          message: `Comment ${commentId} does not belong to PR #${pr}`,
+          hint: "Pass the PR that owns this comment, or omit --pr to edit by comment ID.",
+        }),
+      );
+    }
+  }
+
+  const updated = yield* service.runGhJson<EditableComment>([
+    "api",
+    "-X",
+    "PATCH",
+    endpoint,
+    "-f",
+    `body=${body}`,
+  ]);
+  return {
+    commentId: updated.id,
+    url: updated.html_url,
+    updatedAt: updated.updated_at,
+    hint: "The comment was updated.",
+    nextCommand:
+      kind === "review"
+        ? "gh-tool pr comments --pr <number>"
+        : "gh-tool pr issue-comments --pr <number>",
+  };
 });
 
 /**
