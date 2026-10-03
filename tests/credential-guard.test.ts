@@ -4852,3 +4852,271 @@ describe("approved metadata shell predicates", () => {
       ).toThrow();
   });
 });
+
+// Policy input only; represented jq and external shell commands are never executed.
+describe("bounded readonly jq projections", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "rtk shasum -a 256 /private/tmp/example-measurement/run.ts /private/tmp/example-measurement/control.json /private/tmp/example-measurement/evidence.md && rtk cat /private/tmp/example-measurement/control.json | rtk jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}'",
+    "rtk jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' /private/tmp/example-measurement/dimension.json",
+    "jq '{control,base:.base,delta}' report.json",
+    "jq '.jobs[] | {id,status}' report.json",
+    "jq '.items | {id,value:.data}' report.json",
+    "jq '.items[] | select(.name | contains(\"example\")) | {name,score:.score}' report.json",
+    "jq '{a:.x,b:.y}' report.json",
+    "jq '{dependencies, peerDependencies}' report.json",
+    "jq '{a: .items | map(.value) | length}' report.json",
+    "jq '.a > .b' report.json",
+    "jq 'map(select(.status == \"passed\"))' report.json",
+    "cat report.json | rtk jq '.jobs[] | {id,status}'",
+    "jq -rc -- '{a,base:.base}' report.json",
+    "jq '.env' settings.json",
+  ])("allows literal data projections: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq env",
+    "jq '$ENV' report.json",
+    "jq '{a:env,b:.b}' report.json",
+    "jq '{a:$ENV,b:.b}' report.json",
+    "jq 'import \"module\" as m; {a,b}' report.json",
+    "jq 'include \"module\"; {a,b}' report.json",
+    "jq -f /tmp/program '{a,b}' report.json",
+    "jq --from-file /tmp/program '{a,b}' report.json",
+    "jq -L /tmp/modules '{a,b}' report.json",
+    "jq --arg value env '{a,b}' report.json",
+    "jq '{a,b}' --from-file /tmp/program",
+    "jq '{a,b}' .env",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' ~/.kube/config",
+    "jq --rawfile value .env '{a,b}' report.json",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json > .env",
+    "rtk proxy bash /private/tmp/example-measurement/run-once.sh",
+    "jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}' report.json | sh",
+    "jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}' report.json | xargs",
+    "jq '{control,base:.base,changed:.changed,delta,source:.changedInput,closure:.closure,selection:.selection,toolchain:.toolchain,checkpointEligible}' report.json | opaque-consumer",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json | sh",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json | xargs",
+    "jq '.graph.projects[] | select(.path|contains(\"Example.Api\")) | {path,runnableTest,projectReferences}' report.json | opaque-consumer",
+    "jq '.items[] | select(.name|contains(\"\\(env)\")) | {a,b}' report.json",
+    "jq '.items[] | select(.name|contains(env)) | {a,b}' report.json",
+    "jq '.items[] | select(.name|contains(\"x\")) | {a,b}; env' report.json",
+  ])("refuses executable or sensitive jq roles: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only jq consumer compatibility witnesses.
+describe("readonly jq consumer chains", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "jq '{a,b}' report.json | cat",
+    "jq '{a,b}' report.json | rtk cat",
+    "jq '{a,b}' report.json | sort",
+    "jq '{a,b}' report.json | sort -rn",
+    "jq '{a,b}' report.json | wc -l",
+    "jq '{a,b}' report.json | uniq",
+    "jq '{a,b}' report.json | uniq -c",
+    "jq '{a,b}' report.json | tr -d '\\r'",
+    "jq '{a,b}' report.json | tr 'a-z' 'A-Z'",
+    "jq '{a,b}' report.json | cat | sort | uniq -c | wc -l",
+    "jq '{a,b}' report.json | sort | cat notes.txt",
+    "jq '{a,b}' report.json | cat | rtk jq '{a,b}' | sort | wc -l",
+  ])("allows native data consumers: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq '{a,b}' report.json | sort --compress-program=sh",
+    "jq '{a,b}' report.json | sort --compress-program sh",
+    "jq '{a,b}' report.json | sort --compress=sh",
+    "jq '{a,b}' report.json | sort --comp=sh",
+    "jq '{a,b}' report.json | sort --files0-from=.env",
+    "jq '{a,b}' report.json | wc --files0-from=.env",
+    "jq '{a,b}' report.json | cat .env",
+    "jq '{a,b}' report.json | sort .env",
+    "jq '{a,b}' report.json | uniq .env",
+    "jq '{a,b}' report.json | wc -l .env",
+    "jq '{a,b}' report.json | cat > .env",
+    "jq '{a,b}' report.json | sort | opaque-consumer",
+    "jq '{a,b}' report.json | cat | xargs",
+    "jq '{a,b}' report.json | tr a b | sh",
+    "jq '{a,b}' report.json | sort | jq env",
+    "jq '{a,b}' report.json | sort | jq '$ENV'",
+    "jq '{a,b}' report.json | opaque-consumer",
+    "bun run db-tool query --sql 'select 1' | cat",
+    "bun run db-tool query --sql 'select 1' | sort",
+    "bun run db-tool query --sql 'select 1' | wc -l",
+  ])("refuses execution and protected consumer paths: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only native sort option boundary.
+it.each([
+  "jq '{a,b}' report.json | sort --files0-from=-",
+  "jq '{a,b}' report.json | sort --random-source=/tmp/random",
+  "jq '{a,b}' report.json | sort --random-source /tmp/random",
+  "jq '{a,b}' report.json | sort --unknown-option",
+  "jq '{a,b}' report.json | sort -o /tmp/output",
+  "jq '{a,b}' report.json | sort -T /tmp",
+])("refuses unproved jq sort consumer options: %s", (command) => {
+  const guard = createCredentialGuard();
+  expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+  expect
+    .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+    .toThrow();
+});
+
+// Policy-only bounded nested jq object-map projections.
+describe("bounded nested jq object maps", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "jq '{queueJobId,queueWaitMs,runMs,elapsedMs,startedAt,completedAt,exitCode,accepted,phases:(.phases|map({name,elapsedMs,exitCode}))}' /private/tmp/example-measurement/a.json /private/tmp/example-measurement/b.json /private/tmp/example-measurement/c.json /private/tmp/example-measurement/d.json",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json",
+    "rtk jq '{id,items:.items|map({name,value})}' report.json",
+    "rtk jq '{alias:.identity.id,rows:(.data.rows|map({label:.name,value}))}' report.json",
+    "rtk jq '{first:(.first|map({id,value})),second:(.second|map({name,score:.score})),tag}' report.json",
+    "rtk jq '.groups[] | {id,rows:(.rows | map({name,value}))}' report.json",
+    "rtk jq '.groups[] | select(.name|contains(\"example\")) | {id,rows:(.rows | map({name,value}))}' report.json",
+    "cat report.json | rtk jq '{id,items:(.items | map({name,value}))}' | sort -rn | uniq -c | wc -l",
+    "jq -rc -- '{id,items:(.items | map({name,value}))}' a.json b.json",
+  ])("allows static one-level object maps: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq '{id,items:(.items|map({name,value:env}))}' report.json",
+    "jq '{id,items:(.items|map({name,value:$ENV}))}' report.json",
+    "jq '{id,items:(.items|map({name,value:\"\\(env)\"}))}' report.json",
+    "jq '{id,items:(.items|map({name,value:(include \"module\"; .value)}))}' report.json",
+    "jq 'import \"module\" as m; {id,items:(.items | map({name,value}))}' report.json",
+    "jq '{id,items:(.items|map({name,items:(.items|map({name,value}))}))}' report.json",
+    "jq '{id,items:(.items|map({name,value}))}; env' report.json",
+    "jq '{id,items:(.items|map({name,value}))} | env' report.json",
+    "jq '{id,items:(.items | map({name,value}))}' a.json b.json .env d.json",
+    "jq '{id,items:(.items | map({name,value}))}' ~/.kube/config b.json c.json d.json",
+    "jq '{id,items:(.items | map({name,value}))}' a.json b.json c.json ~/.aws/credentials",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | xargs",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | sh",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | opaque-consumer",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | sort --compress-program=sh",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | sort --files0-from=-",
+    "jq '{id,items:(.items | map({name,value}))}' report.json > .env",
+    "jq --from-file /tmp/program '{id,items:(.items | map({name,value}))}' report.json",
+    "jq --arg value env '{id,items:(.items | map({name,value}))}' report.json",
+    "jq --rawfile value .env '{id,items:(.items | map({name,value}))}' report.json",
+    "rtk proxy bash /private/tmp/example-measurement/run-once.sh",
+  ])("refuses unproved nested map roles: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only uniq INPUT/OUTPUT argument-role witnesses.
+describe("readonly jq uniq operand roles", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "jq '{a,b}' r.json | uniq",
+    "jq '{a,b}' r.json | uniq -c",
+    "jq '{a,b}' r.json | rtk uniq -c",
+    "jq '{a,b}' r.json | uniq -",
+    "jq '{a,b}' r.json | uniq input.txt",
+    "jq '{a,b}' r.json | uniq -ci input.txt",
+    "jq '{a,b}' r.json | uniq -f 2 -s3 -w 8 input.txt",
+    "jq '{a,b}' r.json | uniq -f2 -s 3 -w8 -",
+    "jq '{a,b}' r.json | uniq --skip-fields=2 --skip-chars 3 --check-chars=8 input.txt",
+    "jq '{a,b}' r.json | uniq --count --unique -- input.txt",
+    "jq '{a,b}' r.json | uniq -- -",
+    "jq '{a,b}' r.json | uniq -- -named-input",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -c",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | rtk uniq -c",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -ci input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f 2 -s3 -w 8 input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f2 -s 3 -w8 -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --skip-fields=2 --skip-chars 3 --check-chars=8 input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --count --unique -- input.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- -named-input",
+  ])("allows flags and at most one input: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq '{a,b}' r.json | uniq - package.json",
+    "jq '{a,b}' r.json | uniq - ~/.bashrc",
+    "jq '{a,b}' r.json | uniq input.txt output.txt",
+    "jq '{a,b}' r.json | uniq -c - package.json",
+    "jq '{a,b}' r.json | uniq -f 2 - package.json",
+    "jq '{a,b}' r.json | uniq -f2 - package.json",
+    "jq '{a,b}' r.json | uniq --skip-fields 2 -- - package.json",
+    "jq '{a,b}' r.json | uniq --check-chars=8 - package.json",
+    "jq '{a,b}' r.json | uniq -- - package.json",
+    "jq '{a,b}' r.json | uniq -- input.txt output.txt",
+    "jq '{a,b}' r.json | uniq -f package.json",
+    "jq '{a,b}' r.json | uniq -s",
+    "jq '{a,b}' r.json | uniq --skip-fields=invalid",
+    "jq '{a,b}' r.json | uniq --unknown-option",
+    "jq '{a,b}' r.json | uniq -x",
+    "jq '{a,b}' r.json | uniq input.txt -c",
+    "jq '{a,b}' r.json | uniq .env",
+    "jq '{a,b}' r.json | uniq -w \"$TOKEN\" -",
+    "jq '{a,b}' r.json | uniq - > .env",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq - ~/.bashrc",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq input.txt output.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -c - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f 2 - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f2 - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --skip-fields 2 -- - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --check-chars=8 - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- - package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -- input.txt output.txt",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -f package.json",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -s",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --skip-fields=invalid",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq --unknown-option",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -x",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq input.txt -c",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq .env",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq -w \"$TOKEN\" -",
+    "rtk jq '{id,rows:(.rows|map({name,value}))}' r.json | uniq - > .env",
+  ])("refuses output operands and unproved flags: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});
+
+// Policy-only explicit empty numeric option values.
+it.each([
+  "jq '{a,b}' r.json | uniq --skip-fields= 0 input.txt",
+  "jq '{a,b}' r.json | uniq --skip-chars= 0 -",
+  "jq '{a,b}' r.json | uniq --check-chars= 0 input.txt",
+])("refuses empty attached uniq numeric values: %s", (command) => {
+  const guard = createCredentialGuard();
+  expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+  expect
+    .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+    .toThrow();
+});

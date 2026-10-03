@@ -1512,6 +1512,20 @@ function isJqObjectConstruction(argv: string[]): boolean {
   if (argv[index] === "--") index++;
   const filter = argv[index] ?? "";
   if (argv.slice(index + 1).some((arg) => arg.startsWith("-"))) return false;
+  // ponytail: one object-map level and one literal contains selector; no jq evaluator.
+  const field = String.raw`\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*`;
+  const key = String.raw`[A-Za-z_][A-Za-z0-9_]*`;
+  const flatEntry = String.raw`${key}(?:\s*:\s*${field})?`;
+  const flatObject = String.raw`\{\s*${flatEntry}(?:\s*,\s*${flatEntry})*\s*\}`;
+  const mapped = String.raw`${field}\s*\|\s*map\(\s*${flatObject}\s*\)`;
+  const value = String.raw`(?:${field}|${mapped}|\(\s*${mapped}\s*\))`;
+  const entry = String.raw`${key}(?:\s*:\s*${value})?`;
+  const object = String.raw`\{\s*${entry}(?:\s*,\s*${entry})*\s*\}`;
+  // JSON string escapes exclude jq interpolation, which starts with \(.
+  const string = String.raw`"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
+  const selector = String.raw`select\(\s*${field}\s*\|\s*contains\(\s*${string}\s*\)\s*\)`;
+  const traversal = String.raw`${field}(?:\[\])?\s*\|\s*(?:${selector}\s*\|\s*)?`;
+  if (new RegExp(String.raw`^(?:${traversal})?${object}$`).test(filter)) return true;
   const expression = filter
     .replace(/\.[A-Za-z_][A-Za-z0-9_.-]*/g, "FIELD")
     .replace(/\b[A-Za-z_][A-Za-z0-9_-]*\s*:/g, ":");
@@ -2004,6 +2018,51 @@ function isPassiveTextCommand(argv: string[]): boolean {
   );
 }
 
+/** Native data consumers only; ordinary path, expansion and redirect checks still apply. */
+function isReadonlyJqConsumer(argv: string[]): boolean {
+  if (isPassiveTextCommand(argv)) return true;
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  if (name === "sort")
+    return argv
+      .slice(1)
+      .every(
+        (arg) =>
+          !arg.startsWith("-") || arg === "-" || arg === "--" || /^-[bdfgMhnRruVszcC]+$/.test(arg),
+      );
+  if (name === "uniq") return isReadonlyUniqConsumer(argv);
+  if (["cat", "wc"].includes(name)) return isProvedCwdSubprocessRole(argv);
+  return name === "tr";
+}
+
+/** uniq INPUT is a read; uniq INPUT OUTPUT is a write and cannot acquire this proof. */
+function isReadonlyUniqConsumer(argv: string[]): boolean {
+  let operands = 0;
+  let options = true;
+  for (let index = 1; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (options && arg === "--") {
+      options = false;
+      continue;
+    }
+    if (options) {
+      if (/^-[cduiz]+$|^--(?:count|repeated|unique|ignore-case|zero-terminated)$/.test(arg))
+        continue;
+      const short = /^-[fsw]([0-9]*)$/.exec(arg);
+      const long = /^--(?:skip-fields|skip-chars|check-chars)(?:=(.*))?$/.exec(arg);
+      if (short || long) {
+        const attached = short ? short[1] || undefined : long?.[1];
+        const value = attached === undefined ? argv[++index] : attached;
+        if (!/^[0-9]+$/.test(value ?? "")) return false;
+        continue;
+      }
+      if (arg.startsWith("-") && arg !== "-") return false;
+    }
+    options = false;
+    if (++operands > 1) return false;
+  }
+  return true;
+}
+
 /** One print program with optional numeric or escaped-regex addresses; no callbacks. */
 function isReadonlySedPrint(argv: string[]): boolean {
   if (argv[0]?.split("/").at(-1) !== "sed") return false;
@@ -2178,8 +2237,10 @@ function hasEnvironmentRead(
     pipelines.some((pipeline) =>
       pipeline.some(
         (argv, index) =>
-          literalSqlArgumentIndex(argv) !== undefined &&
-          pipeline.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer)),
+          (literalSqlArgumentIndex(argv) !== undefined &&
+            pipeline.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer))) ||
+          (isJqObjectConstruction(argv) &&
+            pipeline.slice(index + 1).some((consumer) => !isReadonlyJqConsumer(consumer))),
       ),
     )
   )
