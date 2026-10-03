@@ -4977,3 +4977,52 @@ it.each([
     .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
     .toThrow();
 });
+
+// Policy-only bounded nested jq object-map projections.
+describe("bounded nested jq object maps", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    "jq '{queueJobId,queueWaitMs,runMs,elapsedMs,startedAt,completedAt,exitCode,accepted,phases:(.phases|map({name,elapsedMs,exitCode}))}' /private/tmp/example-measurement/a.json /private/tmp/example-measurement/b.json /private/tmp/example-measurement/c.json /private/tmp/example-measurement/d.json",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json",
+    "rtk jq '{id,items:.items|map({name,value})}' report.json",
+    "rtk jq '{alias:.identity.id,rows:(.data.rows|map({label:.name,value}))}' report.json",
+    "rtk jq '{first:(.first|map({id,value})),second:(.second|map({name,score:.score})),tag}' report.json",
+    "rtk jq '.groups[] | {id,rows:(.rows | map({name,value}))}' report.json",
+    "rtk jq '.groups[] | select(.name|contains(\"example\")) | {id,rows:(.rows | map({name,value}))}' report.json",
+    "cat report.json | rtk jq '{id,items:(.items | map({name,value}))}' | sort -rn | uniq -c | wc -l",
+    "jq -rc -- '{id,items:(.items | map({name,value}))}' a.json b.json",
+  ])("allows static one-level object maps: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    "jq '{id,items:(.items|map({name,value:env}))}' report.json",
+    "jq '{id,items:(.items|map({name,value:$ENV}))}' report.json",
+    "jq '{id,items:(.items|map({name,value:\"\\(env)\"}))}' report.json",
+    "jq '{id,items:(.items|map({name,value:(include \"module\"; .value)}))}' report.json",
+    "jq 'import \"module\" as m; {id,items:(.items | map({name,value}))}' report.json",
+    "jq '{id,items:(.items|map({name,items:(.items|map({name,value}))}))}' report.json",
+    "jq '{id,items:(.items|map({name,value}))}; env' report.json",
+    "jq '{id,items:(.items|map({name,value}))} | env' report.json",
+    "jq '{id,items:(.items | map({name,value}))}' a.json b.json .env d.json",
+    "jq '{id,items:(.items | map({name,value}))}' ~/.kube/config b.json c.json d.json",
+    "jq '{id,items:(.items | map({name,value}))}' a.json b.json c.json ~/.aws/credentials",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | xargs",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | sh",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | opaque-consumer",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | sort --compress-program=sh",
+    "rtk jq '{id,items:(.items | map({name,value}))}' report.json | sort --files0-from=-",
+    "jq '{id,items:(.items | map({name,value}))}' report.json > .env",
+    "jq --from-file /tmp/program '{id,items:(.items | map({name,value}))}' report.json",
+    "jq --arg value env '{id,items:(.items | map({name,value}))}' report.json",
+    "jq --rawfile value .env '{id,items:(.items | map({name,value}))}' report.json",
+    "rtk proxy bash /private/tmp/example-measurement/run-once.sh",
+  ])("refuses unproved nested map roles: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+});

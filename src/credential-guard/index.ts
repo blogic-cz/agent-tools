@@ -1512,9 +1512,14 @@ function isJqObjectConstruction(argv: string[]): boolean {
   if (argv[index] === "--") index++;
   const filter = argv[index] ?? "";
   if (argv.slice(index + 1).some((arg) => arg.startsWith("-"))) return false;
-  // ponytail: flat field projections and one literal contains selector; no jq evaluator.
+  // ponytail: one object-map level and one literal contains selector; no jq evaluator.
   const field = String.raw`\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*`;
-  const entry = String.raw`[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*${field})?`;
+  const key = String.raw`[A-Za-z_][A-Za-z0-9_]*`;
+  const flatEntry = String.raw`${key}(?:\s*:\s*${field})?`;
+  const flatObject = String.raw`\{\s*${flatEntry}(?:\s*,\s*${flatEntry})*\s*\}`;
+  const mapped = String.raw`${field}\s*\|\s*map\(\s*${flatObject}\s*\)`;
+  const value = String.raw`(?:${field}|${mapped}|\(\s*${mapped}\s*\))`;
+  const entry = String.raw`${key}(?:\s*:\s*${value})?`;
   const object = String.raw`\{\s*${entry}(?:\s*,\s*${entry})*\s*\}`;
   // JSON string escapes exclude jq interpolation, which starts with \(.
   const string = String.raw`"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
