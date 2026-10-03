@@ -3742,6 +3742,7 @@ describe("bounded Herdr command composition", () => {
       'herdr pane read "$p" --source recent-unwrapped --lines 25',
       Array.from({ length: 16 }, (_, i) => `w1:p${i}`).join(" "),
     ),
+    `rtk ${prompt}; cat README.md`,
   ])("allows proved data composition: %s", (command) => {
     expect(guard.isDangerousBashCommand(command)).toBe(false);
     expect(guard.getBlockedCliTool(command)).toBeNull();
@@ -3771,7 +3772,6 @@ describe("bounded Herdr command composition", () => {
     `${prompt}; env cat README.md`,
     `PATH=/tmp ${prompt}; cat README.md`,
     `env BASH_ENV=./startup ${prompt}; cat README.md`,
-    `rtk ${prompt}; cat README.md`,
     `${prompt}; cat\u00a0README.md`,
     loop(body(projection + ";print(1)")),
     loop(body(projection.replace("import json,sys", "import json,sys,os"))),
@@ -5119,4 +5119,95 @@ it.each([
   expect
     .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
     .toThrow();
+});
+
+// Policy inputs only. Never send represented Herdr prompts.
+describe("literal RTK Herdr forwarding", () => {
+  const guard = createCredentialGuard();
+  it.each([
+    'herdr agent prompt example-coordinator "[worker-result] worker: example-worker status: partial work-record: /private/tmp/example-phase/workers/example-worker.md"',
+    'herdr agent prompt example-coordinator "literal env example"',
+    'herdr agent prompt example-coordinator "printenv"',
+    'herdr agent prompt example-coordinator "sh"',
+    "herdr agent prompt example-coordinator 'literal $TOKEN and {env,printenv}'",
+    'rtk herdr agent prompt example-coordinator "[worker-result] worker: example-worker status: partial work-record: /private/tmp/example-phase/workers/example-worker.md"',
+    'rtk herdr agent prompt example-coordinator "literal env example"',
+    'rtk herdr agent prompt example-coordinator "printenv"',
+    'rtk herdr agent prompt example-coordinator "sh"',
+    "rtk herdr agent prompt example-coordinator 'literal $TOKEN and {env,printenv}'",
+    'rtk proxy herdr agent prompt example-coordinator "[worker-result] worker: example-worker status: partial work-record: /private/tmp/example-phase/workers/example-worker.md"',
+    'rtk proxy herdr agent prompt example-coordinator "literal env example"',
+    'rtk proxy herdr agent prompt example-coordinator "printenv"',
+    'rtk proxy herdr agent prompt example-coordinator "sh"',
+    "rtk proxy herdr agent prompt example-coordinator 'literal $TOKEN and {env,printenv}'",
+    'command -- rtk herdr agent prompt example-coordinator "[worker-result] worker: example-worker status: partial work-record: /private/tmp/example-phase/workers/example-worker.md"',
+    'command -- rtk herdr agent prompt example-coordinator "literal env example"',
+    'command -- rtk herdr agent prompt example-coordinator "printenv"',
+    'command -- rtk herdr agent prompt example-coordinator "sh"',
+    "command -- rtk herdr agent prompt example-coordinator 'literal $TOKEN and {env,printenv}'",
+    'rtk proxy rtk herdr agent prompt example-coordinator "[worker-result] worker: example-worker status: partial work-record: /private/tmp/example-phase/workers/example-worker.md"',
+    'rtk proxy rtk herdr agent prompt example-coordinator "literal env example"',
+    'rtk proxy rtk herdr agent prompt example-coordinator "printenv"',
+    'rtk proxy rtk herdr agent prompt example-coordinator "sh"',
+    "rtk proxy rtk herdr agent prompt example-coordinator 'literal $TOKEN and {env,printenv}'",
+    'rtk herdr agent prompt another-worker "ready" && git status --short',
+    'cd /tmp && rtk herdr agent prompt another-worker "literal env example"',
+    'cd /tmp && rtk herdr agent prompt another-worker "ready" && git status --short',
+  ])("proves transparent bare RTK Herdr dispatch: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(false);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .not.toThrow();
+  });
+  it.each([
+    'herdr agent prompt example-coordinator "$TOKEN"',
+    'herdr agent prompt example-coordinator "$(printenv)"',
+    'herdr agent prompt example-coordinator "`printenv`"',
+    'rtk herdr agent prompt example-coordinator "$TOKEN"',
+    'rtk herdr agent prompt example-coordinator "$(printenv)"',
+    'rtk herdr agent prompt example-coordinator "`printenv`"',
+    'rtk proxy herdr agent prompt example-coordinator "$TOKEN"',
+    'rtk proxy herdr agent prompt example-coordinator "$(printenv)"',
+    'rtk proxy herdr agent prompt example-coordinator "`printenv`"',
+    'command -- rtk herdr agent prompt example-coordinator "$TOKEN"',
+    'command -- rtk herdr agent prompt example-coordinator "$(printenv)"',
+    'command -- rtk herdr agent prompt example-coordinator "`printenv`"',
+    'rtk proxy rtk herdr agent prompt example-coordinator "$TOKEN"',
+    'rtk proxy rtk herdr agent prompt example-coordinator "$(printenv)"',
+    'rtk proxy rtk herdr agent prompt example-coordinator "`printenv`"',
+    'rtk herdr agent prompt "$TOKEN" "ready"',
+    'rtk herdr agent prompt example-coordinator "literal env" | xargs',
+    'rtk herdr agent prompt example-coordinator "literal env" | opaque-consumer',
+    'rtk herdr agent prompt example-coordinator "ready" | sh',
+    'rtk herdr agent prompt example-coordinator "ready"; cat .env',
+    'rtk herdr agent prompt example-coordinator "ready" && printenv',
+    "rtk herdr pane run example-pane -- sh -c printenv",
+    'rtk herdr agent prompt example-coordinator "ready"; sh -c env',
+    'rtk rtk herdr agent prompt example-coordinator "env"',
+    "rtk run sh -c env",
+    'rtk --skip-env herdr agent prompt example-coordinator "{env,printenv}"',
+    'rtk herdr agent prompt example-coordinator "ready" > .env',
+    'rtk herdr agent prompt example-coordinator "ready"; cat ~/.aws/credentials',
+    'rtk herdr agent prompt example-coordinator "ready"; echo printenv | sh',
+    'rtk herdr agent prompt example-coordinator "ready"; python3 -c "import os; print(os.environ)"',
+    'HERDR_ENV=1 rtk herdr agent prompt example-coordinator "env"',
+  ])("refuses unproved forwarding and executable prompt roles: %s", (command) => {
+    expect.soft(guard.isDangerousBashCommand(command)).toBe(true);
+    expect
+      .soft(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }))
+      .toThrow();
+  });
+  it("retains configured policy on bare forwarding", () => {
+    const command =
+      'rtk herdr agent prompt example-coordinator "[worker-result] worker: example-worker status: partial work-record: /private/tmp/example-phase/workers/example-worker.md"';
+    for (const config of [
+      { additionalDangerousBashPatterns: ["^rtk herdr"] },
+      { additionalBlockedCliTools: [{ tool: "herdr", suggestion: "Use an approved transport." }] },
+    ]) {
+      const configured = createCredentialGuard(config);
+      expect(() =>
+        configured.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+      ).toThrow();
+    }
+  });
 });
