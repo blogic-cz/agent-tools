@@ -475,7 +475,9 @@ function unwrapProofCommand(words: string[], marker: string): string[] | undefin
   let index = 0;
   while (words[index] === "rtk" || words[index] === "command") {
     if (words[index++] === "rtk") {
-      if (words[index++] !== "proxy") return undefined;
+      if (words[index] === "proxy") index++;
+      // RTK forwards this verified external binary without changing its argv roles.
+      else if (words[index] !== "herdr") return undefined;
     } else if (words[index] === "--") index++;
   }
   if (words.slice(0, index + 1).some((word) => word.includes(marker))) return undefined;
