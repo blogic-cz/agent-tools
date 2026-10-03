@@ -52,6 +52,7 @@ import {
 } from "./core";
 import {
   createReview,
+  editComment,
   fetchComments,
   fetchDiscussionSummary,
   fetchFeedback,
@@ -1305,6 +1306,47 @@ export const prCommentCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Post a general PR discussion comment"));
+
+export const prEditCommentCommand = Command.make(
+  "edit-comment",
+  {
+    body: Flag.String("body").pipe(
+      Flag.withDescription("Updated comment body text"),
+      Flag.optional,
+    ),
+    bodyFile: Flag.String("body-file").pipe(
+      Flag.withDescription("Read updated comment body from a file path or '-' for stdin"),
+      Flag.optional,
+    ),
+    commentId: Flag.Int("comment-id").pipe(Flag.withDescription("ID of the comment to edit")),
+    format: formatOption,
+    kind: Flag.Literals("kind", ["review", "issue"]).pipe(
+      Flag.withDescription("Comment type: inline review comment or PR discussion comment"),
+      Flag.withDefault("review"),
+    ),
+    pr: Flag.Int("pr").pipe(
+      Flag.withDescription("Require the comment to belong to this PR"),
+      Flag.optional,
+    ),
+    repo: repoOption,
+  },
+  ({ body, bodyFile, commentId, format, kind, pr, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const resolvedBody = yield* resolveRequiredTextInput({
+          command: "gh-tool pr edit-comment",
+          value: Option.getOrNull(body),
+          fileValue: Option.getOrNull(bodyFile),
+          valueFlag: "--body",
+          fileFlag: "--body-file",
+          label: "body",
+        });
+        const result = yield* editComment(commentId, resolvedBody, kind, Option.getOrNull(pr));
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(Command.withDescription("Edit your own inline review or PR discussion comment"));
 
 export const prDiscussionSummaryCommand = Command.make(
   "discussion-summary",

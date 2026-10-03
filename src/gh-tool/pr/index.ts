@@ -3,6 +3,7 @@ export {
   prChecksFailedCommand,
   prCloseCommand,
   prCommentCommand,
+  prEditCommentCommand,
   prCommentsCommand,
   prCreateCommand,
   prDiscussionSummaryCommand,

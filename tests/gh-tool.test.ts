@@ -68,6 +68,7 @@ import {
   fetchLastHumanReviewer,
   fetchReviews,
   fetchThreads,
+  editComment,
   replyAndResolveComment,
   replyToComment,
   resolveThread,
@@ -360,6 +361,220 @@ const pendingReviewContent = () => ({
     repository: { nameWithOwner: "test-owner/test-repo" },
   },
   comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+});
+
+describe("PR comment editing", () => {
+  const commentResponse = (kind: "review" | "issue", pr = 123) => ({
+    id: 456,
+    user: { login: "Demo-User" },
+    ...(kind === "review"
+      ? { pull_request_url: `https://api.github.com/repos/test-owner/test-repo/pulls/${pr}` }
+      : { issue_url: `https://api.github.com/repos/test-owner/test-repo/issues/${pr}` }),
+    html_url: `https://github.com/test-owner/test-repo/pull/${pr}#issuecomment-456`,
+    updated_at: "2026-10-03T12:00:00Z",
+  });
+
+  it.effect("edits review and issue comments after verifying ownership and preserves body", () =>
+    Effect.gen(function* () {
+      for (const kind of ["review", "issue"] as const) {
+        const calls: string[][] = [];
+        const body = "  corrected text\n\n";
+        const result = yield* editComment(456, body, kind, 123).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                calls.push(args);
+                if (args[1] === "user") return Effect.succeed({ login: "demo-user" });
+                if (args[1] === "repos/test-owner/test-repo/pulls/123")
+                  return Effect.succeed({ number: 123 });
+                if (args.includes("PATCH"))
+                  return Effect.succeed({
+                    id: 456,
+                    html_url: "https://github.com/test-owner/test-repo/pull/123#issuecomment-456",
+                    updated_at: "2026-10-03T12:01:00Z",
+                  });
+                return Effect.succeed(commentResponse(kind));
+              },
+            }),
+          ),
+        );
+        expect(calls[0]?.[1]).toContain(
+          kind === "review" ? "pulls/comments/456" : "issues/comments/456",
+        );
+        expect(calls[1]).toEqual(["api", "user"]);
+        const patchCall = calls.find((args) => args.includes("PATCH"));
+        expect(patchCall).toEqual([
+          "api",
+          "-X",
+          "PATCH",
+          `repos/test-owner/test-repo/${kind === "review" ? "pulls" : "issues"}/comments/456`,
+          "-f",
+          `body=${body}`,
+        ]);
+        expect(result).toMatchObject({
+          commentId: 456,
+          url: "https://github.com/test-owner/test-repo/pull/123#issuecomment-456",
+          updatedAt: "2026-10-03T12:01:00Z",
+        });
+      }
+    }),
+  );
+
+  it.effect("refuses another author's comment without mutation", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* editComment(456, "corrected", "review", null).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              calls.push(args);
+              if (args[1] === "user") return Effect.succeed({ login: "demo-user" });
+              return Effect.succeed({
+                ...commentResponse("review"),
+                user: { login: "someone-else" },
+              });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls.some((args) => args.includes("PATCH"))).toBe(false);
+    }),
+  );
+
+  it.effect("refuses when the comment lookup fails", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* editComment(456, "corrected", "issue", null).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              calls.push(args);
+              return Effect.fail(
+                new GitHubNotFoundError({
+                  message: "not found",
+                  resource: "comment",
+                  identifier: "456",
+                }),
+              );
+            },
+          }),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls.some((args) => args.includes("PATCH"))).toBe(false);
+    }),
+  );
+
+  it.effect("refuses a comment from another PR before mutation", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* editComment(456, "corrected", "review", 124).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              calls.push(args);
+              if (args[1] === "user") return Effect.succeed({ login: "demo-user" });
+              return Effect.succeed(commentResponse("review", 123));
+            },
+          }),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls.some((args) => args.includes("PATCH"))).toBe(false);
+    }),
+  );
+
+  it.effect("refuses an issue comment unless its issue is a pull request", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* editComment(456, "corrected", "issue", 123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              calls.push(args);
+              if (args[1] === "user") return Effect.succeed({ login: "demo-user" });
+              if (args[1] === "repos/test-owner/test-repo/pulls/123") {
+                return Effect.fail(
+                  new GitHubNotFoundError({
+                    message: "not a pull request",
+                    resource: "pull request",
+                    identifier: "123",
+                  }),
+                );
+              }
+              return Effect.succeed(commentResponse("issue"));
+            },
+          }),
+        ),
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls.map((args) => args[1])).toEqual([
+        "repos/test-owner/test-repo/issues/comments/456",
+        "user",
+        "repos/test-owner/test-repo/pulls/123",
+      ]);
+      expect(calls.some((args) => args.includes("PATCH"))).toBe(false);
+    }),
+  );
+
+  it.effect("reads body-file content without trimming before edit", () =>
+    Effect.gen(function* () {
+      const originalBun = Reflect.get(globalThis, "Bun");
+      const body = "  from file\n\n";
+      const fixture = yield* makeTextFixture("edit-comment-body.txt", body);
+      let patchedBody: string | undefined;
+      Reflect.set(globalThis, "Bun", {
+        ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
+        file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
+      });
+      const result = yield* resolveRequiredTextInput({
+        command: "gh-tool pr edit-comment",
+        value: null,
+        fileValue: fixture.path,
+        valueFlag: "--body",
+        fileFlag: "--body-file",
+        label: "body",
+      }).pipe(
+        Effect.flatMap((resolved) =>
+          editComment(456, resolved, "issue", null).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  if (args.includes("PATCH")) {
+                    patchedBody = args.at(-1);
+                    return Effect.succeed({
+                      id: 456,
+                      html_url: "https://github.com/test-owner/test-repo/pull/123#issuecomment-456",
+                      updated_at: "2026-10-03T12:01:00Z",
+                    });
+                  }
+                  if (args[1] === "user") return Effect.succeed({ login: "demo-user" });
+                  return Effect.succeed(commentResponse("issue"));
+                },
+              }),
+            ),
+          ),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
+            else Reflect.set(globalThis, "Bun", originalBun);
+          }),
+        ),
+        Effect.ensuring(removeTextFixture(fixture.directory)),
+      );
+      expect(result.commentId).toBe(456);
+      expect(patchedBody).toBe(`body=${body}`);
+    }),
+  );
 });
 
 const makeTextFixture = (filename: string, content: string) =>
