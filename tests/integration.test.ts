@@ -536,7 +536,7 @@ const server = createServer((req, res) => {
         return;
       }
 
-      if (expr === '{job="mock-app"} |= "Nsure"') {
+      if (expr === '{job="mock-app"} |= "ExternalService"') {
         const body = JSON.stringify({
           results: {
             A: {
@@ -551,7 +551,7 @@ const server = createServer((req, res) => {
                 data: {
                   values: [
                     [1710000000001],
-                    ['{"body":"Nsure import failed","severity":"Error","attributes":{"JobId":"job-1","exception.message":"permission denied"}}'],
+                    ['{"body":"ExternalService request failed","severity":"Error","attributes":{"JobId":"job-1","exception.message":"permission denied"}}'],
                     ['{"job":"mock-app"}']
                   ]
                 }
@@ -716,7 +716,7 @@ setInterval(() => {}, 1000);`,
 
     const logQueryResult = runToolWithEnv(
       "src/observability-tool/index.ts",
-      ["logs", "query", '{job="mock-app"} |= "Nsure"', "--format", "json"],
+      ["logs", "query", '{job="mock-app"} |= "ExternalService"', "--format", "json"],
       workDir,
       { HOME: homeDir },
       30000,
@@ -728,7 +728,7 @@ setInterval(() => {}, 1000);`,
         logCount: 1,
         logs: [
           {
-            body: "Nsure import failed",
+            body: "ExternalService request failed",
             severity: "Error",
             attributes: { JobId: "job-1", "exception.message": "permission denied" },
           },
