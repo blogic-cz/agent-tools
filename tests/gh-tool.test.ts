@@ -4024,6 +4024,70 @@ describe("Original inline review locations", () => {
     feedbackOrigin: "current_head",
   }));
 
+  it.effect("deduplicates identical outdated locations and keeps different diff hunks", () =>
+    Effect.gen(function* () {
+      const rawComments = [11, 12, 13].map((id) =>
+        Object.assign({}, comments[0], {
+          id,
+          diff_hunk: id === 13 ? "@@ -40,2 +40,2 @@\n-otherValue\n+newValue" : diffHunk,
+        }),
+      );
+      const layer = createMockGhLayer({
+        runGraphQL: () =>
+          Effect.succeed({
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [11, 12, 13].map((id) => ({
+                    id: `thread-${id}`,
+                    isResolved: id === 11,
+                    comments: {
+                      nodes: [
+                        {
+                          id: `node-${id}`,
+                          databaseId: id,
+                          path: "src/example.ts",
+                          line: null,
+                          body: "Please check this value",
+                          author: { login: "reviewer" },
+                          commit: { oid: "head-sha" },
+                        },
+                      ],
+                    },
+                  })),
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          }),
+        runGh: () =>
+          Effect.succeed({ stdout: JSON.stringify(rawComments), stderr: "", exitCode: 0 }),
+      });
+      const threads = yield* fetchThreads(123, false, false, "head-sha").pipe(
+        Effect.provide(layer),
+      );
+
+      expect(threads).toHaveLength(2);
+      expect(threads[0]).toMatchObject({
+        threadId: "thread-12",
+        commentId: 12,
+        isResolved: false,
+        line: null,
+        originalLine: 41,
+        originalCommitSha: "old-a",
+        diffHunk,
+        duplicateThreadIds: ["thread-11"],
+      });
+      expect(threads[1]).toMatchObject({
+        threadId: "thread-13",
+        originalLine: 41,
+        originalCommitSha: "old-a",
+        diffHunk: rawComments[2]?.diff_hunk,
+        duplicateThreadIds: [],
+      });
+    }),
+  );
+
   it.effect("preserves original locations in threads, comments, and filtered feedback", () =>
     Effect.gen(function* () {
       const endpoints: string[] = [];
