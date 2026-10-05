@@ -3967,6 +3967,139 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
   );
 });
 
+describe("Full review comment IDs", () => {
+  const commentId = 3_000_000_001;
+  const diffHunk = "@@ -8,1 +8,1 @@\n-before\n+after";
+  const graphResponse = (databaseId: unknown, hasNextPage = false) => ({
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          nodes: [
+            {
+              id: "thread-large-id",
+              isResolved: false,
+              comments: {
+                nodes: [
+                  {
+                    id: "node-large-id",
+                    databaseId,
+                    line: null,
+                    path: "src/example.ts",
+                    body: "Check this value",
+                    author: { login: "reviewer" },
+                    commit: { oid: "head-sha" },
+                  },
+                ],
+                pageInfo: { hasNextPage, endCursor: hasNextPage ? "comment-cursor" : null },
+              },
+            },
+          ],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      },
+    },
+  });
+  const restComment = {
+    id: commentId,
+    commit_id: "head-sha",
+    in_reply_to_id: null,
+    user: { login: "reviewer" },
+    body: "Check this value",
+    path: "src/example.ts",
+    line: null,
+    original_line: 8,
+    original_commit_id: "original-sha",
+    diff_hunk: diffHunk,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  it.effect("joins string BigInt IDs above signed 32-bit to original REST locations", () =>
+    Effect.gen(function* () {
+      let queries = 0;
+      const layer = createMockGhLayer({
+        runGraphQL: (query, variables) => {
+          queries += 1;
+          expect(query).toContain("databaseId: fullDatabaseId");
+          expect(query).not.toMatch(/\n\s*databaseId\s*\n/);
+          if (variables.threadId !== undefined) {
+            expect(variables.threadId).toBe("thread-large-id");
+            return Effect.succeed({
+              node: {
+                comments: {
+                  nodes: [
+                    {
+                      id: "node-large-reply-id",
+                      databaseId: String(commentId + 1),
+                      line: null,
+                      path: "src/example.ts",
+                      body: "Reply",
+                      author: { login: "author" },
+                      commit: { oid: "head-sha" },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            });
+          }
+          return Effect.succeed(graphResponse(String(commentId), true));
+        },
+        runGh: () =>
+          Effect.succeed({ stdout: JSON.stringify([restComment]), stderr: "", exitCode: 0 }),
+      });
+      const threads = yield* fetchThreads(123, false, false, "head-sha").pipe(
+        Effect.provide(layer),
+      );
+      expect(queries).toBe(2);
+      expect(threads[0]).toMatchObject({
+        commentId,
+        line: null,
+        originalLine: 8,
+        originalCommitSha: "original-sha",
+        diffHunk,
+      });
+    }),
+  );
+
+  it.effect("rejects absent, malformed, and unsafe full IDs instead of emitting a guessed ID", () =>
+    Effect.gen(function* () {
+      for (const databaseId of [
+        null,
+        undefined,
+        "",
+        "0",
+        "12oops",
+        "1e3",
+        "-1",
+        "1.5",
+        " 12",
+        "12 ",
+        "12\n",
+        "12.0",
+        "+12",
+        "012",
+        true,
+        "9007199254740993",
+        9007199254740992,
+      ]) {
+        const layer = createMockGhLayer({
+          runGraphQL: () => Effect.succeed(graphResponse(databaseId)),
+          runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+        });
+        const error = yield* fetchThreads(123, false).pipe(
+          Effect.provide(layer),
+          Effect.match({ onFailure: (failure) => failure, onSuccess: () => null }),
+        );
+        expect(error).toMatchObject({
+          _tag: "GitHubCommandError",
+          message: "GitHub returned a missing or unsafe review comment ID",
+        });
+      }
+    }),
+  );
+});
+
 describe("Original inline review locations", () => {
   const diffHunk = "@@ -40,2 +40,2 @@\n-oldValue\n+newValue";
   const locations = [
