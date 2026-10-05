@@ -169,7 +169,7 @@ type ThreadNode = {
       id: string;
       databaseId: number;
       path: string;
-      line: number;
+      line: number | null;
       body: string;
       author: { login: string };
       commit: { oid: string } | null;
@@ -268,7 +268,10 @@ type RawReviewComment = {
   user: { login: string };
   body: string;
   path: string;
-  line: number;
+  line: number | null;
+  original_line?: number | null;
+  original_commit_id?: string | null;
+  diff_hunk?: string | null;
   created_at: string;
   updated_at: string;
   pull_request_review_id?: number | null;
@@ -446,6 +449,9 @@ const enrichThreads = (
         feedbackOrigin: feedbackOrigin(comment.commit?.oid ?? null, currentHeadSha),
         path: comment.path,
         line: comment.line,
+        originalLine: root?.originalLine ?? null,
+        originalCommitSha: root?.originalCommitSha ?? null,
+        diffHunk: root?.diffHunk ?? null,
         body: comment.body,
         isResolved: node.isResolved,
         hasReply,
@@ -464,7 +470,18 @@ const enrichThreads = (
   const dedupedByKey = new Map<string, number>();
   const deduped: ReviewThread[] = [];
   for (const thread of mapped) {
-    const key = `${thread.path} ${thread.line} ${thread.body.trim()}`;
+    const originalLocation =
+      thread.line === null
+        ? JSON.stringify([
+            thread.originalLine,
+            thread.originalCommitSha,
+            thread.diffHunk,
+            thread.originalLine === null || thread.originalCommitSha === null
+              ? thread.commentId
+              : null,
+          ])
+        : "";
+    const key = `${thread.path} ${thread.line} ${thread.body.trim()}\u0000${originalLocation}`;
     const existingIndex = dedupedByKey.get(key);
     if (existingIndex === undefined) {
       dedupedByKey.set(key, deduped.length);
@@ -561,6 +578,9 @@ export const fetchComments = Effect.fn("pr.fetchComments")(function* (
     body: c.body,
     path: c.path,
     line: c.line,
+    originalLine: c.original_line ?? null,
+    originalCommitSha: c.original_commit_id ?? null,
+    diffHunk: c.diff_hunk ?? null,
     createdAt: c.created_at,
     reviewId: c.pull_request_review_id ?? null,
     updatedAt: c.updated_at,

@@ -3503,6 +3503,9 @@ describe("Thread parsing (GraphQL → ReviewThread[])", () => {
             commentId: comment.databaseId,
             path: comment.path,
             line: comment.line,
+            originalLine: null,
+            originalCommitSha: null,
+            diffHunk: null,
             body: comment.body,
             isResolved: node.isResolved,
             hasReply: false,
@@ -3768,6 +3771,9 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
         body: c.body,
         path: c.path,
         line: c.line,
+        originalLine: null,
+        originalCommitSha: null,
+        diffHunk: null,
         createdAt: c.created_at,
         reviewId: null,
         updatedAt: c.created_at,
@@ -3958,6 +3964,105 @@ describe("Comment parsing (REST → ReviewComment[])", () => {
       expect(comments[100]?.updatedAt).toBe("2025-01-15T11:00:00Z");
       expect(comments[100]?.reviewId).toBeNull();
     }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("Original inline review locations", () => {
+  const diffHunk = "@@ -40,2 +40,2 @@\n-oldValue\n+newValue";
+  const locations = [
+    { line: null, original_line: 41, original_commit_id: "old-a", diff_hunk: diffHunk },
+    { line: null, original_line: 42, original_commit_id: "old-a", diff_hunk: diffHunk },
+    { line: null, original_line: 41, original_commit_id: "old-b", diff_hunk: diffHunk },
+    { line: 12, original_line: 7, original_commit_id: "old-a", diff_hunk: "" },
+    { line: null, original_line: null, original_commit_id: null, diff_hunk: null },
+    { line: null },
+  ];
+  const comments = locations.map((location, index) => ({
+    id: index + 1,
+    commit_id: "head-sha",
+    in_reply_to_id: null,
+    user: { login: "reviewer" },
+    body: "Please check this value",
+    path: "src/example.ts",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    ...location,
+  }));
+  const response = {
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          nodes: comments.map((comment) => ({
+            id: `thread-${comment.id}`,
+            isResolved: false,
+            comments: {
+              nodes: [
+                {
+                  id: `node-${comment.id}`,
+                  databaseId: comment.id,
+                  path: comment.path,
+                  line: comment.line,
+                  body: comment.body,
+                  author: { login: "reviewer" },
+                  commit: { oid: "head-sha" },
+                },
+              ],
+            },
+          })),
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      },
+    },
+  };
+  const expected = locations.map((location) => ({
+    path: "src/example.ts",
+    line: location.line,
+    originalLine: location.original_line ?? null,
+    originalCommitSha: location.original_commit_id ?? null,
+    diffHunk: location.diff_hunk ?? null,
+    commitSha: "head-sha",
+    feedbackOrigin: "current_head",
+  }));
+
+  it.effect("preserves original locations in threads, comments, and filtered feedback", () =>
+    Effect.gen(function* () {
+      const endpoints: string[] = [];
+      const layer = createMockGhLayer({
+        runGhJson: () => Effect.succeed({ ...mockPRInfo, headRefOid: "head-sha" }),
+        runGraphQL: () => Effect.succeed(response),
+        runGh: (args) => {
+          const endpoint = args[1] ?? "";
+          if (args.includes("--jq")) {
+            return Effect.succeed({ stdout: "base-sha", stderr: "", exitCode: 0 });
+          }
+          endpoints.push(endpoint);
+          return Effect.succeed({
+            stdout: JSON.stringify(endpoint.includes("pulls/123/comments?") ? comments : []),
+            stderr: "",
+            exitCode: 0,
+          });
+        },
+      });
+      const threads = yield* fetchCurrentThreads(123, false, false).pipe(Effect.provide(layer));
+      const inlineComments = yield* fetchCurrentComments(123, null).pipe(Effect.provide(layer));
+      const feedback = yield* fetchCurrentFeedback(123).pipe(Effect.provide(layer));
+      const filtered = filterFeedback(feedback, {
+        only: "all",
+        excludeAuthors: [],
+        rawBodies: false,
+      });
+
+      for (const items of [threads, inlineComments, filtered.threads, filtered.inlineComments]) {
+        expect(items).toHaveLength(expected.length);
+        for (const [index, location] of expected.entries()) {
+          expect(items[index]).toMatchObject(location);
+        }
+      }
+      expect(threads.map((thread) => thread.commentId)).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(threads.every((thread) => thread.duplicateThreadIds.length === 0)).toBe(true);
+      expect(endpoints).toHaveLength(6);
+      expect(endpoints.every((endpoint) => endpoint.endsWith("?per_page=100&page=1"))).toBe(true);
+    }),
   );
 });
 
