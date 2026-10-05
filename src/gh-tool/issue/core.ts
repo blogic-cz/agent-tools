@@ -216,8 +216,7 @@ export const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts:
   const gh = yield* GitHubService;
   const repoInfo = yield* gh.getRepoInfo();
 
-  const trimmedBody = opts.body.trim();
-  if (trimmedBody.length === 0) {
+  if (opts.body.trim().length === 0) {
     return yield* Effect.fail(
       new GitHubCommandError({
         command: "gh-tool issue comment",
@@ -234,7 +233,7 @@ export const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts:
     "POST",
     `repos/${repoInfo.owner}/${repoInfo.name}/issues/${opts.issue}/comments`,
     "-f",
-    `body=${trimmedBody}`,
+    `body=${opts.body}`,
   ]);
 
   const rawComment = yield* Effect.try({
