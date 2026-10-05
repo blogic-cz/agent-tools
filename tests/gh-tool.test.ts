@@ -69,6 +69,7 @@ import {
   fetchReviews,
   fetchThreads,
   editComment,
+  postIssueComment,
   replyAndResolveComment,
   replyToComment,
   resolveThread,
@@ -6870,6 +6871,7 @@ describe("PR composite commands", () => {
       paginateThreads?: boolean;
       paginateComments?: boolean;
       mutations?: string[];
+      postCalls?: string[][];
     } = {},
   ) => {
     const target = options.comment ?? {
@@ -6881,8 +6883,21 @@ describe("PR composite commands", () => {
     return createMockGhLayer({
       runGhJson: () => Effect.succeed(target),
       runGh: (args) => {
-        if (args.includes("POST")) options.mutations?.push("reply");
-        return Effect.succeed({ stdout: JSON.stringify({ id: 301 }), stderr: "", exitCode: 0 });
+        if (args.includes("POST")) {
+          options.mutations?.push("reply");
+          options.postCalls?.push(args);
+        }
+        return Effect.succeed({
+          stdout: JSON.stringify({
+            id: 301,
+            body: "posted",
+            user: { login: "test-user" },
+            created_at: "2026-10-05T12:00:00Z",
+            html_url: "https://github.com/test-owner/test-repo/issues/123#issuecomment-301",
+          }),
+          stderr: "",
+          exitCode: 0,
+        });
       },
       runGraphQL: (query) => {
         if (query.includes("resolveReviewThread")) {
@@ -6930,6 +6945,73 @@ describe("PR composite commands", () => {
       },
     });
   };
+
+  for (const { name, post, endpoint, expectedMutations } of [
+    {
+      name: "postIssueComment",
+      post: (body: string) => postIssueComment(123, body).pipe(Effect.asVoid),
+      endpoint: "repos/test-owner/test-repo/issues/123/comments",
+      expectedMutations: ["reply"],
+    },
+    {
+      name: "commentOnIssue",
+      post: (body: string) => commentOnIssue({ issue: 123, body }).pipe(Effect.asVoid),
+      endpoint: "repos/test-owner/test-repo/issues/123/comments",
+      expectedMutations: ["reply"],
+    },
+    {
+      name: "replyToComment",
+      post: (body: string) => replyToComment(123, 202, body).pipe(Effect.asVoid),
+      endpoint: "repos/test-owner/test-repo/pulls/123/comments/101/replies",
+      expectedMutations: ["reply"],
+    },
+    {
+      name: "reply-and-resolve",
+      post: (body: string) => replyAndResolveComment(null, 202, null, body).pipe(Effect.asVoid),
+      endpoint: "repos/test-owner/test-repo/pulls/123/comments/101/replies",
+      expectedMutations: ["reply", "resolve"],
+    },
+  ]) {
+    for (const [variant, body] of [
+      ["trailing LF", "Approved reply\n"],
+      ["surrounding spaces and tabs", " \tApproved reply \t"],
+      ["CRLF and Unicode", " \r\nČeský reply 🐾\r\n \t"],
+    ]) {
+      it.effect(`${name} preserves exact POST body with ${variant}`, () =>
+        Effect.gen(function* () {
+          const postCalls: string[][] = [];
+          const mutations: string[] = [];
+          yield* post(body).pipe(Effect.provide(replyAndResolveLayer({ postCalls, mutations })));
+
+          expect(postCalls).toEqual([["api", "-X", "POST", endpoint, "-f", `body=${body}`]]);
+          expect(mutations).toEqual(expectedMutations);
+        }),
+      );
+    }
+
+    it.effect(`${name} rejects empty or whitespace-only body before mutation`, () =>
+      Effect.gen(function* () {
+        for (const body of ["", " \t\r\n"]) {
+          const postCalls: string[][] = [];
+          const mutations: string[] = [];
+          const result = yield* post(body).pipe(
+            Effect.provide(replyAndResolveLayer({ postCalls, mutations })),
+            Effect.result,
+          );
+
+          Result.match(result, {
+            onFailure: (error) => {
+              expect(error._tag).toBe("GitHubCommandError");
+              expect(error.message).toContain("body cannot be empty");
+            },
+            onSuccess: () => expect.fail("Expected an empty body to be rejected"),
+          });
+          expect(postCalls).toEqual([]);
+          expect(mutations).toEqual([]);
+        }
+      }),
+    );
+  }
 
   it.effect("reply-and-resolve infers PR/root/thread and paginates threads and comments", () =>
     Effect.gen(function* () {

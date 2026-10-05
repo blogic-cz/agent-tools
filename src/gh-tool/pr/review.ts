@@ -716,8 +716,7 @@ export const postIssueComment = Effect.fn("pr.postIssueComment")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const trimmedBody = body.trim();
-  if (trimmedBody.length === 0) {
+  if (body.trim().length === 0) {
     return yield* Effect.fail(
       new GitHubCommandError({
         command: "gh-tool pr comment",
@@ -734,7 +733,7 @@ export const postIssueComment = Effect.fn("pr.postIssueComment")(function* (
     "POST",
     `repos/${repoInfo.owner}/${repoInfo.name}/issues/${resolvedPr}/comments`,
     "-f",
-    `body=${trimmedBody}`,
+    `body=${body}`,
   ]);
 
   const rawComment = yield* Effect.try({
@@ -924,8 +923,7 @@ export const replyToComment = Effect.fn("pr.replyToComment")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const trimmedBody = body.trim();
-  if (trimmedBody.length === 0) {
+  if (body.trim().length === 0) {
     return yield* Effect.fail(
       new GitHubCommandError({
         command: "gh-tool pr reply",
@@ -957,7 +955,7 @@ export const replyToComment = Effect.fn("pr.replyToComment")(function* (
       "POST",
       `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/comments/${rootCommentId}/replies`,
       "-f",
-      `body=${trimmedBody}`,
+      `body=${body}`,
     ])
     .pipe(
       Effect.catchTag("GitHubCommandError", (error) => {
