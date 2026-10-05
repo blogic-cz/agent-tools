@@ -8270,6 +8270,7 @@ describe("PR composite commands", () => {
       threadId?: string;
       paginateThreads?: boolean;
       paginateComments?: boolean;
+      laterCommentId?: string | number | null;
       mutations?: string[];
       postCalls?: string[][];
     } = {},
@@ -8312,7 +8313,11 @@ describe("PR composite commands", () => {
           return Effect.succeed({
             node: {
               comments: {
-                nodes: [{ databaseId: 202 }],
+                nodes: [
+                  {
+                    databaseId: options.laterCommentId === undefined ? 202 : options.laterCommentId,
+                  },
+                ],
                 pageInfo: { hasNextPage: false, endCursor: null },
               },
             },
@@ -8428,6 +8433,51 @@ describe("PR composite commands", () => {
         );
         expect(result).toMatchObject({ pr: 123, threadId: "thread-2" });
         expect(mutations).toEqual(["reply", "resolve"]);
+      }
+    }),
+  );
+
+  it.effect("reply-and-resolve matches a large string ID only on a later comment page", () =>
+    Effect.gen(function* () {
+      const commentId = 3_000_000_001;
+      const mutations: string[] = [];
+      const result = yield* replyAndResolveComment(null, commentId, null, "done").pipe(
+        Effect.provide(
+          replyAndResolveLayer({
+            comment: {
+              id: commentId,
+              in_reply_to_id: 101,
+              pull_request_url: "https://api.github.com/repos/test-owner/test-repo/pulls/123",
+            },
+            paginateComments: true,
+            laterCommentId: String(commentId),
+            mutations,
+          }),
+        ),
+      );
+      expect(result).toMatchObject({ pr: 123, threadId: "thread-2" });
+      expect(mutations).toEqual(["reply", "resolve"]);
+    }),
+  );
+
+  it.effect("reply-and-resolve refuses invalid IDs on a later page before any mutation", () =>
+    Effect.gen(function* () {
+      for (const laterCommentId of ["3oops", "9007199254740993"]) {
+        const mutations: string[] = [];
+        const result = yield* replyAndResolveComment(null, 202, null, "done").pipe(
+          Effect.provide(
+            replyAndResolveLayer({ paginateComments: true, laterCommentId, mutations }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({
+            _tag: "GitHubCommandError",
+            message: "GitHub returned a missing or unsafe review comment ID",
+          });
+        }
+        expect(mutations).toEqual([]);
       }
     }),
   );
