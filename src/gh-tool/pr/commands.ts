@@ -747,6 +747,10 @@ export const prMergeCommand = Command.make(
       Flag.withDefault(DEFAULT_DELETE_BRANCH),
     ),
     format: formatOption,
+    matchHeadCommit: Flag.String("match-head-commit").pipe(
+      Flag.withDescription("Require the PR head to match this full reviewed commit SHA"),
+      Flag.optional,
+    ),
     pr: Flag.Int("pr").pipe(Flag.withDescription("PR number to merge")),
     repo: repoOption,
     strategy: Flag.Literals("strategy", MERGE_STRATEGIES).pipe(
@@ -754,13 +758,14 @@ export const prMergeCommand = Command.make(
       Flag.withDefault(DEFAULT_MERGE_STRATEGY),
     ),
   },
-  ({ confirm, deleteBranch, format, pr, repo, strategy }) =>
+  ({ confirm, deleteBranch, format, matchHeadCommit, pr, repo, strategy }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const result = yield* mergePR({
           confirm,
           deleteBranch,
+          matchHeadCommit: Option.getOrUndefined(matchHeadCommit),
           pr,
           strategy,
         });

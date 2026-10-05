@@ -43,6 +43,8 @@ const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
 const MERGE_SHA_POLL_INTERVAL_MS = 1000;
 const MERGE_SHA_WAIT_SECONDS = 5;
+const isFullCommitSha = (value: unknown): value is string =>
+  typeof value === "string" && value.length === 40 && /^[0-9a-f]+$/i.test(value);
 
 const validatePRTitle = Effect.fn("pr.validatePRTitle")(function* (title: string) {
   const gh = yield* GitHubService;
@@ -930,16 +932,54 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   strategy: MergeStrategy;
   deleteBranch: boolean;
   confirm: boolean;
+  matchHeadCommit?: string;
 }) {
   const gh = yield* GitHubService;
+  const matchHeadCommit = opts.matchHeadCommit;
 
-  const info = yield* gh.runGhJson<PRViewJsonResult>([
-    "pr",
-    "view",
-    String(opts.pr),
-    "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
-  ]);
+  if (matchHeadCommit !== undefined && !isFullCommitSha(matchHeadCommit)) {
+    return yield* new GitHubMergeError({
+      message: "--match-head-commit must be a full 40-character hexadecimal commit SHA",
+      reason: "unknown",
+      hint: "Provide the complete reviewed head commit SHA before retrying.",
+      nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+    });
+  }
+
+  const info = yield* gh
+    .runGhJson<PRViewJsonResult & { headRefOid?: unknown }>([
+      "pr",
+      "view",
+      String(opts.pr),
+      "--json",
+      "number,url,title,headRefName,baseRefName,state,isDraft,mergeable" +
+        (matchHeadCommit !== undefined ? ",headRefOid" : ""),
+    ])
+    .pipe(
+      Effect.mapError((error) =>
+        matchHeadCommit === undefined
+          ? error
+          : new GitHubMergeError({
+              message: `Could not verify the head commit of PR #${opts.pr}: ${error.message}`,
+              reason: "unknown",
+              hint: "The merge is refused while the head is unknown. Re-read the PR and verify its reviewed head before retrying.",
+              nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+            }),
+      ),
+    );
+
+  if (
+    matchHeadCommit !== undefined &&
+    (!isFullCommitSha(info?.headRefOid) ||
+      info.headRefOid.toLowerCase() !== matchHeadCommit.toLowerCase())
+  ) {
+    return yield* new GitHubMergeError({
+      message: `PR #${opts.pr} head does not match the reviewed commit ${matchHeadCommit}`,
+      reason: "unknown",
+      hint: "The head is missing, invalid, or changed. Re-read the PR and review its current head before retrying with that SHA.",
+      nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+    });
+  }
 
   const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
 
@@ -1120,6 +1160,9 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   });
 
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
+  if (matchHeadCommit !== undefined) {
+    mergeArgs.push("--match-head-commit", matchHeadCommit);
+  }
 
   const shaFromAsyncMerge = yield* gh
     .runGh(mergeArgs)
@@ -1127,7 +1170,16 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
       Effect.map(() => null),
       Effect.catchTag("GitHubCommandError", (error) =>
         ASYNC_MERGE_REQUIRED_RE.test(error.stderr)
-          ? mergeViaAsyncApi({ pr: opts.pr, strategy: opts.strategy })
+          ? matchHeadCommit !== undefined
+            ? Effect.fail(
+                new GitHubMergeError({
+                  message: `PR #${opts.pr} requires an asynchronous merge that cannot enforce --match-head-commit`,
+                  reason: "unknown",
+                  hint: "The asynchronous fallback was refused because its exact-head condition is unsupported. Keep the reviewed SHA requirement and use a merge path that enforces it after reviewing the current head.",
+                  nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+                }),
+              )
+            : mergeViaAsyncApi({ pr: opts.pr, strategy: opts.strategy })
           : Effect.fail(error),
       ),
     )

@@ -314,6 +314,14 @@ race with the edit. Bare or current heads match the selected repository owner's 
 use `--head owner:branch` to opt into updating a fork's PR. `pr edit --body ""` clears
 the body; `pr view` always includes `body`.
 
+`pr merge --match-head-commit <full-40-character-SHA>` requires the PR head to match
+the reviewed commit, including during a dry run. Missing or invalid head information,
+lookup failures, and mismatches refuse the merge before any mutation. With `--confirm`,
+the same SHA is passed to GitHub's merge condition so a concurrent head change also
+refuses the merge. The asynchronous stack fallback cannot enforce this condition and
+is refused when the flag is present. Keep the reviewed SHA requirement and use a merge
+path that enforces it after reviewing the current head.
+
 ### Stacked pull requests
 
 GitHub's native stacked PRs refuse the GraphQL merge and require the asynchronous REST
