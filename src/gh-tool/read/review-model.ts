@@ -9,7 +9,7 @@ export const REVIEW_THREADS_QUERY = `
             comments(first: 100) {
               nodes {
                 id
-                databaseId
+                databaseId: fullDatabaseId
                 path
                 line
                 body
@@ -36,7 +36,7 @@ export const REVIEW_THREAD_COMMENTS_QUERY = `
         comments(first: 100, after: $after) {
           nodes {
             id
-            databaseId
+            databaseId: fullDatabaseId
             path
             line
             body
@@ -136,13 +136,13 @@ export const LAST_HUMAN_REVIEWER_QUERY = `
 // Internal types
 // ---------------------------------------------------------------------------
 
-export type ThreadNode = {
+export type ThreadNode<DatabaseId = number> = {
   id: string;
   isResolved: boolean;
   comments: {
     nodes: Array<{
       id: string;
-      databaseId: number;
+      databaseId: DatabaseId;
       path: string;
       line: number | null;
       body: string;
@@ -154,14 +154,14 @@ export type ThreadNode = {
 };
 
 export type ThreadCommentsQueryResult = {
-  node: { comments: ThreadNode["comments"] } | null;
+  node: { comments: ThreadNode<string | null>["comments"] } | null;
 };
 
 export type ThreadsQueryResult = {
   repository: {
     pullRequest: {
       reviewThreads: {
-        nodes: ThreadNode[];
+        nodes: ThreadNode<string | null>[];
         pageInfo: {
           hasNextPage: boolean;
           endCursor: string | null;

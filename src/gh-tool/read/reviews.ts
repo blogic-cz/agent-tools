@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import { GitHubService } from "#gh/read/transport";
+import { GitHubCommandError } from "#gh/errors";
 import { cachedRead } from "./cache";
 import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";
@@ -50,7 +51,27 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
         node.comments.pageInfo = commentsResponse.node.comments.pageInfo;
         commentsAfter = commentsResponse.node.comments.pageInfo?.endCursor ?? null;
       }
-      nodes.push(node);
+      const comments: ThreadNode["comments"]["nodes"] = [];
+      for (const comment of node.comments.nodes) {
+        // fullDatabaseId is a GraphQL BigInt string, aliased to the existing internal key.
+        const rawId: unknown = comment.databaseId;
+        const databaseId = typeof rawId === "string" ? Number(rawId) : rawId;
+        if (
+          typeof databaseId !== "number" ||
+          !Number.isSafeInteger(databaseId) ||
+          databaseId < 1 ||
+          (typeof rawId === "string" && String(databaseId) !== rawId)
+        ) {
+          return yield* new GitHubCommandError({
+            command: "gh api graphql",
+            exitCode: 1,
+            message: "GitHub returned a missing or unsafe review comment ID",
+            stderr: "Cannot represent fullDatabaseId as a positive safe integer",
+          });
+        }
+        comments.push({ ...comment, databaseId });
+      }
+      nodes.push({ ...node, comments: { ...node.comments, nodes: comments } });
     }
 
     if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) {
