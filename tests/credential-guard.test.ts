@@ -1354,7 +1354,7 @@ describe("dangerous bash command evasion", () => {
     });
     expect(guard.isDangerousBashCommand(command)).toBe(true);
     expect(() => guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } })).toThrow(
-      "might expose secrets",
+      "Command blocked",
     );
   });
 
@@ -5088,6 +5088,7 @@ it.each([
 describe("bounded nested jq object maps", () => {
   const guard = createCredentialGuard();
   it.each([
+    "jq '{id,items:(.items|map({name,items:(.items|map({name,value}))}))}' report.json",
     "jq '{queueJobId,queueWaitMs,runMs,elapsedMs,startedAt,completedAt,exitCode,accepted,phases:(.phases|map({name,elapsedMs,exitCode}))}' /private/tmp/example-measurement/a.json /private/tmp/example-measurement/b.json /private/tmp/example-measurement/c.json /private/tmp/example-measurement/d.json",
     "rtk jq '{id,items:(.items | map({name,value}))}' report.json",
     "rtk jq '{id,items:.items|map({name,value})}' report.json",
@@ -5109,7 +5110,6 @@ describe("bounded nested jq object maps", () => {
     "jq '{id,items:(.items|map({name,value:\"\\(env)\"}))}' report.json",
     "jq '{id,items:(.items|map({name,value:(include \"module\"; .value)}))}' report.json",
     "jq 'import \"module\" as m; {id,items:(.items | map({name,value}))}' report.json",
-    "jq '{id,items:(.items|map({name,items:(.items|map({name,value}))}))}' report.json",
     "jq '{id,items:(.items|map({name,value}))}; env' report.json",
     "jq '{id,items:(.items|map({name,value}))} | env' report.json",
     "jq '{id,items:(.items | map({name,value}))}' a.json b.json .env d.json",

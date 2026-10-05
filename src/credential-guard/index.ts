@@ -18,6 +18,7 @@ import type { CliToolOverride, CredentialGuardConfig } from "#config/types";
 import { redactSensitiveText } from "#shared/content-security";
 import { SECRET_PATTERNS } from "#shared/credential-patterns";
 import { posix } from "node:path";
+import { passiveJqProgramIndex } from "./passive-jq";
 
 export { findSecretMatches } from "#shared/credential-patterns";
 export { redactSensitiveText } from "#shared/content-security";
@@ -76,7 +77,9 @@ const DEFAULT_BLOCKED_PATH_PATTERNS: RegExp[] = [
   /\.aws\//,
   /\.ssh\//,
   /\.kube\//,
-  /kubeconfig/i,
+  /(?:^|\/)kubeconfig(?:[._-][^/]*$|\/|$)/i,
+  // Prefixed/tagged artifacts remain protected; ordinary Markdown word occurrences are data.
+  /(?:^|\/)(?![^/]+\.md$)[^/]+[._-]kubeconfig(?:[._-][^/]*)?$/i,
   /\.sentryclirc$/,
 ];
 
@@ -273,6 +276,14 @@ function isSafeLocalAssignmentCommand(words: string[]): boolean {
   );
 }
 
+function isChecksumCommand(argv: string[]): boolean {
+  return (
+    ["shasum", "sha1sum", "sha256sum", "sha512sum", "md5sum", "cksum"].includes(
+      argv[0]?.split("/").at(-1) ?? "",
+    ) && !hasExecutionOption(argv.slice(1), ["check"], "c")
+  );
+}
+
 function hasSensitivePathRedirect(
   command: string,
   isPathBlocked: (path: string) => boolean,
@@ -311,8 +322,13 @@ function escapeRegex(s: string): string {
 function parseStaticShellCommands(
   command: string,
   literalOperandsOnly = false,
+  onUnterminatedQuote?: () => void,
 ):
-  | { pipelines: string[][][]; redirects: { target: string; dynamic: boolean; pipeline: number }[] }
+  | {
+      pipelines: string[][][];
+      redirects: { target: string; dynamic: boolean; pipeline: number }[];
+      pathnameExpansion: boolean;
+    }
   | "brace-expansion"
   | undefined {
   const pipelines: string[][][] = [];
@@ -324,6 +340,7 @@ function parseStaticShellCommands(
   let word = "";
   let started = false;
   let quote: "'" | '"' | undefined;
+  let pathnameExpansion = false;
 
   const finishWord = () => {
     if (started) {
@@ -406,15 +423,19 @@ function parseStaticShellCommands(
     } else if (/\s/.test(char)) {
       finishWord();
     } else {
+      if (/[*?[\]]/.test(char) || (char === "~" && !started)) pathnameExpansion = true;
       word += char;
       started = true;
     }
   }
 
-  if (quote && !literalOperandsOnly) return undefined;
+  if (quote && !literalOperandsOnly) {
+    onUnterminatedQuote?.();
+    return undefined;
+  }
   finishPipeline();
   if (redirect) return undefined;
-  return { pipelines, redirects };
+  return { pipelines, redirects, pathnameExpansion };
 }
 
 /** A lexical binding proof, preserving shell quotes and rejecting every other expansion. */
@@ -492,6 +513,11 @@ function isLiteralLoopCommand(words: string[], marker: string, value: string): b
   const argv = marked.map((word) => word.replaceAll(marker, () => value));
   const name = argv[0];
   const uses = marked.flatMap((word, index) => (word.includes(marker) ? [index] : []));
+  const jqProgram = passiveJqProgramIndex(argv);
+  if (jqProgram !== undefined)
+    return uses.every(
+      (index) => index > jqProgram && /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(argv[index] ?? ""),
+    );
   if (name === "cat")
     return (
       argv.slice(1).every((word) => word === "--" || !word.startsWith("-")) &&
@@ -503,15 +529,33 @@ function isLiteralLoopCommand(words: string[], marker: string, value: string): b
     return format !== undefined && uses.every((index) => index > format);
   }
   if (name === "herdr") return isLiteralHerdrRead(argv) && uses.every((index) => index === 3);
-  if (name === "bun")
+  if (name === "bun") {
+    if (argv.slice(0, 4).join(" ") !== "bun run gh-tool pr") return false;
+    if (!["checks", "checks-failed", "info", "review-triage"].includes(argv[4] ?? "")) return false;
+    let selector = -1;
+    for (let index = 5; index < argv.length; index += 2) {
+      if (argv[index] === "--repo" && /^[A-Za-z0-9_./-]+$/.test(argv[index + 1] ?? "")) continue;
+      if (argv[index] !== "--pr" || selector !== -1 || !/^\d+$/.test(argv[index + 1] ?? ""))
+        return false;
+      selector = index + 1;
+    }
+    return selector !== -1 && uses.every((index) => index === selector && marked[index] === marker);
+  }
+  if (name === "git") {
+    const boundary = argv.indexOf("--", 2);
     return (
-      argv.length === 9 &&
-      argv.slice(0, 6).join(" ") === "bun run gh-tool pr review-triage --repo" &&
-      /^[A-Za-z0-9_.-]+$/.test(argv[6] ?? "") &&
-      argv[7] === "--pr" &&
-      /^\d+$/.test(argv[8] ?? "") &&
-      uses.every((index) => index === 8)
+      argv[1] === "diff" &&
+      (boundary === 2 || boundary === 3) &&
+      argv
+        .slice(2, boundary)
+        .every((revision) => /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(revision)) &&
+      argv.length > boundary + 1 &&
+      argv.slice(boundary + 1).every((file) => /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(file)) &&
+      uses.every(
+        (index) => index > boundary && /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(argv[index] ?? ""),
+      )
     );
+  }
   return (
     uses.length === 0 &&
     ((["grep", "head", "tail"].includes(name ?? "") && isPassiveTextCommand(argv)) ||
@@ -587,7 +631,7 @@ function literalShellBodies(command: string): string[] | undefined {
             (/^--?[A-Za-z0-9-]+=/.test(word) && isShellWord(word.slice(word.indexOf("=") + 1)))),
       ) &&
       !hasProvedShellDataOperands(argv) &&
-      !isStaticHerdrPrompt(command)
+      !(isLiteralHerdrPrompt(argv) && isStaticHerdrPrompt(command))
     )
       return undefined;
   }
@@ -637,7 +681,6 @@ function isProvedLiteralShellBody(
     return true;
   }
   if (!hasProvedNavigationSequence(materialized)) return false;
-  if (isStaticHerdrPrompt(materialized)) return true;
   return parsed.pipelines.flat().every((words) => {
     const argv = unwrapProofCommand(words, "\0");
     if (!argv) return false;
@@ -659,6 +702,7 @@ function isProvedLiteralShellBody(
       (name === "bun" && isSafeLocalAssignmentCommand(argv) && !isUnsupportedInlineRuntime(argv)) ||
       isStaticNavigationCommand(argv) ||
       isLiteralHerdrRead(argv) ||
+      (isLiteralHerdrPrompt(argv) && isStaticHerdrPrompt(materialized)) ||
       (argv.length === 1 && ["true", "false", "pwd"].includes(name))
     );
   });
@@ -687,6 +731,11 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
   const marker = "GUARDLITERALBINDING";
   if (command.includes(marker)) return undefined;
   let script = command.replace(/^[ \t\n]+|[ \t\n]+$/g, "");
+  // Quote removal is safe only for this literal ASCII path value, never a shell expansion.
+  script = script.replace(
+    /^([A-Za-z])=(["'])([A-Za-z0-9_./][A-Za-z0-9_./-]*)\2(?=[ \t]*(?:;|\n|&&))/,
+    "$1=$3",
+  );
   const wrapped = parseStaticShellCommands(script);
   if (
     wrapped &&
@@ -784,20 +833,35 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
       return undefined;
     const value = assignment[4] ?? "";
     const paths: string[] = [];
+    // One local directory value may occupy only the first gated cd operand.
+    const navigation = parsed.pipelines[0];
+    const navigationArgv = unwrapProofCommand(navigation?.[0] ?? [], marker);
+    const directoryBinding =
+      !assignment[1] &&
+      navigation?.length === 1 &&
+      navigationArgv?.[0] === "cd" &&
+      navigationArgv[navigationArgv[1] === "--" ? 2 : 1] === marker;
+    if (directoryBinding && !hasProvedNavigationSequence(rest.text.replaceAll(marker, () => value)))
+      return undefined;
     for (const words of parsed.pipelines.flat()) {
       const marked = unwrapProofCommand(words, marker);
       if (!marked) return undefined;
       const argv = marked.map((word) => word.replaceAll(marker, () => value));
       const name = argv[0]?.split("/").at(-1) ?? "";
       const uses = marked.flatMap((word, index) => (word.includes(marker) ? [index] : []));
-      const checksum =
-        ["shasum", "sha1sum", "sha256sum", "sha512sum", "md5sum", "cksum"].includes(name) &&
-        !hasExecutionOption(argv.slice(1), ["check"], "c");
+      const checksum = isChecksumCommand(argv);
+      if (directoryBinding && uses.length && words !== navigation?.[0]) return undefined;
       if (!uses.length) {
         if (
           !isSafeLocalAssignmentCommand(argv) &&
           inlineProgramIndex(argv) === undefined &&
           !(argv[0] === "git" && argv[1] === "commit") &&
+          !(
+            directoryBinding &&
+            argv[0] === "git" &&
+            argv[1] === "clone" &&
+            !hasExecutionOption(argv.slice(2), ["config", "upload-pack"], "c")
+          ) &&
           !checksum
         )
           return undefined;
@@ -814,7 +878,9 @@ function materializeLiteralShell(command: string): LiteralShellProof | undefined
       const reader =
         ["cat", "ls", "head", "tail", "wc", "uniq", "cut", "sort", "grep", "rg"].includes(name) &&
         isSafeLocalAssignmentCommand(argv);
-      if (!gitAdd && !reader && !checksum) return undefined;
+      const directory =
+        directoryBinding && words === navigation?.[0] && isStaticNavigationCommand(argv);
+      if (!gitAdd && !reader && !checksum && !directory) return undefined;
       paths.push(...uses.map((index) => argv[index] ?? ""));
     }
     const prefix = assignment[1] ? `cd ${assignment[1]}${assignment[2]} ` : "";
@@ -981,6 +1047,7 @@ function inlineProgramIndex(argv: string[]): number | undefined {
 function isUnsupportedInlineRuntime(argv: string[]): boolean {
   const runtime = inlineRuntimeKind(argv[0]);
   if (!runtime) return false;
+  if (pythonCompileFiles(argv)) return false;
   if (inlineProgramIndex(argv) !== undefined) return false;
   let index = 1;
   for (; index < argv.length; index++) {
@@ -1016,11 +1083,39 @@ function isUnsupportedInlineRuntime(argv: string[]): boolean {
       return true;
   }
   if (runtime === "bun" && ["exec", "repl"].includes(argv[index] ?? "")) return true;
-  // Bun retains eval/loader controls around its tool operand; only a later -c is tool data.
+  // A separate -- after a literal task/file is an argv boundary, not proof of task contents.
+  let boundary = argv.length;
+  const target = argv[index] === "run" ? index + 1 : index;
+  if (
+    runtime === "bun" &&
+    /^[A-Za-z0-9_./][A-Za-z0-9_./-]*$/.test(argv[target] ?? "") &&
+    ![
+      "exec",
+      "repl",
+      "x",
+      "run",
+      "test",
+      "build",
+      "install",
+      "add",
+      "remove",
+      "update",
+      "pm",
+      "create",
+      "link",
+      "unlink",
+      "init",
+      "upgrade",
+    ].includes(argv[target] ?? "")
+  ) {
+    const separator = argv.indexOf("--", target + 1);
+    if (separator !== -1) boundary = separator;
+  }
+  // Before that boundary, unknown eval/loader controls retain conservative refusal.
   return (
     runtime === "bun" &&
     argv
-      .slice(index)
+      .slice(index, boundary)
       .some((arg) =>
         /^(?:-[A-Za-z]*[ep]|-[rmp]|--(?:eval|print|require|import|loader|preload|experimental-loader))(?:$|=|[^-])/.test(
           arg,
@@ -1029,8 +1124,60 @@ function isUnsupportedInlineRuntime(argv: string[]): boolean {
   );
 }
 
+/** -I excludes cwd/user imports and PYTHON* startup controls; -S disables site hooks. */
+function pythonCompileFiles(argv: string[]): string[] | undefined {
+  if (!["python", "python3"].includes(argv[0]?.split("/").at(-1) ?? "")) return undefined;
+  let index = 1;
+  let isolation = "";
+  while (/^-[ISB]+$/.test(argv[index] ?? "")) isolation += argv[index++]?.slice(1);
+  if (!isolation.includes("I") || !isolation.includes("S")) return undefined;
+  if (argv[index] !== "-m" || argv[index + 1] !== "py_compile") return undefined;
+  const files = argv.slice(index + 2);
+  return files.length > 0 &&
+    files.length <= 32 &&
+    files.every((file) => /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*\.py$/.test(file))
+    ? files
+    : undefined;
+}
+
+function isPythonCompileModule(argv: string[]): boolean {
+  return (
+    inlineRuntimeKind(argv[0]) === "python" &&
+    argv
+      .slice(1)
+      .some(
+        (arg, index) =>
+          (arg === "-m" && argv[index + 2] === "py_compile") || arg === "-mpy_compile",
+      )
+  );
+}
+
+/** Preserve the startup proof through the entire invocation, without inspecting target code. */
+function hasProvedPythonCompileInvocation(command: string): boolean {
+  if (new TextEncoder().encode(command).byteLength > 65_536 || !literalBindingText(command, "", ""))
+    return false;
+  const parsed = parseStaticShellCommands(command);
+  if (
+    !parsed ||
+    typeof parsed === "string" ||
+    parsed.pipelines.flat().length > 32 ||
+    !hasProvedNavigationSequence(command)
+  )
+    return false;
+  return parsed.pipelines.every((pipeline) =>
+    pipeline.every((words, index) => {
+      const argv = unwrapProofCommand(words, "\0");
+      if (!argv) return false;
+      if (pythonCompileFiles(argv)) return index === 0;
+      if (isStaticNavigationCommand(argv)) return index === 0 && pipeline.length === 1;
+      return isReadonlyJqConsumer(argv);
+    }),
+  );
+}
+
 /** Move a complete, literal Python stdin program into the existing inline argv boundary. */
-function normalizeProgramHeredocs(command: string): string {
+function normalizeProgramHeredocs(command: string, depth = 0): string {
+  if (depth >= 32 || new TextEncoder().encode(command).byteLength > 65_536) return command;
   const heredoc = boundedHeredoc(command);
   if (!heredoc || !heredoc.closed || (!heredoc.quoted && /[$`\\]/.test(heredoc.body)))
     return command;
@@ -1038,6 +1185,29 @@ function normalizeProgramHeredocs(command: string): string {
   if (!parsed || typeof parsed === "string") return command;
   const last = parsed.pipelines.at(-1)?.at(-1);
   const argv = last ? unwrapStaticCommand(last) : [];
+  const name = argv[0]?.split("/").at(-1);
+  if (
+    depth > 0 &&
+    ((name === "cat" && argv.slice(1).every((arg) => arg === "--" || !arg.startsWith("-"))) ||
+      (name === "tee" &&
+        argv
+          .slice(1)
+          .every((arg) => ["-a", "--append", "--"].includes(arg) || !arg.startsWith("-"))))
+  ) {
+    const following = normalizeProgramHeredocs(heredoc.following, depth + 1);
+    const tail = parseStaticShellCommands(following);
+    if (
+      !tail ||
+      typeof tail === "string" ||
+      !tail.pipelines.flat().every((words) => {
+        const next = unwrapProofCommand(words, "\0");
+        return next !== undefined && isReadonlyJqConsumer(next);
+      })
+    )
+      return command;
+    // Literal writer bodies are data. Every header, file operand and following command is retained.
+    return heredoc.header + "\n" + following;
+  }
   if (
     inlineRuntimeKind(argv[0]) !== "python" ||
     inlineProgramIndex([argv[0] ?? "", "-c", ""]) === undefined ||
@@ -1050,8 +1220,20 @@ function normalizeProgramHeredocs(command: string): string {
   return (
     heredoc.header.replace(/-\s*$/, () => "-c " + quoted) +
     "\n" +
-    normalizeProgramHeredocs(heredoc.following)
+    normalizeProgramHeredocs(heredoc.following, depth + 1)
   );
+}
+
+function hasUnboundedHeredoc(command: string): boolean {
+  if (!boundedHeredoc(command)) return false;
+  if (new TextEncoder().encode(command).byteLength > 65_536) return true;
+  for (let count = 0; count <= 32; count++) {
+    const heredoc = boundedHeredoc(command);
+    if (!heredoc) return false;
+    if (!heredoc.closed || count === 32) return true;
+    command = heredoc.header + "\n" + heredoc.following;
+  }
+  return true;
 }
 
 /** Strings are data in these languages; retain their values separately for path checks. */
@@ -1435,7 +1617,7 @@ function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
     return argv.some((arg, index) => index !== sql && hasArgumentBraceExpansion(arg));
   return (argv[0]?.split("/").at(-1) === "awk" && !isAwkExecution(argv)) ||
     inlineProgramIndex(argv) !== undefined ||
-    isJqObjectConstruction(argv)
+    isPassiveJqCommand(argv)
     ? false
     : hasArgumentBraceExpansion(argv.join(" "));
 }
@@ -1506,42 +1688,48 @@ function isAwkExecution(argv: string[]): boolean {
   );
 }
 
-function isJqObjectConstruction(argv: string[]): boolean {
-  if (argv[0]?.split("/").at(-1) !== "jq") return false;
-  let index = 1;
-  // Options with values, program files, and unknown options cannot prove an inline filter.
-  while (/^-[rRcMsScn]+$/.test(argv[index] ?? "")) index++;
-  if (argv[index] === "--") index++;
-  const filter = argv[index] ?? "";
-  if (argv.slice(index + 1).some((arg) => arg.startsWith("-"))) return false;
-  // ponytail: one object-map level and one literal contains selector; no jq evaluator.
-  const field = String.raw`\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*`;
-  const key = String.raw`[A-Za-z_][A-Za-z0-9_]*`;
-  const flatEntry = String.raw`${key}(?:\s*:\s*${field})?`;
-  const flatObject = String.raw`\{\s*${flatEntry}(?:\s*,\s*${flatEntry})*\s*\}`;
-  const mapped = String.raw`${field}\s*\|\s*map\(\s*${flatObject}\s*\)`;
-  const value = String.raw`(?:${field}|${mapped}|\(\s*${mapped}\s*\))`;
-  const entry = String.raw`${key}(?:\s*:\s*${value})?`;
-  const object = String.raw`\{\s*${entry}(?:\s*,\s*${entry})*\s*\}`;
-  // JSON string escapes exclude jq interpolation, which starts with \(.
-  const string = String.raw`"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
-  const selector = String.raw`select\(\s*${field}\s*\|\s*contains\(\s*${string}\s*\)\s*\)`;
-  const traversal = String.raw`${field}(?:\[\])?\s*\|\s*(?:${selector}\s*\|\s*)?`;
-  if (new RegExp(String.raw`^(?:${traversal})?${object}$`).test(filter)) return true;
-  const expression = filter
-    .replace(/\.[A-Za-z_][A-Za-z0-9_.-]*/g, "FIELD")
-    .replace(/\b[A-Za-z_][A-Za-z0-9_-]*\s*:/g, ":");
-  if (/^\{[\s\S]*\}$/.test(filter) && /^(?:FIELD|length|map|[\s{}():,|>0-9])+$/.test(expression))
-    return true;
-  return (
-    /^\{\s*[A-Za-z_][A-Za-z0-9_-]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_-]*)*\s*\}$/.test(filter) ||
-    /^\{\s*[A-Za-z_][A-Za-z0-9_-]*\s*:\s*\.[A-Za-z_][A-Za-z0-9_.-]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_-]*\s*:\s*\.[A-Za-z_][A-Za-z0-9_.-]*)*\s*\}$/.test(
-      filter,
+function isPassiveJqCommand(argv: string[]): boolean {
+  return passiveJqProgramIndex(argv) !== undefined;
+}
+
+/** Preserve explicit startup and cwd context across every command in a jq compound. */
+function hasProvedJqContext(words: string[]): boolean {
+  let index = 0;
+  while (["rtk", "command"].includes(words[index]?.split("/").at(-1) ?? "")) {
+    const wrapper = words[index++]?.split("/").at(-1);
+    if (
+      (wrapper === "rtk" && words[index] === "proxy") ||
+      (wrapper === "command" && words[index] === "--")
     )
+      index++;
+  }
+  let argv = words.slice(index);
+  if (argv[0]?.split("/").at(-1) === "env") {
+    if (argv[1] !== "HOME=/dev/null") return false;
+    argv = argv.slice(2);
+    return isPassiveJqCommand(argv);
+  }
+  const name = argv[0]?.split("/").at(-1) ?? "";
+  if (/^[A-Za-z_]\w*=/.test(argv[0] ?? "")) return false;
+  return (
+    isReadonlyJqConsumer(argv) ||
+    isProvedCwdSubprocessRole(argv) ||
+    isStaticNavigationCommand(argv) ||
+    isSafeLocalAssignmentCommand(argv) ||
+    isLiteralHerdrRead(argv) ||
+    isLiteralHerdrPrompt(argv) ||
+    isLiteralInlineWriter(argv) ||
+    isChecksumCommand(argv) ||
+    pythonCompileFiles(argv) !== undefined ||
+    DEFAULT_BLOCKED_CLI_TOOLS.some((tool) => tool.wrapper === name) ||
+    (argv.length === 1 && ["true", "false", "pwd"].includes(name))
   );
 }
 
 function jqFileArguments(argv: string[]): string[] {
+  const program = passiveJqProgramIndex(argv);
+  if (program !== undefined) return argv.slice(program + 1);
+  // Unsupported forms retain conservative path evidence, including loader operands.
   const files: string[] = [];
   let index = 1;
   for (; index < argv.length; index++) {
@@ -1564,6 +1752,153 @@ function jqFileArguments(argv: string[]): string[] {
     break;
   }
   return [...files, ...argv.slice(index + 1)];
+}
+
+/** File roles only, never evaluation or repository/cwd attestation. Unknown syntax fails closed. */
+function gitDiffFileArguments(args: string[]): string[] | undefined {
+  const flags = [
+    "patch",
+    "no-patch",
+    "raw",
+    "patch-with-raw",
+    "patch-with-stat",
+    "numstat",
+    "shortstat",
+    "summary",
+    "name-only",
+    "name-status",
+    "cached",
+    "staged",
+    "merge-base",
+    "check",
+    "full-index",
+    "binary",
+    "no-abbrev",
+    "no-renames",
+    "find-copies-harder",
+    "text",
+    "reverse",
+    "exit-code",
+    "quiet",
+    "no-ext-diff",
+    "no-textconv",
+    "no-index",
+    "no-color",
+    "no-relative",
+    "no-prefix",
+    "default-prefix",
+    "ignore-all-space",
+    "ignore-space-change",
+    "ignore-space-at-eol",
+    "ignore-cr-at-eol",
+    "ignore-blank-lines",
+    "minimal",
+    "patience",
+    "histogram",
+    "indent-heuristic",
+    "no-indent-heuristic",
+    "cc",
+    "function-context",
+    "pickaxe-all",
+    "pickaxe-regex",
+  ];
+  const data = [
+    "src-prefix",
+    "dst-prefix",
+    "line-prefix",
+    "word-diff-regex",
+    "anchored",
+    "diff-algorithm",
+    "inter-hunk-context",
+    "find-object",
+    "skip-to",
+    "rotate-to",
+    "ignore-matching-lines",
+    "stat-width",
+    "stat-name-width",
+    "stat-graph-width",
+    "stat-count",
+    "diff-filter",
+    "output-indicator-new",
+    "output-indicator-old",
+    "output-indicator-context",
+    "ws-error-highlight",
+    "color-moved-ws",
+  ];
+  const optional = [
+    "stat",
+    "unified",
+    "color",
+    "color-moved",
+    "relative",
+    "abbrev",
+    "word-diff",
+    "submodule",
+    "dirstat",
+    "dirstat-by-file",
+    "find-renames",
+    "find-copies",
+    "break-rewrites",
+    "ignore-submodules",
+  ];
+  const names = [...flags, ...data, ...optional, "output"];
+  const files: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") return [...files, ...args.slice(index + 1)];
+    if (!arg.startsWith("-") || arg === "-") {
+      files.push(arg);
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=");
+      const spelling = arg.slice(2, equals === -1 ? undefined : equals);
+      const candidates = names.includes(spelling)
+        ? [spelling]
+        : names.filter((name) => name.startsWith(spelling));
+      if (!spelling || candidates.length !== 1) return undefined;
+      const name = candidates[0] ?? "";
+      if (flags.includes(name)) {
+        if (equals !== -1) return undefined;
+        continue;
+      }
+      if (optional.includes(name)) continue; // Optional values attach with =, never consume the next path.
+      const value = equals === -1 ? args[++index] : arg.slice(equals + 1);
+      if (value === undefined || (equals === -1 && value === "--")) return undefined;
+      if (name === "output") {
+        if (!value) return undefined;
+        files.push(value);
+      }
+      continue;
+    }
+    for (let cursor = 1; cursor < arg.length; cursor++) {
+      const option = arg[cursor] ?? "";
+      if ("puszawbcRDW".includes(option)) continue;
+      if ("UMCB".includes(option)) break; // Optional attached data occupies the rest of this word.
+      if (!"OSGIl".includes(option)) return undefined;
+      const attached = arg.slice(cursor + 1);
+      const value = attached || args[++index];
+      if (value === undefined || (!attached && value === "--")) return undefined;
+      if (option === "O") {
+        if (!value) return undefined;
+        files.push(value);
+      }
+      break; // Required data consumes its attached/separate value, including option-looking patterns.
+    }
+  }
+  return files;
+}
+
+function hasUnsupportedGitDiffArguments(command: string): boolean {
+  const parsed = parseStaticShellCommands(command);
+  if (!parsed || typeof parsed === "string") return false;
+  return parsed.pipelines.flat().some((words) => {
+    const argv = unwrapStaticCommand(words);
+    if (argv[0]?.split("/").at(-1) !== "git") return false;
+    let index = 1;
+    while (argv[index] === "-C" && argv[index + 1]) index += 2;
+    return argv[index] === "diff" && gitDiffFileArguments(argv.slice(index + 1)) === undefined;
+  });
 }
 
 /** Index in `args` where the command wrapped by `env` starts, or null when `env` only lists. */
@@ -2011,7 +2346,7 @@ function isPassiveTextCommand(argv: string[]): boolean {
   if (name === "rg") return !hasExecutionOption(args, ["pre", "hostname-bin"]);
   if (name === "awk") return !isAwkExecution(argv);
   if (name === "sed") return isReadonlySedPrint(argv);
-  if (name === "jq") return isJqObjectConstruction(argv);
+  if (name === "jq") return isPassiveJqCommand(argv);
   return (
     (name === "git" && args[0] === "status") ||
     (name === "git" &&
@@ -2084,6 +2419,7 @@ function hasStaticEnvironmentRead(
   allowInventory = false,
 ): boolean {
   const name = argv[0]?.split("/").at(-1);
+  if (isLiteralHerdrPrompt(argv)) return false;
   if (
     ["sh", "bash", "zsh"].includes(name ?? "") &&
     hasExecutionOption(argv.slice(1), ["command"], "c") &&
@@ -2105,6 +2441,7 @@ function hasStaticEnvironmentRead(
       ? isEnvironmentListing(argv)
       : hasStaticEnvironmentRead(unwrapStaticCommand(wrapped), allowedNames, allowInventory);
   }
+  if (name === "jq") return !isPassiveJqCommand(argv);
   if (isUnsupportedInlineRuntime(argv)) return true;
   const programIndex = inlineProgramIndex(argv);
   if (programIndex !== undefined)
@@ -2136,6 +2473,10 @@ function hasStaticEnvironmentRead(
   );
 }
 
+function isLiteralHerdrPrompt(argv: string[]): boolean {
+  return argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt" && argv.length >= 5;
+}
+
 function isStaticHerdrPrompt(command: string): boolean {
   // Preserve shell word boundaries and executable identity before proving composition.
   const literal = literalBindingText(command, "", "");
@@ -2143,18 +2484,22 @@ function isStaticHerdrPrompt(command: string): boolean {
   const parsed = parseStaticShellCommands(command);
   if (!parsed || typeof parsed === "string") return false;
   const commands = parsed.pipelines.flat().map((words) => unwrapProofCommand(words, "\0"));
-  const prompts = commands.filter(
-    (argv) => argv?.[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt",
-  );
-  if (!hasProvedNavigationSequence(command)) return false;
+  const prompts = commands.filter((argv) => argv && isLiteralHerdrPrompt(argv));
+  if (!hasProvedNavigationSequence(command) || hasEnvironmentMutationPrefix(command)) return false;
   return (
     prompts.length > 0 &&
-    parsed.pipelines.every((pipeline) =>
-      pipeline.every((words, index) => {
+    parsed.pipelines.every((pipeline) => {
+      return pipeline.every((words, index) => {
         const argv = unwrapProofCommand(words, "\0");
         if (!argv) return false;
-        if (argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt")
-          return index === 0 && argv.length >= 5;
+        if (isLiteralHerdrPrompt(argv)) return index === 0;
+        if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "close")
+          return (
+            index === 0 &&
+            pipeline.length === 1 &&
+            argv.length === 4 &&
+            /^[A-Za-z0-9_.:-]+$/.test(argv[3] ?? "")
+          );
         // cat is a reader at the start of an independent pipeline, never a consumer.
         if (argv[0] === "cat")
           return (
@@ -2173,9 +2518,16 @@ function isStaticHerdrPrompt(command: string): boolean {
           );
         if (isStaticNavigationCommand(argv))
           return index === 0 && (argv[0] !== "cd" || pipeline.length === 1);
+        // Literal child scripts keep the existing execution boundary; their source is not attested.
+        if (
+          argv[0] === "bun" &&
+          inlineProgramIndex(argv) === undefined &&
+          !isUnsupportedInlineRuntime(argv)
+        )
+          return index === 0 && /^(?:~\/)?[A-Za-z0-9_./-]+\.(?:[cm]?[jt]s)$/.test(argv[1] ?? "");
         return false;
-      }),
-    )
+      });
+    })
   );
 }
 
@@ -2195,8 +2547,7 @@ function hasEnvironmentRead(
   allowInventory = hasProvedPackageInventoryInvocation(command),
   replayedShellBodies: string[] = [],
 ): boolean {
-  if (isStaticHerdrPrompt(command)) return false;
-  if (isHerdrPrompt(command)) return true;
+  if (isHerdrPrompt(command) && !isStaticHerdrPrompt(command)) return true;
   if (isLiteralTextWrite(command)) return false;
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
   const parsed = parseStaticShellCommands(command);
@@ -2241,7 +2592,7 @@ function hasEnvironmentRead(
         (argv, index) =>
           (literalSqlArgumentIndex(argv) !== undefined &&
             pipeline.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer))) ||
-          (isJqObjectConstruction(argv) &&
+          (isPassiveJqCommand(argv) &&
             pipeline.slice(index + 1).some((consumer) => !isReadonlyJqConsumer(consumer))),
       ),
     )
@@ -2365,7 +2716,7 @@ function isLiteralTextWrite(command: string): boolean {
     commands.every((argv, index) => {
       if (index === writerIndexes[0]) return true;
       const name = argv[0]?.split("/").at(-1) ?? "";
-      return name === "cd" || isSafeLiteralConsumer(argv);
+      return name === "cd" || (name === "pwd" && argv.length === 1) || isSafeLiteralConsumer(argv);
     })
   );
 }
@@ -2383,7 +2734,6 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
       !/(?:^|\/)credential-guard(?:(?:-[^/]+)?\.(?:ts|md|js)|\*|\/(?:index\.(?:ts|js)))?$/.test(
         text,
       ));
-  if (/(?:^|[\s;&|])--env-file(?:=|\s)[^;&|]*\.env\b/i.test(command)) return true;
   const heredoc = boundedHeredoc(command);
   if (
     heredoc &&
@@ -2397,7 +2747,7 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
   if (/\bcat\b[^;&|]*<<-?\s*\S+[\s\S]*\b(?:secret|credential)\b/i.test(command)) return true;
   const parsed = parseStaticShellCommands(command);
   const readers =
-    /\b(?:cat|cp|grep|rg|sed|awk|jq|head|tail|less|more|source|ls|sort|uniq|cut|wc|mv|find|shasum|sha1sum|sha256sum|sha512sum|md5sum|cksum)\b/i;
+    /\b(?:cat|tee|cp|grep|rg|sed|awk|jq|head|tail|less|more|source|ls|sort|uniq|cut|wc|mv|find|shasum|sha1sum|sha256sum|sha512sum|md5sum|cksum)\b/i;
   if (parsed && parsed !== "brace-expansion") {
     let directory = "";
     const trackDirectory = hasProvedNavigationSequence(command);
@@ -2419,6 +2769,19 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
         [path, inDirectory(path)].some(
           (value) => isPathBlocked(value) || isPathBlocked(value + "/"),
         );
+      const program = inlineProgramIndex(inspected);
+      // Runtime file options are operands; known text/prompt/program data is not an option.
+      if (
+        !isPassiveTextCommand(inspected) &&
+        !(name === "herdr" && inspected[1] === "agent" && inspected[2] === "prompt") &&
+        inspected.some(
+          (arg, index) =>
+            index !== program &&
+            ((arg === "--env-file" && blockedOperand(inspected[index + 1] ?? "")) ||
+              (arg.startsWith("--env-file=") && blockedOperand(arg.slice("--env-file=".length)))),
+        )
+      )
+        return true;
       if (name === "cd") {
         const path = inspected[inspected[1] === "--" ? 2 : 1];
         if (path === undefined) return false;
@@ -2450,6 +2813,9 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
         if (inspected[index] === "grep") {
           inspected = ["grep", ...inspected.slice(index + 1)];
           name = "grep";
+        } else if (inspected[index] === "diff") {
+          const files = gitDiffFileArguments(inspected.slice(index + 1));
+          return files === undefined || files.some(blockedOperand);
         }
       }
       if (name === "bun" && inspected[1] === "run" && inspected[2] === "gh-tool") {
@@ -2464,6 +2830,14 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
         });
       }
       const programIndex = inlineProgramIndex(inspected);
+      const compileFiles = pythonCompileFiles(inspected);
+      if (isPythonCompileModule(inspected)) {
+        return (compileFiles ?? inspected.slice(1)).some(
+          (file) =>
+            blockedOperand(file) ||
+            blockedDirectory(posix.join(posix.dirname(file), "__pycache__")),
+        );
+      }
       if (programIndex !== undefined) {
         const parts = programParts(
           inspected[programIndex] ?? "",
@@ -2597,6 +2971,8 @@ function hasSensitiveFileRead(command: string, isPathBlocked: (path: string) => 
       return paths.some(blockedOperand);
     });
   }
+  // Unsupported shell syntax retains conservative option evidence.
+  if (/(?:^|[\s;&|])--env-file(?:=|\s)[^;&|]*\.env\b/i.test(command)) return true;
   const operands = parseStaticShellCommands(command, true);
   if (
     operands &&
@@ -3076,16 +3452,18 @@ function hasEnvironmentSourceAccess(
       );
     }
   }
-  if (isLiteralTextWrite(command) || isStaticHerdrPrompt(command)) return false;
+  if (isLiteralTextWrite(command)) return false;
   if (!parsed || typeof parsed === "string") return rawTrigger;
   const commands = parsed.pipelines.flat().map(unwrapStaticCommand);
+  const promptContext = isStaticHerdrPrompt(command);
   if (rawTrigger) {
     // Original invocation-wide evidence survives split writers and inline quote projection.
     return !commands.every(
       (argv) =>
         argv[0]?.split("/").at(-1) === "cat" ||
         isPassiveTextCommand(argv) ||
-        isLiteralInlineWriter(argv),
+        isLiteralInlineWriter(argv) ||
+        (promptContext && isLiteralHerdrPrompt(argv)),
     );
   }
   return commands.some((argv) => {
@@ -3100,6 +3478,32 @@ function hasEnvironmentSourceAccess(
       (python && /\b(?:environ|getenv)\b/.test(parts.code)) ||
       (/\b(?:os|process)\s*\[/.test(parts.code) &&
         parts.literals.some((value) => /^(?:env|environ|getenv)$/.test(value)))
+    );
+  });
+}
+
+/** Explicit lookup/loader names cannot establish interpreter startup context. Literal text is data. */
+function hasInterpreterStartupMutation(command: string): boolean {
+  const parsed = parseStaticShellCommands(command) ?? parseStaticShellCommands(command, true);
+  if (!parsed || typeof parsed === "string") return false;
+  const commands = parsed.pipelines.flat();
+  if (
+    !commands.some((words) => {
+      const name = unwrapStaticCommand(words)[0];
+      return inlineRuntimeKind(name) !== undefined || isShellWord(name ?? "");
+    })
+  )
+    return false;
+  const startupName =
+    /^(?:PATH|HOME|XDG_CONFIG_HOME|BUN_OPTIONS|BUN_PRELOAD|NODE_OPTIONS|NODE_PATH|PYTHON[A-Z_]*|BASH_ENV|ENV|ZDOTDIR|FPATH|SHELLOPTS|BASHOPTS|LD_[A-Z_]+|DYLD_[A-Z_]+)$/;
+  return commands.some((words) => {
+    const argv = unwrapStaticCommand(words);
+    const prefix = words.slice(0, words.length - argv.length);
+    if (prefix.some((word) => startupName.test(word.split("=", 1)[0] ?? ""))) return true;
+    const mutator = argv[0] === "builtin" ? argv.slice(1) : argv;
+    return (
+      ["export", "declare", "typeset", "local", "readonly"].includes(mutator[0] ?? "") &&
+      mutator.slice(1).some((word) => startupName.test(word.split("=", 1)[0] ?? ""))
     );
   });
 }
@@ -3213,9 +3617,29 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
 
   function getDangerousBashReason(command: string, shellDepth = 0): string | null {
     const originalCommand = command;
+    if (hasUnboundedHeredoc(command)) return "cannot prove a bounded complete heredoc invocation";
+    let unterminatedQuote = false;
+    parseStaticShellCommands(command, false, () => {
+      unterminatedQuote = true;
+    });
+    if (unterminatedQuote)
+      return "cannot prove shell syntax: an unterminated quoted argument was found";
     const allowPackageInventory = hasProvedPackageInventoryInvocation(originalCommand);
+    const promptWords = isStaticHerdrPrompt(command)
+      ? parseStaticShellCommands(command)
+      : undefined;
+    const sourceText =
+      promptWords && typeof promptWords !== "string"
+        ? promptWords.pipelines
+            .flat()
+            .map((words) => {
+              const argv = unwrapStaticCommand(words);
+              return (isLiteralHerdrPrompt(argv) ? argv.slice(0, 4) : words).join(" ");
+            })
+            .join("; ")
+        : command;
     const rawEnvironmentSource =
-      mentionsEnvironmentSource(command) && mentionsInlineRuntime(command);
+      mentionsEnvironmentSource(sourceText) && mentionsInlineRuntime(sourceText);
     if (
       hasApprovedPythonEnvironmentRead(originalCommand, allowedEnvironmentVariables) &&
       hasEnvironmentMutationPrefix(normalizeProgramHeredocs(originalCommand))
@@ -3277,11 +3701,50 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       if (reason || getBlockedCliTool(nested, true, shellDepth))
         return reason ?? "invokes a blocked CLI from a script";
     }
+    if (hasUnsupportedGitDiffArguments(command))
+      return "cannot prove supported Git diff option and file argument roles";
     if (
       hasSensitiveFileRead(command, isPathBlocked) ||
       hasSensitivePathRedirect(command, isPathBlocked)
     )
       return "blocked by the file-access policy; a sensitive path matched or this command form could not be verified";
+    if (hasInterpreterStartupMutation(command))
+      return "cannot prove interpreter startup after an explicit lookup or loader mutation";
+    const staticCommands = parseStaticShellCommands(command);
+    const diagnosticCommands = staticCommands ?? parseStaticShellCommands(command, true);
+    const staticArgv =
+      diagnosticCommands && typeof diagnosticCommands !== "string"
+        ? diagnosticCommands.pipelines.flat().map(unwrapStaticCommand)
+        : [];
+    const hasJqInvocation = staticArgv.some(
+      (argv) =>
+        unwrapStaticCommand(argv[0] === "builtin" ? argv.slice(1) : argv)[0]
+          ?.split("/")
+          .at(-1) === "jq",
+    );
+    if (staticArgv.some(isPythonCompileModule) && !hasProvedPythonCompileInvocation(command))
+      return "cannot prove isolated Python py_compile startup and literal source/cache paths";
+    if (staticArgv.some(isPythonCompileModule) && config?.additionalBlockedPaths?.length)
+      return "cannot prove implicit py_compile cache writes against configured path rules";
+    if (
+      staticArgv.some(
+        (argv) =>
+          argv[0]?.split("/").at(-1) === "jq" &&
+          (!staticCommands ||
+            staticCommands === "brace-expansion" ||
+            staticCommands.pathnameExpansion ||
+            !isPassiveJqCommand(argv)),
+      )
+    )
+      return "cannot prove a supported passive jq filter and literal options";
+    if (
+      staticCommands &&
+      typeof staticCommands !== "string" &&
+      hasJqInvocation &&
+      (!hasProvedNavigationSequence(command) ||
+        staticCommands.pipelines.flat().some((words) => !hasProvedJqContext(words)))
+    )
+      return "cannot prove a supported passive jq startup prefix";
     let environmentCommand = command;
     if (
       !isLiteralTextWrite(command) &&
@@ -3294,6 +3757,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         },
       )
     ) {
+      if (getLeadingLiteralAssignments(command).size || /\b[A-Za-z_]\w*=(?:\$\(|~)/.test(command))
+        return "cannot prove a local binding expansion in a supported data operand";
       return "expands an unapproved or executable environment variable value";
     }
     if (
@@ -3315,6 +3780,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         }),
       )
     ) {
+      if (staticArgv.some(isUnsupportedInlineRuntime))
+        return "cannot prove supported inline runtime or module startup; external script contents were not inspected";
       return "blocked by the environment/execution policy; permitted access or non-execution could not be established for this command form";
     }
     if (
@@ -3439,6 +3906,20 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function dangerousCommandRecovery(command: string, reason: string): string {
+    if (reason.includes("Git diff"))
+      return (
+        `Use supported literal Git diff options with complete argument values and nonsensitive file operands. ` +
+        `Output/order-file arguments and revision-shaped positional operands receive file policy too. ` +
+        `Unknown, ambiguous, missing or executable option roles remain unproved; use a simple git diff HEAD -- path/to/source form. ` +
+        `The guard does not inspect repository state, native configuration or source contents.`
+      );
+    if (reason.includes("shell syntax"))
+      return (
+        `Check shell quote balance and encode the complete literal argument safely. ` +
+        `An apostrophe inside single quotes needs shell encoding such as 'don'"'"'t'. ` +
+        `Use a documented file-input option only if that command supports one; no such option is inferred here. ` +
+        `Path, environment and execution policies still apply to the corrected command.`
+      );
     if (reason.startsWith("invokes a blocked CLI")) {
       const blockedTool = getBlockedCliTool(command);
       if (blockedTool) return blockedCliRecovery(blockedTool);
@@ -3447,6 +3928,42 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       `The guard sees the command, not external script contents. Removing shell flags does not certify a script. ` +
       `No generic approved external-script executor is provided by this guard. Review or implement a repository-owned bounded operation ` +
       `with secret injection and filtered output; discover existing operations in the project README and tool help.`;
+    if (reason.includes("py_compile") && config?.additionalBlockedPaths?.length)
+      return (
+        `Configured path rules cannot be proved for py_compile's runtime-specific cache and temporary filenames. ` +
+        `Use a cache-free syntax parse with literal nonsensitive paths: ` +
+        `python3 -I -S -B -c 'import ast; ast.parse(open("path/to/source.py", "rb").read(), filename="path/to/source.py")'. ` +
+        `Source paths and all other command policies still apply; target source is parsed without execution. ` +
+        `The guard has not inspected source contents or resolved symlinks.`
+      );
+    if (reason.includes("py_compile"))
+      return (
+        `Use python3 -I -S -m py_compile path/to/source.py with literal nonsensitive .py paths and passive consumers. ` +
+        `Both -I and -S must precede -m; unknown flags, other modules and stdin file lists are unsupported. ` +
+        `This compiles syntax without executing target source, but writes __pycache__ even with -B and may quote source in errors. ` +
+        `The guard has not inspected source contents or resolved symlinks.`
+      );
+    if (reason.includes("jq"))
+      return (
+        `Use a literal inline jq filter within the supported passive grammar and known formatting/input flags. ` +
+        `Field traversal, // fallback, nested objects/arrays, map/select and length are supported. ` +
+        `Environment reads, imports, program files, unknown calls and incomplete syntax cannot establish this proof. ` +
+        `Use literal nonsensitive input paths and passive output consumers; field omission does not certify input contents. ` +
+        `Native jq normally loads a home .jq file; trusted host configuration is assumed, not inspected. ` +
+        `The exact child-process prefix env HOME=/dev/null jq avoids that user startup lookup; -L does not.`
+      );
+    if (reason.includes("local binding"))
+      return (
+        `Use separate commands with literal nonsensitive file paths, or a supported bounded literal file binding/loop. ` +
+        `Command substitution and a binding used as an executable or script operand cannot establish this proof. ` +
+        `The guard has not inspected external script contents; this refusal does not establish ambient environment access.`
+      );
+    if (reason.includes("runtime or module"))
+      return (
+        `Use a supported literal inline program with known runtime flags, or a repository-owned bounded operation. ` +
+        `Unknown startup options and executable module forms remain unsupported. ` +
+        `The guard has not inspected external script contents.`
+      );
     if (reason.startsWith("cannot prove") && reason.includes("shell")) {
       return (
         `Interactive and login shells load startup files, which can execute code or load credentials. ` +
@@ -3519,7 +4036,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       const dangerousReason = getDangerousBashReason(command);
       if (dangerousReason) {
         throw new Error(
-          `\u{1F6AB} Command blocked: ${dangerousReason}; this command might expose secrets.\n\n` +
+          `\u{1F6AB} Command blocked: ${dangerousReason}.\n\n` +
             `Command: ${command}\n\n` +
             `${dangerousCommandRecovery(command, dangerousReason)}\n\n` +
             `Tool inventory and usage: https://github.com/blogic-cz/agent-tools#tools`,
