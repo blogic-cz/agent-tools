@@ -187,14 +187,82 @@ describe("passive guard proof boundaries", () => {
       "config/team-kubeconfig.backup",
       "config/kubeconfig.md",
       "config/kubeconfig/cluster.json",
+      "prod-kubeconfig/admin.conf",
+      "/tmp/team_kubeconfig/config",
+      "mykubeconfig",
+      "kubeconfig2",
+      "config/MYKUBECONFIG2.backup",
+      "prod-kubeconfig",
+      "/tmp/team_kubeconfig/",
+      "docs/kubeconfig-notes/readme.md",
+      "docs/team-kubeconfig-prod/readme.md",
+      "/tmp/team_kubeconfig/nested/check-kubeconfig-topology.md",
+      "docs/cluster-kubeconfig-notes.md/readme.md",
+      "config/kubeconfig2.MD",
+      "docs/check-kubeconfig.md\n",
+      "docs/check-kubeconfig.md\r\n",
     ])
       expect(guard.isPathBlocked(path)).toBe(true);
     for (const path of [
       "docs/check-kubeconfig-topology.md",
       "docs/team-kubeconfig-prod.md",
       "docs/TEAM-KUBECONFIG-PROD.MD",
-      "docs/kubeconfig-notes/readme.md",
+      "docs/cluster-kubeconfig-notes.md",
     ])
       expect(guard.isPathBlocked(path)).toBe(false);
+  });
+  it.each([
+    ["prod-kubeconfig/admin.conf", true],
+    ["/tmp/team_kubeconfig/config", true],
+    ["mykubeconfig", true],
+    ["kubeconfig2", true],
+    ["docs/kubeconfig-notes/readme.md", true],
+    ["/tmp/team_kubeconfig/check-kubeconfig-topology.md", true],
+    ["docs/cluster-kubeconfig-notes.md/readme.md", true],
+    ["config/kubeconfig.md", true],
+    ["docs/check-kubeconfig-topology.md", false],
+    ["docs/cluster-kubeconfig-notes.md", false],
+    ["docs/TEAM-KUBECONFIG-PROD.MD", false],
+    ["docs/cluster-topology.md", false],
+    ["docs/check-kubeconfig.md\n", true],
+    ["docs/check-kubeconfig.md\r\n", true],
+    ["prod-kubeconfig/.env.example", false],
+  ])("preserves kubeconfig segment policy across file tools: %s", (path, blocked) => {
+    for (const guard of [
+      createCredentialGuard(),
+      createCredentialGuard({ additionalBlockedPaths: ["ordinary-private\\.md$"] }),
+    ]) {
+      expect(guard.isPathBlocked(path)).toBe(blocked);
+      for (const tool of ["Read", "Write", "Edit"]) {
+        const invoke = () =>
+          guard.handleToolExecuteBefore({ tool }, { args: { filePath: path, content: "Notes." } });
+        if (blocked) expect(invoke).toThrow("Access blocked");
+        else expect(invoke).not.toThrow();
+      }
+    }
+  });
+  it("retains configured protection for ordinary kubeconfig Markdown basenames", () => {
+    const path = "docs/cluster-kubeconfig-notes.md";
+    const guard = createCredentialGuard({
+      additionalBlockedPaths: ["cluster-kubeconfig-notes\\.md$"],
+    });
+    expect(guard.isPathBlocked(path)).toBe(true);
+    for (const tool of ["Read", "Write", "Edit"])
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool }, { args: { file_path: path, content: "Notes." } }),
+      ).toThrow("Access blocked");
+  });
+  it("preserves existing explicit allowed-path precedence for kubeconfig segments", () => {
+    const path = "prod-kubeconfig/admin.conf";
+    const guard = createCredentialGuard({
+      additionalAllowedPaths: ["^prod-kubeconfig/admin\\.conf$"],
+      additionalBlockedPaths: ["admin\\.conf$"],
+    });
+    expect(guard.isPathBlocked(path)).toBe(false);
+    for (const tool of ["Read", "Write", "Edit"])
+      expect(() =>
+        guard.handleToolExecuteBefore({ tool }, { args: { file_path: path, content: "Notes." } }),
+      ).not.toThrow();
+    expect(guard.isDangerousBashCommand(`cat ${path}`)).toBe(false);
   });
 });

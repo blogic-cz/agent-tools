@@ -77,9 +77,8 @@ const DEFAULT_BLOCKED_PATH_PATTERNS: RegExp[] = [
   /\.aws\//,
   /\.ssh\//,
   /\.kube\//,
-  /(?:^|\/)kubeconfig(?:[._-][^/]*$|\/|$)/i,
-  // Prefixed/tagged artifacts remain protected; ordinary Markdown word occurrences are data.
-  /(?:^|\/)(?![^/]+\.md$)[^/]+[._-]kubeconfig(?:[._-][^/]*)?$/i,
+  // Every kubeconfig segment is protected except a final non-prefix Markdown prose basename.
+  /(?:^|\/)(?:kubeconfig[^/]*|(?![^/]+\.md(?![\s\S]))[^/]*kubeconfig[^/]*)(?:\/|$)/i,
   /\.sentryclirc$/,
 ];
 
