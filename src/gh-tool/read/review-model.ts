@@ -144,7 +144,7 @@ export type ThreadNode = {
       id: string;
       databaseId: number;
       path: string;
-      line: number;
+      line: number | null;
       body: string;
       author: { login: string };
       commit: { oid: string } | null;
@@ -243,7 +243,10 @@ export type RawReviewComment = {
   user: { login: string };
   body: string;
   path: string;
-  line: number;
+  line: number | null;
+  original_line?: number | null;
+  original_commit_id?: string | null;
+  diff_hunk?: string | null;
   created_at: string;
   updated_at: string;
   pull_request_review_id?: number | null;
