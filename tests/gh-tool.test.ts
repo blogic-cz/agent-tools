@@ -102,6 +102,7 @@ import { ConfigService } from "#config";
 import {
   prCreateCommand,
   prEditCommand,
+  prMergeCommand,
   classifyReviewTriage,
   fetchCurrentComments,
   fetchCurrentFeedback,
@@ -2458,6 +2459,348 @@ describe("PR draft", () => {
       expect(viewCount).toBe(1);
     }),
   );
+});
+
+describe("PR merge head condition", () => {
+  const reviewedSha = "1234567890abcdef1234567890abcdef12345678";
+  const changedSha = "abcdef1234567890abcdef1234567890abcdef12";
+  const options = {
+    pr: 123,
+    strategy: "squash" as const,
+    deleteBranch: true,
+    confirm: true,
+    matchHeadCommit: reviewedSha,
+  };
+
+  for (const sha of ["", "a".repeat(39), "a".repeat(41), "g".repeat(40), `${reviewedSha}\n`]) {
+    it.effect(
+      `rejects invalid requested SHA ${JSON.stringify(sha)} before lookup or mutation`,
+      () =>
+        Effect.gen(function* () {
+          const result = yield* mergePR({ ...options, matchHeadCommit: sha }).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGhJson: () => Effect.die("invalid SHA must not read the PR"),
+                runGh: () => Effect.die("invalid SHA must not mutate"),
+                apiRequest: () => Effect.die("invalid SHA must not call the API"),
+              }),
+            ),
+            Effect.result,
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure).toBeInstanceOf(GitHubMergeError);
+            expect(result.failure.message).toContain("40-character hexadecimal");
+          }
+        }),
+    );
+  }
+
+  for (const headRefOid of [
+    undefined,
+    null,
+    "",
+    "a".repeat(39),
+    "a".repeat(41),
+    "g".repeat(40),
+    `${reviewedSha}\n`,
+    123,
+    changedSha,
+  ]) {
+    it.effect(
+      `refuses missing, malformed, or changed observed head ${JSON.stringify(headRefOid)}`,
+      () =>
+        Effect.gen(function* () {
+          const reads: string[][] = [];
+          const result = yield* mergePR(options).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  reads.push(args);
+                  return Effect.succeed({ ...mockPRInfo, headRefOid });
+                },
+                runGh: () => Effect.die("head refusal must happen before mutation"),
+                apiRequest: () => Effect.die("head refusal must happen before other API calls"),
+                getRepoInfo: () => Effect.die("head refusal must happen before branch handling"),
+              }),
+            ),
+            Effect.result,
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) expect(result.failure).toBeInstanceOf(GitHubMergeError);
+          expect(reads).toEqual([
+            [
+              "pr",
+              "view",
+              "123",
+              "--json",
+              "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRefOid",
+            ],
+          ]);
+        }),
+    );
+  }
+
+  for (const error of [
+    new GitHubCommandError({
+      command: "gh pr view",
+      exitCode: 1,
+      stderr: "lookup failed",
+      message: "lookup failed",
+    }),
+    new GitHubAuthError({ message: "authentication failed" }),
+    new GitHubNotFoundError({ message: "PR not found", resource: "pr", identifier: "123" }),
+  ]) {
+    it.effect(`refuses failed head lookup ${error._tag} before mutation`, () =>
+      Effect.gen(function* () {
+        const result = yield* mergePR(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () => Effect.fail(error),
+              runGh: () => Effect.die("lookup failure must not mutate"),
+              apiRequest: () => Effect.die("lookup failure must not call another API"),
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toBeInstanceOf(GitHubMergeError);
+          expect(result.failure.message).toContain("Could not verify the head commit");
+        }
+      }),
+    );
+  }
+
+  for (const matchHeadCommit of [reviewedSha, reviewedSha.toUpperCase()]) {
+    it.effect(`passes the verified requested SHA to the native merge ${matchHeadCommit}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* mergePR({ ...options, deleteBranch: false, matchHeadCommit }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) =>
+                Effect.succeed(
+                  args.includes("mergeCommit")
+                    ? { mergeCommit: { oid: changedSha } }
+                    : { ...mockPRInfo, headRefOid: reviewedSha },
+                ),
+              runGh: (args) => {
+                mutations.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        );
+        expect(result.merged).toBe(true);
+        expect(result.branchDeleted).toBe(false);
+        expect(result.sha).toBe(changedSha);
+        expect(mutations).toEqual([
+          ["pr", "merge", "123", "--squash", "--match-head-commit", matchHeadCommit],
+        ]);
+      }),
+    );
+  }
+
+  it.effect("verifies the head during a dry run without mutations", () =>
+    Effect.gen(function* () {
+      const result = yield* mergePR({ ...options, confirm: false }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              Effect.succeed(
+                args[1] === "list"
+                  ? [{ number: 124, headRefName: "feat/child", baseRefName: "feat/test" }]
+                  : { ...mockPRInfo, headRefOid: reviewedSha },
+              ),
+            runGh: () => Effect.die("dry run must not mutate"),
+          }),
+        ),
+      );
+      expect(result).toMatchObject({ merged: false, branchDeleted: false, sha: null });
+    }),
+  );
+
+  for (const denial of [
+    "Head branch was modified. Review and try the merge again.",
+    "GraphQL: must be merged using the asynchronous merge REST API",
+  ]) {
+    it.effect(`refuses service denial and rolls retargets back: ${denial}`, () =>
+      Effect.gen(function* () {
+        const mutations: string[][] = [];
+        const result = yield* mergePR(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[1] === "view")
+                  return Effect.succeed({ ...mockPRInfo, headRefOid: reviewedSha });
+                if (args[1] === "list")
+                  return Effect.succeed([
+                    { number: 124, headRefName: "feat/child", baseRefName: "feat/test" },
+                  ]);
+                return Effect.die(
+                  "guarded merge must not issue merge-async or read mergeCommit after denial",
+                );
+              },
+              runGh: (args) => {
+                mutations.push(args);
+                return args[1] === "merge"
+                  ? Effect.fail(
+                      new GitHubCommandError({
+                        command: "gh pr merge",
+                        exitCode: 1,
+                        stderr: denial,
+                        message: "merge failed",
+                      }),
+                    )
+                  : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toBeInstanceOf(GitHubMergeError);
+          if (denial.includes("asynchronous")) {
+            expect(result.failure.message).toContain("cannot enforce --match-head-commit");
+            expect((result.failure as GitHubMergeError).hint).toContain(
+              "Keep the reviewed SHA requirement",
+            );
+          } else expect(result.failure.message).toContain("Head branch was modified");
+        }
+        expect(mutations).toEqual([
+          ["api", "--method", "PATCH", "repos/test-owner/test-repo/pulls/124", "-f", "base=main"],
+          ["pr", "merge", "123", "--squash", "--match-head-commit", reviewedSha],
+          [
+            "api",
+            "--method",
+            "PATCH",
+            "repos/test-owner/test-repo/pulls/124",
+            "-f",
+            "base=feat/test",
+          ],
+        ]);
+      }),
+    );
+  }
+
+  it.effect("keeps the legacy view fields and merge arguments without a head condition", () =>
+    Effect.gen(function* () {
+      const reads: string[][] = [];
+      const mutations: string[][] = [];
+      const result = yield* mergePR({
+        pr: 123,
+        strategy: "squash",
+        deleteBranch: false,
+        confirm: true,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              reads.push(args);
+              return Effect.succeed(
+                args.includes("mergeCommit") ? { mergeCommit: { oid: changedSha } } : mockPRInfo,
+              );
+            },
+            runGh: (args) => {
+              mutations.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(result.merged).toBe(true);
+      expect(reads[0]).toEqual([
+        "pr",
+        "view",
+        "123",
+        "--json",
+        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
+      ]);
+      expect(mutations).toEqual([["pr", "merge", "123", "--squash"]]);
+    }),
+  );
+
+  const cliLayer = Layer.mergeAll(
+    FileSystem.layerNoop({}),
+    Path.layer,
+    Stdio.layerTest({}),
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() => Effect.die("merge CLI must not spawn a local process")),
+    ),
+    Layer.succeed(
+      Terminal.Terminal,
+      Terminal.make({
+        columns: Effect.succeed(80),
+        rows: Effect.succeed(24),
+        readInput: Effect.die("unused"),
+        readLine: Effect.die("unused"),
+        display: () => Effect.void,
+      }),
+    ),
+  );
+
+  it.effect("parses the public match-head option and passes it to the merge service", () =>
+    Effect.gen(function* () {
+      const mutations: string[][] = [];
+      yield* Command.runWith(prMergeCommand, { version: "test" })([
+        "--pr",
+        "123",
+        "--match-head-commit",
+        reviewedSha,
+        "--confirm",
+        "--delete-branch=false",
+      ]).pipe(
+        Effect.provide(
+          Layer.merge(
+            cliLayer,
+            createMockGhLayer({
+              runGhJson: (args) =>
+                Effect.succeed(
+                  args.includes("mergeCommit")
+                    ? { mergeCommit: { oid: changedSha } }
+                    : { ...mockPRInfo, headRefOid: reviewedSha },
+                ),
+              runGh: (args) => {
+                mutations.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        ),
+      );
+      expect(mutations).toEqual([
+        ["pr", "merge", "123", "--squash", "--match-head-commit", reviewedSha],
+      ]);
+    }),
+  );
+
+  for (const arguments_ of [["--match-head-commit"], ["--match-head-commit", ""]]) {
+    it.effect(`refuses an absent or empty CLI SHA value ${JSON.stringify(arguments_)}`, () =>
+      Effect.gen(function* () {
+        const result = yield* Command.runWith(prMergeCommand, { version: "test" })([
+          "--pr",
+          "123",
+          ...arguments_,
+          "--confirm",
+        ]).pipe(
+          Effect.provide(
+            Layer.merge(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: () => Effect.die("invalid CLI SHA must not read the PR"),
+                runGh: () => Effect.die("invalid CLI SHA must not mutate"),
+              }),
+            ),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+      }),
+    );
+  }
 });
 
 describe("PR merge logic", () => {
