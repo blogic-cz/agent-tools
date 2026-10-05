@@ -42,6 +42,112 @@ describe("credential guard corpus", () => {
   });
 });
 
+describe("credential guard actionable diagnostics", () => {
+  function message(command: string, guard = createCredentialGuard(), tool = "Bash"): string {
+    try {
+      guard.handleToolExecuteBefore({ tool }, { args: { command } });
+    } catch (error) {
+      if (error instanceof Error) return error.message;
+      throw error;
+    }
+    throw new Error("Expected command to remain blocked");
+  }
+
+  it.each(["Bash", "bash", "mcp_bash"])(
+    "explains the anonymized interactive-shell refusal through %s",
+    (tool) => {
+      const command = "rtk proxy zsh -ic 'python3 /private/tmp/example-verify-live.py'";
+      const guard = createCredentialGuard();
+      expect(guard.isDangerousBashCommand(command)).toBe(true);
+      const error = message(command, guard, tool);
+      expect(error).toContain("Interactive and login shells load startup files");
+      expect(error).toContain("completely proved closed body");
+      expect(error).toContain("Removing shell flags does not certify a script");
+      expect(error).toContain(
+        "No generic approved external-script executor is provided by this guard",
+      );
+      expect(error).toContain(
+        "repository-owned bounded operation with secret injection and filtered output",
+      );
+      expect(error).not.toContain("Use instead:");
+      expect(error).not.toContain("agent-tools-python");
+      expect(error).not.toContain("script was inspected");
+    },
+  );
+
+  it.each([
+    ["printenv", "Do not dump or forward the environment"],
+    ["echo $UNAPPROVED_VALUE", "printenv NAME"],
+    ["cat .env", "nonsensitive example/template"],
+    [
+      "zsh -f -c 'python3 /private/tmp/example-verify-live.py'",
+      "Removing shell flags does not certify a script",
+    ],
+  ])("keeps %s blocked with relevant recovery", (command, hint) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+    expect(message(command)).toContain(hint);
+  });
+
+  it("does not invent a wrapper for a configured dangerous pattern", () => {
+    const guard = createCredentialGuard({ additionalDangerousBashPatterns: ["custom-operation"] });
+    const error = message("custom-operation", guard);
+    expect(error).toContain("cannot verify this command form");
+    expect(error).toContain("project README and tool help");
+    expect(error).not.toContain("Use instead:");
+  });
+
+  it.each(["gh issue list", "sh -c 'gh issue list'"])(
+    "uses the real wrapper and documented help for %s",
+    (command) => {
+      const error = message(command);
+      expect(error).toContain("Configured recovery: agent-tools-gh");
+      expect(error).toContain("Discover supported operations: agent-tools-gh --help");
+      expect(error).not.toContain("bun gh-tool");
+    },
+  );
+
+  it.each(["approved-reader", "Use the repository's reviewed reader"])(
+    "preserves configured recovery %s without inventing help",
+    (suggestion) => {
+      const guard = createCredentialGuard({
+        additionalBlockedCliTools: [{ tool: "custom-cli", suggestion }],
+      });
+      const error = message("custom-cli list", guard);
+      expect(error).toContain(`Configured recovery: ${suggestion}`);
+      expect(error).not.toContain("--help");
+      expect(error).not.toContain("-tool");
+      expect(guard.getBlockedCliTool("custom-cli list")).toEqual({
+        name: "custom-cli",
+        wrapper: suggestion,
+      });
+    },
+  );
+
+  it("redacts secrets in commands and configured recovery", () => {
+    const guard = createCredentialGuard({
+      additionalBlockedCliTools: [
+        { tool: "custom-cli", suggestion: `reader ${SYNTHETIC_HANDLER_TOKEN}` },
+      ],
+    });
+    const error = message(`custom-cli list ${SYNTHETIC_HANDLER_TOKEN}`, guard);
+    expect(error).toContain("[REDACTED]");
+    expect(error).not.toContain(SYNTHETIC_HANDLER_TOKEN);
+  });
+
+  it.each([
+    "sh -c 'pwd'",
+    "zsh -f -c 'pwd'",
+    "printf '%s' safe",
+    "python3 /private/tmp/example-verify-live.py",
+  ])("retains the existing allowance for %s without inspecting scripts", (command) => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(command)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore({ tool: "Bash" }, { args: { command } }),
+    ).not.toThrow();
+  });
+});
+
 describe("credential guard handler error redaction", () => {
   it("redacts credentials from blocked Bash, Read, and Write errors", () => {
     const guard = createCredentialGuard();

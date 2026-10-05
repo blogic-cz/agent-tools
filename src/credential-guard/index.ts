@@ -3426,6 +3426,55 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     }
   }
 
+  function blockedCliRecovery(blockedTool: { name: string; wrapper: string }): string {
+    // Custom suggestions can be prose or commands. Preserve them without inventing a binary.
+    const hasKnownHelp = DEFAULT_BLOCKED_CLI_TOOLS.some(
+      ({ wrapper }) => wrapper === blockedTool.wrapper,
+    );
+    return (
+      `Configured recovery: ${blockedTool.wrapper}\n` +
+      (hasKnownHelp ? `Discover supported operations: ${blockedTool.wrapper} --help\n` : "") +
+      `Check the project README and the tool's documented help for the bounded operation.`
+    );
+  }
+
+  function dangerousCommandRecovery(command: string, reason: string): string {
+    if (reason.startsWith("invokes a blocked CLI")) {
+      const blockedTool = getBlockedCliTool(command);
+      if (blockedTool) return blockedCliRecovery(blockedTool);
+    }
+    const externalExecutionRecovery =
+      `The guard sees the command, not external script contents. Removing shell flags does not certify a script. ` +
+      `No generic approved external-script executor is provided by this guard. Review or implement a repository-owned bounded operation ` +
+      `with secret injection and filtered output; discover existing operations in the project README and tool help.`;
+    if (reason.startsWith("cannot prove") && reason.includes("shell")) {
+      return (
+        `Interactive and login shells load startup files, which can execute code or load credentials. ` +
+        `Only supported noninteractive literal forms, such as sh -c or zsh -f -c, with a completely proved closed body can pass. ` +
+        externalExecutionRecovery
+      );
+    }
+    if (reason.includes("file")) {
+      return (
+        `Use a nonsensitive example/template or a bounded wrapper operation that returns only the needed fields. ` +
+        `A matched sensitive path or an unverifiable file-access form remains blocked; do not copy or dump credential files.`
+      );
+    }
+    if (reason.includes("environment")) {
+      return (
+        `Do not dump or forward the environment. For a known nonsensitive value, use an exact approved name ` +
+        `with printenv NAME; approval is configured in credentialGuard.allowedEnvironmentVariables. ` +
+        `This does not approve execution or secret values. ` +
+        externalExecutionRecovery
+      );
+    }
+    return (
+      `The guard cannot verify this command form as permitted. Check the project README and tool help ` +
+      `for an existing bounded operation, or review the guard proof and add a regression test before changing policy. ` +
+      externalExecutionRecovery
+    );
+  }
+
   function enforceToolExecuteBefore(input: HookInput, output: HookOutput): void {
     // Normalize tool name across platforms:
     // - AI coding agents pass capitalized: "Bash", "Read", "Write", "Edit"
@@ -3472,8 +3521,8 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
         throw new Error(
           `\u{1F6AB} Command blocked: ${dangerousReason}; this command might expose secrets.\n\n` +
             `Command: ${command}\n\n` +
-            `Use a supported command form or the appropriate wrapper tool.\n\n` +
-            `Think this is wrong? Review the project repository, adjust the patterns, and submit a PR.`,
+            `${dangerousCommandRecovery(command, dangerousReason)}\n\n` +
+            `Tool inventory and usage: https://github.com/blogic-cz/agent-tools#tools`,
         );
       }
 
@@ -3489,14 +3538,10 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
 
       const blockedTool = getBlockedCliTool(command);
       if (blockedTool) {
-        const skillName = blockedTool.wrapper.replace("agent-tools-", "") + "-tool";
         throw new Error(
           `\u{1F6AB} Direct ${blockedTool.name} usage blocked.\n\n` +
             `AI agents must use wrapper tools for security and audit.\n\n` +
-            `Use instead: bun ${skillName}\n\n` +
-            `Example: bun ${skillName} --help\n\n` +
-            `Think this tool should be allowed? Review the project repository, extend the whitelist, and submit a PR.\n` +
-            `→ Skill "${skillName}"`,
+            blockedCliRecovery(blockedTool),
         );
       }
     }

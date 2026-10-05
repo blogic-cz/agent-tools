@@ -249,6 +249,17 @@ import { handleToolExecuteBefore } from "@blogic-cz/agent-tools/credential-guard
 export default { handleToolExecuteBefore };
 ```
 
+Guard refusals include recovery guidance for the policy that blocked the command. Direct CLI
+refusals preserve the configured wrapper or suggestion. Built-in wrappers support `--help`;
+consult this README and the tool's own help to find an existing bounded operation.
+
+Interactive and login shells load startup files. Supported noninteractive literal forms pass
+only when the guard proves their complete closed body. The guard sees command text, not external
+script contents, so removing shell flags does not certify a script. The guard provides no generic
+approved external-script executor. Review or implement a repository-owned bounded operation with
+secret injection and filtered output when existing tools do not cover the task. Environment
+approval permits exact nonsensitive reads, not script execution or environment forwarding.
+
 ## Tools
 
 | Binary               | Description                                                                                                      |
