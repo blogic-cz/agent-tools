@@ -112,8 +112,10 @@ export function relativePath(path: string): string {
     throw apiError("POLICY_DENIED");
   return path;
 }
-export const matchesPrefix = (path: string, prefix: string): boolean =>
-  prefix === "/" || path === prefix || path.startsWith(`${prefix.replace(/\/$/, "")}/`);
+export const matchesPrefix = (path: string, prefix: string): boolean => {
+  const normalized = prefix === "/" ? prefix : prefix.replace(/\/$/, "");
+  return normalized === "/" || path === normalized || path.startsWith(`${normalized}/`);
+};
 export function originUrl(origin: string, developmentLoopback = false): URL {
   let url: URL;
   try {

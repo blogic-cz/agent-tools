@@ -50,9 +50,10 @@ export function allowedAddress(
   if (!family) return false;
   if (family === 6) {
     const normalized = new URL(`http://[${address}]`).hostname.slice(1, -1);
+    const first = Number.parseInt(normalized.split(":")[0] || "0", 16);
     if (
       normalized.startsWith("::ffff:") ||
-      normalized.startsWith("fe80:") ||
+      (first & 0xffc0) === 0xfe80 ||
       normalized === "fd00:ec2::254"
     )
       return false;

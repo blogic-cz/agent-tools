@@ -845,6 +845,149 @@ describe("actual synthetic upstream TLS transport", () => {
 });
 
 describe("Opus boundary regressions", () => {
+  it.each(["/v1/auth", "/v1/auth/", "/"])(
+    "denies endpoints and descendants for denied prefix %s before auth or upstream dispatch",
+    async (prefix) => {
+      const value = loginConfig();
+      value.profiles.sample.pathPrefixes = ["/"];
+      value.profiles.sample.deniedPathPrefixes = [prefix];
+      let calls = 0;
+      const proxy = proxyFor(async (input) => {
+        calls++;
+        return input.method === "POST"
+          ? { status: 200, body: '{"token":"synthetic-login-token"}' }
+          : success(input);
+      }, value);
+      const paths = ["/v1/auth", "/v1/auth/", "/v1/auth/token", "/v1/AUTH"];
+      if (prefix === "/") paths.push("/");
+      for (const path of paths) {
+        await expect(proxy.request(capability, { ...request, path })).rejects.toMatchObject({
+          code: "POLICY_DENIED",
+        });
+      }
+      expect(calls).toBe(0);
+      if (prefix !== "/") {
+        expect(await proxy.request(capability, { ...request, path: "/v1/authentication" })).toEqual(
+          {
+            status: 200,
+            data: { items: [1, 2] },
+          },
+        );
+        expect(calls).toBe(2);
+      }
+    },
+  );
+  it.each(["/auth/login", "/auth/login/", "/"])(
+    "denies endpoints and descendants for login path %s before auth or upstream dispatch",
+    async (path) => {
+      const value = loginConfig();
+      value.profiles.sample.auth = {
+        kind: "login",
+        path,
+        fields: { password: "token" },
+        tokenField: "token",
+      };
+      value.profiles.sample.pathPrefixes = ["/"];
+      let calls = 0;
+      const proxy = proxyFor(async (input) => {
+        calls++;
+        return input.method === "POST"
+          ? { status: 200, body: '{"token":"synthetic-login-token"}' }
+          : success(input);
+      }, value);
+      const endpoints = ["/auth/login", "/auth/login/", "/auth/login/token", "/auth/LOGIN"];
+      if (path === "/") endpoints.push("/");
+      for (const endpoint of endpoints) {
+        await expect(
+          proxy.request(capability, { ...request, path: endpoint }),
+        ).rejects.toMatchObject({
+          code: "POLICY_DENIED",
+        });
+      }
+      expect(calls).toBe(0);
+      if (path !== "/") {
+        expect(await proxy.request(capability, { ...request, path: "/auth/logins" })).toEqual({
+          status: 200,
+          data: { items: [1, 2] },
+        });
+        expect(calls).toBe(2);
+      }
+    },
+  );
+  it.each(["/v1", "/v1/", "/"])(
+    "admits endpoints and descendants for allowed prefix %s",
+    async (prefix) => {
+      const value = config();
+      value.profiles.sample.pathPrefixes = [prefix];
+      let calls = 0;
+      const proxy = proxyFor(async (input) => {
+        calls++;
+        return success(input);
+      }, value);
+      const paths =
+        prefix === "/" ? ["/", "/v1", "/v1/", "/v1/items"] : ["/v1", "/v1/", "/v1/items"];
+      for (const path of paths) {
+        expect(await proxy.request(capability, { ...request, path })).toEqual({
+          status: 200,
+          data: { items: [1, 2] },
+        });
+      }
+      expect(calls).toBe(paths.length);
+    },
+  );
+  it.each(["/v1", "/v1/"])(
+    "keeps allowed prefix %s case-sensitive and segment-bounded",
+    async (prefix) => {
+      const value = config();
+      value.profiles.sample.pathPrefixes = [prefix];
+      let calls = 0;
+      const proxy = proxyFor(async (input) => {
+        calls++;
+        return success(input);
+      }, value);
+      for (const path of ["/V1", "/V1/items", "/v10", "/v10/items"]) {
+        await expect(proxy.request(capability, { ...request, path })).rejects.toMatchObject({
+          code: "POLICY_DENIED",
+        });
+      }
+      expect(calls).toBe(0);
+    },
+  );
+  it.each([
+    "fe80::1",
+    "fe81::1",
+    "fe90::1",
+    "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "FE90:0:0:0:0:0:0:1",
+  ])("unconditionally refuses IPv6 link-local destination %s", async (address) => {
+    const normalized = new URL(`http://[${address}]`).hostname.slice(1, -1);
+    expect(allowedAddress(address, [])).toBe(false);
+    expect(allowedAddress(address, [normalized])).toBe(false);
+    const value = config();
+    value.profiles.sample.allowedPrivateAddresses = [normalized];
+    expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
+    await expect(
+      makePinnedTransport(async () => [{ address, family: 6 }])({
+        url: new URL("https://service.example.invalid/x"),
+        method: "GET",
+        headers: {},
+        body: "",
+        maxBytes: 100,
+        signal: new AbortController().signal,
+        allowedPrivateAddresses: [normalized],
+      }),
+    ).rejects.toMatchObject({ code: "DESTINATION_DENIED" });
+  });
+  it.each(["fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fec0::1"])(
+    "retains private allowance behavior immediately outside FE80::/10 for %s",
+    (address) => {
+      expect(allowedAddress(address, [])).toBe(false);
+      expect(allowedAddress(address, [address])).toBe(true);
+      const value = config();
+      value.profiles.sample.allowedPrivateAddresses = [address];
+      expect(validateOperator(value).profiles.sample?.allowedPrivateAddresses).toEqual([address]);
+    },
+  );
   it.each(["/v1/auth;x/t", "/v1/AUTH/t", "/v1/auth./t"])(
     "denies normalized auth path %s before transport",
     async (path) => {
