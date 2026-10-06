@@ -46,6 +46,7 @@
     "dist/",
     "src/",
     "schemas/",
+    "docs/rest-api-proxy.md",
     "README.md",
     "LICENSE"
   ],

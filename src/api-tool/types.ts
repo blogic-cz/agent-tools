@@ -100,11 +100,14 @@ export function decode<S extends Schema.ConstraintDecoder<unknown>>(
     throw apiError("CONFIG_INVALID");
   }
 }
+export const MAX_PATH_BYTES = 16_384;
+export const MAX_RESULT_ENVELOPE_BYTES = 10_000_000;
 export function relativePath(path: string): string {
   if (
-    !/^\/(?:[A-Za-z0-9_~!$&'()+,;=:@.-]+\/?)*$/.test(path) ||
+    path.length > MAX_PATH_BYTES ||
+    !/^\/[A-Za-z0-9_~!$&'()+,=:@./-]*$/.test(path) ||
     path.includes("//") ||
-    path.split("/").some((segment) => segment === "." || segment === "..")
+    path.split("/").some((segment) => segment.endsWith("."))
   )
     throw apiError("POLICY_DENIED");
   return path;
@@ -181,7 +184,17 @@ export function validateOperator(value: unknown): OperatorConfig {
       relativePath(prefix);
     if (profile.auth.kind === "apiKey" && !/^(?:x-[a-z0-9-]+|api-key)$/i.test(profile.auth.header))
       throw apiError("CONFIG_INVALID");
-    if (profile.auth.kind === "login") relativePath(profile.auth.path);
+    if (profile.auth.kind === "login") {
+      relativePath(profile.auth.path);
+      const minimumBody = JSON.stringify(
+        Object.fromEntries(Object.keys(profile.auth.fields).map((field) => [field, ""])),
+      );
+      if (
+        Buffer.byteLength(profile.auth.path) + Buffer.byteLength(minimumBody) >
+        profile.maxRequestBytes
+      )
+        throw apiError("CONFIG_INVALID");
+    }
   }
   return config;
 }

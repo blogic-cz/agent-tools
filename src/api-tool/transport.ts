@@ -1,8 +1,9 @@
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
+import type { SecureContextOptions } from "node:tls";
 import { isIP } from "node:net";
-import { apiError } from "./errors";
+import { ApiError, apiError } from "./errors";
 
 export type TransportRequest = {
   url: URL;
@@ -19,7 +20,10 @@ export type Transport = (request: TransportRequest) => Promise<TransportResult>;
 export type Resolver = (host: string) => Promise<readonly { address: string; family: number }[]>;
 
 export function beforeAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(apiError("DEADLINE_EXCEEDED"));
+  if (signal.aborted) {
+    void operation.catch(() => undefined);
+    return Promise.reject(apiError("DEADLINE_EXCEEDED"));
+  }
   return new Promise((resolve, reject) => {
     const abort = () => reject(apiError("DEADLINE_EXCEEDED"));
     signal.addEventListener("abort", abort, { once: true });
@@ -53,10 +57,12 @@ export function allowedAddress(
     )
       return false;
     if (privateAllow.includes(normalized)) return true;
+    const second = Number.parseInt(normalized.split(":")[1] || "0", 16);
     return (
       /^[23][0-9a-f]{3}:/.test(normalized) &&
-      !/^200[12]:/.test(normalized) &&
-      !normalized.startsWith("3fff:")
+      !(normalized.startsWith("2001:") && (second <= 0x1ff || second === 0xdb8)) &&
+      !normalized.startsWith("2002:") &&
+      !(normalized.startsWith("3fff:") && second <= 0xfff)
     );
   }
   const parts = address.split(".").map(Number);
@@ -74,9 +80,12 @@ export function allowedAddress(
   );
 }
 
+export const MAX_PENDING_DNS_LOOKUPS = 64;
 export function makePinnedTransport(
   resolve: Resolver = (host) => lookup(host, { all: true, verbatim: true }),
+  trust: Pick<SecureContextOptions, "ca"> = {},
 ): Transport {
+  let pendingLookups = 0;
   return async (input) => {
     const host = input.url.hostname.replace(/^\[|\]$/g, "");
     if (
@@ -84,12 +93,22 @@ export function makePinnedTransport(
       !(input.developmentLoopback && input.url.protocol === "http:" && host === "127.0.0.1")
     )
       throw apiError("DESTINATION_DENIED");
+    if (input.signal.aborted) throw apiError("DEADLINE_EXCEEDED");
     let addresses: Awaited<ReturnType<Resolver>>;
     try {
-      addresses = isIP(host)
-        ? [{ address: host, family: isIP(host) }]
-        : await beforeAbort(resolve(host), input.signal);
-    } catch {
+      if (isIP(host)) addresses = [{ address: host, family: isIP(host) }];
+      else {
+        if (pendingLookups >= MAX_PENDING_DNS_LOOKUPS) throw apiError("BUDGET_EXHAUSTED");
+        pendingLookups++;
+        const operation = Promise.resolve()
+          .then(() => resolve(host))
+          .finally(() => {
+            pendingLookups--;
+          });
+        addresses = await beforeAbort(operation, input.signal);
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "BUDGET_EXHAUSTED") throw error;
       throw apiError(input.signal.aborted ? "DEADLINE_EXCEEDED" : "DESTINATION_DENIED");
     }
     if (input.signal.aborted) throw apiError("DEADLINE_EXCEEDED");
@@ -111,6 +130,7 @@ export function makePinnedTransport(
           signal: input.signal,
           agent: false,
           family: pinned.family,
+          ca: trust.ca,
           rejectUnauthorized: true,
           lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
         },

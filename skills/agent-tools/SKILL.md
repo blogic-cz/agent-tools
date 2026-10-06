@@ -1,6 +1,6 @@
 ---
 name: agent-tools
-description: "LOAD THIS SKILL when: using CLI wrapper tools (gh-tool, observability-tool, db-tool, k8s-tool, az-tool, azdo-tool, logs-tool, session-tool), working with observability, databases, GitHub PRs, Kubernetes, Azure platform resources, Azure DevOps, or application logs. Contains tool overview, usage patterns, and project-specific aliases."
+description: "LOAD THIS SKILL when: using CLI wrapper tools (gh-tool, observability-tool, db-tool, k8s-tool, az-tool, azdo-tool, logs-tool, session-tool, api-tool, api-proxy), working with observability, databases, GitHub PRs, Kubernetes, Azure platform resources, Azure DevOps, or application logs. Contains tool overview, usage patterns, and project-specific aliases."
 ---
 
 # Agent Tools
@@ -36,6 +36,8 @@ Legacy `agent-tools-*` binary names (e.g. `bun gh-tool`) still work but prefer t
 | **azdo-tool**          | Azure DevOps tool — pipelines, builds, repos (read-only)            | `bun azdo-tool --help`          |
 | **logs-tool**          | Application logs — read local and remote (k8s pod) logs             | `bun logs-tool --help`          |
 | **session-tool**       | OpenCode session browser — list, read, search session history       | `bun session-tool --help`       |
+| **api-tool**           | JSON REST client using an operator-issued capability                | `api-tool request --help`       |
+| **api-proxy**          | Isolated operator service holding upstream REST credentials         | `api-proxy --help`              |
 
 ## Tool Priority
 
@@ -47,6 +49,10 @@ Always prefer `bun gh-tool` over raw `gh`, `bun db-tool` over raw `psql`, `bun k
 **Consistency**: Tools provide `hint`, `nextCommand`, and `retryable` fields in error responses to help you recover from failures. Always check these fields when a command fails.
 
 ## Quick Reference
+
+### api-tool (REST services)
+
+Use `api-tool request --config ./api-client.json --profile sample --path /v1/items` for an operator-approved REST profile. In this source checkout use `bun run api-tool request` with the same flags. Client configuration contains only the proxy origin and caller capability. Read [REST proxy setup](../../docs/rest-api-proxy.md) before configuring or operating `api-proxy`; its private store and policy require a separate service identity outside the requesting agent's authority.
 
 ### gh-tool (GitHub)
 
@@ -194,12 +200,14 @@ The guard blocks agents from accessing sensitive files and leaking secrets. It's
 
 Each tool uses its own auth — no unified token store:
 
-| Tool                 | Auth                                                           |
-| -------------------- | -------------------------------------------------------------- |
-| `gh-tool`            | `gh auth login` or `GITHUB_TOKEN` env var                      |
-| `observability-tool` | Grafana URL from config plus optional token from `tokenEnvVar` |
-| `k8s-tool`           | Existing kubectl context (kubeconfig)                          |
-| `az-tool`            | `az login` session                                             |
-| `azdo-tool`          | `az login` session                                             |
-| `db-tool`            | Env var defined by `passwordEnvVar` in config                  |
-| `logs-tool`          | No auth — local files or via k8s-tool for remote access        |
+| Tool                 | Auth                                                                 |
+| -------------------- | -------------------------------------------------------------------- |
+| `gh-tool`            | `gh auth login` or `GITHUB_TOKEN` env var                            |
+| `observability-tool` | Grafana URL from config plus optional token from `tokenEnvVar`       |
+| `k8s-tool`           | Existing kubectl context (kubeconfig)                                |
+| `az-tool`            | `az login` session                                                   |
+| `azdo-tool`          | `az login` session                                                   |
+| `db-tool`            | Env var defined by `passwordEnvVar` in config                        |
+| `logs-tool`          | No auth — local files or via k8s-tool for remote access              |
+| `api-tool`           | Caller capability and proxy HTTPS origin in client config            |
+| `api-proxy`          | Protected operator credential store under separated service identity |

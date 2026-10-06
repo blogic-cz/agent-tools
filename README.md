@@ -275,6 +275,8 @@ approval permits exact nonsensitive reads, not script execution or environment f
 | `azdo-tool`          | Azure DevOps tool — pipelines, builds, repos                                                                     |
 | `logs-tool`          | Application logs — read local and remote (k8s pod) logs                                                          |
 | `session-tool`       | OpenCode session browser — list, read, search sessions                                                           |
+| `api-tool`           | JSON REST client using an operator-issued capability                                                             |
+| `api-proxy`          | Isolated operator service holding upstream REST credentials                                                      |
 
 All tools support `--help` for full usage documentation. Legacy `agent-tools-*` binary names (e.g. `agent-tools-gh`) still work for backwards compatibility.
 
@@ -536,8 +538,10 @@ Each tool uses its own auth method — no unified token store:
 | `azdo-tool`          | `az` CLI session (`az login`)                                                                |
 | `db-tool`            | Password from env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWORD`) |
 | `logs-tool`          | No auth — reads local files or uses k8s-tool for remote access                               |
+| `api-tool`           | Caller capability and proxy HTTPS origin in client configuration                             |
+| `api-proxy`          | Private operator store and policy under a separated service identity                         |
 
-Secrets are **never** stored in the config file. The `db-tool` config references env var **names** only:
+The REST proxy uses its separate private operator store described in [REST proxy setup](docs/rest-api-proxy.md). Other tool configs reference credential sources. Provider secrets are **never** stored in the caller client config file. The `db-tool` config references env var **names** only:
 
 ```json5
 {

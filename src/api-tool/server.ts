@@ -38,6 +38,13 @@ export function createRequestHandler(proxy: ReturnType<typeof createProxy>, maxC
       failure(apiError("UNAUTHORIZED"));
       return;
     }
+    try {
+      proxy.authorize(auth.slice(7));
+    } catch (error) {
+      request.resume();
+      failure(error);
+      return;
+    }
     active++;
     const run = async (): Promise<void> => {
       try {
@@ -55,12 +62,12 @@ export function createRequestHandler(proxy: ReturnType<typeof createProxy>, maxC
         } catch {
           throw apiError("CONFIG_INVALID");
         }
-        const result = await proxy.request(auth.slice(7), input);
+        const serialized = await proxy.requestSerialized(auth.slice(7), input);
         response.writeHead(200, {
           "content-type": "application/json",
           "cache-control": "no-store",
         });
-        response.end(JSON.stringify(result));
+        response.end(serialized);
       } catch (error) {
         failure(error);
       } finally {

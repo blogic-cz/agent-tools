@@ -1626,9 +1626,9 @@ function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
 
 function apiRequestDataIndexes(argv: string[]): Set<number> | undefined {
   const start =
-    argv[0]?.split("/").at(-1) === "bun" && argv[1] === "run" && argv[2] === "api-tool"
+    argv[0] === "bun" && argv[1] === "run" && argv[2] === "api-tool"
       ? 3
-      : ["api-tool", "agent-tools-api"].includes(argv[0]?.split("/").at(-1) ?? "")
+      : ["api-tool", "agent-tools-api"].includes(argv[0] ?? "")
         ? 1
         : -1;
   if (start < 0 || argv[start] !== "request" || argv.length > 18) return undefined;
@@ -1651,6 +1651,20 @@ function apiRequestDataIndexes(argv: string[]): Set<number> | undefined {
         return undefined;
       }
       data.add(index);
+    } else if (flag === "--method") {
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(value)) return undefined;
+    } else if (flag === "--profile") {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) return undefined;
+    } else if (flag === "--config") {
+      if (!/^(?:\.?\.?\/)?[A-Za-z0-9_./-]+$/.test(value)) return undefined;
+    } else if (flag === "--path") {
+      if (
+        value.length > 16384 ||
+        !/^\/[A-Za-z0-9_~!$&'()+,=:@./-]*$/.test(value) ||
+        value.includes("//") ||
+        value.split("/").some((part) => part.endsWith("."))
+      )
+        return undefined;
     }
   }
   return data;
@@ -2586,6 +2600,15 @@ function hasEnvironmentRead(
   // ponytail: complex shell syntax stays conservative; use a shell AST if more exceptions are needed.
   const parsed = parseStaticShellCommands(command);
   if (parsed === "brace-expansion") return true;
+  if (
+    parsed &&
+    typeof parsed !== "string" &&
+    hasEnvironmentMutationPrefix(command) &&
+    parsed.pipelines
+      .flat()
+      .some((words) => apiRequestDataIndexes(unwrapStaticCommand(words)) !== undefined)
+  )
+    return true;
   if (!parsed) {
     const operands = parseStaticShellCommands(command, true);
     if (

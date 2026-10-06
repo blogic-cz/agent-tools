@@ -3,7 +3,8 @@ import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { createApiClient } from "./client";
 import { decode, ClientSchema, RequestSchema } from "./types";
-import { safeError } from "./errors";
+import { ApiError, apiError, safeError } from "./errors";
+import type { ApiRequest, ClientConfig } from "./types";
 import { VERSION } from "#shared";
 
 const requestCommand = Command.make(
@@ -20,14 +21,20 @@ const requestCommand = Command.make(
     Effect.gen(function* () {
       const result = yield* Effect.tryPromise({
         try: async () => {
-          const config = decode(ClientSchema, JSON.parse(await Bun.file(args.config).text()));
-          const request = decode(RequestSchema, {
-            profile: args.profile,
-            method: args.method,
-            path: args.path,
-            query: JSON.parse(args.query),
-            ...(args.body ? { body: JSON.parse(args.body) } : {}),
-          });
+          let config: ClientConfig;
+          let request: ApiRequest;
+          try {
+            config = decode(ClientSchema, JSON.parse(await Bun.file(args.config).text()));
+            request = decode(RequestSchema, {
+              profile: args.profile,
+              method: args.method,
+              path: args.path,
+              query: JSON.parse(args.query),
+              ...(args.body ? { body: JSON.parse(args.body) } : {}),
+            });
+          } catch {
+            throw apiError("CONFIG_INVALID");
+          }
           return createApiClient(config).request(request);
         },
         catch: safeError,
@@ -41,7 +48,11 @@ const command = Command.make("api-tool", {}).pipe(Command.withSubcommands([reque
 BunRuntime.runMain(
   Command.run(command, { version: VERSION, renderErrors: false }).pipe(
     Effect.provide(BunServices.layer),
-    Effect.tapError((error) => Console.error(JSON.stringify(safeError(error)))),
+    Effect.tapError((error) =>
+      Console.error(
+        JSON.stringify(error instanceof ApiError ? safeError(error) : apiError("CONFIG_INVALID")),
+      ),
+    ),
   ),
   { disableErrorReporting: true },
 );
