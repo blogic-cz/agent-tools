@@ -28,7 +28,8 @@
       "#az/*": ["./src/az-tool/*"],
       "#azdo/*": ["./src/azdo-tool/*"],
       "#guard": ["./src/credential-guard/index.ts"],
-      "#session/*": ["./src/session-tool/*"]
+      "#session/*": ["./src/session-tool/*"],
+      "#api/*": ["./src/api-tool/*"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],

@@ -1602,6 +1602,9 @@ function hasArgumentBraceExpansion(text: string): boolean {
 }
 
 function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
+  const apiData = apiRequestDataIndexes(argv);
+  if (apiData)
+    return argv.some((arg, index) => !apiData.has(index) && hasArgumentBraceExpansion(arg));
   // LogQL is data for this wrapper; its quoted label selectors are never shell-evaluated.
   if (
     argv[0]?.split("/").at(-1) === "bun" &&
@@ -1619,6 +1622,38 @@ function hasCommandArgumentBraceExpansion(argv: string[]): boolean {
     isPassiveJqCommand(argv)
     ? false
     : hasArgumentBraceExpansion(argv.join(" "));
+}
+
+function apiRequestDataIndexes(argv: string[]): Set<number> | undefined {
+  const start =
+    argv[0]?.split("/").at(-1) === "bun" && argv[1] === "run" && argv[2] === "api-tool"
+      ? 3
+      : ["api-tool", "agent-tools-api"].includes(argv[0]?.split("/").at(-1) ?? "")
+        ? 1
+        : -1;
+  if (start < 0 || argv[start] !== "request" || argv.length > 18) return undefined;
+  const data = new Set<number>();
+  const seen = new Set<string>();
+  for (let index = start + 1; index < argv.length; index++) {
+    const [flag = "", ...attached] = (argv[index] ?? "").split("=");
+    if (
+      !["--config", "--profile", "--path", "--method", "--query", "--body"].includes(flag) ||
+      seen.has(flag)
+    )
+      return undefined;
+    seen.add(flag);
+    const value = attached.length ? attached.join("=") : argv[++index];
+    if (!value || value.startsWith("--")) return undefined;
+    if (flag === "--query" || flag === "--body") {
+      try {
+        JSON.parse(value);
+      } catch {
+        return undefined;
+      }
+      data.add(index);
+    }
+  }
+  return data;
 }
 
 function literalSqlArgumentIndex(argv: string[]): number | undefined {

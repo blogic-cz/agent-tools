@@ -1,6 +1,8 @@
 # @blogic-cz/agent-tools
 
-Safe CLI wrappers for AI coding agents. 9 tools for GitHub, observability, databases, Kubernetes, Azure platform, Azure DevOps, logs, OpenCode sessions, and audit history — with JSON5 config and a credential guard that blocks agents from touching secrets.
+Safe CLI wrappers for AI coding agents. Tools for GitHub, observability, databases, Kubernetes, Azure platform, Azure DevOps, logs, OpenCode sessions, audit history and generic JSON REST requests.
+
+The [REST credential proxy](docs/rest-api-proxy.md) adds `api-tool`, an exported TypeScript client and the operator-only `api-proxy` runtime. Deploy its private credential store under a separate service identity outside agent authority, with verified TLS. Its client configuration is separate from `agent-tools.json5`.
 
 ## Why
 
