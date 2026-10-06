@@ -128,6 +128,49 @@ describe("REST credential proxy boundaries", () => {
       code: "DISCLOSURE_DENIED",
     });
   });
+  describe.each(["stored", "minted"] as const)("%s URL-encoded credentials", (source) => {
+    const secret = "Synthetic/Credential+with space!~()'";
+    const uri = encodeURIComponent(secret);
+    const form = new URLSearchParams({ token: secret }).toString();
+    it.each([
+      ["canonical URI", uri],
+      ["lowercase URI escapes", uri.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())],
+      ["mixed URI escapes", uri.replace("%2F", "%2f")],
+      ["canonical form", form],
+      ["mixed form escapes", form.replace("%2B", "%2b")],
+    ])("blocks %s", async (_encoding, echo) => {
+      const proxy = createProxy({
+        config: source === "minted" ? loginConfig() : config(),
+        secrets: { token: source === "stored" ? secret : credential },
+        transport: async (input) => ({
+          status: 200,
+          body: JSON.stringify(input.url.pathname === "/auth/login" ? { token: secret } : { echo }),
+        }),
+      });
+      await expect(proxy.request(capability, request)).rejects.toMatchObject({
+        code: "DISCLOSURE_DENIED",
+      });
+    });
+    it.each([
+      ["literal letter case", uri.replace("Synthetic", "synthetic")],
+      ["literal plus instead of space", form.replace("with+space", "with%2Bspace")],
+      ["space instead of literal plus", form.replace("%2Bwith", "+with")],
+      ["unrelated percent escapes", "safe%2fvalue+with%2bplus%21%7e%28%29%27"],
+    ])("allows benign output with %s", async (_difference, echo) => {
+      const proxy = createProxy({
+        config: source === "minted" ? loginConfig() : config(),
+        secrets: { token: source === "stored" ? secret : credential },
+        transport: async (input) => ({
+          status: 200,
+          body: JSON.stringify(input.url.pathname === "/auth/login" ? { token: secret } : { echo }),
+        }),
+      });
+      await expect(proxy.request(capability, request)).resolves.toEqual({
+        status: 200,
+        data: { echo },
+      });
+    });
+  });
   it("projects only approved JSON fields", async () => {
     const value = config();
     value.profiles.sample.disclosure = { kind: "fields", fields: ["safe"] };
