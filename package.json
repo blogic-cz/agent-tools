@@ -1,6 +1,6 @@
 {
   "name": "@blogic-cz/agent-tools",
-  "version": "1.6.20",
+  "version": "1.7.0",
   "description": "CLI tools for AI coding agent workflows — GitHub, database, Kubernetes, Azure platform, Azure DevOps, logs, sessions, and audit",
   "keywords": [
     "agent",
@@ -20,6 +20,7 @@
     "url": "https://github.com/blogic-cz/agent-tools.git"
   },
   "bin": {
+    "agent-tools-api": "./src/api-tool/index.ts",
     "agent-tools-audit": "./src/audit-tool/index.ts",
     "agent-tools-az": "./src/az-tool/index.ts",
     "agent-tools-azdo": "./src/azdo-tool/index.ts",
@@ -29,6 +30,8 @@
     "agent-tools-logs": "./src/logs-tool/index.ts",
     "agent-tools-observability": "./src/observability-tool/index.ts",
     "agent-tools-session": "./src/session-tool/index.ts",
+    "api-proxy": "./src/api-tool/proxy-entry.ts",
+    "api-tool": "./src/api-tool/index.ts",
     "audit-tool": "./src/audit-tool/index.ts",
     "az-tool": "./src/az-tool/index.ts",
     "azdo-tool": "./src/azdo-tool/index.ts",
@@ -43,6 +46,7 @@
     "dist/",
     "src/",
     "schemas/",
+    "docs/rest-api-proxy.md",
     "README.md",
     "LICENSE"
   ],
@@ -100,6 +104,10 @@
     "#session/*": {
       "types": "./dist/session-tool/*.d.ts",
       "default": "./src/session-tool/*.ts"
+    },
+    "#api/*": {
+      "types": "./dist/api-tool/*.d.ts",
+      "default": "./src/api-tool/*.ts"
     }
   },
   "exports": {
@@ -126,6 +134,10 @@
     "./prerequisites": {
       "types": "./dist/shared/prerequisites/index.d.ts",
       "default": "./src/shared/prerequisites/index.ts"
+    },
+    "./api": {
+      "types": "./dist/api-tool/client.d.ts",
+      "default": "./src/api-tool/client.ts"
     }
   },
   "publishConfig": {
@@ -145,7 +157,9 @@
     "session-tool": "bun src/session-tool/index.ts",
     "update:packages": "bun update -i -r",
     "update:skills": "bun run .agents/skills/update-packages/references/skills-update-local.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "api-tool": "bun src/api-tool/index.ts",
+    "api-proxy": "bun src/api-tool/proxy-entry.ts"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.117",

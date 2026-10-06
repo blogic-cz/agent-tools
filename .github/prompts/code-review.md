@@ -11,7 +11,7 @@ Review the PR diff for these project-specific patterns:
 Effect Patterns:
 
 - ✅ `ServiceMap.Service` for service definitions ❌ `Context.Tag` (deprecated pattern)
-- ✅ `Schema.TaggedErrorClass` for typed errors ❌ `Data.TaggedError` or plain `class extends Error`
+- ✅ `Schema.TaggedError` for typed errors ❌ `Data.TaggedError` or plain `class extends Error`. Verify the API against the installed Effect version and existing typed errors before requesting a rename.
 - ✅ `Effect.gen(function* () { ... })` with generator syntax ❌ Bare promise chains or async/await
 - ✅ `Effect.scoped` for resource management ❌ Manual cleanup logic
 - ✅ Service namespace prefix `@agent-tools/ServiceName` ❌ Missing namespace prefix
