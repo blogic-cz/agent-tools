@@ -1696,9 +1696,11 @@ function literalSqlArgumentIndex(argv: string[]): number | undefined {
   return sql;
 }
 
-/** echo and printf print their arguments; grep -o, rg and git grep print matched pattern text. */
 function isLiteralTextProducer(argv: string[]): boolean {
-  return isPassiveTextCommand(argv) && argv[0]?.split("/").at(-1) !== "head";
+  return (
+    (argv[0]?.split("/").at(-1) === "git" && argv[1] === "commit") ||
+    (isPassiveTextCommand(argv) && argv[0]?.split("/").at(-1) !== "head")
+  );
 }
 
 function awkProgramIndex(argv: string[]): number | undefined {
@@ -2461,6 +2463,22 @@ function isReadonlySedPrint(argv: string[]): boolean {
   );
 }
 
+function gitCommitExecutionArguments(argv: string[]): string[] {
+  if (argv[0]?.split("/").at(-1) !== "git" || argv[1] !== "commit") return argv;
+  const executionArguments = [...argv];
+  for (let index = 2; index < argv.length && argv[index] !== "--"; index++) {
+    const argument = argv[index] ?? "";
+    if (argument === "-m" || argument === "--message") {
+      if (index + 1 < argv.length) executionArguments[++index] = "";
+    } else if (argument.startsWith("--message=")) {
+      executionArguments[index] = "--message=";
+    } else if (argument.startsWith("-m") && argument.length > 2) {
+      executionArguments[index] = "-m";
+    }
+  }
+  return executionArguments;
+}
+
 function hasStaticEnvironmentRead(
   argv: string[],
   allowedNames: Set<string>,
@@ -2517,7 +2535,7 @@ function hasStaticEnvironmentRead(
       "jq",
       "docker",
     ].includes(name ?? "") &&
-      mentionsEnvironmentRead(argv.join(" ")))
+      mentionsEnvironmentRead(gitCommitExecutionArguments(argv).join(" ")))
   );
 }
 
@@ -2658,6 +2676,18 @@ function hasEnvironmentRead(
   if (
     parsed.redirects.length > 0 &&
     unwrapped.some((argv) => isAllowedEnvironmentRead(argv, allowedNames))
+  ) {
+    return true;
+  }
+  if (
+    parsed.redirects.length > 0 &&
+    unwrapped.some(
+      (producer, index) =>
+        producer[0]?.split("/").at(-1) === "git" &&
+        producer[1] === "commit" &&
+        mentionsEnvironmentRead(producer.join(" ")) &&
+        unwrapped.slice(index + 1).some((consumer) => !isPassiveTextCommand(consumer)),
+    )
   ) {
     return true;
   }
