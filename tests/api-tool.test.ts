@@ -899,7 +899,7 @@ describe("Opus boundary regressions", () => {
       }
     },
   );
-  it.each(["[]", "1", '"string"'])(
+  it.each(["[]", "1", '"string"', "null"])(
     "classifies unsupported projected data %s as disclosure denial",
     async (body) => {
       const value = config();

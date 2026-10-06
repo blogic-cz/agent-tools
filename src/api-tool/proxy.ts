@@ -257,7 +257,7 @@ export function createProxy(options: {
         throw apiError("LIMIT_EXCEEDED");
       if (controller.signal.aborted) throw apiError("DEADLINE_EXCEEDED");
       let data = response.body === "" ? null : decode(Schema.Json, JSON.parse(response.body));
-      if (profile.disclosure.kind === "fields" && data !== null) {
+      if (profile.disclosure.kind === "fields" && response.body !== "") {
         let object: Readonly<Record<string, typeof Schema.Json.Type>>;
         try {
           object = decode(Schema.Record(Schema.String, Schema.Json), data);
