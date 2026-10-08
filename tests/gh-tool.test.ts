@@ -6778,7 +6778,8 @@ describe("PR composite commands", () => {
     it.effect(`review-triage readiness handles ${name}`, () =>
       Effect.gen(function* () {
         const checkResults = checks.map((check, index) => ({
-          ...check,
+          state: check.state,
+          bucket: check.bucket,
           name: `CI-${index}`,
           link: "https://example.test/check",
         }));
