@@ -190,6 +190,12 @@ export const classifyReviewTriage = (
 ): ReviewTriageClassification => {
   const reasons = [
     ...(checks.some((check) => check.bucket === "fail") ? ["failed_checks"] : []),
+    ...(checks.some((check) => check.bucket === "cancel") ? ["cancelled_checks"] : []),
+    ...(checks.some(
+      (check) => !["pass", "fail", "pending", "skipping", "cancel"].includes(check.bucket),
+    )
+      ? ["unknown_checks"]
+      : []),
     ...(summary.visibleOpenReviewThreadsCount > 0 ? ["visible_open_review_threads"] : []),
     ...(summary.unrepliedReviewThreadsCount > 0 ? ["unreplied_review_threads"] : []),
     ...(summary.unresolvedReviewThreadsCount > 0 ? ["unresolved_review_threads"] : []),
@@ -412,6 +418,14 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   if (info.mergeable !== "MERGEABLE") blocking.push(`mergeable=${info.mergeable || "UNKNOWN"}`);
   if (checks.some((check) => check.bucket === "fail")) blocking.push("failing_checks");
   if (checks.some((check) => check.bucket === "pending")) blocking.push("pending_checks");
+  if (checks.some((check) => check.bucket === "cancel")) blocking.push("cancelled_checks");
+  if (
+    checks.some(
+      (check) => !["pass", "fail", "pending", "skipping", "cancel"].includes(check.bucket),
+    )
+  ) {
+    blocking.push("unknown_checks");
+  }
   if (summary.unresolvedReviewThreadsCount > 0) blocking.push("unresolved_threads");
   if (info.reviewDecision !== "" && info.reviewDecision !== "APPROVED") {
     blocking.push(`review=${info.reviewDecision}`);

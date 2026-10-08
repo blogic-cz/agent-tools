@@ -6711,6 +6711,125 @@ describe("PR checks", () => {
 });
 
 describe("PR composite commands", () => {
+  for (const { name, checks, blocking, reasons } of [
+    {
+      name: "cancelled checks alone",
+      checks: [{ state: "CANCELLED", bucket: "cancel" }],
+      blocking: ["cancelled_checks"],
+      reasons: ["cancelled_checks"],
+    },
+    {
+      name: "cancelled checks alongside passed and skipped checks",
+      checks: [
+        { state: "CANCELLED", bucket: "cancel" },
+        { state: "SUCCESS", bucket: "pass" },
+        { state: "SKIPPED", bucket: "skipping" },
+      ],
+      blocking: ["cancelled_checks"],
+      reasons: ["cancelled_checks"],
+    },
+    {
+      name: "unknown check buckets",
+      checks: [{ state: "COMPLETED", bucket: "unknown" }],
+      blocking: ["unknown_checks"],
+      reasons: ["unknown_checks"],
+    },
+    {
+      name: "empty check buckets",
+      checks: [{ state: "COMPLETED", bucket: "" }],
+      blocking: ["unknown_checks"],
+      reasons: ["unknown_checks"],
+    },
+    {
+      name: "failed checks",
+      checks: [{ state: "FAILURE", bucket: "fail" }],
+      blocking: ["failing_checks"],
+      reasons: ["failed_checks"],
+    },
+    {
+      name: "pending checks",
+      checks: [{ state: "IN_PROGRESS", bucket: "pending" }],
+      blocking: ["pending_checks"],
+      reasons: [],
+    },
+    {
+      name: "passed checks",
+      checks: [{ state: "SUCCESS", bucket: "pass" }],
+      blocking: [],
+      reasons: [],
+    },
+    {
+      name: "skipped checks",
+      checks: [{ state: "SKIPPED", bucket: "skipping" }],
+      blocking: [],
+      reasons: [],
+    },
+    {
+      name: "passed and skipped checks",
+      checks: [
+        { state: "SUCCESS", bucket: "pass" },
+        { state: "SKIPPED", bucket: "skipping" },
+      ],
+      blocking: [],
+      reasons: [],
+    },
+    { name: "no checks", checks: [], blocking: [], reasons: [] },
+  ]) {
+    it.effect(`review-triage readiness handles ${name}`, () =>
+      Effect.gen(function* () {
+        const checkResults = checks.map((check, index) => ({
+          state: check.state,
+          bucket: check.bucket,
+          name: `CI-${index}`,
+          link: "https://example.test/check",
+        }));
+        const result = yield* fetchReviewTriage(123, "json").pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr" && args[1] === "view") {
+                  return Effect.succeed({
+                    ...mockPRInfo,
+                    mergeable: "MERGEABLE",
+                    headRefOid: "stable-head",
+                    reviewDecision: "APPROVED",
+                  });
+                }
+                if (args[0] === "pr" && args[1] === "checks") {
+                  return Effect.succeed(checkResults);
+                }
+                return Effect.succeed({});
+              },
+              runGraphQL: () =>
+                Effect.succeed({
+                  repository: {
+                    pullRequest: {
+                      reviewThreads: {
+                        nodes: [],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    },
+                  },
+                }),
+              runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+            }),
+          ),
+        );
+        expect(result.ready).toEqual({
+          ready: blocking.length === 0,
+          mergeable: "MERGEABLE",
+          reviewDecision: "APPROVED",
+          blocking,
+        });
+        expect(result.classification).toEqual({
+          status: reasons.length === 0 ? "clear" : "needs_investigation",
+          reasons,
+        });
+        expect(result.checks).toEqual(checkResults);
+      }),
+    );
+  }
+
   it.effect("review-triage discards checks and feedback collected across a push race", () =>
     Effect.gen(function* () {
       let views = 0;
