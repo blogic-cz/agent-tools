@@ -2065,15 +2065,50 @@ describe("Workflow log diagnosis", () => {
     ]);
   });
 
-  it.effect("uses GitHub's failed-step view for a job", () =>
+  const checkJobSteps = [
+    {
+      name: "Install bun dependencies",
+      status: "completed",
+      conclusion: "success",
+      number: 15,
+      startedAt: "2026-10-09T12:19:56Z",
+      completedAt: "2026-10-09T12:19:56Z",
+    },
+    {
+      name: "Run checks (build, format, test)",
+      status: "completed",
+      conclusion: "failure",
+      number: 21,
+      startedAt: "2026-10-09T12:19:56Z",
+      completedAt: "2026-10-09T12:30:04Z",
+    },
+    {
+      name: "Collect check profiling data",
+      status: "completed",
+      conclusion: "success",
+      number: 22,
+      startedAt: "2026-10-09T12:30:04Z",
+      completedAt: "2026-10-09T12:30:05Z",
+    },
+  ];
+  const checkJobLog = [
+    "2026-10-09T12:19:56.1000000Z ##[group]Run bun install",
+    "2026-10-09T12:19:56.2000000Z bun install v1.4.2",
+    "2026-10-09T12:19:56.9000000Z ##[group]Run set +e",
+    "2026-10-09T12:30:03.9000000Z \u001b[31m✗\u001b[0m complexity (2.3s)",
+    "2026-10-09T12:30:04.0100000Z 7 CA1031 violation(s) in members this branch changed",
+    "2026-10-09T12:30:04.0200000Z ##[group]Run mkdir -p profile",
+    "2026-10-09T12:30:05.0000000Z profile collected",
+  ].join("\n");
+
+  it.effect("reads the job log endpoint with escape sequences allowed", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
       const result = yield* fetchJobLogs({
-        runId: 36048484807,
+        runId: 37929257899,
         job: "Build and Test",
-        jobId: 107797832643,
-        failedStepsOnly: true,
-        failedStepNames: ["Run checks (build, format, test)"],
+        jobId: 113815650059,
+        failedStepsOnly: false,
         format: "json",
         repo: "sabservis/nexus-be",
       }).pipe(
@@ -2081,12 +2116,7 @@ describe("Workflow log diagnosis", () => {
           createMockGhLayer({
             runGh: (args) => {
               calls.push(args);
-              return Effect.succeed({
-                stdout:
-                  "Build and Test\tRun checks (build, format, test)\t2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0",
-                stderr: "",
-                exitCode: 0,
-              });
+              return Effect.succeed({ stdout: checkJobLog, stderr: "", exitCode: 0 });
             },
           }),
         ),
@@ -2094,26 +2124,359 @@ describe("Workflow log diagnosis", () => {
 
       expect(calls).toEqual([
         [
-          "run",
-          "view",
-          "36048484807",
-          "--repo",
-          "sabservis/nexus-be",
-          "--log-failed",
-          "--job",
-          "107797832643",
+          "api",
+          "repos/sabservis/nexus-be/actions/jobs/113815650059/logs",
+          "--allow-escape-sequences",
         ],
       ]);
+      expect("entries" in result && result.entries?.map((e) => e.message)).toContain(
+        "7 CA1031 violation(s) in members this branch changed",
+      );
+    }),
+  );
+
+  it.effect("keeps a failed step's final lines from the complete job log", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* fetchJobLogs({
+        runId: 37929257899,
+        job: "Build and Test",
+        jobId: 113815650059,
+        failedStepsOnly: true,
+        format: "json",
+        repo: "sabservis/nexus-be",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: checkJobLog, stderr: "", exitCode: 0 });
+            },
+            runGhJson: () =>
+              Effect.succeed({
+                jobs: [
+                  {
+                    databaseId: 113815650059,
+                    name: "Build and Test",
+                    status: "completed",
+                    conclusion: "failure",
+                    steps: checkJobSteps,
+                  },
+                ],
+              }),
+          }),
+        ),
+      );
+
+      expect(calls.some((args) => args.includes("--log-failed"))).toBe(false);
       expect("entries" in result && result.entries).toEqual([
+        { step: "Run checks (build, format, test)", message: "bun install v1.4.2" },
+        { step: "Run checks (build, format, test)", message: "✗ complexity (2.3s)" },
         {
           step: "Run checks (build, format, test)",
-          message: "[Test Failure] AssertionException: Expected count 1, got 0",
+          message: "7 CA1031 violation(s) in members this branch changed",
         },
       ]);
     }),
   );
 
-  it.effect("keeps available logs if the failed step name cannot be matched", () =>
+  it("starts a step at its timestamped group marker for the untimestamped line after it", () => {
+    const entries = parseRawJobLogs(
+      [
+        "2026-10-09T12:00:01.0000000Z dependencies installed",
+        "2026-10-09T12:00:03.0000000Z ##[group]Run bun check",
+        "Error: first test failure without timestamp",
+        "2026-10-09T12:00:04.0000000Z tests failed",
+      ].join("\n"),
+      [
+        {
+          name: "Install",
+          conclusion: "success",
+          startedAt: "2026-10-09T12:00:00Z",
+          completedAt: "2026-10-09T12:00:02Z",
+        },
+        {
+          name: "Build",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:00:03Z",
+          completedAt: "2026-10-09T12:00:05Z",
+        },
+      ],
+    );
+
+    expect(entries).toEqual([
+      { step: "Install", message: "dependencies installed" },
+      { step: "Build", message: "Error: first test failure without timestamp" },
+      { step: "Build", message: "tests failed" },
+    ]);
+  });
+
+  it("ends a failed step without a completion time where the next step starts", () => {
+    const entries = parseRawJobLogs(
+      "2026-10-09T12:00:01.0000000Z tests failed\n2026-10-09T12:00:05.0000000Z Error: post failed",
+      [
+        {
+          name: "Build",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:00:00Z",
+          completedAt: null,
+        },
+        {
+          name: "Post action",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:00:04Z",
+          completedAt: "2026-10-09T12:00:06Z",
+        },
+      ],
+    );
+
+    expect(entries).toEqual([
+      { step: "Build", message: "tests failed" },
+      { step: "Post action", message: "Error: post failed" },
+    ]);
+  });
+
+  it("keeps a line without a timestamp in the step of the line before it", () => {
+    const entries = parseRawJobLogs(
+      [
+        "2026-10-09T12:20:00.0000000Z ##[group]Run bun check",
+        "2026-10-09T12:20:01.0000000Z tests started",
+        "Error: final verdict without timestamp",
+      ].join("\n"),
+      [
+        {
+          name: "Build",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:20:00Z",
+          completedAt: "2026-10-09T12:20:02Z",
+        },
+      ],
+    );
+
+    expect(entries).toEqual([
+      { step: "Build", message: "tests started" },
+      { step: "Build", message: "Error: final verdict without timestamp" },
+    ]);
+  });
+
+  it.effect("keeps every line when a failed step has no recorded times", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchJobLogs({
+        runId: 1,
+        job: "Build and Test",
+        jobId: 10,
+        failedStepsOnly: true,
+        steps: [
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:20:00Z",
+            completedAt: "2026-10-09T12:20:02Z",
+          },
+          {
+            name: "Cleanup",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:20:03Z",
+            completedAt: "2026-10-09T12:20:04Z",
+          },
+          { name: "Post action", conclusion: "failure", startedAt: null, completedAt: null },
+        ],
+        format: "json",
+        repo: "o/r",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () =>
+              Effect.succeed({
+                stdout: [
+                  "2026-10-09T12:20:01.0000000Z tests failed",
+                  "2026-10-09T12:20:05.0000000Z ##[group]Post action",
+                  "2026-10-09T12:20:05.1000000Z Error: post failed",
+                ].join("\n"),
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+
+      expect("entries" in result && result.entries).toEqual([
+        { step: "Build", message: "tests failed" },
+        { step: "Post action", message: "Error: post failed" },
+      ]);
+    }),
+  );
+
+  const failedOnlyEntries = (
+    stdout: string,
+    steps: ReadonlyArray<{
+      name: string;
+      conclusion: string;
+      startedAt: string | null;
+      completedAt: string | null;
+    }>,
+  ) =>
+    fetchJobLogs({
+      runId: 1,
+      job: "Build and Test",
+      jobId: 10,
+      failedStepsOnly: true,
+      steps,
+      format: "json",
+      repo: "o/r",
+    }).pipe(
+      Effect.map((result) => ("entries" in result ? result.entries : undefined)),
+      Effect.provide(
+        createMockGhLayer({ runGh: () => Effect.succeed({ stdout, stderr: "", exitCode: 0 }) }),
+      ),
+    );
+
+  it.effect("keeps an error outside every step window under a successful group name", () =>
+    Effect.gen(function* () {
+      const entries = yield* failedOnlyEntries(
+        [
+          "2026-10-09T12:00:00.0000000Z ##[group]Install",
+          "2026-10-09T12:00:01.0000000Z dependencies installed",
+          "2026-10-09T12:00:02.0000000Z ##[endgroup]",
+          "2026-10-09T12:00:03.0000000Z Error: first failure outside recorded windows",
+          "2026-10-09T12:00:04.0000000Z tests failed",
+        ].join("\n"),
+        [
+          {
+            name: "Install",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:04Z",
+            completedAt: "2026-10-09T12:00:05Z",
+          },
+        ],
+      );
+
+      expect(entries?.map((e) => e.message)).toEqual([
+        "Error: first failure outside recorded windows",
+        "tests failed",
+      ]);
+    }),
+  );
+
+  it.effect("keeps an untimestamped error that only inherits a successful step", () =>
+    Effect.gen(function* () {
+      const entries = yield* failedOnlyEntries(
+        [
+          "2026-10-09T12:00:00.0000000Z ##[group]Install",
+          "2026-10-09T12:00:01.0000000Z dependencies installed",
+          "##[endgroup]",
+          "Error: first failure before a new timestamp",
+          "2026-10-09T12:00:04.0000000Z tests failed",
+        ].join("\n"),
+        [
+          {
+            name: "Install",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:04Z",
+            completedAt: "2026-10-09T12:00:05Z",
+          },
+        ],
+      );
+
+      expect(entries?.map((e) => e.message)).toEqual([
+        "Error: first failure before a new timestamp",
+        "tests failed",
+      ]);
+    }),
+  );
+
+  it.effect("ends a step without a completion time and no later step at its start", () =>
+    Effect.gen(function* () {
+      const entries = yield* failedOnlyEntries(
+        [
+          "2026-10-09T12:00:01.0000000Z tests failed",
+          "2026-10-09T12:00:03.0000000Z cleanup started",
+          "2026-10-09T12:00:20.0000000Z Error: uncertain final failure",
+        ].join("\n"),
+        [
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Cleanup",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:03Z",
+            completedAt: null,
+          },
+        ],
+      );
+
+      expect(entries?.map((e) => e.message)).toEqual([
+        "tests failed",
+        "Error: uncertain final failure",
+      ]);
+    }),
+  );
+
+  it.effect("keeps an error after an untimestamped group even when a later line is timed", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchJobLogs({
+        runId: 1,
+        job: "Build and Test",
+        jobId: 10,
+        failedStepsOnly: true,
+        steps: [
+          {
+            name: "Install",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:03Z",
+            completedAt: "2026-10-09T12:00:05Z",
+          },
+        ],
+        format: "json",
+        repo: "o/r",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () =>
+              Effect.succeed({
+                stdout: [
+                  "2026-10-09T12:00:01.0000000Z dependencies installed",
+                  "##[group]Run bun check",
+                  "Error: first failure without timestamp",
+                  "2026-10-09T12:00:04.0000000Z tests failed",
+                ].join("\n"),
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+
+      expect("entries" in result && result.entries).toEqual([
+        { step: "Run bun check", message: "Error: first failure without timestamp" },
+        { step: "Build", message: "tests failed" },
+      ]);
+    }),
+  );
+
+  it.effect("falls back to GitHub's failed-step view when the job log endpoint fails", () =>
     Effect.gen(function* () {
       const result = yield* fetchJobLogs({
         runId: 36048484807,
@@ -2127,21 +2490,29 @@ describe("Workflow log diagnosis", () => {
         Effect.provide(
           createMockGhLayer({
             runGh: (args) =>
-              Effect.succeed({
-                stdout:
-                  args[0] === "api"
-                    ? "2026-09-24T19:29:37Z ##[group]Run bun check.ts ci\n2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0"
-                    : "",
-                stderr: "",
-                exitCode: 0,
-              }),
+              args[0] === "api"
+                ? Effect.fail(
+                    new GitHubCommandError({
+                      message: "the response contains terminal escape sequences",
+                      command: "gh api",
+                      exitCode: 1,
+                      stderr: "",
+                    }),
+                  )
+                : Effect.succeed({
+                    stdout:
+                      "Build and Test\tRun checks (build, format, test)\t2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0",
+                    stderr: "",
+                    exitCode: 0,
+                  }),
+            runGhJson: () => Effect.succeed({ jobs: [] }),
           }),
         ),
       );
 
       expect("entries" in result && result.entries).toEqual([
         {
-          step: "Run bun check.ts ci",
+          step: "Run checks (build, format, test)",
           message: "[Test Failure] AssertionException: Expected count 1, got 0",
         },
       ]);
@@ -6180,12 +6551,66 @@ describe("PR checks", () => {
       });
 
       const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
-      expect(calls).toContainEqual(["api", "repos/test-owner/test-repo/actions/jobs/9420/logs"]);
+      expect(calls).toContainEqual([
+        "api",
+        "repos/test-owner/test-repo/actions/jobs/9420/logs",
+        "--allow-escape-sequences",
+      ]);
       expect(calls.filter((args) => args[0] === "run")).toEqual([
         ["run", "rerun", "42", "--failed"],
       ]);
       expect(result.rerun).toBe(1);
       expect(result.runs?.[0]).toMatchObject({ currentAttempt: 1, status: "rerun_started" });
+    }),
+  );
+
+  it.effect("rerun-checks reads job logs on a gh without --allow-escape-sequences", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr") {
+            return Effect.succeed([
+              {
+                name: "deploy",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/42",
+              },
+            ]);
+          }
+          if (args[0] === "run") {
+            return Effect.succeed({
+              databaseId: 42,
+              attempt: 1,
+              jobs: [
+                { databaseId: 420, name: "deploy", status: "completed", conclusion: "failure" },
+              ],
+            });
+          }
+          if (args[0] === "api") {
+            return Effect.succeed({ jobs: [{ id: 9420, name: "deploy" }] });
+          }
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          calls.push(args);
+          return args.includes("--allow-escape-sequences")
+            ? Effect.fail(
+                new GitHubCommandError({
+                  message: "unknown flag: --allow-escape-sequences",
+                  command: "gh api",
+                  exitCode: 1,
+                  stderr: "unknown flag: --allow-escape-sequences",
+                }),
+              )
+            : Effect.succeed({ stdout: "log evidence", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
+      expect(calls).toContainEqual(["api", "repos/test-owner/test-repo/actions/jobs/9420/logs"]);
+      expect(result.rerun).toBe(1);
     }),
   );
 

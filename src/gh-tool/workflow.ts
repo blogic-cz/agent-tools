@@ -454,18 +454,72 @@ export function cleanLogLine(line: string): string {
     .trim();
 }
 
-export function parseRawJobLogs(raw: string): LogEntry[] {
-  const entries: LogEntry[] = [];
+type StepTiming = {
+  name: string;
+  conclusion: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+type StepWindow = { name: string; failed: boolean; start: number; end: number };
+
+const LINE_SECOND_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/;
+
+// Older gh versions reject --allow-escape-sequences; they print escapes without it.
+export const readJobLogApi = Effect.fn("workflow.readJobLogApi")(function* (path: string) {
+  const gh = yield* GitHubService;
+  return yield* gh
+    .runGh(["api", path, "--allow-escape-sequences"])
+    .pipe(
+      Effect.catchTag("GitHubCommandError", (error) =>
+        `${error.stderr}${error.message}`.includes("unknown flag: --allow-escape-sequences")
+          ? gh.runGh(["api", path])
+          : Effect.fail(error),
+      ),
+    );
+});
+
+// Step times have one-second precision and several steps can share a second, so a
+// boundary line goes to the failed step: a few extra lines beat a lost final error.
+// Returns undefined for a line without a timestamp and null for a time outside every step.
+function stepAtTime(line: string, windows: ReadonlyArray<StepWindow>) {
+  const second = LINE_SECOND_RE.exec(line)?.[1];
+  if (second === undefined) return undefined;
+  const time = Date.parse(`${second}Z`);
+  const inside = windows.filter((w) => w.start <= time && time <= w.end);
+  return (inside.find((w) => w.failed) ?? inside.at(-1))?.name ?? null;
+}
+
+export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = []): LogEntry[] {
+  return parseAttributedJobLogs(raw, steps).map(({ step, message }) => ({ step, message }));
+}
+
+// `established` is true only when gh labelled the line or its own time falls inside a step window.
+function parseAttributedJobLogs(raw: string, steps: ReadonlyArray<StepTiming>) {
+  const entries: Array<LogEntry & { established: boolean }> = [];
   let currentStep = "(unknown)";
+  let timedStep: string | undefined;
+  const timed = steps
+    .flatMap((step) => (step.startedAt ? [{ ...step, start: Date.parse(step.startedAt) }] : []))
+    .toSorted((a, b) => a.start - b.start);
+  const windows = timed.map((step, index) => ({
+    name: step.name,
+    failed: step.conclusion === "failure",
+    start: step.start,
+    end: step.completedAt ? Date.parse(step.completedAt) : (timed[index + 1]?.start ?? step.start),
+  }));
 
   for (const rawLine of raw.split("\n")) {
     const cliLine = rawLine.match(/^[^\t]+\t([^\t]+)\t(\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?.*)$/);
     const line = (cliLine?.[2] ?? rawLine).replace(/^\uFEFF/, "").replace(/\r$/, "");
+    const byTime = stepAtTime(line, windows);
+    if (byTime !== undefined) timedStep = byTime ?? undefined;
 
     // Step group markers
     const groupMatch = line.match(/##\[group\](.+)/);
     if (groupMatch) {
       if (!cliLine) currentStep = groupMatch[1].trim();
+      if (byTime === undefined) timedStep = undefined;
       continue;
     }
     if (line.includes("##[endgroup]")) continue;
@@ -473,7 +527,11 @@ export function parseRawJobLogs(raw: string): LogEntry[] {
     const cleaned = cleanLogLine(line);
     if (cleaned.length === 0) continue;
 
-    entries.push({ step: cliLine?.[1] ?? currentStep, message: cleaned });
+    entries.push({
+      step: cliLine?.[1] ?? timedStep ?? currentStep,
+      message: cleaned,
+      established: cliLine !== null || typeof byTime === "string",
+    });
   }
 
   return entries;
@@ -592,31 +650,12 @@ const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
   });
 });
 
-const filterFailedStepEntries = Effect.fn("workflow.filterFailedStepEntries")(function* (
-  runId: number,
-  jobId: number,
-  entries: LogEntry[],
-  repo: string | null,
-) {
-  const jobs = yield* listJobs(runId, repo);
-  const job = jobs.find((j) => j.databaseId === jobId);
-  if (!job) return entries;
-
-  const failedStepNames = new Set(
-    job.steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
-  );
-
-  if (failedStepNames.size === 0) return entries;
-
-  const filtered = entries.filter((e) => failedStepNames.has(e.step));
-  return filtered.length > 0 ? filtered : entries;
-});
-
 export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
   runId: number;
   job: string;
   jobId?: number | null;
   failedStepNames?: readonly string[] | null;
+  steps?: ReadonlyArray<StepTiming>;
   failedStepsOnly: boolean;
   diagnose?: boolean;
   format: string;
@@ -646,30 +685,33 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
 
   const jobId = opts.jobId ?? (yield* resolveJobId(opts.runId, opts.job, opts.repo));
 
-  const apiLogs = Effect.suspend(() =>
-    gh
-      .runGh(["api", `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`])
-      .pipe(Effect.map((r) => r.stdout)),
+  // `gh run view --log` can omit lines, so the job log endpoint is the primary source.
+  const apiLogs = readJobLogApi(`repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`).pipe(
+    Effect.map((r) => r.stdout),
   );
   const cliLogs = fetchLogs(opts.runId, opts.failedStepsOnly, jobId, opts.repo).pipe(
     Effect.map((r) => r.log),
   );
-  const raw = opts.failedStepsOnly
-    ? yield* cliLogs.pipe(
-        Effect.flatMap((log) => (log.trim() ? Effect.succeed(log) : apiLogs)),
-        Effect.catchTag("GitHubCommandError", () => apiLogs),
-      )
-    : yield* apiLogs.pipe(Effect.catchTag("GitHubCommandError", () => cliLogs));
+  const raw = yield* apiLogs.pipe(Effect.catchTag("GitHubCommandError", () => cliLogs));
 
-  let entries = parseRawJobLogs(raw);
+  const steps = !opts.failedStepsOnly
+    ? []
+    : (opts.steps ??
+      (yield* listJobs(opts.runId, opts.repo)).find((j) => j.databaseId === jobId)?.steps ??
+      []);
+  const attributed = parseAttributedJobLogs(raw, steps);
+  let entries: LogEntry[] = attributed.map(({ step, message }) => ({ step, message }));
 
   if (opts.failedStepsOnly) {
-    if (Array.isArray(opts.failedStepNames) && opts.failedStepNames.length > 0) {
-      const wanted = new Set(opts.failedStepNames);
-      const filtered = entries.filter((e) => wanted.has(e.step));
-      if (filtered.length > 0) entries = filtered;
-    } else {
-      entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
+    const wanted = new Set(
+      opts.failedStepNames?.length
+        ? opts.failedStepNames
+        : steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
+    );
+    const untimed = steps.some((s) => wanted.has(s.name) && !s.startedAt);
+    const kept = attributed.filter((e) => wanted.has(e.step) || !e.established);
+    if (!untimed && kept.some((e) => wanted.has(e.step))) {
+      entries = kept.map(({ step, message }) => ({ step, message }));
     }
   }
 

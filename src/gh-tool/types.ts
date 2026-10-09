@@ -240,6 +240,8 @@ export type WorkflowRunDetail = {
       name: string;
       status: string;
       conclusion: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
     }>;
   }>;
 };
