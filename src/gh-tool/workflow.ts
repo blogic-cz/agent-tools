@@ -481,12 +481,13 @@ export const readJobLogApi = Effect.fn("workflow.readJobLogApi")(function* (path
 
 // Step times have one-second precision and several steps can share a second, so a
 // boundary line goes to the failed step: a few extra lines beat a lost final error.
+// Returns undefined for a line without a timestamp and null for a time outside every step.
 function stepAtTime(line: string, windows: ReadonlyArray<StepWindow>) {
   const second = LINE_SECOND_RE.exec(line)?.[1];
   if (second === undefined) return undefined;
   const time = Date.parse(`${second}Z`);
-  const failed = windows.find((w) => w.failed && w.start <= time && time <= w.end);
-  return (failed ?? windows.findLast((w) => w.start <= time))?.name;
+  const inside = windows.filter((w) => w.start <= time && time <= w.end);
+  return (inside.find((w) => w.failed) ?? inside.at(-1))?.name ?? null;
 }
 
 export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = []): LogEntry[] {
@@ -508,12 +509,14 @@ export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = 
   for (const rawLine of raw.split("\n")) {
     const cliLine = rawLine.match(/^[^\t]+\t([^\t]+)\t(\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?.*)$/);
     const line = (cliLine?.[2] ?? rawLine).replace(/^\uFEFF/, "").replace(/\r$/, "");
-    timedStep = stepAtTime(line, windows) ?? timedStep;
+    const byTime = stepAtTime(line, windows);
+    if (byTime !== undefined) timedStep = byTime ?? undefined;
 
     // Step group markers
     const groupMatch = line.match(/##\[group\](.+)/);
     if (groupMatch) {
       if (!cliLine) currentStep = groupMatch[1].trim();
+      if (byTime === undefined) timedStep = undefined;
       continue;
     }
     if (line.includes("##[endgroup]")) continue;
@@ -698,8 +701,9 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
         : steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
     );
     const untimed = steps.some((s) => wanted.has(s.name) && !s.startedAt);
-    const filtered = entries.filter((e) => wanted.has(e.step));
-    if (!untimed && filtered.length > 0) entries = filtered;
+    const timedNames = new Set(steps.filter((s) => s.startedAt).map((s) => s.name));
+    const filtered = entries.filter((e) => wanted.has(e.step) || !timedNames.has(e.step));
+    if (!untimed && filtered.some((e) => wanted.has(e.step))) entries = filtered;
   }
 
   if (opts.diagnose) {

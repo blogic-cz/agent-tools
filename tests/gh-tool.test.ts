@@ -2088,7 +2088,7 @@ describe("Workflow log diagnosis", () => {
       conclusion: "success",
       number: 22,
       startedAt: "2026-10-09T12:30:04Z",
-      completedAt: "2026-10-09T12:30:04Z",
+      completedAt: "2026-10-09T12:30:05Z",
     },
   ];
   const checkJobLog = [
@@ -2300,9 +2300,57 @@ describe("Workflow log diagnosis", () => {
         ),
       );
 
-      expect("entries" in result && result.entries?.map((e) => e.message)).toEqual([
-        "tests failed",
-        "Error: post failed",
+      expect("entries" in result && result.entries).toEqual([
+        { step: "Build", message: "tests failed" },
+        { step: "Post action", message: "Error: post failed" },
+      ]);
+    }),
+  );
+
+  it.effect("keeps an error after an untimestamped group even when a later line is timed", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchJobLogs({
+        runId: 1,
+        job: "Build and Test",
+        jobId: 10,
+        failedStepsOnly: true,
+        steps: [
+          {
+            name: "Install",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:03Z",
+            completedAt: "2026-10-09T12:00:05Z",
+          },
+        ],
+        format: "json",
+        repo: "o/r",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () =>
+              Effect.succeed({
+                stdout: [
+                  "2026-10-09T12:00:01.0000000Z dependencies installed",
+                  "##[group]Run bun check",
+                  "Error: first failure without timestamp",
+                  "2026-10-09T12:00:04.0000000Z tests failed",
+                ].join("\n"),
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+
+      expect("entries" in result && result.entries).toEqual([
+        { step: "Run bun check", message: "Error: first failure without timestamp" },
+        { step: "Build", message: "tests failed" },
       ]);
     }),
   );
