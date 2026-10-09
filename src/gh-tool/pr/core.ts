@@ -35,6 +35,7 @@ import {
   formatLogEntries,
   listDispatchedRuns,
   parseRawJobLogs,
+  readJobLogApi,
 } from "#gh/workflow";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
@@ -1904,14 +1905,13 @@ const readJobDiagnosis = Effect.fn("pr.readJobDiagnosis")(function* (
   attempt: number,
   repo: string,
 ) {
-  const gh = yield* GitHubService;
   const jobs = yield* fetchAttemptJobs(runId, attempt, repo);
   if (jobs === null) return null;
   const matches = jobs.filter((job) => job.name === jobName);
   if (matches.length !== 1) return null;
-  const logs = yield* gh
-    .runGh(["api", `repos/${repo}/actions/jobs/${matches[0]?.id}/logs`, "--allow-escape-sequences"])
-    .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+  const logs = yield* readJobLogApi(`repos/${repo}/actions/jobs/${matches[0]?.id}/logs`).pipe(
+    Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+  );
   return logs === null ? null : diagnoseLogEntries(parseRawJobLogs(logs.stdout));
 });
 

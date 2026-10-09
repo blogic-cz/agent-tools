@@ -465,6 +465,20 @@ type StepWindow = { name: string; failed: boolean; start: number; end: number };
 
 const LINE_SECOND_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/;
 
+// Older gh versions reject --allow-escape-sequences; they print escapes without it.
+export const readJobLogApi = Effect.fn("workflow.readJobLogApi")(function* (path: string) {
+  const gh = yield* GitHubService;
+  return yield* gh
+    .runGh(["api", path, "--allow-escape-sequences"])
+    .pipe(
+      Effect.catchTag("GitHubCommandError", (error) =>
+        `${error.stderr}${error.message}`.includes("unknown flag: --allow-escape-sequences")
+          ? gh.runGh(["api", path])
+          : Effect.fail(error),
+      ),
+    );
+});
+
 // Step times have one-second precision and several steps can share a second, so a
 // boundary line goes to the failed step: a few extra lines beat a lost final error.
 function stepAtTime(line: string, windows: ReadonlyArray<StepWindow>) {
@@ -478,6 +492,7 @@ function stepAtTime(line: string, windows: ReadonlyArray<StepWindow>) {
 export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = []): LogEntry[] {
   const entries: LogEntry[] = [];
   let currentStep = "(unknown)";
+  let timedStep: string | undefined;
   const windows = steps
     .flatMap((step) =>
       step.startedAt
@@ -508,10 +523,8 @@ export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = 
     const cleaned = cleanLogLine(line);
     if (cleaned.length === 0) continue;
 
-    entries.push({
-      step: cliLine?.[1] ?? stepAtTime(line, windows) ?? currentStep,
-      message: cleaned,
-    });
+    timedStep = stepAtTime(line, windows) ?? timedStep;
+    entries.push({ step: cliLine?.[1] ?? timedStep ?? currentStep, message: cleaned });
   }
 
   return entries;
@@ -666,34 +679,30 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
   const jobId = opts.jobId ?? (yield* resolveJobId(opts.runId, opts.job, opts.repo));
 
   // `gh run view --log` can omit lines, so the job log endpoint is the primary source.
-  // Recent gh refuses colored output unless escape sequences are allowed.
-  const apiLogs = gh
-    .runGh([
-      "api",
-      `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`,
-      "--allow-escape-sequences",
-    ])
-    .pipe(Effect.map((r) => r.stdout));
+  const apiLogs = readJobLogApi(`repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`).pipe(
+    Effect.map((r) => r.stdout),
+  );
   const cliLogs = fetchLogs(opts.runId, opts.failedStepsOnly, jobId, opts.repo).pipe(
     Effect.map((r) => r.log),
   );
   const raw = yield* apiLogs.pipe(Effect.catchTag("GitHubCommandError", () => cliLogs));
 
-  let entries = parseRawJobLogs(raw);
+  const steps = !opts.failedStepsOnly
+    ? []
+    : (opts.steps ??
+      (yield* listJobs(opts.runId, opts.repo)).find((j) => j.databaseId === jobId)?.steps ??
+      []);
+  let entries = parseRawJobLogs(raw, steps);
 
   if (opts.failedStepsOnly) {
-    const steps =
-      opts.steps ??
-      (yield* listJobs(opts.runId, opts.repo)).find((j) => j.databaseId === jobId)?.steps ??
-      [];
-    entries = parseRawJobLogs(raw, steps);
     const wanted = new Set(
       opts.failedStepNames?.length
         ? opts.failedStepNames
         : steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
     );
+    const untimed = steps.some((s) => wanted.has(s.name) && !s.startedAt);
     const filtered = entries.filter((e) => wanted.has(e.step));
-    if (filtered.length > 0) entries = filtered;
+    if (!untimed && filtered.length > 0) entries = filtered;
   }
 
   if (opts.diagnose) {

@@ -2180,6 +2180,77 @@ describe("Workflow log diagnosis", () => {
     }),
   );
 
+  it("keeps a line without a timestamp in the step of the line before it", () => {
+    const entries = parseRawJobLogs(
+      [
+        "2026-10-09T12:20:00.0000000Z ##[group]Run bun check",
+        "2026-10-09T12:20:01.0000000Z tests started",
+        "Error: final verdict without timestamp",
+      ].join("\n"),
+      [
+        {
+          name: "Build",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:20:00Z",
+          completedAt: "2026-10-09T12:20:02Z",
+        },
+      ],
+    );
+
+    expect(entries).toEqual([
+      { step: "Build", message: "tests started" },
+      { step: "Build", message: "Error: final verdict without timestamp" },
+    ]);
+  });
+
+  it.effect("keeps every line when a failed step has no recorded times", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchJobLogs({
+        runId: 1,
+        job: "Build and Test",
+        jobId: 10,
+        failedStepsOnly: true,
+        steps: [
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:20:00Z",
+            completedAt: "2026-10-09T12:20:02Z",
+          },
+          {
+            name: "Cleanup",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:20:03Z",
+            completedAt: "2026-10-09T12:20:04Z",
+          },
+          { name: "Post action", conclusion: "failure", startedAt: null, completedAt: null },
+        ],
+        format: "json",
+        repo: "o/r",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: () =>
+              Effect.succeed({
+                stdout: [
+                  "2026-10-09T12:20:01.0000000Z tests failed",
+                  "2026-10-09T12:20:05.0000000Z ##[group]Post action",
+                  "2026-10-09T12:20:05.1000000Z Error: post failed",
+                ].join("\n"),
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+
+      expect("entries" in result && result.entries?.map((e) => e.message)).toEqual([
+        "tests failed",
+        "Error: post failed",
+      ]);
+    }),
+  );
+
   it.effect("falls back to GitHub's failed-step view when the job log endpoint fails", () =>
     Effect.gen(function* () {
       const result = yield* fetchJobLogs({
@@ -6265,6 +6336,56 @@ describe("PR checks", () => {
       ]);
       expect(result.rerun).toBe(1);
       expect(result.runs?.[0]).toMatchObject({ currentAttempt: 1, status: "rerun_started" });
+    }),
+  );
+
+  it.effect("rerun-checks reads job logs on a gh without --allow-escape-sequences", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const layer = createMockGhLayer({
+        runGhJson: (args) => {
+          if (args[0] === "pr") {
+            return Effect.succeed([
+              {
+                name: "deploy",
+                state: "completed",
+                bucket: "fail",
+                link: "https://github.com/test-owner/test-repo/actions/runs/42",
+              },
+            ]);
+          }
+          if (args[0] === "run") {
+            return Effect.succeed({
+              databaseId: 42,
+              attempt: 1,
+              jobs: [
+                { databaseId: 420, name: "deploy", status: "completed", conclusion: "failure" },
+              ],
+            });
+          }
+          if (args[0] === "api") {
+            return Effect.succeed({ jobs: [{ id: 9420, name: "deploy" }] });
+          }
+          return Effect.succeed({});
+        },
+        runGh: (args) => {
+          calls.push(args);
+          return args.includes("--allow-escape-sequences")
+            ? Effect.fail(
+                new GitHubCommandError({
+                  message: "unknown flag: --allow-escape-sequences",
+                  command: "gh api",
+                  exitCode: 1,
+                  stderr: "unknown flag: --allow-escape-sequences",
+                }),
+              )
+            : Effect.succeed({ stdout: "log evidence", stderr: "", exitCode: 0 });
+        },
+      });
+
+      const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
+      expect(calls).toContainEqual(["api", "repos/test-owner/test-repo/actions/jobs/9420/logs"]);
+      expect(result.rerun).toBe(1);
     }),
   );
 
