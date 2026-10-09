@@ -493,24 +493,22 @@ export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = 
   const entries: LogEntry[] = [];
   let currentStep = "(unknown)";
   let timedStep: string | undefined;
-  const windows = steps
-    .flatMap((step) =>
-      step.startedAt
-        ? [
-            {
-              name: step.name,
-              failed: step.conclusion === "failure",
-              start: Date.parse(step.startedAt),
-              end: step.completedAt ? Date.parse(step.completedAt) : Number.POSITIVE_INFINITY,
-            },
-          ]
-        : [],
-    )
+  const timed = steps
+    .flatMap((step) => (step.startedAt ? [{ ...step, start: Date.parse(step.startedAt) }] : []))
     .toSorted((a, b) => a.start - b.start);
+  const windows = timed.map((step, index) => ({
+    name: step.name,
+    failed: step.conclusion === "failure",
+    start: step.start,
+    end: step.completedAt
+      ? Date.parse(step.completedAt)
+      : (timed[index + 1]?.start ?? Number.POSITIVE_INFINITY),
+  }));
 
   for (const rawLine of raw.split("\n")) {
     const cliLine = rawLine.match(/^[^\t]+\t([^\t]+)\t(\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?.*)$/);
     const line = (cliLine?.[2] ?? rawLine).replace(/^\uFEFF/, "").replace(/\r$/, "");
+    timedStep = stepAtTime(line, windows) ?? timedStep;
 
     // Step group markers
     const groupMatch = line.match(/##\[group\](.+)/);
@@ -523,7 +521,6 @@ export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = 
     const cleaned = cleanLogLine(line);
     if (cleaned.length === 0) continue;
 
-    timedStep = stepAtTime(line, windows) ?? timedStep;
     entries.push({ step: cliLine?.[1] ?? timedStep ?? currentStep, message: cleaned });
   }
 

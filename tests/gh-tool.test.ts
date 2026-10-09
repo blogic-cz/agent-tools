@@ -2180,6 +2180,62 @@ describe("Workflow log diagnosis", () => {
     }),
   );
 
+  it("starts a step at its timestamped group marker for the untimestamped line after it", () => {
+    const entries = parseRawJobLogs(
+      [
+        "2026-10-09T12:00:01.0000000Z dependencies installed",
+        "2026-10-09T12:00:03.0000000Z ##[group]Run bun check",
+        "Error: first test failure without timestamp",
+        "2026-10-09T12:00:04.0000000Z tests failed",
+      ].join("\n"),
+      [
+        {
+          name: "Install",
+          conclusion: "success",
+          startedAt: "2026-10-09T12:00:00Z",
+          completedAt: "2026-10-09T12:00:02Z",
+        },
+        {
+          name: "Build",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:00:03Z",
+          completedAt: "2026-10-09T12:00:05Z",
+        },
+      ],
+    );
+
+    expect(entries).toEqual([
+      { step: "Install", message: "dependencies installed" },
+      { step: "Build", message: "Error: first test failure without timestamp" },
+      { step: "Build", message: "tests failed" },
+    ]);
+  });
+
+  it("ends a failed step without a completion time where the next step starts", () => {
+    const entries = parseRawJobLogs(
+      "2026-10-09T12:00:01.0000000Z tests failed\n2026-10-09T12:00:05.0000000Z Error: post failed",
+      [
+        {
+          name: "Build",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:00:00Z",
+          completedAt: null,
+        },
+        {
+          name: "Post action",
+          conclusion: "failure",
+          startedAt: "2026-10-09T12:00:04Z",
+          completedAt: "2026-10-09T12:00:06Z",
+        },
+      ],
+    );
+
+    expect(entries).toEqual([
+      { step: "Build", message: "tests failed" },
+      { step: "Post action", message: "Error: post failed" },
+    ]);
+  });
+
   it("keeps a line without a timestamp in the step of the line before it", () => {
     const entries = parseRawJobLogs(
       [
