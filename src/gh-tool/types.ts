@@ -35,7 +35,10 @@ export type ReviewThread = {
   feedbackOrigin: FeedbackOrigin;
   commentId: number;
   path: string;
-  line: number;
+  line: number | null;
+  originalLine: number | null;
+  originalCommitSha: string | null;
+  diffHunk: string | null;
   body: string;
   isResolved: boolean;
   hasReply: boolean;
@@ -58,7 +61,10 @@ export type ReviewComment = {
   author: string;
   body: string;
   path: string;
-  line: number;
+  line: number | null;
+  originalLine: number | null;
+  originalCommitSha: string | null;
+  diffHunk: string | null;
   createdAt: string;
   reviewId: number | null;
   /**
