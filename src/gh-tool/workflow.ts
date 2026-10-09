@@ -454,9 +454,44 @@ export function cleanLogLine(line: string): string {
     .trim();
 }
 
-export function parseRawJobLogs(raw: string): LogEntry[] {
+type StepTiming = {
+  name: string;
+  conclusion: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+type StepWindow = { name: string; failed: boolean; start: number; end: number };
+
+const LINE_SECOND_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/;
+
+// Step times have one-second precision and several steps can share a second, so a
+// boundary line goes to the failed step: a few extra lines beat a lost final error.
+function stepAtTime(line: string, windows: ReadonlyArray<StepWindow>) {
+  const second = LINE_SECOND_RE.exec(line)?.[1];
+  if (second === undefined) return undefined;
+  const time = Date.parse(`${second}Z`);
+  const failed = windows.find((w) => w.failed && w.start <= time && time <= w.end);
+  return (failed ?? windows.findLast((w) => w.start <= time))?.name;
+}
+
+export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = []): LogEntry[] {
   const entries: LogEntry[] = [];
   let currentStep = "(unknown)";
+  const windows = steps
+    .flatMap((step) =>
+      step.startedAt
+        ? [
+            {
+              name: step.name,
+              failed: step.conclusion === "failure",
+              start: Date.parse(step.startedAt),
+              end: step.completedAt ? Date.parse(step.completedAt) : Number.POSITIVE_INFINITY,
+            },
+          ]
+        : [],
+    )
+    .toSorted((a, b) => a.start - b.start);
 
   for (const rawLine of raw.split("\n")) {
     const cliLine = rawLine.match(/^[^\t]+\t([^\t]+)\t(\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?.*)$/);
@@ -473,7 +508,10 @@ export function parseRawJobLogs(raw: string): LogEntry[] {
     const cleaned = cleanLogLine(line);
     if (cleaned.length === 0) continue;
 
-    entries.push({ step: cliLine?.[1] ?? currentStep, message: cleaned });
+    entries.push({
+      step: cliLine?.[1] ?? stepAtTime(line, windows) ?? currentStep,
+      message: cleaned,
+    });
   }
 
   return entries;
@@ -592,31 +630,12 @@ const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
   });
 });
 
-const filterFailedStepEntries = Effect.fn("workflow.filterFailedStepEntries")(function* (
-  runId: number,
-  jobId: number,
-  entries: LogEntry[],
-  repo: string | null,
-) {
-  const jobs = yield* listJobs(runId, repo);
-  const job = jobs.find((j) => j.databaseId === jobId);
-  if (!job) return entries;
-
-  const failedStepNames = new Set(
-    job.steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
-  );
-
-  if (failedStepNames.size === 0) return entries;
-
-  const filtered = entries.filter((e) => failedStepNames.has(e.step));
-  return filtered.length > 0 ? filtered : entries;
-});
-
 export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
   runId: number;
   job: string;
   jobId?: number | null;
   failedStepNames?: readonly string[] | null;
+  steps?: ReadonlyArray<StepTiming>;
   failedStepsOnly: boolean;
   diagnose?: boolean;
   format: string;
@@ -646,31 +665,35 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
 
   const jobId = opts.jobId ?? (yield* resolveJobId(opts.runId, opts.job, opts.repo));
 
-  const apiLogs = Effect.suspend(() =>
-    gh
-      .runGh(["api", `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`])
-      .pipe(Effect.map((r) => r.stdout)),
-  );
+  // `gh run view --log` can omit lines, so the job log endpoint is the primary source.
+  // Recent gh refuses colored output unless escape sequences are allowed.
+  const apiLogs = gh
+    .runGh([
+      "api",
+      `repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`,
+      "--allow-escape-sequences",
+    ])
+    .pipe(Effect.map((r) => r.stdout));
   const cliLogs = fetchLogs(opts.runId, opts.failedStepsOnly, jobId, opts.repo).pipe(
     Effect.map((r) => r.log),
   );
-  const raw = opts.failedStepsOnly
-    ? yield* cliLogs.pipe(
-        Effect.flatMap((log) => (log.trim() ? Effect.succeed(log) : apiLogs)),
-        Effect.catchTag("GitHubCommandError", () => apiLogs),
-      )
-    : yield* apiLogs.pipe(Effect.catchTag("GitHubCommandError", () => cliLogs));
+  const raw = yield* apiLogs.pipe(Effect.catchTag("GitHubCommandError", () => cliLogs));
 
   let entries = parseRawJobLogs(raw);
 
   if (opts.failedStepsOnly) {
-    if (Array.isArray(opts.failedStepNames) && opts.failedStepNames.length > 0) {
-      const wanted = new Set(opts.failedStepNames);
-      const filtered = entries.filter((e) => wanted.has(e.step));
-      if (filtered.length > 0) entries = filtered;
-    } else {
-      entries = yield* filterFailedStepEntries(opts.runId, jobId, entries, opts.repo);
-    }
+    const steps =
+      opts.steps ??
+      (yield* listJobs(opts.runId, opts.repo)).find((j) => j.databaseId === jobId)?.steps ??
+      [];
+    entries = parseRawJobLogs(raw, steps);
+    const wanted = new Set(
+      opts.failedStepNames?.length
+        ? opts.failedStepNames
+        : steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
+    );
+    const filtered = entries.filter((e) => wanted.has(e.step));
+    if (filtered.length > 0) entries = filtered;
   }
 
   if (opts.diagnose) {

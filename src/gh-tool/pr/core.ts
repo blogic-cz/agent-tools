@@ -250,8 +250,9 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
     conclusion: run.conclusion,
     failedJobs,
   };
+  const stepsByJob = new Map(run.jobs.map((job) => [job.databaseId, job.steps] as const));
 
-  return context;
+  return { context, stepsByJob };
 });
 
 // `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
@@ -311,26 +312,22 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
       Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
     ));
 
-  const runContexts = new Map<number, FailedCheckRunContext | null>();
-  const contexts = yield* Effect.forEach(
-    runIds,
-    (runId) =>
-      fetchWorkflowRunFailureContext(runId).pipe(
-        Effect.map((context) => [runId, context] as const),
-      ),
-    { concurrency: "unbounded" },
+  const runContexts = new Map(
+    yield* Effect.forEach(
+      runIds,
+      (runId) =>
+        fetchWorkflowRunFailureContext(runId).pipe(Effect.map((found) => [runId, found] as const)),
+      { concurrency: "unbounded" },
+    ),
   );
-
-  for (const [runId, context] of contexts) {
-    runContexts.set(runId, context);
-  }
 
   const enrichedFailedChecks: FailedCheckDetail[] = yield* Effect.forEach(
     failedChecks,
     (check) =>
       Effect.gen(function* () {
         const runId = extractRunIdFromCheckLink(check.link);
-        const run = runId === null ? null : (runContexts.get(runId) ?? null);
+        const found = runId === null ? null : (runContexts.get(runId) ?? null);
+        const run = found?.context ?? null;
         const detail: FailedCheckDetail = { ...check, runId, run };
 
         if (!options.withLogs || runId === null) {
@@ -347,6 +344,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
           job: matchedJob.name,
           jobId: matchedJob.databaseId,
           failedStepNames: matchedJob.failedSteps,
+          steps: found?.stepsByJob.get(matchedJob.databaseId) ?? [],
           failedStepsOnly: true,
           format: "json",
           repo: null,
@@ -1912,7 +1910,7 @@ const readJobDiagnosis = Effect.fn("pr.readJobDiagnosis")(function* (
   const matches = jobs.filter((job) => job.name === jobName);
   if (matches.length !== 1) return null;
   const logs = yield* gh
-    .runGh(["api", `repos/${repo}/actions/jobs/${matches[0]?.id}/logs`])
+    .runGh(["api", `repos/${repo}/actions/jobs/${matches[0]?.id}/logs`, "--allow-escape-sequences"])
     .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
   return logs === null ? null : diagnoseLogEntries(parseRawJobLogs(logs.stdout));
 });

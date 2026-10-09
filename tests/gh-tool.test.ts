@@ -2065,15 +2065,50 @@ describe("Workflow log diagnosis", () => {
     ]);
   });
 
-  it.effect("uses GitHub's failed-step view for a job", () =>
+  const checkJobSteps = [
+    {
+      name: "Install bun dependencies",
+      status: "completed",
+      conclusion: "success",
+      number: 15,
+      startedAt: "2026-10-09T12:19:56Z",
+      completedAt: "2026-10-09T12:19:56Z",
+    },
+    {
+      name: "Run checks (build, format, test)",
+      status: "completed",
+      conclusion: "failure",
+      number: 21,
+      startedAt: "2026-10-09T12:19:56Z",
+      completedAt: "2026-10-09T12:30:04Z",
+    },
+    {
+      name: "Collect check profiling data",
+      status: "completed",
+      conclusion: "success",
+      number: 22,
+      startedAt: "2026-10-09T12:30:04Z",
+      completedAt: "2026-10-09T12:30:04Z",
+    },
+  ];
+  const checkJobLog = [
+    "2026-10-09T12:19:56.1000000Z ##[group]Run bun install",
+    "2026-10-09T12:19:56.2000000Z bun install v1.4.2",
+    "2026-10-09T12:19:56.9000000Z ##[group]Run set +e",
+    "2026-10-09T12:30:03.9000000Z \u001b[31m✗\u001b[0m complexity (2.3s)",
+    "2026-10-09T12:30:04.0100000Z 7 CA1031 violation(s) in members this branch changed",
+    "2026-10-09T12:30:04.0200000Z ##[group]Run mkdir -p profile",
+    "2026-10-09T12:30:05.0000000Z profile collected",
+  ].join("\n");
+
+  it.effect("reads the job log endpoint with escape sequences allowed", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
       const result = yield* fetchJobLogs({
-        runId: 36048484807,
+        runId: 37929257899,
         job: "Build and Test",
-        jobId: 107797832643,
-        failedStepsOnly: true,
-        failedStepNames: ["Run checks (build, format, test)"],
+        jobId: 113815650059,
+        failedStepsOnly: false,
         format: "json",
         repo: "sabservis/nexus-be",
       }).pipe(
@@ -2081,12 +2116,7 @@ describe("Workflow log diagnosis", () => {
           createMockGhLayer({
             runGh: (args) => {
               calls.push(args);
-              return Effect.succeed({
-                stdout:
-                  "Build and Test\tRun checks (build, format, test)\t2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0",
-                stderr: "",
-                exitCode: 0,
-              });
+              return Effect.succeed({ stdout: checkJobLog, stderr: "", exitCode: 0 });
             },
           }),
         ),
@@ -2094,26 +2124,63 @@ describe("Workflow log diagnosis", () => {
 
       expect(calls).toEqual([
         [
-          "run",
-          "view",
-          "36048484807",
-          "--repo",
-          "sabservis/nexus-be",
-          "--log-failed",
-          "--job",
-          "107797832643",
+          "api",
+          "repos/sabservis/nexus-be/actions/jobs/113815650059/logs",
+          "--allow-escape-sequences",
         ],
       ]);
+      expect("entries" in result && result.entries?.map((e) => e.message)).toContain(
+        "7 CA1031 violation(s) in members this branch changed",
+      );
+    }),
+  );
+
+  it.effect("keeps a failed step's final lines from the complete job log", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* fetchJobLogs({
+        runId: 37929257899,
+        job: "Build and Test",
+        jobId: 113815650059,
+        failedStepsOnly: true,
+        format: "json",
+        repo: "sabservis/nexus-be",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGh: (args) => {
+              calls.push(args);
+              return Effect.succeed({ stdout: checkJobLog, stderr: "", exitCode: 0 });
+            },
+            runGhJson: () =>
+              Effect.succeed({
+                jobs: [
+                  {
+                    databaseId: 113815650059,
+                    name: "Build and Test",
+                    status: "completed",
+                    conclusion: "failure",
+                    steps: checkJobSteps,
+                  },
+                ],
+              }),
+          }),
+        ),
+      );
+
+      expect(calls.some((args) => args.includes("--log-failed"))).toBe(false);
       expect("entries" in result && result.entries).toEqual([
+        { step: "Run checks (build, format, test)", message: "bun install v1.4.2" },
+        { step: "Run checks (build, format, test)", message: "✗ complexity (2.3s)" },
         {
           step: "Run checks (build, format, test)",
-          message: "[Test Failure] AssertionException: Expected count 1, got 0",
+          message: "7 CA1031 violation(s) in members this branch changed",
         },
       ]);
     }),
   );
 
-  it.effect("keeps available logs if the failed step name cannot be matched", () =>
+  it.effect("falls back to GitHub's failed-step view when the job log endpoint fails", () =>
     Effect.gen(function* () {
       const result = yield* fetchJobLogs({
         runId: 36048484807,
@@ -2127,21 +2194,29 @@ describe("Workflow log diagnosis", () => {
         Effect.provide(
           createMockGhLayer({
             runGh: (args) =>
-              Effect.succeed({
-                stdout:
-                  args[0] === "api"
-                    ? "2026-09-24T19:29:37Z ##[group]Run bun check.ts ci\n2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0"
-                    : "",
-                stderr: "",
-                exitCode: 0,
-              }),
+              args[0] === "api"
+                ? Effect.fail(
+                    new GitHubCommandError({
+                      message: "the response contains terminal escape sequences",
+                      command: "gh api",
+                      exitCode: 1,
+                      stderr: "",
+                    }),
+                  )
+                : Effect.succeed({
+                    stdout:
+                      "Build and Test\tRun checks (build, format, test)\t2026-09-24T19:34:10Z [Test Failure] AssertionException: Expected count 1, got 0",
+                    stderr: "",
+                    exitCode: 0,
+                  }),
+            runGhJson: () => Effect.succeed({ jobs: [] }),
           }),
         ),
       );
 
       expect("entries" in result && result.entries).toEqual([
         {
-          step: "Run bun check.ts ci",
+          step: "Run checks (build, format, test)",
           message: "[Test Failure] AssertionException: Expected count 1, got 0",
         },
       ]);
@@ -6180,7 +6255,11 @@ describe("PR checks", () => {
       });
 
       const result = yield* rerunChecks(123, true).pipe(Effect.provide(layer));
-      expect(calls).toContainEqual(["api", "repos/test-owner/test-repo/actions/jobs/9420/logs"]);
+      expect(calls).toContainEqual([
+        "api",
+        "repos/test-owner/test-repo/actions/jobs/9420/logs",
+        "--allow-escape-sequences",
+      ]);
       expect(calls.filter((args) => args[0] === "run")).toEqual([
         ["run", "rerun", "42", "--failed"],
       ]);
