@@ -2307,6 +2307,127 @@ describe("Workflow log diagnosis", () => {
     }),
   );
 
+  const failedOnlyEntries = (
+    stdout: string,
+    steps: ReadonlyArray<{
+      name: string;
+      conclusion: string;
+      startedAt: string | null;
+      completedAt: string | null;
+    }>,
+  ) =>
+    fetchJobLogs({
+      runId: 1,
+      job: "Build and Test",
+      jobId: 10,
+      failedStepsOnly: true,
+      steps,
+      format: "json",
+      repo: "o/r",
+    }).pipe(
+      Effect.map((result) => ("entries" in result ? result.entries : undefined)),
+      Effect.provide(
+        createMockGhLayer({ runGh: () => Effect.succeed({ stdout, stderr: "", exitCode: 0 }) }),
+      ),
+    );
+
+  it.effect("keeps an error outside every step window under a successful group name", () =>
+    Effect.gen(function* () {
+      const entries = yield* failedOnlyEntries(
+        [
+          "2026-10-09T12:00:00.0000000Z ##[group]Install",
+          "2026-10-09T12:00:01.0000000Z dependencies installed",
+          "2026-10-09T12:00:02.0000000Z ##[endgroup]",
+          "2026-10-09T12:00:03.0000000Z Error: first failure outside recorded windows",
+          "2026-10-09T12:00:04.0000000Z tests failed",
+        ].join("\n"),
+        [
+          {
+            name: "Install",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:04Z",
+            completedAt: "2026-10-09T12:00:05Z",
+          },
+        ],
+      );
+
+      expect(entries?.map((e) => e.message)).toEqual([
+        "Error: first failure outside recorded windows",
+        "tests failed",
+      ]);
+    }),
+  );
+
+  it.effect("keeps an untimestamped error that only inherits a successful step", () =>
+    Effect.gen(function* () {
+      const entries = yield* failedOnlyEntries(
+        [
+          "2026-10-09T12:00:00.0000000Z ##[group]Install",
+          "2026-10-09T12:00:01.0000000Z dependencies installed",
+          "##[endgroup]",
+          "Error: first failure before a new timestamp",
+          "2026-10-09T12:00:04.0000000Z tests failed",
+        ].join("\n"),
+        [
+          {
+            name: "Install",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:04Z",
+            completedAt: "2026-10-09T12:00:05Z",
+          },
+        ],
+      );
+
+      expect(entries?.map((e) => e.message)).toEqual([
+        "Error: first failure before a new timestamp",
+        "tests failed",
+      ]);
+    }),
+  );
+
+  it.effect("ends a step without a completion time and no later step at its start", () =>
+    Effect.gen(function* () {
+      const entries = yield* failedOnlyEntries(
+        [
+          "2026-10-09T12:00:01.0000000Z tests failed",
+          "2026-10-09T12:00:03.0000000Z cleanup started",
+          "2026-10-09T12:00:20.0000000Z Error: uncertain final failure",
+        ].join("\n"),
+        [
+          {
+            name: "Build",
+            conclusion: "failure",
+            startedAt: "2026-10-09T12:00:00Z",
+            completedAt: "2026-10-09T12:00:02Z",
+          },
+          {
+            name: "Cleanup",
+            conclusion: "success",
+            startedAt: "2026-10-09T12:00:03Z",
+            completedAt: null,
+          },
+        ],
+      );
+
+      expect(entries?.map((e) => e.message)).toEqual([
+        "tests failed",
+        "Error: uncertain final failure",
+      ]);
+    }),
+  );
+
   it.effect("keeps an error after an untimestamped group even when a later line is timed", () =>
     Effect.gen(function* () {
       const result = yield* fetchJobLogs({

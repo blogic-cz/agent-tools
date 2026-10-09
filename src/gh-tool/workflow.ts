@@ -491,7 +491,12 @@ function stepAtTime(line: string, windows: ReadonlyArray<StepWindow>) {
 }
 
 export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = []): LogEntry[] {
-  const entries: LogEntry[] = [];
+  return parseAttributedJobLogs(raw, steps).map(({ step, message }) => ({ step, message }));
+}
+
+// `established` is true only when gh labelled the line or its own time falls inside a step window.
+function parseAttributedJobLogs(raw: string, steps: ReadonlyArray<StepTiming>) {
+  const entries: Array<LogEntry & { established: boolean }> = [];
   let currentStep = "(unknown)";
   let timedStep: string | undefined;
   const timed = steps
@@ -501,9 +506,7 @@ export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = 
     name: step.name,
     failed: step.conclusion === "failure",
     start: step.start,
-    end: step.completedAt
-      ? Date.parse(step.completedAt)
-      : (timed[index + 1]?.start ?? Number.POSITIVE_INFINITY),
+    end: step.completedAt ? Date.parse(step.completedAt) : (timed[index + 1]?.start ?? step.start),
   }));
 
   for (const rawLine of raw.split("\n")) {
@@ -524,7 +527,11 @@ export function parseRawJobLogs(raw: string, steps: ReadonlyArray<StepTiming> = 
     const cleaned = cleanLogLine(line);
     if (cleaned.length === 0) continue;
 
-    entries.push({ step: cliLine?.[1] ?? timedStep ?? currentStep, message: cleaned });
+    entries.push({
+      step: cliLine?.[1] ?? timedStep ?? currentStep,
+      message: cleaned,
+      established: cliLine !== null || typeof byTime === "string",
+    });
   }
 
   return entries;
@@ -692,7 +699,8 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
     : (opts.steps ??
       (yield* listJobs(opts.runId, opts.repo)).find((j) => j.databaseId === jobId)?.steps ??
       []);
-  let entries = parseRawJobLogs(raw, steps);
+  const attributed = parseAttributedJobLogs(raw, steps);
+  let entries: LogEntry[] = attributed.map(({ step, message }) => ({ step, message }));
 
   if (opts.failedStepsOnly) {
     const wanted = new Set(
@@ -701,9 +709,10 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
         : steps.filter((s) => s.conclusion === "failure").map((s) => s.name),
     );
     const untimed = steps.some((s) => wanted.has(s.name) && !s.startedAt);
-    const timedNames = new Set(steps.filter((s) => s.startedAt).map((s) => s.name));
-    const filtered = entries.filter((e) => wanted.has(e.step) || !timedNames.has(e.step));
-    if (!untimed && filtered.some((e) => wanted.has(e.step))) entries = filtered;
+    const kept = attributed.filter((e) => wanted.has(e.step) || !e.established);
+    if (!untimed && kept.some((e) => wanted.has(e.step))) {
+      entries = kept.map(({ step, message }) => ({ step, message }));
+    }
   }
 
   if (opts.diagnose) {
