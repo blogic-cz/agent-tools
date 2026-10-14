@@ -68,6 +68,7 @@ export type GitHubApiRequest = {
 };
 
 const MAX_API_RETRIES = 2;
+const rateLimitRetryDelays = new WeakMap<GitHubCommandError, number>();
 
 // Traverse only parsed JSON, never the caller's getters or toJSON hooks.
 const decodedBodyText = (value: unknown): string => {
@@ -142,13 +143,30 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
     });
   }
 
-  return yield* new GitHubCommandError({
+  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
+  const resetDelay =
+    Number.isFinite(resetSeconds) && resetSeconds > 0
+      ? Math.max(0, resetSeconds * 1000 - Date.now() + 1000)
+      : undefined;
+  const rateLimit =
+    response.status === 429 ||
+    (response.status === 403 &&
+      (response.headers.get("x-ratelimit-remaining") === "0" ||
+        /rate limit|secondary rate limit|abuse detection/i.test(
+          apiErrorMessage(parsed, response.status),
+        )));
+
+  const error = new GitHubCommandError({
     message: apiErrorMessage(parsed, response.status),
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,
-    ...(response.status >= 500 ? { retryable: true } : {}),
+    ...(response.status >= 500 || (rateLimit && resetDelay !== undefined)
+      ? { retryable: true }
+      : {}),
   });
+  if (rateLimit && resetDelay !== undefined) rateLimitRetryDelays.set(error, resetDelay);
+  return yield* error;
 });
 
 // Mirrors GitHubService.runGh: replay a transient failure, and only for an idempotent read.
@@ -190,6 +208,10 @@ export const githubApi = <T>(
       isTransient: (error) =>
         error._tag === "GitHubCommandError" && error.retryable === true && request.method === "GET",
       maxRetries: MAX_API_RETRIES,
+      retryDelayMs: (error, _attempt, fallbackMs) =>
+        error instanceof GitHubCommandError
+          ? Math.max(fallbackMs, rateLimitRetryDelays.get(error) ?? 0)
+          : fallbackMs,
     });
   });
 

@@ -73,7 +73,7 @@ const stackMember = (
   base: { ref: overrides.base ?? "main" },
 });
 
-type FetchRoute = { status: number; body: unknown };
+type FetchRoute = { status: number; body: unknown; headers?: Record<string, string> };
 
 let fetchCalls: Array<{ url: string; method: string; body: unknown }> = [];
 let routes: Array<{ match: RegExp; method?: string; respond: () => FetchRoute }> = [];
@@ -98,7 +98,7 @@ const installFetch = () => {
     return Promise.resolve(
       new Response(hasBody ? JSON.stringify(result.body) : null, {
         status: result.status,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...result.headers },
       }),
     );
   }) as typeof globalThis.fetch;
@@ -114,6 +114,93 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch;
   delete process.env["GITHUB_TOKEN"];
+});
+
+describe("GitHub API rate-limit retry", () => {
+  it.effect("waits for the reset on GET and never retries a mutation", () =>
+    Effect.gen(function* () {
+      const reset = Math.floor(Date.now() / 1000) + 2;
+      let reads = 0;
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/pulls\/123$/,
+        method: "GET",
+        respond: () => {
+          reads += 1;
+          return reads === 1
+            ? {
+                status: 429,
+                body: { message: "API rate limit exceeded" },
+                headers: { "x-ratelimit-reset": String(reset) },
+              }
+            : { status: 200, body: { ok: true } };
+        },
+      });
+      const readFiber = yield* Effect.forkChild(
+        githubApi<{ ok: boolean }>({ path: "repos/test-owner/test-repo/pulls/123" }),
+      );
+      yield* TestClock.adjust("4 seconds");
+      expect(yield* Fiber.join(readFiber)).toMatchObject({ body: { ok: true } });
+      expect(reads).toBe(2);
+
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/pulls\/123$/,
+        method: "POST",
+        respond: () => ({
+          status: 429,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-reset": String(reset) },
+        }),
+      });
+      const error = yield* githubApi({
+        path: "repos/test-owner/test-repo/pulls/123",
+        method: "POST",
+        body: { title: "one attempt" },
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("GitHubCommandError");
+      expect(fetchCalls.filter((call) => call.method === "POST")).toHaveLength(1);
+
+      const secondaryReset = Math.floor(Date.now() / 1000) + 1;
+      let limitedReads = 0;
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/rate-limited\/123$/,
+        method: "GET",
+        respond: () => {
+          limitedReads += 1;
+          return limitedReads === 1
+            ? {
+                status: 403,
+                body: { message: "API rate limit exceeded" },
+                headers: {
+                  "x-ratelimit-reset": String(secondaryReset),
+                  "x-ratelimit-remaining": "0",
+                },
+              }
+            : { status: 200, body: { ok: true } };
+        },
+      });
+      const rateLimitedFiber = yield* Effect.forkChild(
+        githubApi<{ ok: boolean }>({ path: "repos/test-owner/test-repo/rate-limited/123" }),
+      );
+      yield* TestClock.adjust("3 seconds");
+      expect(yield* Fiber.join(rateLimitedFiber)).toMatchObject({ status: 200 });
+      expect(limitedReads).toBe(2);
+
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/issues\/123$/,
+        method: "GET",
+        respond: () => ({
+          status: 403,
+          body: { message: "Resource not accessible by integration" },
+          headers: { "x-ratelimit-reset": String(reset), "x-ratelimit-remaining": "4999" },
+        }),
+      });
+      const permissionError = yield* githubApi({
+        path: "repos/test-owner/test-repo/issues/123",
+      }).pipe(Effect.flip);
+      expect(permissionError._tag).toBe("GitHubCommandError");
+      expect(fetchCalls.filter((call) => call.url.endsWith("/issues/123"))).toHaveLength(1);
+    }),
+  );
 });
 
 describe("pr stack view", () => {

@@ -121,6 +121,7 @@ export type FailedCheckJob = {
 export type FailedCheckRunContext = {
   runId: number;
   attempt: number | null;
+  headSha: string | null;
   url: string | null;
   workflowName: string | null;
   status: string;
@@ -226,6 +227,7 @@ export type FailedChecksReport = {
 export type WorkflowRunDetail = {
   databaseId: number;
   attempt: number | null;
+  headSha: string | null;
   url: string;
   workflowName: string | null;
   status: string;

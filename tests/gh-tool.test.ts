@@ -2037,6 +2037,16 @@ describe("Workflow log diagnosis", () => {
     ).toBe(
       diagnoseLogEntries([{ step: "Run tests", message: "Tests failed at line 99" }]).fingerprint,
     );
+    expect(
+      diagnoseLogEntries([
+        { step: "Checkout", message: "From https://github.com/example/repo" },
+        {
+          step: "Checkout",
+          message:
+            "* [new branch] fix/core-480-agent-tooling-timeout -> origin/fix/core-480-agent-tooling-timeout",
+        },
+      ]).firstRelevantError,
+    ).toBeNull();
   });
 
   it("prefers a TUnit assertion over an unrelated timeout comment", () => {
@@ -5811,8 +5821,8 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const rawJobLogs = [
         "2025-01-01T00:00:00Z ##[group]Run lint",
-        "2025-01-01T00:00:01Z npm run lint",
-        "2025-01-01T00:00:02Z Error: lint failed hard",
+        ...Array.from({ length: 30 }, (_, index) => `2025-01-01T00:00:01Z setup output ${index}`),
+        "2025-01-01T00:00:02Z AssertionError: lint failed hard",
         "2025-01-01T00:00:03Z ##[endgroup]",
       ].join("\n");
 
@@ -5842,6 +5852,8 @@ describe("PR checks", () => {
 
             return Effect.succeed({
               databaseId: 2,
+              attempt: 2,
+              headSha: "run-head",
               url: "https://github.com/test-owner/test-repo/actions/runs/2",
               workflowName: "CI",
               status: "completed",
@@ -5872,7 +5884,10 @@ describe("PR checks", () => {
 
       expect(result.failedChecks).toHaveLength(1);
       expect(result.failedChecks[0]?.failedStepLogs).toContain("Run lint");
-      expect(result.failedChecks[0]?.failedStepLogs).toContain("Error: lint failed hard");
+      expect(result.failedChecks[0]?.failedStepLogs).toContain("AssertionError: lint failed hard");
+      expect(result.failedChecks[0]?.failedStepLogs).not.toContain("setup output 29");
+      expect(result.failedChecks[0]?.failedStepLogs?.length).toBeLessThanOrEqual(4_000);
+      expect(result.failedChecks[0]?.run).toMatchObject({ attempt: 2, headSha: "run-head" });
     }),
   );
 
@@ -6400,7 +6415,14 @@ describe("PR checks", () => {
       yield* Fiber.join(fiber);
       expect(apiPRs).toEqual([1]);
       expect(events).toEqual([
-        expect.objectContaining({ type: "watcher_terminal", status: "timeout", terminal: [] }),
+        expect.objectContaining({
+          type: "watcher_terminal",
+          status: "timeout",
+          terminal: [],
+          verdict: null,
+          message: "Watch timed out. This is not a CI verdict.",
+          pending: [1, 2],
+        }),
       ]);
     }),
   );
