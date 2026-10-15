@@ -18,11 +18,11 @@ import type {
 } from "#gh/types";
 
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
-import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
+import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 import { resolveGitHubToken } from "#gh/api";
 import type { GhResult } from "#gh/service";
-import { logText } from "#shared";
+import { logFormatted, logText } from "#shared";
 import { redactSensitiveText } from "#shared/content-security";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
@@ -1535,13 +1535,8 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       watchArgs.push("--fail-fast");
     }
 
-    // Block for the caller's requested --timeout (no artificial cap — blocking isn't the problem;
-    // --timeout is validated >= 1s at the CLI boundary). On timeout return a snapshot, never
-    // nothing — that was the actual token-wasting bug.
-    // A push registers its checks a moment after the ref lands, and `gh pr checks --watch`
-    // exits non-zero in that window. A watch was asked to wait, so keep waiting: the outer
-    // timeout still bounds it, and a PR that genuinely has no checks returns an empty
-    // snapshot at that deadline rather than an error.
+    // A push can register checks after the ref lands. Wait through that window
+    // within the caller's timeout, then report the final snapshot.
     let watchResult: GhResult | null = null;
     let registered = false;
     let graceExpired = false;
@@ -1592,12 +1587,14 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
           `likely dropped, and re-watching will find nothing again — dispatch them on the PR ` +
           `head instead:\n   agent-tools-gh pr trigger-checks --pr ${prRef} --workflow <file.yml>`,
       );
-    } else if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
-      const pending = results.filter((c) => c.bucket === "pending").length;
-      yield* Console.warn(
-        `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
-          `Re-run to keep watching:\n   ${buildChecksCommand(pr, true)}`,
-      );
+    }
+    if (watchOutcome === null && results.some((check) => check.bucket === "pending")) {
+      const pending = results.filter((check) => check.bucket === "pending").length;
+      yield* logFormatted(results, quiet ? "json" : "toon");
+      return yield* new GitHubTimeoutError({
+        message: `Watch timed out, ${pending} pending after ${timeoutSeconds}s. This is not a CI verdict.`,
+        timeoutMs: timeoutSeconds * 1000,
+      });
     }
     return results;
   }
@@ -1997,12 +1994,18 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
     ...(watcherTimedOut
       ? {
           verdict: null,
-          message: "Watch timed out. This is not a CI verdict.",
+          message: `Watch timed out, ${prs.length - terminal.size} pending. This is not a CI verdict.`,
           timeoutSeconds: options.timeoutSeconds,
           pending: prs.filter((number) => !terminal.has(number)).toSorted((a, b) => a - b),
         }
       : {}),
   });
+  if (watcherTimedOut) {
+    return yield* new GitHubTimeoutError({
+      message: `Watch timed out, ${prs.length - terminal.size} pending. This is not a CI verdict.`,
+      timeoutMs: options.timeoutSeconds * 1000,
+    });
+  }
 });
 
 type RerunDiscovery = RerunCheckAttempt & { status?: string };

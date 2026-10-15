@@ -30,6 +30,7 @@ import {
   GitHubCommandError,
   GitHubMergeError,
   GitHubNotFoundError,
+  type GitHubTimeoutError,
 } from "#gh/errors";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
@@ -5034,7 +5035,7 @@ describe("pr feedback (aggregated review-response inventory)", () => {
       const collectors: ReadonlyArray<{
         operation: string;
         command: string;
-        collect: () => Effect.Effect<unknown, GhError, GitHubService>;
+        collect: () => Effect.Effect<unknown, GhError | GitHubTimeoutError, GitHubService>;
       }> = [
         {
           operation: "review threads",
@@ -5696,6 +5697,34 @@ describe("Issue triage", () => {
       expect(result.comments[1]?.id).toBe(502);
       expect(result.comments[1]?.body).toBe("Latest proposal");
     }).pipe(Effect.provide(createMockGhLayer())),
+  );
+});
+
+describe("watch timeout failures", () => {
+  it.effect("checks watch fails at its deadline while a check remains pending", () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        fetchChecksForCommand(123, true, false, 1, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGh: () => Effect.never,
+              runGhJson: () =>
+                Effect.succeed([
+                  { name: "CI", state: "IN_PROGRESS", bucket: "pending", link: "external" },
+                ]),
+            }),
+          ),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("1 second");
+      const result = yield* Fiber.join(fiber);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure._tag).toBe("GitHubTimeoutError");
+        expect(result.failure.message).toContain("timed out, 1 pending");
+      }
+    }),
   );
 });
 
@@ -6490,6 +6519,7 @@ describe("PR checks", () => {
         watchPRs([1, 2], { intervalSeconds: 60, timeoutSeconds: 0.01 }, (event) =>
           Effect.sync(() => events.push(event)),
         ).pipe(
+          Effect.flip,
           Effect.provide(
             createMockGhLayer({
               runGhJson: (args) => {
@@ -6509,7 +6539,7 @@ describe("PR checks", () => {
         ),
       );
       yield* TestClock.adjust("20 millis");
-      yield* Fiber.join(fiber);
+      expect(yield* Fiber.join(fiber)).toMatchObject({ _tag: "GitHubTimeoutError" });
       expect(apiPRs).toEqual([1]);
       expect(events).toEqual([
         expect.objectContaining({
@@ -6517,7 +6547,7 @@ describe("PR checks", () => {
           status: "timeout",
           terminal: [],
           verdict: null,
-          message: "Watch timed out. This is not a CI verdict.",
+          message: "Watch timed out, 2 pending. This is not a CI verdict.",
           pending: [1, 2],
         }),
       ]);
@@ -6537,12 +6567,12 @@ describe("PR checks", () => {
               ]),
       });
       const fiber = yield* Effect.forkChild(
-        watchPRs([1], { intervalSeconds: 60, timeoutSeconds: 0.01 }, (event) =>
+        watchPRs([1], { intervalSeconds: 120, timeoutSeconds: 0.01 }, (event) =>
           Effect.sync(() => events.push(event)),
-        ).pipe(Effect.provide(layer)),
+        ).pipe(Effect.provide(layer), Effect.flip),
       );
       yield* TestClock.adjust("10 millis");
-      yield* Fiber.join(fiber);
+      expect(yield* Fiber.join(fiber)).toMatchObject({ _tag: "GitHubTimeoutError" });
       const elapsed = Number(yield* Clock.currentTimeMillis) - start;
       expect(elapsed).toBe(10);
       expect(events.at(-1)).toMatchObject({ status: "timeout" });
@@ -6599,6 +6629,7 @@ describe("PR checks", () => {
       yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
+        Effect.flip,
         Effect.provide(
           createMockGhLayer({
             runGhJson: (args) =>
