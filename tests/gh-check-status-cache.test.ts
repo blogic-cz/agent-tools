@@ -106,3 +106,13 @@ describe("shared PR check status cache", () => {
     expect(snapshots.every((snapshot) => snapshot.checks[0].name === "Build")).toBe(true);
   });
 });
+
+it("sweeps stale snapshots for other PRs when writing", async () => {
+  directory = await mkdtemp(join(tmpdir(), "agent-tools-cache-sweep-"));
+  await writeCheckStatusCache("principal", "owner/repo", 1, "old", checks, 1000, directory);
+  await writeCheckStatusCache("principal", "owner/repo", 2, "fresh", checks, 32000, directory);
+  expect(await readdir(directory)).toHaveLength(1);
+  expect(
+    await readCheckStatusCache("principal", "owner/repo", 2, "fresh", 32000, false, directory),
+  ).toEqual(checks);
+});

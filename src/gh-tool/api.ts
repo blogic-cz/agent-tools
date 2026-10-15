@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { retryTransient } from "#shared/retry-transient";
 
@@ -68,6 +68,7 @@ export type GitHubApiRequest = {
 };
 
 const MAX_API_RETRIES = 2;
+const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 const rateLimitRetryDelays = new WeakMap<GitHubCommandError, number>();
 
 // Traverse only parsed JSON, never the caller's getters or toJSON hooks.
@@ -143,11 +144,24 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
     });
   }
 
+  const now = yield* Clock.currentTimeMillis;
   const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
   const resetDelay =
     Number.isFinite(resetSeconds) && resetSeconds > 0
-      ? Math.max(0, resetSeconds * 1000 - Date.now() + 1000)
+      ? Math.max(0, resetSeconds * 1000 - now + 1000)
       : undefined;
+  const retryAfter = response.headers.get("retry-after");
+  const retryAfterMs =
+    retryAfter === null
+      ? undefined
+      : /^\d+(?:\.\d+)?$/.test(retryAfter)
+        ? Number(retryAfter) * 1000
+        : Date.parse(retryAfter) - now;
+  const waitMs =
+    retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+      ? retryAfterMs
+      : resetDelay;
+  const canWait = waitMs !== undefined && waitMs <= MAX_RATE_LIMIT_WAIT_MS;
   const rateLimit =
     response.status === 429 ||
     (response.status === 403 &&
@@ -163,11 +177,9 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,
-    ...(response.status >= 500 || (rateLimit && resetDelay !== undefined)
-      ? { retryable: true }
-      : {}),
+    ...(response.status >= 500 || (rateLimit && canWait) ? { retryable: true } : {}),
   });
-  if (rateLimit && resetDelay !== undefined) rateLimitRetryDelays.set(error, resetDelay);
+  if (rateLimit && canWait && waitMs !== undefined) rateLimitRetryDelays.set(error, waitMs);
   return yield* error;
 });
 

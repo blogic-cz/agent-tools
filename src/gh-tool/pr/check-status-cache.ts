@@ -1,3 +1,4 @@
+import { Context } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -8,6 +9,11 @@ import type { CheckResult } from "#gh/types";
 const CACHE_TTL_MS = 30_000;
 const WATCH_PENDING_TTL_MS = 5_000;
 const CACHE_DIR = join(homedir(), ".cache", "agent-tools", "gh-check-status-v1");
+
+export const CheckStatusCacheDirectory = Context.Reference<string | undefined>(
+  "@agent-tools/CheckStatusCacheDirectory",
+  { defaultValue: () => CACHE_DIR },
+);
 
 type CacheEntry = { fetchedAt: number; checks: CheckResult[] };
 
@@ -98,6 +104,28 @@ export const writeCheckStatusCache = async (
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await chmod(directory, 0o700);
+    await Promise.all(
+      (await readdir(directory))
+        .filter((name) => name.endsWith(".json"))
+        .map(async (name) => {
+          const path = join(directory, name);
+          try {
+            const entry: unknown = JSON.parse(await readFile(path, "utf8"));
+            if (
+              entry !== null &&
+              typeof entry === "object" &&
+              "fetchedAt" in entry &&
+              typeof entry.fetchedAt === "number" &&
+              Number.isFinite(entry.fetchedAt) &&
+              fetchedAt - entry.fetchedAt <= CACHE_TTL_MS
+            )
+              return;
+            await rm(path, { force: true });
+          } catch {
+            /* Another writer can remove a stale snapshot first. */
+          }
+        }),
+    );
     const prefix = keyFor(identity, repo, pr, headSha);
     const temporary = join(directory, `${prefix}.${process.pid}.${randomUUID()}.tmp`);
     const destination = join(

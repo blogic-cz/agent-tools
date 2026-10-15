@@ -39,7 +39,11 @@ import {
   parseRawJobLogs,
   readJobLogApi,
 } from "#gh/workflow";
-import { readCheckStatusCache, writeCheckStatusCache } from "./check-status-cache";
+import {
+  CheckStatusCacheDirectory,
+  readCheckStatusCache,
+  writeCheckStatusCache,
+} from "./check-status-cache";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
@@ -282,18 +286,17 @@ const summarizeFailedStepEntries = (entries: Array<{ step: string; message: stri
         ? 0
         : 1,
     }))
-    .toSorted((a, b) => a.rank - b.rank || a.index - b.index)
+    .toSorted((a, b) => a.rank - b.rank || b.index - a.index)
     .slice(0, 20)
     .toSorted((a, b) => a.index - b.index);
-  let output = formatLogEntries(
-    selected.map(({ entry }) => ({
-      ...entry,
-      message: entry.message.slice(0, 500),
-    })),
-  );
-  if (selected.length < entries.length)
-    output += `\n… ${entries.length - selected.length} log lines omitted`;
-  if (output.length > 4_000) output = `${output.slice(0, 3_900)}\n… log summary truncated`;
+  const kept: Array<{ step: string; message: string }> = [];
+  for (const { entry } of selected.toReversed()) {
+    const clipped = { step: entry.step.slice(0, 80), message: entry.message.slice(0, 150) };
+    if (formatLogEntries([clipped, ...kept]).length <= 3_900) kept.unshift(clipped);
+  }
+  let output = formatLogEntries(kept);
+  if (kept.length < entries.length)
+    output += `\n… ${entries.length - kept.length} log lines omitted`;
   return output;
 };
 
@@ -308,9 +311,11 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
     args.push(String(pr));
   }
 
+  const directory = yield* CheckStatusCacheDirectory;
+  const now = yield* Clock.currentTimeMillis;
   let repo: string | null = null;
   let identity: string | null = null;
-  if (cache !== undefined && pr !== null) {
+  if (cache !== undefined && pr !== null && directory !== undefined) {
     const repoInfo = yield* gh.getRepoInfo().pipe(Effect.result);
     const token = yield* resolveGitHubToken().pipe(Effect.result);
     if (Result.isSuccess(repoInfo) && Result.isSuccess(token)) {
@@ -328,8 +333,9 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
               cacheRepo,
               pr,
               cache.headSha,
-              Date.now(),
+              now,
               cache.watchPending,
+              directory,
             ),
           catch: () => null,
         }).pipe(Effect.orElseSucceed(() => null));
@@ -340,7 +346,7 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
     }
   }
 
-  const fetchedAt = Date.now();
+  const fetchedAt = yield* Clock.currentTimeMillis;
   const checks = yield* gh
     .runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS])
     .pipe(
@@ -358,7 +364,8 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
     checks.length > 0
   ) {
     yield* Effect.tryPromise({
-      try: () => writeCheckStatusCache(identity, repo, pr, cache.headSha, checks, fetchedAt),
+      try: () =>
+        writeCheckStatusCache(identity, repo, pr, cache.headSha, checks, fetchedAt, directory),
       catch: () => undefined,
     }).pipe(Effect.orElseSucceed(() => undefined));
   }

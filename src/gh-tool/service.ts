@@ -226,13 +226,20 @@ export class GitHubService extends Context.Service<
 
             if (/rate limit|abuse detection|HTTP 429/i.test(result.stderr)) {
               const resource =
-                /graphql/i.test(result.stderr) || args.includes("graphql") ? "graphql" : "core";
-              const quota = yield* executeGh([
-                "api",
-                "rate_limit",
-                "--jq",
-                `.resources.${resource} | "reset time: \\(.reset | todateiso8601); remaining quota: \\(.remaining)"`,
-              ]).pipe(Effect.orElseSucceed(() => null));
+                args[0] === "api"
+                  ? args[1]?.replace(/^\//, "") === "graphql"
+                    ? "graphql"
+                    : args[1]?.replace(/^\//, "").startsWith("search/")
+                      ? "search"
+                      : "core"
+                  : undefined;
+              const quotaFilter =
+                resource === undefined
+                  ? '.resources | to_entries[] | "\\(.key): reset time: \\(.value.reset | todateiso8601); remaining quota: \\(.value.remaining)"'
+                  : `.resources.${resource} | "reset time: \\(.reset | todateiso8601); remaining quota: \\(.remaining)"`;
+              const quota = yield* executeGh(["api", "rate_limit", "--jq", quotaFilter]).pipe(
+                Effect.orElseSucceed(() => null),
+              );
               const detail =
                 quota?.exitCode === 0 && quota.stdout.trim()
                   ? quota.stdout.trim()

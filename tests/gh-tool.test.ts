@@ -32,6 +32,7 @@ import {
   GitHubNotFoundError,
   type GitHubTimeoutError,
 } from "#gh/errors";
+import { CheckStatusCacheDirectory } from "#gh/pr/check-status-cache";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
 import { ghEnvironment } from "#gh/environment";
@@ -52,6 +53,7 @@ import {
   createPR,
   editPR,
   draftPR,
+  fetchCheckResults,
   fetchChecksForCommand,
   fetchFailedChecks,
   mergePR,
@@ -352,7 +354,7 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
-  );
+  ).pipe(Layer.merge(Layer.succeed(CheckStatusCacheDirectory, undefined)));
 }
 
 const pendingReviewContent = () => ({
@@ -1347,7 +1349,7 @@ describe("workflow dispatch", () => {
 });
 
 describe("GitHubService.runGh() error mapping", () => {
-  for (const resource of ["core", "graphql"]) {
+  for (const resource of ["core", "graphql", "search"]) {
     it.effect(
       `looks up the ${resource} reset once and never replays a rate-limited command`,
       () => {
@@ -1367,7 +1369,7 @@ describe("GitHubService.runGh() error mapping", () => {
                     }
                   : {
                       stdout: "",
-                      stderr: `${resource === "graphql" ? "GraphQL: " : ""}API rate limit exceeded (HTTP 403)`,
+                      stderr: "API rate limit exceeded (HTTP 403)",
                       exitCode: 1,
                     },
               ),
@@ -1376,10 +1378,16 @@ describe("GitHubService.runGh() error mapping", () => {
         );
         return Effect.gen(function* () {
           const service = yield* GitHubService;
-          const error = yield* service.runGh(["pr", "view", "123"]).pipe(Effect.flip);
+          const endpoint =
+            resource === "graphql"
+              ? "graphql"
+              : resource === "search"
+                ? "search/issues"
+                : "repos/owner/repo";
+          const error = yield* service.runGh(["api", endpoint]).pipe(Effect.flip);
           expect(error.message).toContain("reset time: 2027-01-15T08:00:00Z; remaining quota: 0");
           expect(calls).toHaveLength(2);
-          expect(calls[0]).toEqual(["pr", "view", "123"]);
+          expect(calls[0]).toEqual(["api", endpoint]);
           expect(calls[1]?.slice(0, 3)).toEqual(["api", "rate_limit", "--jq"]);
           expect(calls[1]?.[3]).toContain(`.resources.${resource}`);
           expect(calls[1]?.[3]).toContain("\\(.reset | todateiso8601)");
@@ -5947,7 +5955,10 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const rawJobLogs = [
         "2025-01-01T00:00:00Z ##[group]Run lint",
-        ...Array.from({ length: 30 }, (_, index) => `2025-01-01T00:00:01Z setup output ${index}`),
+        ...Array.from(
+          { length: 24 },
+          (_, index) => `2025-01-01T00:00:01Z Error: ${index} ${"x".repeat(500)}`,
+        ),
         "2025-01-01T00:00:02Z AssertionError: lint failed hard",
         "2025-01-01T00:00:03Z ##[endgroup]",
       ].join("\n");
@@ -10344,3 +10355,45 @@ describe("PR creation safety", () => {
     }),
   );
 });
+
+it.effect("expires pending cache snapshots using TestClock", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-cache-clock-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    const previous = process.env["GH_TOKEN"];
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.env["GH_TOKEN"] = "cache-test-token";
+      }),
+      () =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env["GH_TOKEN"];
+          else process.env["GH_TOKEN"] = previous;
+        }),
+    );
+    let calls = 0;
+    const pending = [{ name: "Build", state: "PENDING", bucket: "pending", link: "run" }];
+    const success = [{ name: "Build", state: "SUCCESS", bucket: "pass", link: "run" }];
+    const layer = Layer.merge(
+      createMockGhLayer({
+        runGhJson: () => {
+          calls += 1;
+          return Effect.succeed(calls === 1 ? pending : success);
+        },
+      }),
+      Layer.succeed(CheckStatusCacheDirectory, directory),
+    );
+    yield* Effect.gen(function* () {
+      const options = { headSha: "clock-test", watchPending: true };
+      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
+      expect(calls).toBe(1);
+      yield* TestClock.adjust("1 second");
+      expect(yield* fetchCheckResults(123, options)).toEqual(success);
+      expect(calls).toBe(2);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.scoped),
+);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Console, Effect, Fiber, Layer } from "effect";
+import { Clock, Console, Effect, Fiber, Layer } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
@@ -117,9 +117,62 @@ afterEach(() => {
 });
 
 describe("GitHub API rate-limit retry", () => {
+  it.effect("refuses rate-limit waits above 60 seconds", () =>
+    Effect.gen(function* () {
+      const reset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 61;
+      routes.push({
+        match: /\/quota$/,
+        respond: () => ({
+          status: 403,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-reset": String(reset), "x-ratelimit-remaining": "0" },
+        }),
+      });
+      const fiber = yield* Effect.forkChild(githubApi({ path: "quota" }).pipe(Effect.result));
+      yield* TestClock.adjust("1 second");
+      expect(fiber.pollUnsafe()).not.toBeUndefined();
+      const error = yield* Fiber.join(fiber);
+      expect(error).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          message: expect.stringContaining("remaining quota: 0"),
+        },
+      });
+      expect(fetchCalls).toHaveLength(1);
+    }),
+  );
+
+  it.effect("honors retry-after before the primary reset", () =>
+    Effect.gen(function* () {
+      const reset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 3000;
+      let attempts = 0;
+      routes.push({
+        match: /\/secondary$/,
+        respond: () =>
+          ++attempts === 1
+            ? {
+                status: 403,
+                body: { message: "secondary rate limit" },
+                headers: {
+                  "retry-after": "2",
+                  "x-ratelimit-reset": String(reset),
+                  "x-ratelimit-remaining": "4999",
+                },
+              }
+            : { status: 200, body: { ok: true } },
+      });
+      const fiber = yield* Effect.forkChild(githubApi({ path: "secondary" }));
+      yield* TestClock.adjust("1 second");
+      expect(attempts).toBe(1);
+      yield* TestClock.adjust("2 seconds");
+      expect(attempts).toBe(2);
+      expect(yield* Fiber.join(fiber)).toMatchObject({ status: 200 });
+    }),
+  );
+
   it.effect("waits for the reset on GET and never retries a mutation", () =>
     Effect.gen(function* () {
-      const reset = Math.floor(Date.now() / 1000) + 2;
+      const reset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 2;
       let reads = 0;
       routes.push({
         match: /\/repos\/test-owner\/test-repo\/pulls\/123$/,
@@ -159,7 +212,7 @@ describe("GitHub API rate-limit retry", () => {
       expect(error._tag).toBe("GitHubCommandError");
       expect(fetchCalls.filter((call) => call.method === "POST")).toHaveLength(1);
 
-      const secondaryReset = Math.floor(Date.now() / 1000) + 1;
+      const secondaryReset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 1;
       let limitedReads = 0;
       routes.push({
         match: /\/repos\/test-owner\/test-repo\/rate-limited\/123$/,
