@@ -2101,8 +2101,7 @@ describe("Workflow log diagnosis", () => {
         { step: "Checkout", message: "From https://github.com/example/repo" },
         {
           step: "Checkout",
-          message:
-            "* [new branch] fix/core-480-agent-tooling-timeout -> origin/fix/core-480-agent-tooling-timeout",
+          message: "* [new branch] fix/tooling-timeout -> origin/fix/tooling-timeout",
         },
       ]).firstRelevantError,
     ).toBeNull();
