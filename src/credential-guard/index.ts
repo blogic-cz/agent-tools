@@ -1174,6 +1174,24 @@ function hasProvedPythonCompileInvocation(command: string): boolean {
   );
 }
 
+/** Only literal navigation may precede an unqualified writer; shell state can change what runs. */
+function isLiteralWriterHeader(command: string, pipelines: string[][][]): boolean {
+  const commands = pipelines.flat();
+  const writer = commands.at(-1);
+  return (
+    !command.includes("\r") &&
+    pipelines.at(-1)?.length === 1 &&
+    (writer?.[0] === "cat" || writer?.[0] === "tee") &&
+    commands
+      .slice(0, -1)
+      .every(
+        (words) =>
+          (words[0] === "cd" && isStaticNavigationCommand(words)) ||
+          (words.length === 1 && words[0] === "pwd"),
+      )
+  );
+}
+
 /** Move a complete, literal Python stdin program into the existing inline argv boundary. */
 function normalizeProgramHeredocs(command: string, depth = 0): string {
   if (depth >= 32 || new TextEncoder().encode(command).byteLength > 65_536) return command;
@@ -1187,7 +1205,7 @@ function normalizeProgramHeredocs(command: string, depth = 0): string {
   const name = argv[0]?.split("/").at(-1);
   // A quoted delimiter disables expansion, so a first cat/tee body is data too.
   if (
-    (depth > 0 || heredoc.quoted) &&
+    (depth > 0 || (heredoc.quoted && isLiteralWriterHeader(command, parsed.pipelines))) &&
     ((name === "cat" && argv.slice(1).every((arg) => arg === "--" || !arg.startsWith("-"))) ||
       (name === "tee" &&
         argv

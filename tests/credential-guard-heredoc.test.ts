@@ -14,6 +14,8 @@ function refusal(command: string): string | null {
 const quotedNote = (text: string, delimiter = "'EOF'") =>
   `cat >> notes.md <<${delimiter}\n${text}\nEOF`;
 
+const pollingText = "sleep 120; kubectl get pods";
+
 describe("credential guard heredoc bodies", () => {
   it.each([
     ["sleep text", quotedNote("Then sleep 120 and rerun bun agent-tools-gh pr checks --pr 7.")],
@@ -28,6 +30,7 @@ describe("credential guard heredoc bodies", () => {
       `${quotedNote("printenv; sleep 120; kubectl get pods")}\ngit status`,
     ],
     ["cli name text", quotedNote("x; gh pr merge 1; kubectl delete pod y")],
+    ["navigation header", `cd docs && pwd; ${quotedNote(`printenv; ${pollingText}`)}`],
   ])("allows a quoted heredoc with %s as data", (_label, command) => {
     expect(refusal(command)).toBeNull();
   });
@@ -68,6 +71,20 @@ describe("credential guard heredoc bodies", () => {
       `${quotedNote("notes")}\nsleep 120; bun agent-tools-gh pr checks --pr 7`,
       "Sleep-polling",
     ],
+    ["export before writer", "export PATH=/tmp/x\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["assignment before writer", "PATH=/tmp/x\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["alias before writer", "alias cat=sh\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    [
+      "shopt before writer",
+      "shopt -s expand_aliases\ncat <<'EOF'\nprintenv\nEOF",
+      "Command blocked",
+    ],
+    ["enable before writer", "enable -n cat\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["true before writer", "true; cat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["path-qualified writer", `/tmp/x/${quotedNote(pollingText)}`, "Sleep-polling"],
+    ["tee -p", `tee -p notes.md <<'EOF'\n${pollingText}\nEOF`, "Sleep-polling"],
+    ["tee -i", `tee -i notes.md <<'EOF'\n${pollingText}\nEOF`, "Sleep-polling"],
+    ["CRLF opening line", `cat >> notes.md <<'EOF'\r\n${pollingText}\r\nEOF`, "Sleep-polling"],
   ])("still refuses %s", (_label, command, reason) => {
     expect(refusal(command)).toContain(reason);
   });
