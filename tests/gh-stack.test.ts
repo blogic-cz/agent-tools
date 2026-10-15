@@ -203,6 +203,29 @@ describe("GitHub API rate-limit retry", () => {
   );
 });
 
+describe("rate-limit error details", () => {
+  it.effect("includes reset time and remaining quota from HTTP headers", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/quota$/,
+        method: "POST",
+        respond: () => ({
+          status: 403,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-reset": "1800000000", "x-ratelimit-remaining": "0" },
+        }),
+      });
+      const error = yield* githubApi({
+        path: "repos/test-owner/test-repo/quota",
+        method: "POST",
+      }).pipe(Effect.flip);
+      expect(error.message).toContain("reset time: 2027-01-15T08:00:00.000Z");
+      expect(error.message).toContain("remaining quota: 0");
+      expect(fetchCalls).toHaveLength(1);
+    }),
+  );
+});
+
 describe("pr stack view", () => {
   it.effect("reports an unstacked PR instead of inventing a stack", () =>
     Effect.gen(function* () {

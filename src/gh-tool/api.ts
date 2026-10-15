@@ -157,7 +157,9 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
         )));
 
   const error = new GitHubCommandError({
-    message: apiErrorMessage(parsed, response.status),
+    message: rateLimit
+      ? `${apiErrorMessage(parsed, response.status)}; reset time: ${resetDelay === undefined ? "unavailable" : new Date(resetSeconds * 1000).toISOString()}; remaining quota: ${response.headers.get("x-ratelimit-remaining") ?? "unavailable"}`
+      : apiErrorMessage(parsed, response.status),
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,

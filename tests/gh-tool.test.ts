@@ -1346,6 +1346,55 @@ describe("workflow dispatch", () => {
 });
 
 describe("GitHubService.runGh() error mapping", () => {
+  for (const resource of ["core", "graphql"]) {
+    it.effect(
+      `looks up the ${resource} reset once and never replays a rate-limited command`,
+      () => {
+        const calls: string[][] = [];
+        const spawner = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            if (command._tag !== "StandardCommand") return Effect.die("unexpected command");
+            calls.push([...command.args]);
+            return Effect.succeed(
+              createMockProcess(
+                command.args[1] === "rate_limit"
+                  ? {
+                      stdout: "reset time: 2027-01-15T08:00:00Z; remaining quota: 0",
+                      stderr: "",
+                      exitCode: 0,
+                    }
+                  : {
+                      stdout: "",
+                      stderr: `${resource === "graphql" ? "GraphQL: " : ""}API rate limit exceeded (HTTP 403)`,
+                      exitCode: 1,
+                    },
+              ),
+            );
+          }),
+        );
+        return Effect.gen(function* () {
+          const service = yield* GitHubService;
+          const error = yield* service.runGh(["pr", "view", "123"]).pipe(Effect.flip);
+          expect(error.message).toContain("reset time: 2027-01-15T08:00:00Z; remaining quota: 0");
+          expect(calls).toHaveLength(2);
+          expect(calls[0]).toEqual(["pr", "view", "123"]);
+          expect(calls[1]?.slice(0, 3)).toEqual(["api", "rate_limit", "--jq"]);
+          expect(calls[1]?.[3]).toContain(`.resources.${resource}`);
+          expect(calls[1]?.[3]).toContain("\\(.reset | todateiso8601)");
+        }).pipe(
+          Effect.provide(GitHubService.layer),
+          Effect.provide(spawner),
+          Effect.provide(
+            Layer.succeed(ConfigService, {
+              github: { default: { owner: "selected", repo: "repo" } },
+            }),
+          ),
+        );
+      },
+    );
+  }
+
   it.effect("gives gh only its explicit environment and overrides the selected repository", () => {
     const originalEnvironment = process.env;
     const environment = {
