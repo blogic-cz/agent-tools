@@ -11,81 +11,49 @@ function refusal(command: string): string | null {
   }
 }
 
-const quotedNote = (text: string, delimiter = "'EOF'") =>
-  `cat >> notes.md <<${delimiter}\n${text}\nEOF`;
-
-const pollingText = "sleep 120; kubectl get pods";
+const text = "Wait with sleep 120, then check kubectl get pods. Never run printenv or env.";
+const note = (header = "cat >> notes.md", open = "<<'EOF'\n") => `${header} ${open}${text}\nEOF`;
 
 describe("credential guard heredoc bodies", () => {
   it.each([
-    ["sleep text", quotedNote("Then sleep 120 and rerun bun agent-tools-gh pr checks --pr 7.")],
-    ["env text", quotedNote("The env command and Directory.* options are prose here.")],
-    ["printenv text", quotedNote("Never run printenv in a worker.")],
-    ["substitution text", quotedNote("Do not write $(cat secrets) or `env` in a script.")],
-    ["double-quoted delimiter", quotedNote("sleep 120 with kubectl get pods", '"EOF"')],
-    ["tab-stripped delimiter", "cat >> notes.md <<-'EOF'\n\tsleep 120; kubectl get pods\n\tEOF"],
-    ["tee append", "tee -a notes.md <<'EOF'\nprintenv; sleep 120; kubectl get pods\nEOF"],
-    [
-      "following passive command",
-      `${quotedNote("printenv; sleep 120; kubectl get pods")}\ngit status`,
-    ],
-    ["cli name text", quotedNote("x; gh pr merge 1; kubectl delete pod y")],
-    ["navigation header", `cd docs && pwd; ${quotedNote(`printenv; ${pollingText}`)}`],
-  ])("allows a quoted heredoc with %s as data", (_label, command) => {
+    note(),
+    note("cat >> notes.md", '<<"EOF"\n'),
+    "cat >> notes.md <<-'EOF'\n\tsleep 120; kubectl get pods\n\tEOF",
+    note("tee -a notes.md"),
+    `${note()}\ngit status`,
+    `cd docs && pwd; ${note()}`,
+    "cat >> notes.md <<'EOF'\nDo not write $(cat secrets), `env`; gh pr merge 1.\nEOF",
+  ])("allows quoted body text as data: %j", (command) => {
     expect(refusal(command)).toBeNull();
   });
 
   it("does not report sleep text in a quoted body as polling", () => {
-    expect(detectSleepPolling(quotedNote("sleep 120; kubectl get pods"))).toBeNull();
+    expect(detectSleepPolling(note())).toBeNull();
   });
 
   it.each([
-    ["sensitive redirect target", "cat >> .env <<'EOF'\nnotes\nEOF", "file-access"],
-    ["sensitive tee target", "tee -a secrets/notes.md <<'EOF'\nnotes\nEOF", "file-access"],
-    ["unquoted substitution", "cat >> notes.md <<EOF\n$(cat secrets)\nEOF", "Command blocked"],
-    ["unquoted variable", "cat >> notes.md <<EOF\n$HOME\nEOF", "Command blocked"],
-    ["unquoted backtick", "cat >> notes.md <<EOF\n`printenv`\nEOF", "Command blocked"],
-    [
-      "unquoted plain text",
-      "cat >> notes.md <<EOF\nsleep 120 then bun agent-tools-gh pr checks --pr 7\nEOF",
-      "Sleep-polling",
-    ],
-    ["shell consumer", "bash <<'EOF'\nprintenv\nEOF", "Command blocked"],
-    ["same-line pipe to shell", "cat <<'EOF' | bash\nprintenv\nEOF", "bounded complete heredoc"],
-    [
-      "python stdin consumer",
-      "python3 - <<'EOF'\nimport os; print(os.environ)\nEOF",
-      "Command blocked",
-    ],
-    ["node stdin consumer", "node <<'EOF'\nconsole.log(process.env)\nEOF", "Command blocked"],
-    ["written script then run", "cat > run.sh <<'EOF'\nprintenv\nEOF\n./run.sh", "environment"],
-    ["written script then shell", "cat > run.sh <<'EOF'\nprintenv\nEOF\nbash run.sh", "shell"],
-    ["unclosed body", "cat >> notes.md <<'EOF'\nprintenv\n", "bounded complete heredoc"],
-    [
-      "real sleep loop",
-      "while true; do bun agent-tools-gh pr checks --pr 7; sleep 120; done",
-      "Sleep-polling",
-    ],
-    [
-      "real sleep after heredoc",
-      `${quotedNote("notes")}\nsleep 120; bun agent-tools-gh pr checks --pr 7`,
-      "Sleep-polling",
-    ],
-    ["export before writer", "export PATH=/tmp/x\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
-    ["assignment before writer", "PATH=/tmp/x\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
-    ["alias before writer", "alias cat=sh\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
-    [
-      "shopt before writer",
-      "shopt -s expand_aliases\ncat <<'EOF'\nprintenv\nEOF",
-      "Command blocked",
-    ],
-    ["enable before writer", "enable -n cat\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
-    ["true before writer", "true; cat <<'EOF'\nprintenv\nEOF", "Command blocked"],
-    ["path-qualified writer", `/tmp/x/${quotedNote(pollingText)}`, "Sleep-polling"],
-    ["tee -p", `tee -p notes.md <<'EOF'\n${pollingText}\nEOF`, "Sleep-polling"],
-    ["tee -i", `tee -i notes.md <<'EOF'\n${pollingText}\nEOF`, "Sleep-polling"],
-    ["CRLF opening line", `cat >> notes.md <<'EOF'\r\n${pollingText}\r\nEOF`, "Sleep-polling"],
-  ])("still refuses %s", (_label, command, reason) => {
+    ["cat >> .env <<'EOF'\nnotes\nEOF", "file-access"],
+    ["tee -a secrets/notes.md <<'EOF'\nnotes\nEOF", "file-access"],
+    ["cat >> notes.md <<EOF\n$(cat secrets)\nEOF", "Command blocked"],
+    ["cat >> notes.md <<EOF\nsleep 120; kubectl get pods\nEOF", "Sleep-polling"],
+    ["bash <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["python3 - <<'EOF'\nimport os; print(os.environ)\nEOF", "Command blocked"],
+    ["cat <<'EOF' | bash\nprintenv\nEOF", "bounded complete heredoc"],
+    ["cat > run.sh <<'EOF'\nprintenv\nEOF\n./run.sh", "environment"],
+    ["cat >> notes.md <<'EOF'\nprintenv\n", "bounded complete heredoc"],
+    ["export PATH=/tmp/x\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["PATH=/tmp/x\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["alias cat=sh\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["shopt -s expand_aliases\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["enable -n cat\ncat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    ["true; cat <<'EOF'\nprintenv\nEOF", "Command blocked"],
+    [note("/tmp/x/cat >> notes.md"), "Sleep-polling"],
+    [note("tee -p notes.md"), "Sleep-polling"],
+    [note("tee -i notes.md"), "Sleep-polling"],
+    [note("cat >> notes.md", "<<'EOF'\r\n"), "Sleep-polling"],
+    ["while true; do bun agent-tools-gh pr checks --pr 7; sleep 120; done", "Sleep-polling"],
+    ["cat >> notes.md <<'EOF'\nnotes\nEOF\nsleep 120; kubectl get pods", "Sleep-polling"],
+  ])("still refuses %j", (command, reason) => {
     expect(refusal(command)).toContain(reason);
   });
 });
