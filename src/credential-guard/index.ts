@@ -1185,8 +1185,9 @@ function normalizeProgramHeredocs(command: string, depth = 0): string {
   const last = parsed.pipelines.at(-1)?.at(-1);
   const argv = last ? unwrapStaticCommand(last) : [];
   const name = argv[0]?.split("/").at(-1);
+  // A quoted delimiter disables expansion, so a first cat/tee body is data too.
   if (
-    depth > 0 &&
+    (depth > 0 || heredoc.quoted) &&
     ((name === "cat" && argv.slice(1).every((arg) => arg === "--" || !arg.startsWith("-"))) ||
       (name === "tee" &&
         argv
@@ -3896,6 +3897,7 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
   }
 
   function detectSleepPolling(command: string): string | null {
+    command = normalizeProgramHeredocs(command);
     if (!/\bsleep\s+\d+/.test(command)) return null;
 
     for (const { pattern, suggestion } of DEFAULT_POLLING_DETECTION_RULES) {
