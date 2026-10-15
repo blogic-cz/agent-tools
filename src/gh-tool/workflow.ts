@@ -567,7 +567,15 @@ const normalizeFingerprint = (message: string) =>
     .slice(0, 240);
 
 export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis => {
-  const lines = entries.map((entry) => entry.message);
+  const fetchProgress =
+    /^(?:\s*(?:\*\s+\[new branch\]|\[new branch\]|From\s+\S+|\*\s+\[new tag\]|\s*->\s+origin\/)|\s*\+?git fetch\b|.*refs\/(?:heads|remotes)\/)/i;
+  const lines = entries
+    .filter(
+      ({ message }) =>
+        /fatal:|error:|failed|exception|could not resolve|connection|timed out/i.test(message) ||
+        !fetchProgress.test(message),
+    )
+    .map((entry) => entry.message);
   const text = lines.join("\n");
   const find = (pattern: RegExp) => lines.find((line) => pattern.test(line)) ?? null;
   const testsStarted =

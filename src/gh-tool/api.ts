@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { retryTransient } from "#shared/retry-transient";
 
@@ -68,6 +68,8 @@ export type GitHubApiRequest = {
 };
 
 const MAX_API_RETRIES = 2;
+const MAX_RATE_LIMIT_WAIT_MS = 60_000;
+const rateLimitRetryDelays = new WeakMap<GitHubCommandError, number>();
 
 // Traverse only parsed JSON, never the caller's getters or toJSON hooks.
 const decodedBodyText = (value: unknown): string => {
@@ -142,13 +144,43 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
     });
   }
 
-  return yield* new GitHubCommandError({
-    message: apiErrorMessage(parsed, response.status),
+  const now = yield* Clock.currentTimeMillis;
+  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
+  const resetDelay =
+    Number.isFinite(resetSeconds) && resetSeconds > 0
+      ? Math.max(0, resetSeconds * 1000 - now + 1000)
+      : undefined;
+  const retryAfter = response.headers.get("retry-after");
+  const retryAfterMs =
+    retryAfter === null
+      ? undefined
+      : /^\d+(?:\.\d+)?$/.test(retryAfter)
+        ? Number(retryAfter) * 1000
+        : Date.parse(retryAfter) - now;
+  const waitMs =
+    retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+      ? retryAfterMs
+      : resetDelay;
+  const canWait = waitMs !== undefined && waitMs <= MAX_RATE_LIMIT_WAIT_MS;
+  const rateLimit =
+    response.status === 429 ||
+    (response.status === 403 &&
+      (response.headers.get("x-ratelimit-remaining") === "0" ||
+        /rate limit|secondary rate limit|abuse detection/i.test(
+          apiErrorMessage(parsed, response.status),
+        )));
+
+  const error = new GitHubCommandError({
+    message: rateLimit
+      ? `${apiErrorMessage(parsed, response.status)}; reset time: ${resetDelay === undefined ? "unavailable" : new Date(resetSeconds * 1000).toISOString()}; remaining quota: ${response.headers.get("x-ratelimit-remaining") ?? "unavailable"}`
+      : apiErrorMessage(parsed, response.status),
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,
-    ...(response.status >= 500 ? { retryable: true } : {}),
+    ...(response.status >= 500 || (rateLimit && canWait) ? { retryable: true } : {}),
   });
+  if (rateLimit && canWait && waitMs !== undefined) rateLimitRetryDelays.set(error, waitMs);
+  return yield* error;
 });
 
 // Mirrors GitHubService.runGh: replay a transient failure, and only for an idempotent read.
@@ -190,6 +222,10 @@ export const githubApi = <T>(
       isTransient: (error) =>
         error._tag === "GitHubCommandError" && error.retryable === true && request.method === "GET",
       maxRetries: MAX_API_RETRIES,
+      retryDelayMs: (error, _attempt, fallbackMs) =>
+        error instanceof GitHubCommandError
+          ? Math.max(fallbackMs, rateLimitRetryDelays.get(error) ?? 0)
+          : fallbackMs,
     });
   });
 

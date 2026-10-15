@@ -1,4 +1,5 @@
 import { Clock, Console, Duration, Effect, Option, Result } from "effect";
+import { createHash } from "node:crypto";
 
 import type {
   BranchPRDetail,
@@ -17,10 +18,11 @@ import type {
 } from "#gh/types";
 
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
-import { GitHubCommandError, GitHubMergeError } from "#gh/errors";
+import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import { resolveGitHubToken } from "#gh/api";
 import type { GhResult } from "#gh/service";
-import { logText } from "#shared";
+import { logFormatted, logText } from "#shared";
 import { redactSensitiveText } from "#shared/content-security";
 
 import type { ButStatusJson, PRViewJsonResult } from "./helpers";
@@ -37,6 +39,11 @@ import {
   parseRawJobLogs,
   readJobLogApi,
 } from "#gh/workflow";
+import {
+  CheckStatusCacheDirectory,
+  readCheckStatusCache,
+  writeCheckStatusCache,
+} from "./check-status-cache";
 
 const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
@@ -219,7 +226,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
       "view",
       String(runId),
       "--json",
-      "databaseId,attempt,url,workflowName,status,conclusion,jobs",
+      "databaseId,attempt,headSha,url,workflowName,status,conclusion,jobs",
     ])
     .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
 
@@ -245,6 +252,7 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
   const context: FailedCheckRunContext = {
     runId: run.databaseId,
     attempt: run.attempt ?? null,
+    headSha: run.headSha ?? null,
     url: run.url,
     workflowName: run.workflowName,
     status: run.status,
@@ -267,7 +275,35 @@ export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 const CHECK_REGISTRATION_POLL_SECONDS = 5;
 const CHECK_REGISTRATION_GRACE_SECONDS = 60;
 
-export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr: number | null) {
+const summarizeFailedStepEntries = (entries: Array<{ step: string; message: string }>) => {
+  const selected = entries
+    .map((entry, index) => ({
+      entry,
+      index,
+      rank: /assert|expected|received|actual|failed|failure|error|exception|fatal/i.test(
+        entry.message,
+      )
+        ? 0
+        : 1,
+    }))
+    .toSorted((a, b) => a.rank - b.rank || b.index - a.index)
+    .slice(0, 20)
+    .toSorted((a, b) => a.index - b.index);
+  const kept: Array<{ step: string; message: string }> = [];
+  for (const { entry } of selected.toReversed()) {
+    const clipped = { step: entry.step.slice(0, 80), message: entry.message.slice(0, 150) };
+    if (formatLogEntries([clipped, ...kept]).length <= 3_900) kept.unshift(clipped);
+  }
+  let output = formatLogEntries(kept);
+  if (kept.length < entries.length)
+    output += `\n… ${entries.length - kept.length} log lines omitted`;
+  return output;
+};
+
+export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
+  pr: number | null,
+  cache?: { headSha: string; watchPending?: boolean },
+) {
   const gh = yield* GitHubService;
 
   const args = ["pr", "checks"];
@@ -275,7 +311,43 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr
     args.push(String(pr));
   }
 
-  return yield* gh
+  const directory = yield* CheckStatusCacheDirectory;
+  const now = yield* Clock.currentTimeMillis;
+  let repo: string | null = null;
+  let identity: string | null = null;
+  if (cache !== undefined && pr !== null && directory !== undefined) {
+    const repoInfo = yield* gh.getRepoInfo().pipe(Effect.result);
+    const token = yield* resolveGitHubToken().pipe(Effect.result);
+    if (Result.isSuccess(repoInfo) && Result.isSuccess(token)) {
+      const host = yield* Effect.try({
+        try: () => new URL(repoInfo.success.url).host,
+        catch: () => "",
+      }).pipe(Effect.orElseSucceed(() => ""));
+      if (host.length > 0) {
+        const cacheRepo = `${host}/${repoInfo.success.owner}/${repoInfo.success.name}`;
+        const cacheIdentity = createHash("sha256").update(token.success).digest("hex");
+        const cached = yield* Effect.tryPromise({
+          try: () =>
+            readCheckStatusCache(
+              cacheIdentity,
+              cacheRepo,
+              pr,
+              cache.headSha,
+              now,
+              cache.watchPending,
+              directory,
+            ),
+          catch: () => null,
+        }).pipe(Effect.orElseSucceed(() => null));
+        if (cached !== null) return cached;
+        repo = cacheRepo;
+        identity = cacheIdentity;
+      }
+    }
+  }
+
+  const fetchedAt = yield* Clock.currentTimeMillis;
+  const checks = yield* gh
     .runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS])
     .pipe(
       Effect.catchTag("GitHubCommandError", (error) =>
@@ -284,6 +356,20 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (pr
           : Effect.fail(error),
       ),
     );
+  if (
+    cache !== undefined &&
+    pr !== null &&
+    repo !== null &&
+    identity !== null &&
+    checks.length > 0
+  ) {
+    yield* Effect.tryPromise({
+      try: () =>
+        writeCheckStatusCache(identity, repo, pr, cache.headSha, checks, fetchedAt, directory),
+      catch: () => undefined,
+    }).pipe(Effect.orElseSucceed(() => undefined));
+  }
+  return checks;
 });
 
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
@@ -291,6 +377,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   checks: CheckResult[],
   options: {
     withLogs: boolean;
+    fullLogs?: boolean;
     evidence?: { headSha: string | null; baseSha: string | null } | null;
   } = { withLogs: false },
 ) {
@@ -354,12 +441,20 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         if (failedStepLogs === null || !("entries" in failedStepLogs) || !failedStepLogs.entries) {
           return detail;
         }
-        const formatted = formatLogEntries(failedStepLogs.entries);
+        const formatted = options.fullLogs
+          ? formatLogEntries(failedStepLogs.entries)
+          : summarizeFailedStepEntries(failedStepLogs.entries);
         return formatted.length > 0
           ? {
               ...detail,
               failedStepLogs: formatted,
-              diagnosis: diagnoseLogEntries(failedStepLogs.entries),
+              ...(run?.headSha !== null &&
+              run?.headSha !== undefined &&
+              evidence?.headSha !== null &&
+              evidence?.headSha !== undefined &&
+              run.headSha !== evidence.headSha
+                ? {}
+                : { diagnosis: diagnoseLogEntries(failedStepLogs.entries) }),
             }
           : detail;
       }),
@@ -375,10 +470,12 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         }
 
         const commands = [`bun agent-tools-gh workflow view --run ${check.runId}`];
-        const firstFailedJob = check.run?.failedJobs[0];
-        if (firstFailedJob) {
+        const matchedJob = check.run
+          ? matchFailedJobForCheck(check.name, check.run.failedJobs)
+          : null;
+        if (matchedJob) {
           commands.push(
-            `bun agent-tools-gh workflow job-logs --run ${check.runId} --job ${JSON.stringify(firstFailedJob.name)} --failed-steps-only`,
+            `bun agent-tools-gh workflow job-logs --run ${check.runId} --job ${JSON.stringify(matchedJob.name)} --failed-steps-only`,
           );
         }
 
@@ -396,6 +493,20 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
       : pendingChecks.length > 0
         ? `Detected ${failedChecks.length} failed check(s) while ${pendingChecks.length} check(s) are still running.`
         : `Detected ${failedChecks.length} failed check(s).`;
+
+  let remainingLogCharacters = 16_000;
+  const reportFailedChecks = options.fullLogs
+    ? enrichedFailedChecks
+    : enrichedFailedChecks.map((check) => {
+        if (check.failedStepLogs === undefined) return check;
+        const limit = Math.max(0, remainingLogCharacters);
+        remainingLogCharacters -= check.failedStepLogs.length;
+        return check.failedStepLogs.length <= limit
+          ? check
+          : Object.assign({}, check, {
+              failedStepLogs: `${check.failedStepLogs.slice(0, Math.max(0, limit - 40))}\n… report log summary omitted`,
+            });
+      });
 
   const hint =
     failedChecks.length === 0
@@ -416,7 +527,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
       pending: pendingChecks.length,
       passed: passedChecks.length,
     },
-    failedChecks: enrichedFailedChecks,
+    failedChecks: reportFailedChecks,
     pendingChecks,
     hint,
     nextCommands,
@@ -1431,13 +1542,8 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       watchArgs.push("--fail-fast");
     }
 
-    // Block for the caller's requested --timeout (no artificial cap — blocking isn't the problem;
-    // --timeout is validated >= 1s at the CLI boundary). On timeout return a snapshot, never
-    // nothing — that was the actual token-wasting bug.
-    // A push registers its checks a moment after the ref lands, and `gh pr checks --watch`
-    // exits non-zero in that window. A watch was asked to wait, so keep waiting: the outer
-    // timeout still bounds it, and a PR that genuinely has no checks returns an empty
-    // snapshot at that deadline rather than an error.
+    // A push can register checks after the ref lands. Wait through that window
+    // within the caller's timeout, then report the final snapshot.
     let watchResult: GhResult | null = null;
     let registered = false;
     let graceExpired = false;
@@ -1488,12 +1594,14 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
           `likely dropped, and re-watching will find nothing again — dispatch them on the PR ` +
           `head instead:\n   agent-tools-gh pr trigger-checks --pr ${prRef} --workflow <file.yml>`,
       );
-    } else if (!quiet && watchOutcome === null && results.some((c) => c.bucket === "pending")) {
-      const pending = results.filter((c) => c.bucket === "pending").length;
-      yield* Console.warn(
-        `ℹ️  Watch timed out after ${timeoutSeconds}s; ${pending} check(s) still pending (snapshot returned). ` +
-          `Re-run to keep watching:\n   ${buildChecksCommand(pr, true)}`,
-      );
+    }
+    if (watchOutcome === null && results.some((check) => check.bucket === "pending")) {
+      const pending = results.filter((check) => check.bucket === "pending").length;
+      yield* logFormatted(results, quiet ? "json" : "toon");
+      return yield* new GitHubTimeoutError({
+        message: `Watch timed out, ${pending} pending after ${timeoutSeconds}s. This is not a CI verdict.`,
+        timeoutMs: timeoutSeconds * 1000,
+      });
     }
     return results;
   }
@@ -1591,6 +1699,7 @@ export const collectWithStableState = <S, A, E1, R1, E2, R2>(
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   pr: number | null,
   withLogs = false,
+  fullLogs = false,
 ) {
   const initial = yield* viewPR(pr);
   const snapshot = yield* collectWithStableState(
@@ -1604,7 +1713,8 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   );
   if (snapshot !== null) {
     return yield* buildFailedChecksReport(snapshot.state.number, snapshot.value, {
-      withLogs,
+      withLogs: withLogs || fullLogs,
+      fullLogs,
       evidence: { headSha: snapshot.state.headSha, baseSha: snapshot.state.baseSha },
     });
   }
@@ -1710,7 +1820,14 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
       const initial = yield* watchPRState(pr);
       const stableResult = yield* collectWithStableState(
         initial,
-        () => requireDeadline.pipe(Effect.andThen(fetchCheckResults(pr))),
+        (state) =>
+          requireDeadline.pipe(
+            Effect.andThen(
+              state.headRefOid
+                ? fetchCheckResults(pr, { headSha: state.headRefOid, watchPending: true })
+                : fetchCheckResults(pr),
+            ),
+          ),
         () => requireDeadline.pipe(Effect.andThen(watchPRState(pr))),
         (before, after) => before.headRefOid === after.headRefOid && before.state === after.state,
       ).pipe(Effect.result);
@@ -1769,7 +1886,13 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
             timedOut = true;
             break;
           }
-          const state = yield* snapshot(number);
+          const remainingMs = Math.max(1, deadline - Number(yield* Clock.currentTimeMillis));
+          const state = yield* snapshot(number).pipe(
+            Effect.timeoutOrElse({
+              duration: remainingMs,
+              orElse: () => Effect.succeed("timeout" as const),
+            }),
+          );
           if (state === "timeout") {
             timedOut = true;
             break;
@@ -1869,12 +1992,27 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
       }),
     step: () => undefined,
   });
+  const watcherTimedOut = terminal.size < prs.length;
   yield* emit({
     type: "watcher_terminal",
     repo: `${repo.owner}/${repo.name}`,
-    status: terminal.size === prs.length ? "terminal" : "timeout",
+    status: watcherTimedOut ? "timeout" : "terminal",
     terminal: [...terminal].toSorted((a, b) => a - b),
+    ...(watcherTimedOut
+      ? {
+          verdict: null,
+          message: `Watch timed out, ${prs.length - terminal.size} pending. This is not a CI verdict.`,
+          timeoutSeconds: options.timeoutSeconds,
+          pending: prs.filter((number) => !terminal.has(number)).toSorted((a, b) => a - b),
+        }
+      : {}),
   });
+  if (watcherTimedOut) {
+    return yield* new GitHubTimeoutError({
+      message: `Watch timed out, ${prs.length - terminal.size} pending. This is not a CI verdict.`,
+      timeoutMs: options.timeoutSeconds * 1000,
+    });
+  }
 });
 
 type RerunDiscovery = RerunCheckAttempt & { status?: string };

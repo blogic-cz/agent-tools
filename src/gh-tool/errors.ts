@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Runtime, Schema } from "effect";
 
 export class GitHubCommandError extends Schema.TaggedError<GitHubCommandError>()(
   "GitHubCommandError",
@@ -55,7 +55,9 @@ export class GitHubTimeoutError extends Schema.TaggedError<GitHubTimeoutError>()
     nextCommand: Schema.optionalKey(Schema.String),
     retryable: Schema.optionalKey(Schema.Boolean),
   },
-) {}
+) {
+  readonly [Runtime.errorExitCode] = 124;
+}
 
 export type GitHubServiceError =
   | GitHubCommandError

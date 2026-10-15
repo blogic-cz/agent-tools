@@ -224,6 +224,35 @@ export class GitHubService extends Context.Service<
               });
             }
 
+            if (/rate limit|abuse detection|HTTP 429/i.test(result.stderr)) {
+              const resource =
+                args[0] === "api"
+                  ? args[1]?.replace(/^\//, "") === "graphql"
+                    ? "graphql"
+                    : args[1]?.replace(/^\//, "").startsWith("search/")
+                      ? "search"
+                      : "core"
+                  : undefined;
+              const quotaFilter =
+                resource === undefined
+                  ? '.resources | to_entries[] | "\\(.key): reset time: \\(.value.reset | todateiso8601); remaining quota: \\(.value.remaining)"'
+                  : `.resources.${resource} | "reset time: \\(.reset | todateiso8601); remaining quota: \\(.remaining)"`;
+              const quota = yield* executeGh(["api", "rate_limit", "--jq", quotaFilter]).pipe(
+                Effect.orElseSucceed(() => null),
+              );
+              const detail =
+                quota?.exitCode === 0 && quota.stdout.trim()
+                  ? quota.stdout.trim()
+                  : "reset time: unavailable; remaining quota: unavailable (quota lookup failed)";
+              return yield* new GitHubCommandError({
+                message: `${result.stderr.trim()}; ${detail}`,
+                command: `gh ${args.join(" ")}`,
+                exitCode: result.exitCode,
+                stderr: result.stderr,
+                hint: "Wait until the quota resets before you retry. The failed command was not replayed.",
+              });
+            }
+
             // Transient network/5xx — flag retryable so the wrapper below can replay safe reads.
             if (NETWORK_ERROR_RE.test(result.stderr)) {
               return yield* new GitHubCommandError({

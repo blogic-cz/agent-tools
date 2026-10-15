@@ -30,7 +30,9 @@ import {
   GitHubCommandError,
   GitHubMergeError,
   GitHubNotFoundError,
+  type GitHubTimeoutError,
 } from "#gh/errors";
+import { CheckStatusCacheDirectory } from "#gh/pr/check-status-cache";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
 import { ghEnvironment } from "#gh/environment";
@@ -51,6 +53,7 @@ import {
   createPR,
   editPR,
   draftPR,
+  fetchCheckResults,
   fetchChecksForCommand,
   fetchFailedChecks,
   mergePR,
@@ -104,6 +107,7 @@ import {
   prCreateCommand,
   prEditCommand,
   prMergeCommand,
+  prWatchCommand,
   classifyReviewTriage,
   fetchCurrentComments,
   fetchCurrentFeedback,
@@ -350,7 +354,7 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
-  );
+  ).pipe(Layer.merge(Layer.succeed(CheckStatusCacheDirectory, undefined)));
 }
 
 const pendingReviewContent = () => ({
@@ -1345,6 +1349,61 @@ describe("workflow dispatch", () => {
 });
 
 describe("GitHubService.runGh() error mapping", () => {
+  for (const resource of ["core", "graphql", "search"]) {
+    it.effect(
+      `looks up the ${resource} reset once and never replays a rate-limited command`,
+      () => {
+        const calls: string[][] = [];
+        const spawner = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            if (command._tag !== "StandardCommand") return Effect.die("unexpected command");
+            calls.push([...command.args]);
+            return Effect.succeed(
+              createMockProcess(
+                command.args[1] === "rate_limit"
+                  ? {
+                      stdout: "reset time: 2027-01-15T08:00:00Z; remaining quota: 0",
+                      stderr: "",
+                      exitCode: 0,
+                    }
+                  : {
+                      stdout: "",
+                      stderr: "API rate limit exceeded (HTTP 403)",
+                      exitCode: 1,
+                    },
+              ),
+            );
+          }),
+        );
+        return Effect.gen(function* () {
+          const service = yield* GitHubService;
+          const endpoint =
+            resource === "graphql"
+              ? "graphql"
+              : resource === "search"
+                ? "search/issues"
+                : "repos/owner/repo";
+          const error = yield* service.runGh(["api", endpoint]).pipe(Effect.flip);
+          expect(error.message).toContain("reset time: 2027-01-15T08:00:00Z; remaining quota: 0");
+          expect(calls).toHaveLength(2);
+          expect(calls[0]).toEqual(["api", endpoint]);
+          expect(calls[1]?.slice(0, 3)).toEqual(["api", "rate_limit", "--jq"]);
+          expect(calls[1]?.[3]).toContain(`.resources.${resource}`);
+          expect(calls[1]?.[3]).toContain("\\(.reset | todateiso8601)");
+        }).pipe(
+          Effect.provide(GitHubService.layer),
+          Effect.provide(spawner),
+          Effect.provide(
+            Layer.succeed(ConfigService, {
+              github: { default: { owner: "selected", repo: "repo" } },
+            }),
+          ),
+        );
+      },
+    );
+  }
+
   it.effect("gives gh only its explicit environment and overrides the selected repository", () => {
     const originalEnvironment = process.env;
     const environment = {
@@ -2037,6 +2096,15 @@ describe("Workflow log diagnosis", () => {
     ).toBe(
       diagnoseLogEntries([{ step: "Run tests", message: "Tests failed at line 99" }]).fingerprint,
     );
+    expect(
+      diagnoseLogEntries([
+        { step: "Checkout", message: "From https://github.com/example/repo" },
+        {
+          step: "Checkout",
+          message: "* [new branch] fix/tooling-timeout -> origin/fix/tooling-timeout",
+        },
+      ]).firstRelevantError,
+    ).toBeNull();
   });
 
   it("prefers a TUnit assertion over an unrelated timeout comment", () => {
@@ -3113,6 +3181,53 @@ describe("PR merge head condition", () => {
       }),
     ),
   );
+
+  for (const interval of [120, 86400]) {
+    it.effect(`accepts a watch interval of ${interval} seconds`, () =>
+      Effect.gen(function* () {
+        yield* Command.runWith(prWatchCommand, { version: "test" })([
+          "--prs",
+          "123",
+          "--interval",
+          String(interval),
+        ]).pipe(
+          Effect.provide(
+            Layer.merge(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: (args) =>
+                  Effect.succeed(
+                    args[1] === "view" ? { number: 123, state: "CLOSED", headRefOid: "head" } : [],
+                  ),
+              }),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  for (const interval of [0, 86401]) {
+    it.effect(`rejects a watch interval of ${interval} seconds`, () =>
+      Effect.gen(function* () {
+        const result = yield* Command.runWith(prWatchCommand, {
+          version: "test",
+          renderErrors: false,
+        })(["--prs", "123", "--interval", String(interval)]).pipe(
+          Effect.provide(
+            Layer.merge(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: () => Effect.die("invalid interval must not read GitHub"),
+              }),
+            ),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+      }),
+    );
+  }
 
   it.effect("parses the public match-head option and passes it to the merge service", () =>
     Effect.gen(function* () {
@@ -4927,7 +5042,7 @@ describe("pr feedback (aggregated review-response inventory)", () => {
       const collectors: ReadonlyArray<{
         operation: string;
         command: string;
-        collect: () => Effect.Effect<unknown, GhError, GitHubService>;
+        collect: () => Effect.Effect<unknown, GhError | GitHubTimeoutError, GitHubService>;
       }> = [
         {
           operation: "review threads",
@@ -5592,6 +5707,34 @@ describe("Issue triage", () => {
   );
 });
 
+describe("watch timeout failures", () => {
+  it.effect("checks watch fails at its deadline while a check remains pending", () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        fetchChecksForCommand(123, true, false, 1, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGh: () => Effect.never,
+              runGhJson: () =>
+                Effect.succeed([
+                  { name: "CI", state: "IN_PROGRESS", bucket: "pending", link: "external" },
+                ]),
+            }),
+          ),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("1 second");
+      const result = yield* Fiber.join(fiber);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure._tag).toBe("GitHubTimeoutError");
+        expect(result.failure.message).toContain("timed out, 1 pending");
+      }
+    }),
+  );
+});
+
 describe("GitHubService.getRepoInfo()", () => {
   it.effect("returns repo info", () =>
     Effect.gen(function* () {
@@ -5811,8 +5954,11 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const rawJobLogs = [
         "2025-01-01T00:00:00Z ##[group]Run lint",
-        "2025-01-01T00:00:01Z npm run lint",
-        "2025-01-01T00:00:02Z Error: lint failed hard",
+        ...Array.from(
+          { length: 24 },
+          (_, index) => `2025-01-01T00:00:01Z Error: ${index} ${"x".repeat(500)}`,
+        ),
+        "2025-01-01T00:00:02Z AssertionError: lint failed hard",
         "2025-01-01T00:00:03Z ##[endgroup]",
       ].join("\n");
 
@@ -5842,6 +5988,8 @@ describe("PR checks", () => {
 
             return Effect.succeed({
               databaseId: 2,
+              attempt: 2,
+              headSha: "run-head",
               url: "https://github.com/test-owner/test-repo/actions/runs/2",
               workflowName: "CI",
               status: "completed",
@@ -5872,7 +6020,10 @@ describe("PR checks", () => {
 
       expect(result.failedChecks).toHaveLength(1);
       expect(result.failedChecks[0]?.failedStepLogs).toContain("Run lint");
-      expect(result.failedChecks[0]?.failedStepLogs).toContain("Error: lint failed hard");
+      expect(result.failedChecks[0]?.failedStepLogs).toContain("AssertionError: lint failed hard");
+      expect(result.failedChecks[0]?.failedStepLogs).not.toContain("setup output 29");
+      expect(result.failedChecks[0]?.failedStepLogs?.length).toBeLessThanOrEqual(4_000);
+      expect(result.failedChecks[0]?.run).toMatchObject({ attempt: 2, headSha: "run-head" });
     }),
   );
 
@@ -6378,6 +6529,7 @@ describe("PR checks", () => {
         watchPRs([1, 2], { intervalSeconds: 60, timeoutSeconds: 0.01 }, (event) =>
           Effect.sync(() => events.push(event)),
         ).pipe(
+          Effect.flip,
           Effect.provide(
             createMockGhLayer({
               runGhJson: (args) => {
@@ -6397,10 +6549,17 @@ describe("PR checks", () => {
         ),
       );
       yield* TestClock.adjust("20 millis");
-      yield* Fiber.join(fiber);
+      expect(yield* Fiber.join(fiber)).toMatchObject({ _tag: "GitHubTimeoutError" });
       expect(apiPRs).toEqual([1]);
       expect(events).toEqual([
-        expect.objectContaining({ type: "watcher_terminal", status: "timeout", terminal: [] }),
+        expect.objectContaining({
+          type: "watcher_terminal",
+          status: "timeout",
+          terminal: [],
+          verdict: null,
+          message: "Watch timed out, 2 pending. This is not a CI verdict.",
+          pending: [1, 2],
+        }),
       ]);
     }),
   );
@@ -6418,12 +6577,12 @@ describe("PR checks", () => {
               ]),
       });
       const fiber = yield* Effect.forkChild(
-        watchPRs([1], { intervalSeconds: 60, timeoutSeconds: 0.01 }, (event) =>
+        watchPRs([1], { intervalSeconds: 120, timeoutSeconds: 0.01 }, (event) =>
           Effect.sync(() => events.push(event)),
-        ).pipe(Effect.provide(layer)),
+        ).pipe(Effect.provide(layer), Effect.flip),
       );
       yield* TestClock.adjust("10 millis");
-      yield* Fiber.join(fiber);
+      expect(yield* Fiber.join(fiber)).toMatchObject({ _tag: "GitHubTimeoutError" });
       const elapsed = Number(yield* Clock.currentTimeMillis) - start;
       expect(elapsed).toBe(10);
       expect(events.at(-1)).toMatchObject({ status: "timeout" });
@@ -6480,6 +6639,7 @@ describe("PR checks", () => {
       yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
+        Effect.flip,
         Effect.provide(
           createMockGhLayer({
             runGhJson: (args) =>
@@ -10194,3 +10354,45 @@ describe("PR creation safety", () => {
     }),
   );
 });
+
+it.effect("expires pending cache snapshots using TestClock", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-cache-clock-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    const previous = process.env["GH_TOKEN"];
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.env["GH_TOKEN"] = "cache-test-token";
+      }),
+      () =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env["GH_TOKEN"];
+          else process.env["GH_TOKEN"] = previous;
+        }),
+    );
+    let calls = 0;
+    const pending = [{ name: "Build", state: "PENDING", bucket: "pending", link: "run" }];
+    const success = [{ name: "Build", state: "SUCCESS", bucket: "pass", link: "run" }];
+    const layer = Layer.merge(
+      createMockGhLayer({
+        runGhJson: () => {
+          calls += 1;
+          return Effect.succeed(calls === 1 ? pending : success);
+        },
+      }),
+      Layer.succeed(CheckStatusCacheDirectory, directory),
+    );
+    yield* Effect.gen(function* () {
+      const options = { headSha: "clock-test", watchPending: true };
+      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
+      expect(calls).toBe(1);
+      yield* TestClock.adjust("1 second");
+      expect(yield* fetchCheckResults(123, options)).toEqual(success);
+      expect(calls).toBe(2);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.scoped),
+);

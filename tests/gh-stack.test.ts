@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Console, Effect, Fiber, Layer } from "effect";
+import { Clock, Console, Effect, Fiber, Layer } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
@@ -73,7 +73,7 @@ const stackMember = (
   base: { ref: overrides.base ?? "main" },
 });
 
-type FetchRoute = { status: number; body: unknown };
+type FetchRoute = { status: number; body: unknown; headers?: Record<string, string> };
 
 let fetchCalls: Array<{ url: string; method: string; body: unknown }> = [];
 let routes: Array<{ match: RegExp; method?: string; respond: () => FetchRoute }> = [];
@@ -98,7 +98,7 @@ const installFetch = () => {
     return Promise.resolve(
       new Response(hasBody ? JSON.stringify(result.body) : null, {
         status: result.status,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...result.headers },
       }),
     );
   }) as typeof globalThis.fetch;
@@ -114,6 +114,169 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch;
   delete process.env["GITHUB_TOKEN"];
+});
+
+describe("GitHub API rate-limit retry", () => {
+  it.effect("refuses rate-limit waits above 60 seconds", () =>
+    Effect.gen(function* () {
+      const reset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 61;
+      routes.push({
+        match: /\/quota$/,
+        respond: () => ({
+          status: 403,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-reset": String(reset), "x-ratelimit-remaining": "0" },
+        }),
+      });
+      const fiber = yield* Effect.forkChild(githubApi({ path: "quota" }).pipe(Effect.result));
+      yield* TestClock.adjust("1 second");
+      expect(fiber.pollUnsafe()).not.toBeUndefined();
+      const error = yield* Fiber.join(fiber);
+      expect(error).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          message: expect.stringContaining("remaining quota: 0"),
+        },
+      });
+      expect(fetchCalls).toHaveLength(1);
+    }),
+  );
+
+  it.effect("honors retry-after before the primary reset", () =>
+    Effect.gen(function* () {
+      const reset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 3000;
+      let attempts = 0;
+      routes.push({
+        match: /\/secondary$/,
+        respond: () =>
+          ++attempts === 1
+            ? {
+                status: 403,
+                body: { message: "secondary rate limit" },
+                headers: {
+                  "retry-after": "2",
+                  "x-ratelimit-reset": String(reset),
+                  "x-ratelimit-remaining": "4999",
+                },
+              }
+            : { status: 200, body: { ok: true } },
+      });
+      const fiber = yield* Effect.forkChild(githubApi({ path: "secondary" }));
+      yield* TestClock.adjust("1 second");
+      expect(attempts).toBe(1);
+      yield* TestClock.adjust("2 seconds");
+      expect(attempts).toBe(2);
+      expect(yield* Fiber.join(fiber)).toMatchObject({ status: 200 });
+    }),
+  );
+
+  it.effect("waits for the reset on GET and never retries a mutation", () =>
+    Effect.gen(function* () {
+      const reset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 2;
+      let reads = 0;
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/pulls\/123$/,
+        method: "GET",
+        respond: () => {
+          reads += 1;
+          return reads === 1
+            ? {
+                status: 429,
+                body: { message: "API rate limit exceeded" },
+                headers: { "x-ratelimit-reset": String(reset) },
+              }
+            : { status: 200, body: { ok: true } };
+        },
+      });
+      const readFiber = yield* Effect.forkChild(
+        githubApi<{ ok: boolean }>({ path: "repos/test-owner/test-repo/pulls/123" }),
+      );
+      yield* TestClock.adjust("4 seconds");
+      expect(yield* Fiber.join(readFiber)).toMatchObject({ body: { ok: true } });
+      expect(reads).toBe(2);
+
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/pulls\/123$/,
+        method: "POST",
+        respond: () => ({
+          status: 429,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-reset": String(reset) },
+        }),
+      });
+      const error = yield* githubApi({
+        path: "repos/test-owner/test-repo/pulls/123",
+        method: "POST",
+        body: { title: "one attempt" },
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("GitHubCommandError");
+      expect(fetchCalls.filter((call) => call.method === "POST")).toHaveLength(1);
+
+      const secondaryReset = Math.floor((yield* Clock.currentTimeMillis) / 1000) + 1;
+      let limitedReads = 0;
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/rate-limited\/123$/,
+        method: "GET",
+        respond: () => {
+          limitedReads += 1;
+          return limitedReads === 1
+            ? {
+                status: 403,
+                body: { message: "API rate limit exceeded" },
+                headers: {
+                  "x-ratelimit-reset": String(secondaryReset),
+                  "x-ratelimit-remaining": "0",
+                },
+              }
+            : { status: 200, body: { ok: true } };
+        },
+      });
+      const rateLimitedFiber = yield* Effect.forkChild(
+        githubApi<{ ok: boolean }>({ path: "repos/test-owner/test-repo/rate-limited/123" }),
+      );
+      yield* TestClock.adjust("3 seconds");
+      expect(yield* Fiber.join(rateLimitedFiber)).toMatchObject({ status: 200 });
+      expect(limitedReads).toBe(2);
+
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/issues\/123$/,
+        method: "GET",
+        respond: () => ({
+          status: 403,
+          body: { message: "Resource not accessible by integration" },
+          headers: { "x-ratelimit-reset": String(reset), "x-ratelimit-remaining": "4999" },
+        }),
+      });
+      const permissionError = yield* githubApi({
+        path: "repos/test-owner/test-repo/issues/123",
+      }).pipe(Effect.flip);
+      expect(permissionError._tag).toBe("GitHubCommandError");
+      expect(fetchCalls.filter((call) => call.url.endsWith("/issues/123"))).toHaveLength(1);
+    }),
+  );
+});
+
+describe("rate-limit error details", () => {
+  it.effect("includes reset time and remaining quota from HTTP headers", () =>
+    Effect.gen(function* () {
+      routes.push({
+        match: /\/repos\/test-owner\/test-repo\/quota$/,
+        method: "POST",
+        respond: () => ({
+          status: 403,
+          body: { message: "API rate limit exceeded" },
+          headers: { "x-ratelimit-reset": "1800000000", "x-ratelimit-remaining": "0" },
+        }),
+      });
+      const error = yield* githubApi({
+        path: "repos/test-owner/test-repo/quota",
+        method: "POST",
+      }).pipe(Effect.flip);
+      expect(error.message).toContain("reset time: 2027-01-15T08:00:00.000Z");
+      expect(error.message).toContain("remaining quota: 0");
+      expect(fetchCalls).toHaveLength(1);
+    }),
+  );
 });
 
 describe("pr stack view", () => {

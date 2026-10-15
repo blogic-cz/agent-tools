@@ -22,6 +22,7 @@ import {
 } from "#gh/text-input";
 import {
   CI_CHECK_WATCH_TIMEOUT_MS,
+  PR_WATCH_TIMEOUT_SECONDS,
   DEFAULT_DELETE_BRANCH,
   DEFAULT_MERGE_STRATEGY,
   DEFAULT_REVIEW_EVENT,
@@ -913,18 +914,20 @@ export const prChecksFailedCommand = Command.make(
     ),
     repo: repoOption,
     withLogs: Flag.Boolean("with-logs").pipe(
-      Flag.withDescription(
-        "Inline the failed-step logs for each failed check so no follow-up job-logs call is needed",
-      ),
+      Flag.withDescription("Inline a short summary from each failed step"),
+      Flag.withDefault(false),
+    ),
+    fullLogs: Flag.Boolean("full-logs").pipe(
+      Flag.withDescription("Inline all failed-step log lines; implies --with-logs"),
       Flag.withDefault(false),
     ),
   },
-  ({ format, pr, repo, withLogs }) =>
+  ({ format, pr, repo, withLogs, fullLogs }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const checks = yield* fetchFailedChecks(prNumber, withLogs);
+        const checks = yield* fetchFailedChecks(prNumber, withLogs, fullLogs);
         yield* logFormatted(checks, format);
       }),
     ),
@@ -938,13 +941,17 @@ export const prWatchCommand = Command.make(
     format: Flag.Literals("format", ["jsonl"]).pipe(Flag.withDefault("jsonl")),
     interval: Flag.Int("interval").pipe(
       Flag.withDefault(5),
+      Flag.withDescription("Polling interval in seconds (default: 5, range: 1..86400)"),
       Flag.filter(
-        (n) => n >= 1 && n <= 60,
-        () => "--interval must be 1..60 seconds",
+        (n) => n >= 1 && n <= 86400,
+        () => "--interval must be 1..86400 seconds",
       ),
     ),
     timeout: Flag.Int("timeout").pipe(
-      Flag.withDefault(CI_CHECK_WATCH_TIMEOUT_MS / 1000),
+      Flag.withDefault(PR_WATCH_TIMEOUT_SECONDS),
+      Flag.withDescription(
+        "Timeout in seconds (default: 1800, minimum 1); timeout is not a CI verdict",
+      ),
       Flag.filter(
         (n) => n >= 1,
         () => "--timeout must be at least 1 second",
