@@ -941,9 +941,10 @@ export const prWatchCommand = Command.make(
     format: Flag.Literals("format", ["jsonl"]).pipe(Flag.withDefault("jsonl")),
     interval: Flag.Int("interval").pipe(
       Flag.withDefault(5),
+      Flag.withDescription("Polling interval in seconds (default: 5, range: 1..86400)"),
       Flag.filter(
-        (n) => n >= 1 && n <= 60,
-        () => "--interval must be 1..60 seconds",
+        (n) => n >= 1 && n <= 86400,
+        () => "--interval must be 1..86400 seconds",
       ),
     ),
     timeout: Flag.Int("timeout").pipe(

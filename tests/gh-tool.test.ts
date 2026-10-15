@@ -104,6 +104,7 @@ import {
   prCreateCommand,
   prEditCommand,
   prMergeCommand,
+  prWatchCommand,
   classifyReviewTriage,
   fetchCurrentComments,
   fetchCurrentFeedback,
@@ -3123,6 +3124,53 @@ describe("PR merge head condition", () => {
       }),
     ),
   );
+
+  for (const interval of [120, 86400]) {
+    it.effect(`accepts a watch interval of ${interval} seconds`, () =>
+      Effect.gen(function* () {
+        yield* Command.runWith(prWatchCommand, { version: "test" })([
+          "--prs",
+          "123",
+          "--interval",
+          String(interval),
+        ]).pipe(
+          Effect.provide(
+            Layer.merge(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: (args) =>
+                  Effect.succeed(
+                    args[1] === "view" ? { number: 123, state: "CLOSED", headRefOid: "head" } : [],
+                  ),
+              }),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  for (const interval of [0, 86401]) {
+    it.effect(`rejects a watch interval of ${interval} seconds`, () =>
+      Effect.gen(function* () {
+        const result = yield* Command.runWith(prWatchCommand, {
+          version: "test",
+          renderErrors: false,
+        })(["--prs", "123", "--interval", String(interval)]).pipe(
+          Effect.provide(
+            Layer.merge(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: () => Effect.die("invalid interval must not read GitHub"),
+              }),
+            ),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+      }),
+    );
+  }
 
   it.effect("parses the public match-head option and passes it to the merge service", () =>
     Effect.gen(function* () {
