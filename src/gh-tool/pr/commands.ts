@@ -40,6 +40,7 @@ import {
   editPR,
   fetchPRView,
   fetchChecks,
+  fetchChecksBatch,
   fetchChecksForCommand,
   fetchFailedChecks,
   listPRs,
@@ -877,14 +878,7 @@ export const prChecksCommand = Command.make(
             }
           }
           const numbers = yield* parsePrNumbers(batch);
-          const results = yield* Effect.all(
-            numbers.map((n) =>
-              fetchChecks(n, false, failFast, timeout, format === "json").pipe(
-                Effect.map((checks) => ({ pr: n, checks })),
-              ),
-            ),
-            { concurrency: 5 },
-          );
+          const results = yield* fetchChecksBatch(numbers);
           yield* logFormatted({ count: results.length, prs: results }, format);
           return;
         }

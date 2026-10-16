@@ -265,7 +265,8 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 });
 
 // `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
-// is an ordinary state, so map it to [] and keep the zero-check paths downstream reachable.
+// is an ordinary state, so it is not an error, but it is also not an empty list: a PR with green
+// checks (sabservis/nexus-be#1396) once came back empty.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 // `gh` reports "no checks reported" both for the seconds after a push, before its checks
 // register, and forever for a PR that has none — the message cannot tell them apart. So the
@@ -274,6 +275,12 @@ export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 // for the caller's whole --timeout.
 const CHECK_REGISTRATION_POLL_SECONDS = 5;
 const CHECK_REGISTRATION_GRACE_SECONDS = 60;
+const NO_CHECKS_REPORTED_REASON =
+  "gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.";
+
+export type CheckReport =
+  | { checksStatus: "reported"; checks: CheckResult[] }
+  | { checksStatus: "none_reported"; reason: string; checks: null };
 
 const summarizeFailedStepEntries = (entries: Array<{ step: string; message: string }>) => {
   const selected = entries
@@ -301,6 +308,14 @@ const summarizeFailedStepEntries = (entries: Array<{ step: string; message: stri
 };
 
 export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
+  pr: number | null,
+  cache?: { headSha: string; watchPending?: boolean },
+) {
+  const report = yield* fetchCheckReport(pr, cache);
+  return report.checks ?? [];
+});
+
+export const fetchCheckReport = Effect.fn("pr.fetchCheckReport")(function* (
   pr: number | null,
   cache?: { headSha: string; watchPending?: boolean },
 ) {
@@ -339,7 +354,8 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
             ),
           catch: () => null,
         }).pipe(Effect.orElseSucceed(() => null));
-        if (cached !== null) return cached;
+        if (cached !== null)
+          return { checksStatus: "reported", checks: cached } satisfies CheckReport;
         repo = cacheRepo;
         identity = cacheIdentity;
       }
@@ -352,10 +368,17 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
     .pipe(
       Effect.catchTag("GitHubCommandError", (error) =>
         NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
-          ? Effect.succeed<CheckResult[]>([])
+          ? Effect.succeed(null)
           : Effect.fail(error),
       ),
     );
+  if (checks === null || checks.length === 0) {
+    return {
+      checksStatus: "none_reported",
+      reason: NO_CHECKS_REPORTED_REASON,
+      checks: null,
+    } satisfies CheckReport;
+  }
   if (
     cache !== undefined &&
     pr !== null &&
@@ -369,7 +392,7 @@ export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
       catch: () => undefined,
     }).pipe(Effect.orElseSucceed(() => undefined));
   }
-  return checks;
+  return { checksStatus: "reported", checks } satisfies CheckReport;
 });
 
 const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function* (
@@ -1780,6 +1803,39 @@ const watchPRState = Effect.fn("pr.watchPRState")(function* (pr: number) {
     "--json",
     "number,state,headRefOid",
   ]);
+});
+
+export const fetchChecksBatch = Effect.fn("pr.fetchChecksBatch")(function* (
+  prs: readonly number[],
+) {
+  return yield* Effect.forEach(
+    prs,
+    (pr) =>
+      Effect.gen(function* () {
+        const snapshot = yield* collectWithStableState(
+          yield* watchPRState(pr),
+          () => fetchCheckReport(pr),
+          () => watchPRState(pr),
+          (before, after) => before.headRefOid === after.headRefOid && before.state === after.state,
+        );
+        if (snapshot === null) {
+          return yield* new GitHubCommandError({
+            command: "gh-tool pr checks --prs",
+            exitCode: 1,
+            stderr: "",
+            message: `PR #${pr} head changed repeatedly while collecting checks`,
+            retryable: true,
+          });
+        }
+        return {
+          pr,
+          state: snapshot.state.state,
+          headSha: snapshot.state.headRefOid ?? null,
+          ...snapshot.value,
+        };
+      }),
+    { concurrency: 5 },
+  );
 });
 
 export const watchPRs = Effect.fn("pr.watchPRs")(function* (

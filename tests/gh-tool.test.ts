@@ -54,6 +54,7 @@ import {
   editPR,
   draftPR,
   fetchCheckResults,
+  fetchChecksBatch,
   fetchChecksForCommand,
   fetchFailedChecks,
   mergePR,
@@ -9326,6 +9327,72 @@ describe("zero reported checks", () => {
       );
 
       expect(Result.isFailure(outcome)).toBe(true);
+    }),
+  );
+
+  it.effect("batch checks mark an open PR without reported checks as none_reported", () =>
+    Effect.gen(function* () {
+      const results = yield* fetchChecksBatch([7]).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              args[1] === "checks"
+                ? noChecksFailure()
+                : Effect.succeed({ number: 7, state: "OPEN", headRefOid: "abc123" }),
+          }),
+        ),
+      );
+
+      expect(results).toEqual([
+        {
+          pr: 7,
+          state: "OPEN",
+          headSha: "abc123",
+          checksStatus: "none_reported",
+          reason:
+            "gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.",
+          checks: null,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("batch checks never report an empty list from a successful gh call", () =>
+    Effect.gen(function* () {
+      const results = yield* fetchChecksBatch([7]).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              args[1] === "checks"
+                ? Effect.succeed([])
+                : Effect.succeed({ number: 7, state: "MERGED", headRefOid: "abc123" }),
+          }),
+        ),
+      );
+
+      expect(results.map(({ checksStatus, checks }) => ({ checksStatus, checks }))).toEqual([
+        { checksStatus: "none_reported", checks: null },
+      ]);
+    }),
+  );
+
+  it.effect("batch checks fail when the PR head keeps moving", () =>
+    Effect.gen(function* () {
+      let views = 0;
+      const outcome = yield* fetchChecksBatch([7]).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "checks") return Effect.succeed([]);
+              views += 1;
+              return Effect.succeed({ number: 7, state: "OPEN", headRefOid: `head-${views}` });
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+
+      expect(outcome.message).toBe("PR #7 head changed repeatedly while collecting checks");
     }),
   );
 
