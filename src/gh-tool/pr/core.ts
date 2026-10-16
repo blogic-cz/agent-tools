@@ -1727,7 +1727,7 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   const initial = yield* viewPR(pr);
   const snapshot = yield* collectWithStableState(
     initial,
-    (info) => fetchCheckResults(info.number),
+    (info) => fetchCheckReport(info.number),
     (info) =>
       fetchPRView(info.number).pipe(
         Effect.map((refreshed) => ({ ...refreshed, baseSha: initial.baseSha })),
@@ -1735,7 +1735,20 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
     (before, after) => after.headSha === before.headSha,
   );
   if (snapshot !== null) {
-    return yield* buildFailedChecksReport(snapshot.state.number, snapshot.value, {
+    if (snapshot.value.checksStatus === "none_reported") {
+      return {
+        evidence: { headSha: snapshot.state.headSha, baseSha: snapshot.state.baseSha },
+        status: "none_reported",
+        reason: snapshot.value.reason,
+        message: "No checks were reported for this PR head.",
+        summary: { total: 0, failed: 0, pending: 0, passed: 0 },
+        failedChecks: [],
+        pendingChecks: [],
+        hint: "This is not a CI verdict. Check whether CI exists or has registered for this head.",
+        nextCommands: [`bun agent-tools-gh pr checks --pr ${snapshot.state.number}`],
+      };
+    }
+    return yield* buildFailedChecksReport(snapshot.state.number, snapshot.value.checks, {
       withLogs: withLogs || fullLogs,
       fullLogs,
       evidence: { headSha: snapshot.state.headSha, baseSha: snapshot.state.baseSha },

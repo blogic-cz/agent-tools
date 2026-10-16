@@ -340,7 +340,13 @@ export type StackView = {
 
 export type StackMergeBlocker = {
   number: number;
-  reason: "draft" | "not_mergeable" | "mergeability_unknown" | "checks_failing" | "checks_pending";
+  reason:
+    | "draft"
+    | "not_mergeable"
+    | "mergeability_unknown"
+    | "checks_failing"
+    | "checks_pending"
+    | "checks_none_reported";
   detail: string;
 };
 
