@@ -163,15 +163,15 @@
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.4",
-    "@toon-format/toon": "4.1.1"
+    "@toon-format/toon": "4.4.0"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.45.0",
+    "@effect/tsgo": "0.51.1",
     "@effect/vitest": "4.0.4",
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.3",
     "effect": "4.0.4",
-    "oxfmt": "0.70.0",
-    "oxlint": "1.82.0",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
     "typescript": "7.0.2",
     "vitest": "5.0.4"
   },

@@ -28,7 +28,7 @@ export type CommandResult = {
   stdout: string;
   stderr: string;
   exitCode: number;
-  signalCode: NodeJS.Signals | null;
+  signalCode: NodeJS.Signals | number | null;
   timedOut: boolean;
   executionTimeMs: number;
 };
