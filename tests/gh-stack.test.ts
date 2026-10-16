@@ -433,6 +433,54 @@ describe("pr stack merge", () => {
     }),
   );
 
+  it.effect("reports missing checks as a blocker state in the dry-run plan", () =>
+    Effect.gen(function* () {
+      twoOpenAboveOneMerged();
+
+      const result = yield* mergeStack({ pr: 693, strategy: "squash", confirm: false }).pipe(
+        Effect.provide(
+          ghLayerWith({
+            runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            runGhJson: (args) =>
+              args[1] === "view"
+                ? Effect.succeed({
+                    number: Number(args[2]),
+                    mergeable: "MERGEABLE",
+                    isDraft: false,
+                  })
+                : Effect.fail(
+                    new GitHubCommandError({
+                      command: "gh pr checks",
+                      exitCode: 1,
+                      stderr: "no checks reported on the 'feat/x' branch",
+                      message: "no checks reported on the 'feat/x' branch",
+                    }),
+                  ),
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({
+        dryRun: true,
+        merged: false,
+        blockers: [
+          {
+            number: 693,
+            reason: "checks_none_reported",
+            detail:
+              "checks: none_reported. gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.",
+          },
+          {
+            number: 694,
+            reason: "checks_none_reported",
+            detail:
+              "checks: none_reported. gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.",
+          },
+        ],
+      });
+    }),
+  );
+
   it.effect("refuses the whole stack when any open member is not ready", () =>
     Effect.gen(function* () {
       twoOpenAboveOneMerged();
