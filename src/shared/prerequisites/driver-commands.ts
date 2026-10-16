@@ -1,4 +1,4 @@
-import { ChildProcess } from "effect/unstable/process";
+import { ChildProcess } from "effect/process";
 
 import type { ResolvedVpnDriver } from "#shared/prerequisites/types";
 import type { SanitizedVpnDriver } from "#shared/prerequisites/store";

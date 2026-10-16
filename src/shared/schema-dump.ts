@@ -1,4 +1,4 @@
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 import { Option } from "effect";
 
 import { formatOption, logFormatted } from "./format";
@@ -22,7 +22,7 @@ export type CommandSchema = {
   readonly subcommands: readonly CommandSchema[];
 };
 
-// Leaf parameter from effect/unstable/cli; carries the user-facing flag name/description/type.
+// Leaf parameter from effect/cli; carries the user-facing flag name/description/type.
 type SingleParam = {
   readonly _tag: "Single";
   readonly name: string;

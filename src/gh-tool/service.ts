@@ -1,4 +1,4 @@
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";

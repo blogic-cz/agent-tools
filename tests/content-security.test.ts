@@ -140,7 +140,7 @@ describe("shared content security", () => {
       "bun",
       [
         "-e",
-        `import { BunServices } from "@effect/platform-bun"; import { Effect } from "effect"; import { Command, Flag } from "effect/unstable/cli"; import { renderCauseToStderr } from "./src/shared/error-renderer.ts"; const command = Command.make("test-tool", { count: Flag.Int("count") }, () => Effect.void); const program = Command.runWith(command, { version: "1", renderErrors: false })(["--count", "${githubToken}"]).pipe(Effect.provide(BunServices.layer), Effect.tapCause(renderCauseToStderr)); await Effect.runPromiseExit(program);`,
+        `import { BunServices } from "@effect/platform-bun"; import { Effect } from "effect"; import { Command, Flag } from "effect/cli"; import { renderCauseToStderr } from "./src/shared/error-renderer.ts"; const command = Command.make("test-tool", { count: Flag.Int("count") }, () => Effect.void); const program = Command.runWith(command, { version: "1", renderErrors: false })(["--count", "${githubToken}"]).pipe(Effect.provide(BunServices.layer), Effect.tapCause(renderCauseToStderr)); await Effect.runPromiseExit(program);`,
       ],
       { cwd: process.cwd(), encoding: "utf8" },
     );

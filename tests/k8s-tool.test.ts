@@ -5,8 +5,8 @@ import {
 } from "#k8s/security";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Match, Option, Result, Sink, Stream } from "effect";
-import type { ChildProcess } from "effect/unstable/process";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcess } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import type { CommandResult, Environment } from "#k8s/types";
 

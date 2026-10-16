@@ -14,7 +14,7 @@
  * Use --format toon for LLM-optimized output (fewer tokens).
  */
 
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer, Option, Result } from "effect";
 

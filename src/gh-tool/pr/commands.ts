@@ -1,4 +1,4 @@
-import { Command, Flag, Param } from "effect/unstable/cli";
+import { Command, Flag, Param } from "effect/cli";
 import { Console, Effect, Option } from "effect";
 
 import type { CheckResult, PRStatusResult } from "#gh/types";

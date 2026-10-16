@@ -1,5 +1,5 @@
 import { Schema, type Effect } from "effect";
-import type { ChildProcess } from "effect/unstable/process";
+import type { ChildProcess } from "effect/process";
 
 import type {
   LinuxNmcliVpnDriverConfig,

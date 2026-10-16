@@ -1,4 +1,4 @@
-import { Flag } from "effect/unstable/cli";
+import { Flag } from "effect/cli";
 import { decode as decodeToon, encode as encodeToon } from "@toon-format/toon";
 import { Effect } from "effect";
 

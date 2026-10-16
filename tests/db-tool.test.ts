@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer, Sink, Stream } from "effect";
-import type { ChildProcess } from "effect/unstable/process";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcess } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import type { DbError } from "#db/errors";
 import type { QueryResult } from "#db/types";
