@@ -16,7 +16,7 @@ import type { BaseResult, OutputFormat } from "@blogic-cz/agent-tools";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { encode as encodeToon } from "@toon-format/toon";
 import { type Cause, Console, Effect } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 
 // ---------------------------------------------------------------------------
 // Shared helpers (inline — real tools use #shared from the package internals)

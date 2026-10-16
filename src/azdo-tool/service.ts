@@ -1,4 +1,4 @@
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Option, Stream } from "effect";
 
 import type { InvokeParams } from "./types";

@@ -8,8 +8,9 @@
   },
   "dependencies": {
     "@blogic-cz/agent-tools": "latest",
-    "@effect/platform-bun": "4.0.0-rc.117",
-    "@toon-format/toon": "4.1.1",
-    "effect": "4.0.0-rc.117"
+    "@effect/platform-bun": "4.0.4",
+    "@effect/platform-node-shared": "4.0.4",
+    "@toon-format/toon": "4.4.0",
+    "effect": "4.0.4"
   }
 }

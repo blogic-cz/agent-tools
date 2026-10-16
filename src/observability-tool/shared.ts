@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { Flag } from "effect/unstable/cli";
+import { Flag } from "effect/cli";
 
 import { ConfigService, getToolConfig } from "#config";
 import type { ObservabilityConfig } from "#config";

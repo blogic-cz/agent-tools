@@ -1,4 +1,4 @@
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 import { Effect, Option } from "effect";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";

@@ -1,4 +1,4 @@
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Clock, Context, Duration, Effect, Layer, Ref, Result, Stream } from "effect";
 
 import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./types";

@@ -1,4 +1,4 @@
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Effect, Schema, Stream } from "effect";
 
 const DEFAULT_TIMEOUT_MS = 30000;

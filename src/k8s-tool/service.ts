@@ -1,6 +1,6 @@
 import { posix } from "node:path";
 
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Option, Ref } from "effect";
 
 import type { CommandResult, Environment } from "./types";

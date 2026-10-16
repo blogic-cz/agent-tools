@@ -1,5 +1,5 @@
 import { Effect, type Option } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 
 import { formatOption, formatOutput, logText } from "#shared";
 import type { OutputFormat } from "#shared";

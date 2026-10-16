@@ -4,12 +4,12 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 
 import { prReplyAndResolveCommand, prRerunChecksCommand, prWatchCommand } from "#gh/pr/index";
 import { dumpCommandSchema } from "#shared/schema-dump";
 
-// Guards the parser against effect/unstable/cli internal-shape changes: if the Command/Param/
+// Guards the parser against effect/cli internal-shape changes: if the Command/Param/
 // primitive internals shift on an effect bump, these assertions fail loudly instead of the dump
 // silently degrading to empty flags/subcommands.
 const greet = Command.make(

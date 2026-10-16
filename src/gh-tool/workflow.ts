@@ -1,4 +1,4 @@
-import { Command, Flag, Param } from "effect/unstable/cli";
+import { Command, Flag, Param } from "effect/cli";
 import { Duration, Effect, Option } from "effect";
 
 import { formatOption, logFormatted, logText } from "#shared";

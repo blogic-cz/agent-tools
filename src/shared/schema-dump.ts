@@ -1,4 +1,4 @@
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 import { Option } from "effect";
 
 import { formatOption, logFormatted } from "./format";
@@ -22,8 +22,7 @@ export type CommandSchema = {
   readonly subcommands: readonly CommandSchema[];
 };
 
-// Leaf parameter from effect/unstable/cli; carries the user-facing flag name/description/type.
-type SingleParam = {
+type EffectCliSingleParam = {
   readonly _tag: "Single";
   readonly name: string;
   readonly description: Option.Option<string>;
@@ -44,11 +43,11 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 // Flags wrap as Optional/Map/Transform/Variadic around a leaf Single; descend via `.param`.
-const unwrapToSingle = (param: unknown): SingleParam | undefined => {
+const unwrapToSingle = (param: unknown): EffectCliSingleParam | undefined => {
   let current: unknown = param;
   for (let depth = 0; depth < 16 && isObject(current); depth++) {
     if (current._tag === "Single" && typeof current.name === "string") {
-      return current as unknown as SingleParam;
+      return current as unknown as EffectCliSingleParam;
     }
     current = current.param;
   }

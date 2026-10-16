@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
-import type { ChildProcess } from "effect/unstable/process";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcess } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 import { Effect, Layer, Result, Sink, Stream } from "effect";
 
 import { ConfigService } from "#config/loader";
