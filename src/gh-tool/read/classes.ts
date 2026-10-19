@@ -22,6 +22,7 @@ export const OPS = {
   runList: { kind: "ttl", ttlMs: 15000 },
   runView: { kind: "ttl", ttlMs: 15000 },
   runJobs: { kind: "ttl", ttlMs: 15000 },
+  completedAttemptJobs: { kind: "immutable" },
   runLog: { kind: "ttl", ttlMs: 15000 },
   jobLog: { kind: "passthrough" },
   annotations: { kind: "passthrough" },

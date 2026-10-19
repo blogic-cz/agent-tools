@@ -21,6 +21,39 @@ import {
 
 export type JobRef = { readonly id: number; readonly status: string };
 
+const completedAttemptJobs = Effect.fn("reads.completedAttemptJobs")(function* (
+  repo: RepoRef,
+  runId: number,
+  attempt: number,
+) {
+  const gh = yield* GitHubService;
+  const Job = Schema.Struct({ id: Schema.Number, name: Schema.String });
+  return yield* cachedRead({
+    key: { op: "completedAttemptJobs", repo, runId, attempt },
+    policy: OPS.completedAttemptJobs,
+    decode: parsePreserving(Schema.mutable(Schema.Array(Job))),
+    fetch: () =>
+      Effect.gen(function* () {
+        const jobs: Array<typeof Job.Type> = [];
+        for (let page = 1; ; page += 1) {
+          const response = yield* gh.runGhJson<{ jobs?: Array<typeof Job.Type> }>([
+            "api",
+            `repos/${repoSlug(repo)}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+          ]);
+          if (response.jobs === undefined)
+            return yield* new GitHubCommandError({
+              command: "attempt jobs",
+              exitCode: 0,
+              message: "Attempt jobs unavailable",
+              stderr: "Attempt jobs unavailable",
+            });
+          jobs.push(...response.jobs);
+          if (response.jobs.length < 100) return { kind: "fresh" as const, value: jobs };
+        }
+      }),
+  });
+});
+
 export const resolveRepo = Effect.fn("reads.resolveRepo")(function* (repo: string | null) {
   if (repo !== null) {
     const [owner, name, extra] = repo.split("/");
@@ -238,6 +271,7 @@ const jobIdentity = Effect.fn("reads.jobIdentity")(function* (repo: RepoRef, job
 });
 
 export const reads = {
+  completedAttemptJobs,
   jobIdentity,
   reviewGuards,
   prComments,

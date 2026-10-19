@@ -29,6 +29,7 @@ export type ReadKey = { readonly repo: RepoRef } & (
   | { readonly op: "runList"; readonly filter: RunFilter }
   | { readonly op: "runView"; readonly runId: number; readonly attempt?: number }
   | { readonly op: "runJobs"; readonly runId: number; readonly attempt: number }
+  | { readonly op: "completedAttemptJobs"; readonly runId: number; readonly attempt: number }
   | {
       readonly op: "runLog";
       readonly runId: number;
@@ -84,6 +85,7 @@ export const tagsFor = (key: ReadKey): readonly Tag[] => {
       return [fallback, `issue-comments:${repo}#${key.issue}`];
     case "runView":
     case "runJobs":
+    case "completedAttemptJobs":
     case "runLog":
       return [fallback, `run:${repo}/${key.runId}`];
     case "runList":

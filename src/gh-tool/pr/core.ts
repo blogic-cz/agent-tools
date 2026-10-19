@@ -12,7 +12,6 @@ import type {
   RerunChecksReport,
   RerunChecksRun,
   RerunRetryEvidence,
-  WorkflowRunDetail,
 } from "#gh/types";
 
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
@@ -207,16 +206,8 @@ const matchFailedJobForCheck = <Job extends { name: string }>(
 const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureContext")(function* (
   runId: number,
 ) {
-  const gh = yield* GitHubService;
-
-  const run = yield* gh
-    .runGhJson<WorkflowRunDetail>([
-      "run",
-      "view",
-      String(runId),
-      "--json",
-      "databaseId,attempt,headSha,url,workflowName,status,conclusion,jobs",
-    ])
+  const run = yield* reads
+    .runView(yield* resolveRepo(null), runId)
     .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
 
   if (run === null) {
@@ -2020,25 +2011,21 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
 
 type RerunDiscovery = RerunCheckAttempt & { status?: string };
 
-const fetchAttemptJobs = Effect.fn("pr.fetchAttemptJobs")(function* (
-  runId: string,
-  attempt: number,
-  repo: string,
-) {
-  const gh = yield* GitHubService;
-  const jobs: Array<{ id: number; name: string }> = [];
-  for (let page = 1; ; page += 1) {
-    const response = yield* gh
-      .runGhJson<{ jobs?: Array<{ id: number; name: string }> }>([
-        "api",
-        `repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
-      ])
+const fetchAttemptJobs = (runId: string, attempt: number, repo: string) =>
+  Effect.gen(function* () {
+    return yield* reads
+      .completedAttemptJobs(yield* resolveRepo(repo), Number(runId), attempt)
       .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
-    if (response?.jobs === undefined) return null;
-    jobs.push(...response.jobs);
-    if (response.jobs.length < 100) return jobs;
-  }
-});
+  });
+
+const readRerunState = (runId: string, withStatus: boolean) =>
+  Effect.gen(function* () {
+    const run = yield* reads.runView(yield* resolveRepo(null), Number(runId), "origin");
+    const fields = withStatus
+      ? (["databaseId", "attempt", "status", "jobs"] as const)
+      : (["databaseId", "attempt", "jobs"] as const);
+    return project(run, fields);
+  });
 
 const readJobDiagnosis = Effect.fn("pr.readJobDiagnosis")(function* (
   runId: string,
@@ -2062,12 +2049,11 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
   currentJobIds: readonly number[],
   deadline: number,
 ) {
-  const gh = yield* GitHubService;
   let latest: RerunDiscovery | null = null;
   while (Number(yield* Clock.currentTimeMillis) <= deadline) {
-    latest = yield* gh
-      .runGhJson<RerunDiscovery>(["run", "view", runId, "--json", "databaseId,attempt,status,jobs"])
-      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+    latest = yield* readRerunState(runId, true).pipe(
+      Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+    );
     if (
       latest !== null &&
       ((latest.attempt ?? 0) > (currentAttempt ?? 0) ||
@@ -2113,9 +2099,9 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
     evidence: RerunRetryEvidence;
   }> = [];
   for (const [runId, runChecks] of checksByRun) {
-    const run = yield* gh
-      .runGhJson<RerunCheckAttempt>(["run", "view", runId, "--json", "databaseId,attempt,jobs"])
-      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+    const run = yield* readRerunState(runId, false).pipe(
+      Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+    );
     let evidence: RerunRetryEvidence = { state: "eligible", diagnosis: diagnoseLogEntries([]) };
     if (failedOnly) {
       const jobIds = run === null ? null : resolveJobIdsForFailedChecks(runChecks, run.jobs);
@@ -2245,15 +2231,9 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
             if (remaining <= 0) break;
             yield* Effect.sleep(Duration.millis(Math.min(5000, remaining)));
             if (Number(yield* Clock.currentTimeMillis) >= deadline) break;
-            latest = yield* gh
-              .runGhJson<RerunDiscovery>([
-                "run",
-                "view",
-                candidate.runId,
-                "--json",
-                "databaseId,attempt,status,jobs",
-              ])
-              .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)));
+            latest = yield* readRerunState(candidate.runId, true).pipe(
+              Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)),
+            );
           }
           result.latestAttempt = latest;
           result.status = latest.status === "completed" ? "completed" : "watch_timeout";
