@@ -12,6 +12,7 @@ import { githubApi } from "./api";
 import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 import { validateOutboundText } from "#gh/text-input";
+import { ReadCache } from "./read/cache";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
 const NETWORK_ERROR_RE =
@@ -163,10 +164,16 @@ export class GitHubService extends Context.Service<
           Effect.scoped(
             Effect.gen(function* () {
               const ghRepo = yield* RepoTarget;
+              const cache = yield* ReadCache;
+              const cacheDirectory = cache?.store?.ghCacheDirectory;
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
-                env: { ...ghEnvironment(), ...(ghRepo ? { GH_REPO: ghRepo } : {}) },
+                env: {
+                  ...ghEnvironment(),
+                  ...(ghRepo ? { GH_REPO: ghRepo } : {}),
+                  ...(cacheDirectory === undefined ? {} : { XDG_CACHE_HOME: cacheDirectory }),
+                },
                 extendEnv: false,
               });
 

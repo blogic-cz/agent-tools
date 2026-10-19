@@ -36,6 +36,7 @@ import { CheckStatusCacheDirectory } from "#gh/pr/check-status-cache";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
 import { ghEnvironment } from "#gh/environment";
+import { withReadCache } from "#gh/read/cache";
 import {
   closeIssue,
   commentOnIssue,
@@ -1441,6 +1442,48 @@ describe("GitHubService.runGh() error mapping", () => {
       ),
     );
   });
+
+  for (const enabled of [true, false]) {
+    it.effect(`changes only gh's cache directory when cache is ${enabled ? "on" : "off"}`, () => {
+      const originalEnvironment = process.env;
+      const observed: ObservedGhCommand[] = [];
+      let directory: string | undefined;
+      return Effect.gen(function* () {
+        directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-child-cache-")));
+        const environment = {
+          HOME: "/synthetic/home",
+          GH_TOKEN: "synthetic-token",
+          GH_TOOL_CACHE: enabled ? "on" : "off",
+          GH_TOOL_CACHE_DIR: directory,
+          GH_CONFIG_DIR: "/synthetic/config",
+          XDG_CONFIG_HOME: "/synthetic/xdg-config",
+          XDG_DATA_HOME: "/synthetic/xdg-data",
+        };
+        process.env = environment;
+        const service = yield* GitHubService;
+        yield* withReadCache(service.runGh(["issue", "view", "1"]));
+        expect(observed[0]?.env).toEqual({
+          ...ghEnvironment(environment),
+          GH_REPO: "selected/repo",
+          ...(enabled ? { XDG_CACHE_HOME: join(directory, "gh-read-v1", "gh-xdg-cache") } : {}),
+        });
+      }).pipe(
+        Effect.provide(GitHubService.layer),
+        Effect.provide(createMockGhSpawnerLayer(observed)),
+        Effect.provide(
+          Layer.succeed(ConfigService, {
+            github: { default: { owner: "selected", repo: "repo" } },
+          }),
+        ),
+        Effect.ensuring(
+          Effect.promise(async () => {
+            process.env = originalEnvironment;
+            if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+          }),
+        ),
+      );
+    });
+  }
 
   it.effect("rejects a credential in a title before spawning gh", () => {
     const observedGhCommands: ObservedGhCommand[] = [];
@@ -6001,6 +6044,7 @@ describe("PR checks", () => {
               conclusion: "failure",
               jobs: [
                 {
+                  databaseId: 20,
                   name: "lint",
                   status: "completed",
                   conclusion: "failure",

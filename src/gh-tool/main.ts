@@ -73,6 +73,8 @@ import {
 } from "./release";
 import { repoInfoCommand, repoListCommand, repoSearchCodeCommand } from "./repo";
 import { GitHubService } from "./service";
+import { withReadCache } from "./read";
+import { cacheCommand } from "./read/commands";
 import {
   workflowAnnotationsCommand,
   workflowCancelCommand,
@@ -240,6 +242,7 @@ WORKFLOW FOR AI AGENTS:
     releaseCommand,
     gistCommand,
     commandsCommand,
+    cacheCommand,
   ]),
 );
 
@@ -254,7 +257,7 @@ const MainLayer = GitHubService.layer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
 );
 
-const program = withRedactedOutput(withAudit("gh", cli)).pipe(
+const program = withReadCache(withRedactedOutput(withAudit("gh", cli))).pipe(
   Effect.provide(MainLayer),
   Effect.tapCause(renderCauseToStderr),
 );
