@@ -49,6 +49,7 @@ export const cachedRead = <A, E, R>(opts: {
   readonly policyForValue?: (value: A) => CacheClass;
   readonly consistency?: "cached" | "origin";
   readonly validateOrigin?: boolean;
+  readonly cacheableWhen?: (value: A) => boolean;
 }): Effect.Effect<A, E, R> =>
   Effect.gen(function* () {
     const session = yield* ReadCache;
@@ -101,14 +102,15 @@ export const cachedRead = <A, E, R>(opts: {
         );
         return previous.value;
       }
-      yield* safe(session, () =>
-        store.put(
-          prepared,
-          fetched.value,
-          opts.immutableWhen?.(fetched.value) ?? opts.policy.kind === "immutable",
-          fetched.etag,
-        ),
-      );
+      if (opts.cacheableWhen?.(fetched.value) !== false)
+        yield* safe(session, () =>
+          store.put(
+            prepared,
+            fetched.value,
+            opts.immutableWhen?.(fetched.value) ?? opts.policy.kind === "immutable",
+            fetched.etag,
+          ),
+        );
       return fetched.value;
     }).pipe(
       Effect.catch((error) =>
@@ -131,6 +133,35 @@ export const cachedRead = <A, E, R>(opts: {
       ),
       Effect.ensuring(safe(session, () => store.release(prepared.key, prepared.owner))),
     );
+  });
+
+export const readFence = Effect.gen(function* () {
+  const session = yield* ReadCache;
+  if (session === null || session.store === null) return null;
+  const store = session.store;
+  return yield* safe(session, () => store.readClock());
+});
+
+export const seedRead = <A>(key: ReadKey, value: A, clock: number | null) =>
+  Effect.gen(function* () {
+    const session = yield* ReadCache;
+    if (session === null || session.store === null || clock === null) return;
+    const store = session.store;
+    yield* safe(session, async () => {
+      const prepared = await store.prepare(
+        key,
+        { kind: "passthrough" },
+        (raw) => raw,
+        undefined,
+        true,
+      );
+      if (prepared.kind !== "fetch") return;
+      try {
+        await store.put({ ...prepared, startedAtClock: clock }, value, false);
+      } finally {
+        await store.release(prepared.key, prepared.owner);
+      }
+    });
   });
 
 export const invalidate = (tags: readonly Tag[]) =>

@@ -18,6 +18,7 @@ export const gatedRead = <A, E, R, E2, R2>(opts: {
   readonly signal: Effect.Effect<string, E2, R2>;
   readonly maxAgeMs: (value: A) => number;
   readonly consistency?: "cached" | "origin";
+  readonly cacheableWhen?: (value: A) => boolean;
 }) =>
   Effect.gen(function* () {
     const session = yield* ReadCache;
@@ -26,6 +27,7 @@ export const gatedRead = <A, E, R, E2, R2>(opts: {
     const value = yield* cachedRead({
       key: opts.key,
       policy: OPS[opts.key.op],
+      cacheableWhen: (envelope: Envelope<A>) => opts.cacheableWhen?.(envelope.data) !== false,
       decode: (raw): Envelope<A> => {
         const envelope = parsePreserving(Envelope)(raw);
         return { ...envelope, data: opts.decode(envelope.data) };

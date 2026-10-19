@@ -115,7 +115,7 @@ export class FileStore {
     return store;
   }
 
-  private async readClock(): Promise<number> {
+  async readClock(): Promise<number> {
     try {
       const value = Number(await readFile(join(this.directory, "clock"), "utf8"));
       if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid cache clock");

@@ -2,7 +2,8 @@ import { Effect, Schema } from "effect";
 import { GitHubService } from "#gh/service";
 import { GitHubCommandError } from "#gh/errors";
 import type { CheckResult } from "#gh/types";
-import { cachedRead } from "./cache";
+import { cachedRead, readFence, ReadCache, seedRead } from "./cache";
+import { resolveTarget } from "#gh/pr/snapshot";
 import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";
 import { OPS } from "./classes";
@@ -136,7 +137,20 @@ export const prView = Effect.fn("reads.prView")(function* (
   ];
   const fetch = () =>
     gh.runGhJson<PrView>(args).pipe(Effect.map((value) => ({ kind: "fresh" as const, value })));
-  if (selector.by === "currentBranch" || repo === null) return (yield* fetch()).value;
+  if (selector.by === "currentBranch" || repo === null) {
+    const fence = yield* readFence;
+    const data = (yield* fetch()).value;
+    if (repo !== null && consistency !== "origin" && fence !== null) {
+      const head = yield* prHead(repo, data.number).pipe(Effect.orElseSucceed(() => null));
+      if (head !== null && head.headSha === data.headRefOid)
+        yield* seedRead(
+          { op: "prView", repo, pr: data.number },
+          { data, originFetchedAt: Date.now(), signal: head.signature },
+          fence,
+        );
+    }
+    return data;
+  }
   return yield* gatedRead({
     key: { op: "prView", repo, pr: selector.number },
     consistency,
@@ -202,15 +216,51 @@ export const prChecks = Effect.fn("reads.prChecks")(function* (
         "name,state,bucket,link",
       ])
       .pipe(Effect.map((value) => ({ kind: "fresh" as const, value })));
-  if (pr === null || headSha === null) return (yield* fetch()).value;
+  const session = yield* ReadCache;
+  if (session === null || session.store === null) return (yield* fetch()).value;
+  const number = yield* resolveTarget(pr, prView(repo, { by: "currentBranch" }));
+  const head =
+    headSha === null
+      ? yield* prHead(repo, number, "origin").pipe(Effect.orElseSucceed(() => null))
+      : { headSha };
+  if (head === null) return (yield* fetch()).value;
+  const sha = head.headSha;
+  let verified = true;
+  const stableFetch = Effect.gen(function* () {
+    const before = yield* prHead(repo, number, "origin").pipe(Effect.orElseSucceed(() => null));
+    if (before !== null && before.headSha !== sha) return yield* movedHead(number);
+    const value = yield* gh.runGhJson<CheckResult[]>([
+      "pr",
+      "checks",
+      String(number),
+      "--repo",
+      repoSlug(repo),
+      "--json",
+      "name,state,bucket,link",
+    ]);
+    const after = yield* prHead(repo, number, "origin").pipe(Effect.orElseSucceed(() => null));
+    if (after !== null && after.headSha !== sha) return yield* movedHead(number);
+    verified = before !== null && after !== null;
+    return value;
+  });
   return yield* gatedRead({
-    key: { op: "prChecks", repo, pr, headSha },
+    key: { op: "prChecks", repo, pr: number, headSha: sha },
     decode: parsePreserving(Schema.mutable(Schema.Array(Check))),
-    fetch: Effect.suspend(fetch).pipe(Effect.map((value) => value.value)),
-    signal: checkSignal(repo, headSha),
+    fetch: stableFetch,
+    cacheableWhen: () => verified,
+    signal: checkSignal(repo, sha),
     maxAgeMs: (value) =>
       value.length === 0 || value.some((check) => check.bucket === "pending")
         ? 15000
         : OPS.prChecks.maxAgeMs,
   });
 });
+
+const movedHead = (pr: number) =>
+  new GitHubCommandError({
+    command: `gh-tool pr checks --pr ${pr}`,
+    exitCode: 1,
+    message: "PR head changed while collecting checks",
+    stderr: "PR head changed while collecting checks",
+    retryable: true,
+  });

@@ -10574,8 +10574,15 @@ it.effect("gates shared pending checks and separates heads", () =>
     );
     const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
     let calls = 0;
+    let currentHead = "first";
     const layer = createMockGhLayer({
-      apiRequest: () => Effect.succeed({ status: 200, body: { check_runs: [], statuses: [] } }),
+      apiRequest: ({ path }) =>
+        Effect.succeed({
+          status: 200,
+          body: path.includes("/pulls/")
+            ? { head: { sha: currentHead }, base: { sha: "base" } }
+            : { check_runs: [], statuses: [] },
+        }),
       runGhJson: () => {
         calls += 1;
         return Effect.succeed([
@@ -10603,6 +10610,7 @@ it.effect("gates shared pending checks and separates heads", () =>
       now = Number(yield* Clock.currentTimeMillis);
       expect((yield* read)[0]?.bucket).toBe("pass");
       expect(calls).toBe(2);
+      currentHead = "second";
       yield* fetchCheckResults(123, { headSha: "second" });
       expect(calls).toBe(3);
     }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
@@ -10626,6 +10634,11 @@ it.effect("refreshes checks for a commit status change and a write with unchange
     const paths: string[] = [];
     const layer = createMockGhLayer({
       apiRequest: ({ path }) => {
+        if (path.includes("/pulls/"))
+          return Effect.succeed({
+            status: 200,
+            body: { head: { sha: "head" }, base: { sha: "base" } },
+          });
         paths.push(path);
         return Effect.succeed({
           status: 200,
