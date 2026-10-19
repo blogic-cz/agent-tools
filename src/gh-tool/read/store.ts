@@ -271,6 +271,7 @@ export class FileStore {
     policy: CacheClass,
     decode: (value: unknown) => A,
     policyForValue: (value: A) => CacheClass = () => policy,
+    force = false,
   ): Promise<Prepared<A>> {
     const key = entryKey(this.identity, readKey);
     const owner = randomUUID();
@@ -288,7 +289,7 @@ export class FileStore {
               now >= previous.fetchedAt &&
               now - previous.fetchedAt < effectivePolicy.ttlMs &&
               previous.startedAtClock >= (await this.maxGeneration(tagsFor(readKey)))));
-        if (fresh && previous !== null) {
+        if (!force && fresh && previous !== null) {
           await this.record(readKey.op, "hit");
           return { kind: "hit", value: previous.value };
         }
@@ -309,6 +310,7 @@ export class FileStore {
           // A prior owner can publish between the first read and this lease acquisition.
           const current = await this.entry(key, decode);
           if (
+            !force &&
             current !== null &&
             (current.immutable ||
               (current.fetchedAt !== previous?.fetchedAt &&

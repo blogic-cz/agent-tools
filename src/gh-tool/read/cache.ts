@@ -48,6 +48,7 @@ export const cachedRead = <A, E, R>(opts: {
   readonly immutableWhen?: (value: A) => boolean;
   readonly policyForValue?: (value: A) => CacheClass;
   readonly consistency?: "cached" | "origin";
+  readonly validateOrigin?: boolean;
 }): Effect.Effect<A, E, R> =>
   Effect.gen(function* () {
     const session = yield* ReadCache;
@@ -67,11 +68,17 @@ export const cachedRead = <A, E, R>(opts: {
       store === null ||
       store === undefined ||
       opts.policy.kind === "passthrough" ||
-      opts.consistency === "origin"
+      (opts.consistency === "origin" && opts.validateOrigin !== true)
     )
       return yield* direct();
     const prepared = yield* safe(session, () =>
-      store.prepare(opts.key, opts.policy, opts.decode, opts.policyForValue),
+      store.prepare(
+        opts.key,
+        opts.policy,
+        opts.decode,
+        opts.policyForValue,
+        opts.consistency === "origin",
+      ),
     );
     if (prepared === null) return yield* direct();
     if (prepared.kind === "hit") return prepared.value;
@@ -110,7 +117,8 @@ export const cachedRead = <A, E, R>(opts: {
             error instanceof GitHubCommandError &&
             (error.exitCode === 429 ||
               /rate limit|abuse detection/i.test(`${error.message}\n${error.stderr}`));
-          if (!rateLimited || prepared.previous === null) return yield* Effect.fail(error);
+          if (opts.consistency === "origin" || !rateLimited || prepared.previous === null)
+            return yield* Effect.fail(error);
           const valid = yield* safe(session, () => store.canServeStale(prepared));
           if (valid !== true) return yield* Effect.fail(error);
           if (!session.staleWarned) {

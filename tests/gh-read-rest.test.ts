@@ -8,8 +8,58 @@ import type { GitHubApiRequest, GitHubApiResponse } from "#gh/api";
 import { ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
 import { restSnapshot, snapshotDigest } from "#gh/read/rest";
+import { GitHubCommandError } from "#gh/errors";
 
 afterEach(() => vi.restoreAllMocks());
+
+it("origin reads validate stored ETags inside the TTL and refuse stale data on failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gh-read-origin-"));
+  try {
+    const store = await FileStore.open("fixture", root);
+    const requests: GitHubApiRequest[] = [];
+    let failure = false;
+    const gh = GitHubService.of({
+      apiRequest: <T>(request: GitHubApiRequest) => {
+        requests.push(request);
+        if (failure)
+          return Effect.fail(
+            new GitHubCommandError({
+              command: "GET pulls/1",
+              exitCode: 429,
+              message: "rate limited",
+              stderr: "rate limited",
+            }),
+          );
+        return Effect.succeed({
+          status: requests.length === 1 ? 200 : 304,
+          body: { head: { sha: "sha" } } as T,
+          etag: '"head"',
+        });
+      },
+      runGh: () => Effect.die("Unexpected porcelain request"),
+      runGhJson: () => Effect.die("Unexpected porcelain request"),
+      runGraphQL: () => Effect.die("Unexpected GraphQL request"),
+      getRepoInfo: () => Effect.die("Unexpected repo request"),
+      getRepoConfig: () => Effect.succeed(undefined),
+      withRepoTarget: (_target, effect) => effect,
+    });
+    const read = restSnapshot(
+      { op: "prHead", repo: { owner: "o", name: "r" }, pr: 1 },
+      [{ kind: "single", path: "repos/o/r/pulls/1" }],
+      "origin",
+    ).pipe(
+      Effect.provideService(GitHubService, gh),
+      Effect.provideService(ReadCache, { store, warned: false }),
+    );
+    const first = await Effect.runPromise(read);
+    expect(await Effect.runPromise(read)).toEqual(first);
+    expect(requests.map((request) => request.ifNoneMatch)).toEqual([undefined, '"head"']);
+    failure = true;
+    expect(await Effect.runPromise(read.pipe(Effect.flip))).toBeInstanceOf(GitHubCommandError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 it("revalidates every page and handles changed and removed trailing pages", async () => {
   const root = await mkdtemp(join(tmpdir(), "gh-read-rest-"));

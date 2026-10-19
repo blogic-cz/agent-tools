@@ -32,6 +32,7 @@ export const restSnapshot = Effect.fn("reads.restSnapshot")(function* (
     key,
     policy: OPS[key.op],
     consistency,
+    validateOrigin: true,
     decode: parsePreserving(Snapshot),
     fetch: (previous: { value: RestSnapshot } | null) =>
       Effect.gen(function* () {
