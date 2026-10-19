@@ -5,6 +5,7 @@ import { digest } from "./keys";
 import type { ReadKey, RepoRef, Tag } from "./keys";
 import type { CacheClass } from "./classes";
 import { FileStore } from "./store";
+import type { ReadFence } from "./store";
 
 type CacheSession = { store: FileStore | null; warned: boolean; staleWarned?: boolean };
 export const ReadCache = Context.Reference<CacheSession | null>("@agent-tools/ReadCache", {
@@ -145,7 +146,7 @@ export const readFence = Effect.gen(function* () {
   return yield* safe(session, () => store.readClock());
 });
 
-export const seedRead = <A>(key: ReadKey, value: A, clock: number | null) =>
+export const seedRead = <A>(key: ReadKey, value: A, clock: ReadFence | null) =>
   Effect.gen(function* () {
     const session = yield* ReadCache;
     if (session === null || session.store === null || clock === null) return;

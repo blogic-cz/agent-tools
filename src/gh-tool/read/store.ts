@@ -7,11 +7,14 @@ import type { CacheClass } from "./classes";
 import { digest, entryKey, repoSlug, tagsFor } from "./keys";
 import type { ReadKey, RepoRef, Tag } from "./keys";
 
+const ClockSchema = Schema.Struct({ resetId: Schema.String, generation: Schema.Number });
+export type ReadFence = typeof ClockSchema.Type;
+
 const EntrySchema = Schema.Struct({
   schema: Schema.Literal(1),
   value: Schema.Unknown,
   fetchedAt: Schema.Number,
-  startedAtClock: Schema.Number,
+  startedAtClock: Schema.Union([ClockSchema, Schema.Number]),
   immutable: Schema.Boolean,
   identity: Schema.String,
   repo: Schema.String,
@@ -20,7 +23,7 @@ const EntrySchema = Schema.Struct({
 const LeaseSchema = Schema.Struct({ owner: Schema.String, expiresAt: Schema.Number });
 const LockOwnerSchema = Schema.Struct({ pid: Schema.Number, owner: Schema.String });
 const CounterSchema = Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Number));
-type Entry = typeof EntrySchema.Type;
+type Entry = Omit<typeof EntrySchema.Type, "startedAtClock"> & { startedAtClock: ReadFence };
 export type StoreStats = Record<string, Record<string, number>>;
 export type Prepared<A> =
   | { readonly kind: "hit"; readonly value: A }
@@ -29,7 +32,7 @@ export type Prepared<A> =
       readonly key: string;
       readonly readKey: ReadKey;
       readonly owner: string;
-      readonly startedAtClock: number;
+      readonly startedAtClock: ReadFence;
       readonly previous: (Entry & { value: A }) | null;
     };
 
@@ -117,17 +120,20 @@ export class FileStore {
     return store;
   }
 
-  readClock(): Promise<number> {
+  readClock(): Promise<ReadFence> {
     return this.locked(() => this.clockUnderLock());
   }
 
-  private async clockUnderLock(): Promise<number> {
+  private async clockUnderLock(): Promise<ReadFence> {
     try {
-      const value = Number(await readFile(join(this.directory, "clock"), "utf8"));
-      if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid cache clock");
+      const value = Schema.decodeUnknownSync(ClockSchema)(
+        JSON.parse(await readFile(join(this.directory, "clock"), "utf8")),
+      );
+      if (!Number.isSafeInteger(value.generation) || value.generation < 0)
+        throw new Error("Invalid cache clock");
       return value;
     } catch (error) {
-      if (missing(error)) {
+      if (missing(error) || Schema.isSchemaError(error)) {
         const entries = join(this.directory, "entries");
         await Promise.all(
           (await readdir(entries)).map(async (name) => {
@@ -146,8 +152,9 @@ export class FileStore {
             );
           }),
         );
-        await atomicWrite(join(this.directory, "clock"), "0");
-        return 0;
+        const clock = { resetId: randomUUID(), generation: 0 };
+        await atomicWrite(join(this.directory, "clock"), JSON.stringify(clock));
+        return clock;
       }
       throw error;
     }
@@ -265,13 +272,14 @@ export class FileStore {
 
   async bump(tags: readonly Tag[]): Promise<void> {
     await this.locked(async () => {
-      const generation = (await this.clockUnderLock()) + 1;
+      const clock = await this.clockUnderLock();
+      const generation = clock.generation + 1;
       await Promise.all(
         [...new Set(tags)].map((tag) =>
           atomicWrite(join(this.directory, "tags", digest(tag)), String(generation)),
         ),
       );
-      await atomicWrite(join(this.directory, "clock"), String(generation));
+      await atomicWrite(join(this.directory, "clock"), JSON.stringify({ ...clock, generation }));
     });
   }
 
@@ -319,7 +327,14 @@ export class FileStore {
       const entry = Schema.decodeUnknownSync(EntrySchema)(
         JSON.parse(await readFile(join(this.directory, "entries", `${key}.json`), "utf8")),
       );
-      return { ...entry, value: decode(entry.value) };
+      return {
+        ...entry,
+        startedAtClock:
+          typeof entry.startedAtClock === "number"
+            ? { resetId: "legacy", generation: entry.startedAtClock }
+            : entry.startedAtClock,
+        value: decode(entry.value),
+      };
     } catch (error) {
       if (missing(error) || error instanceof SyntaxError || Schema.isSchemaError(error))
         return null;
@@ -339,58 +354,42 @@ export class FileStore {
     let waited = false;
     return repeatUntil<Prepared<A>>(
       async () => {
-        await this.readClock();
-        const previous = await this.entry(key, decode);
-        const now = Date.now();
-        const effectivePolicy = previous === null ? policy : policyForValue(previous.value);
-        const fresh =
-          previous !== null &&
-          (previous.immutable ||
-            (effectivePolicy.kind !== "passthrough" &&
-              effectivePolicy.kind !== "immutable" &&
-              now >= previous.fetchedAt &&
-              now - previous.fetchedAt < effectivePolicy.ttlMs &&
-              previous.startedAtClock >= (await this.maxGeneration(tagsFor(readKey)))));
-        if (!force && fresh && previous !== null) {
-          await this.record(readKey.op, "hit");
-          return { kind: "hit", value: previous.value };
-        }
-        const acquired = await this.locked(async () => {
+        const prepared = await this.locked(async (): Promise<Prepared<A> | null> => {
+          const clock = await this.clockUnderLock();
+          const previous = await this.entry(key, decode);
+          const now = Date.now();
+          const effectivePolicy = previous === null ? policy : policyForValue(previous.value);
+          const valid =
+            previous !== null &&
+            (previous.immutable ||
+              (previous.startedAtClock.resetId === clock.resetId &&
+                previous.startedAtClock.generation >=
+                  (await this.maxGeneration(tagsFor(readKey)))));
+          const fresh =
+            valid &&
+            previous !== null &&
+            (previous.immutable ||
+              (effectivePolicy.kind !== "passthrough" &&
+                effectivePolicy.kind !== "immutable" &&
+                now >= previous.fetchedAt &&
+                now - previous.fetchedAt < effectivePolicy.ttlMs));
+          if (!force && fresh && previous !== null) {
+            await this.record(readKey.op, "hit");
+            return { kind: "hit", value: previous.value };
+          }
           const path = join(this.directory, "leases", `${key}.json`);
           try {
             const lease = Schema.decodeUnknownSync(LeaseSchema)(
               JSON.parse(await readFile(path, "utf8")),
             );
-            if (lease.expiresAt > Date.now()) return false;
+            if (lease.expiresAt > now) return null;
           } catch (error) {
             if (!missing(error)) throw error;
           }
-          await atomicWrite(path, JSON.stringify({ owner, expiresAt: Date.now() + 60_000 }));
-          return true;
+          await atomicWrite(path, JSON.stringify({ owner, expiresAt: now + 60_000 }));
+          return { kind: "fetch", key, readKey, owner, startedAtClock: clock, previous };
         });
-        if (acquired) {
-          // A prior owner can publish between the first read and this lease acquisition.
-          const current = await this.entry(key, decode);
-          if (
-            !force &&
-            current !== null &&
-            (current.immutable ||
-              (current.fetchedAt !== previous?.fetchedAt &&
-                current.startedAtClock >= (await this.maxGeneration(tagsFor(readKey)))))
-          ) {
-            await this.release(key, owner);
-            await this.record(readKey.op, "hit");
-            return { kind: "hit", value: current.value };
-          }
-          return {
-            kind: "fetch",
-            key,
-            readKey,
-            owner,
-            startedAtClock: await this.readClock(),
-            previous,
-          };
-        }
+        if (prepared !== null) return prepared;
         if (!waited) {
           await this.record(readKey.op, "wait");
           waited = true;
@@ -409,6 +408,8 @@ export class FileStore {
     etag?: string,
   ): Promise<boolean> {
     return this.locked(async () => {
+      const clock = await this.clockUnderLock();
+      if (prepared.startedAtClock.resetId !== clock.resetId) return false;
       try {
         const lease = Schema.decodeUnknownSync(LeaseSchema)(
           JSON.parse(
@@ -422,7 +423,7 @@ export class FileStore {
       }
       if (
         !immutable &&
-        (await this.maxGeneration(tagsFor(prepared.readKey))) > prepared.startedAtClock
+        (await this.maxGeneration(tagsFor(prepared.readKey))) > prepared.startedAtClock.generation
       )
         return false;
       await atomicWrite(
@@ -442,15 +443,20 @@ export class FileStore {
     });
   }
 
-  async canServeStale<A>(prepared: Extract<Prepared<A>, { kind: "fetch" }>): Promise<boolean> {
-    await this.readClock();
-    const previous = prepared.previous;
-    return (
-      previous !== null &&
-      (await this.entry(prepared.key, (value) => value)) !== null &&
-      (previous.immutable ||
-        previous.startedAtClock >= (await this.maxGeneration(tagsFor(prepared.readKey))))
-    );
+  canServeStale<A>(prepared: Extract<Prepared<A>, { kind: "fetch" }>): Promise<boolean> {
+    return this.locked(async () => {
+      const clock = await this.clockUnderLock();
+      const previous = prepared.previous;
+      return (
+        previous !== null &&
+        (await this.entry(prepared.key, (value) => value)) !== null &&
+        (previous.immutable ||
+          (previous.startedAtClock.resetId === clock.resetId &&
+            prepared.startedAtClock.resetId === clock.resetId &&
+            previous.startedAtClock.generation >=
+              (await this.maxGeneration(tagsFor(prepared.readKey)))))
+      );
+    });
   }
 
   async release(key: string, owner: string): Promise<void> {

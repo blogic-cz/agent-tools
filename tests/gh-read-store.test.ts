@@ -21,7 +21,7 @@ import { FileStore } from "#gh/read/store";
 import { OPS } from "#gh/read/classes";
 import { entryKey, tagsFor } from "#gh/read/keys";
 import type { ReadKey } from "#gh/read/keys";
-import { cachedRead, ReadCache } from "#gh/read/cache";
+import { cachedRead, ReadCache, readFence, seedRead } from "#gh/read/cache";
 import { GitHubCommandError } from "#gh/errors";
 
 const directories: string[] = [];
@@ -201,7 +201,7 @@ await store["locked"](async () => {
       child.kill("SIGKILL");
       await exited;
       await store.bump(tagsFor(key));
-      expect(await store.readClock()).toBe(1);
+      expect(await store.readClock()).toMatchObject({ generation: 1 });
     } finally {
       child.kill("SIGKILL");
     }
@@ -350,4 +350,84 @@ it("evicts entries older than fourteen days without touching gh's cache files", 
   await FileStore.open("identity", root);
   await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await readFile(zip, "utf8")).toBe("gh owns this file");
+});
+
+it("fences stale reads, seeds and paused readers across namespace resets", async () => {
+  const root = await directory();
+  const store = await FileStore.open("identity", root);
+  const other = await FileStore.open("identity", root);
+  const session = { store, warned: false };
+  const policy = { kind: "ttl" as const, ttlMs: 60_000 };
+  const save = async (value: string) => {
+    const prepared = await other.prepare(key, policy, decode);
+    if (prepared.kind !== "fetch") throw new Error("Expected miss");
+    await other.put(prepared, value, false);
+    await other.release(prepared.key, prepared.owner);
+  };
+  await store.bump(tagsFor(key));
+  await save("before reset");
+  const fence = await Effect.runPromise(readFence.pipe(Effect.provideService(ReadCache, session)));
+  const error = new GitHubCommandError({
+    message: "rate limit",
+    stderr: "rate limit",
+    exitCode: 429,
+    command: "fixture",
+  });
+  const read = cachedRead({
+    key,
+    policy: { kind: "ttl", ttlMs: 0 },
+    decode,
+    fetch: () =>
+      Effect.gen(function* () {
+        yield* Effect.promise(async () => {
+          await rm(join(store.directory, "clock"));
+          await other.bump(tagsFor(key));
+          await save("after reset");
+        });
+        return yield* Effect.fail(error);
+      }),
+  }).pipe(Effect.provideService(ReadCache, session), Effect.flip);
+  expect(await Effect.runPromise(read)).toEqual(error);
+  await rm(join(store.directory, "clock"));
+  await other.bump(tagsFor(key));
+  await Effect.runPromise(
+    seedRead(key, "old seed", fence).pipe(Effect.provideService(ReadCache, session)),
+  );
+  const seeded = await store.prepare(key, policy, decode);
+  expect(seeded.kind).toBe("fetch");
+  if (seeded.kind !== "fetch") throw new Error("Expected rejected seed");
+  await store.put(seeded, "before paused reset", false);
+  await store.release(seeded.key, seeded.owner);
+
+  const original = store["entry"].bind(store);
+  let pause = () => {};
+  const paused = new Promise<void>((resolve) => {
+    pause = resolve;
+  });
+  let resume = () => {};
+  const resumed = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  store["entry"] = async <A>(entryKey: string, decodeValue: (value: unknown) => A) => {
+    const entry = await original(entryKey, decodeValue);
+    pause();
+    await resumed;
+    return entry;
+  };
+  const reader = store.prepare(key, policy, decode);
+  await paused;
+  let resetDone = false;
+  await rm(join(store.directory, "clock"));
+  const reset = other.bump(tagsFor(key)).then(() => {
+    resetDone = true;
+    return undefined;
+  });
+  expect(resetDone).toBe(false);
+  resume();
+  expect(await reader).toEqual({ kind: "hit", value: "before paused reset" });
+  await reset;
+  store["entry"] = original;
+  const after = await store.prepare(key, policy, decode);
+  expect(after.kind).toBe("fetch");
+  if (after.kind === "fetch") await store.release(after.key, after.owner);
 });
