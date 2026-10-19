@@ -81,6 +81,34 @@ it("serves immutable content without another fetch after invalidation", async ()
   expect(await store.stats()).toMatchObject({ runView: { hit: 1 } });
 });
 
+it("resets volatile state after clock loss and keeps immutable entries across identities", async () => {
+  const root = await directory();
+  const store = await FileStore.open("identity", root);
+  const other = await FileStore.open("other", root);
+  const immutableKey: ReadKey = { op: "jobLog", repo: key.repo, jobId: 456 };
+  await store.bump(tagsFor(key));
+  const volatile = await store.prepare(key, OPS.runView, decode);
+  const immutable = await other.prepare(immutableKey, { kind: "immutable" }, decode);
+  if (volatile.kind !== "fetch" || immutable.kind !== "fetch") throw new Error("Expected misses");
+  await store.put(volatile, "old state", false);
+  await other.put(immutable, "completed log", true);
+  await store.release(volatile.key, volatile.owner);
+  await other.release(immutable.key, immutable.owner);
+  const stale = await store.prepare(key, { kind: "ttl", ttlMs: 0 }, decode);
+  if (stale.kind !== "fetch") throw new Error("Expected expired entry");
+  await rm(join(store.directory, "clock"));
+  await store.bump(tagsFor(key));
+  expect(await store.canServeStale(stale)).toBe(false);
+  expect(await store.put(stale, "late response", false)).toBe(false);
+  const next = await store.prepare(key, OPS.runView, decode);
+  expect(next.kind).toBe("fetch");
+  if (next.kind === "fetch") await store.release(next.key, next.owner);
+  expect(await other.prepare(immutableKey, { kind: "immutable" }, decode)).toEqual({
+    kind: "hit",
+    value: "completed log",
+  });
+});
+
 it("separates identities and canonicalizes repository spelling", () => {
   expect(entryKey("one", key)).not.toBe(entryKey("two", key));
   expect(entryKey("one", key)).toBe(

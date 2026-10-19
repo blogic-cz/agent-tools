@@ -111,17 +111,43 @@ export class FileStore {
       }),
     );
     const store = new FileStore(join(directory, "gh-read-v1"), identity);
+    await store.readClock();
     await store.prune();
     return store;
   }
 
-  async readClock(): Promise<number> {
+  readClock(): Promise<number> {
+    return this.locked(() => this.clockUnderLock());
+  }
+
+  private async clockUnderLock(): Promise<number> {
     try {
       const value = Number(await readFile(join(this.directory, "clock"), "utf8"));
       if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid cache clock");
       return value;
     } catch (error) {
-      if (missing(error)) return 0;
+      if (missing(error)) {
+        const entries = join(this.directory, "entries");
+        await Promise.all(
+          (await readdir(entries)).map(async (name) => {
+            const path = join(entries, name);
+            const entry = Schema.decodeUnknownSync(EntrySchema)(
+              JSON.parse(await readFile(path, "utf8")),
+            );
+            if (!entry.immutable) await rm(path, { force: true });
+          }),
+        );
+        await Promise.all(
+          ["tags", "leases"].map(async (child) => {
+            const directory = join(this.directory, child);
+            await Promise.all(
+              (await readdir(directory)).map((name) => rm(join(directory, name), { force: true })),
+            );
+          }),
+        );
+        await atomicWrite(join(this.directory, "clock"), "0");
+        return 0;
+      }
       throw error;
     }
   }
@@ -204,7 +230,7 @@ export class FileStore {
 
   async bump(tags: readonly Tag[]): Promise<void> {
     await this.locked(async () => {
-      const generation = (await this.readClock()) + 1;
+      const generation = (await this.clockUnderLock()) + 1;
       await Promise.all(
         [...new Set(tags)].map((tag) =>
           atomicWrite(join(this.directory, "tags", digest(tag)), String(generation)),
@@ -278,6 +304,7 @@ export class FileStore {
     let waited = false;
     return repeatUntil<Prepared<A>>(
       async () => {
+        await this.readClock();
         const previous = await this.entry(key, decode);
         const now = Date.now();
         const effectivePolicy = previous === null ? policy : policyForValue(previous.value);
@@ -381,9 +408,11 @@ export class FileStore {
   }
 
   async canServeStale<A>(prepared: Extract<Prepared<A>, { kind: "fetch" }>): Promise<boolean> {
+    await this.readClock();
     const previous = prepared.previous;
     return (
       previous !== null &&
+      (await this.entry(prepared.key, (value) => value)) !== null &&
       (previous.immutable ||
         previous.startedAtClock >= (await this.maxGeneration(tagsFor(prepared.readKey))))
     );
