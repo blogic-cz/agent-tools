@@ -377,6 +377,15 @@ describe("getDefaultEnvironment", () => {
 });
 
 describe("decodeConfig", () => {
+  it("preserves explicit chain copy directories", () => {
+    expect(
+      decodeConfig({ credentialGuard: { chainCopyDestinations: ["/workspace/inbox"] } })
+        .credentialGuard?.chainCopyDestinations,
+    ).toEqual(["/workspace/inbox"]);
+    expect(() => decodeConfig({ credentialGuard: { chainCopyDestinations: [true] } })).toThrow(
+      "Invalid agent-tools config",
+    );
+  });
   it("preserves generic credential-guard environment permissions", () => {
     const config = decodeConfig({
       credentialGuard: { allowedEnvironmentVariables: ["TEST_FLAG", "WORKSPACE_LABEL"] },

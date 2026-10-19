@@ -463,6 +463,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "chainCopyDestinations": {
+          "description": "Absolute canonical directories approved for cp destinations in proved command chains. Empty by default. Symlinks and traversal are refused.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "allowedEnvironmentVariables": {
           "description": "Exact, case-sensitive environment names approved for static printenv reads. Empty by default.",
           "type": "array",

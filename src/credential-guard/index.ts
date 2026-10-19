@@ -18,6 +18,7 @@ import type { CliToolOverride, CredentialGuardConfig } from "#config/types";
 import { redactSensitiveText } from "#shared/content-security";
 import { SECRET_PATTERNS } from "#shared/credential-patterns";
 import { posix } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
 import { passiveJqProgramIndex } from "./passive-jq";
 
 export { findSecretMatches } from "#shared/credential-patterns";
@@ -2558,6 +2559,131 @@ function hasStaticEnvironmentRead(
   );
 }
 
+function commandChainSources(command: string): string[] | undefined {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | "`" | undefined;
+  let depth = 0;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      index++;
+    } else if (quote) {
+      if (char === quote) quote = undefined;
+    } else if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+    } else if (char === "#") {
+      return undefined;
+    } else if (char === "(") {
+      depth++;
+    } else if (char === ")") {
+      if (--depth < 0) return undefined;
+    } else if (!depth && (char === ";" || command.startsWith("&&", index))) {
+      const part = command.slice(start, index).trim();
+      if (!part || parts.length >= 31) return undefined;
+      parts.push(part);
+      if (char === "&") index++;
+      start = index + 1;
+    }
+  }
+  const last = command.slice(start).trim();
+  return !quote && !depth && last && parts.length ? [...parts, last] : undefined;
+}
+
+type LiteralChainPart = { source: string; argv: string[]; redirects: boolean };
+
+function literalCommandChain(command: string): LiteralChainPart[] | undefined {
+  const literal = literalBindingText(command, "", "");
+  if (!literal || /[|&\r\n]/.test(literal.syntax.replaceAll("&&", ""))) return undefined;
+  const boundaries = [...literal.syntax.matchAll(/&&|;/g)];
+  if (!boundaries.length || boundaries.length > 31) return undefined;
+  const parts: LiteralChainPart[] = [];
+  let start = 0;
+  for (const end of [...boundaries.map((match) => match.index), command.length]) {
+    const source = command.slice(start, end).trim();
+    const parsed = parseStaticShellCommands(source);
+    if (
+      !parsed ||
+      typeof parsed === "string" ||
+      parsed.pipelines.length !== 1 ||
+      parsed.pipelines[0]?.length !== 1
+    )
+      return undefined;
+    const argv = unwrapProofCommand(parsed.pipelines[0][0] ?? [], "\0");
+    if (!argv) return undefined;
+    parts.push({ source, argv, redirects: parsed.redirects.length > 0 });
+    start = end + (literal.syntax.startsWith("&&", end) ? 2 : 1);
+  }
+  return parts;
+}
+
+function isIndependentHerdrOperation(argv: string[]): boolean {
+  if (isLiteralHerdrPrompt(argv)) return argv.length === 5;
+  if (argv[0] !== "herdr") return false;
+  if (argv[1] === "agent" && argv[2] === "start") {
+    const separator = argv.indexOf("--", 3);
+    const options = argv.slice(3, separator < 0 ? undefined : separator);
+    const kinds = options.filter((arg) => arg === "--kind" || arg.startsWith("--kind="));
+    return (
+      kinds.length === 1 &&
+      kinds[0] === "--kind" &&
+      options[options.indexOf("--kind") + 1] === "codex"
+    );
+  }
+  if (argv[1] !== "pane") return false;
+  if (argv[2] === "run")
+    return argv.length === 5 && argv[4] === "exec bash ~/.codex/codex-clean.sh bash --norc -i";
+  if (argv[2] !== "wait-output" || argv.length < 6) return false;
+  const seen = new Set<string>();
+  for (let index = 4; index < argv.length; index += 2) {
+    const option = argv[index] ?? "";
+    if (seen.has(option)) return false;
+    seen.add(option);
+    if (!["--match", "--regex", "--timeout"].includes(option) || !argv[index + 1]) return false;
+    if (argv[index] === "--timeout" && !/^\d+$/.test(argv[index + 1] ?? "")) return false;
+  }
+  return true;
+}
+
+function isIndependentDataCopy(argv: string[], destinations: string[]): boolean {
+  if (!destinations.length || argv[0] !== "cp" || argv.length !== 3) return false;
+  const source = argv[1] ?? "";
+  const target = argv[2] ?? "";
+  const literalPath = (path: string) =>
+    /^\/[A-Za-z0-9_./ -]+$/.test(path) &&
+    !path.split("/").some((part) => part === "." || part === "..");
+  if (!/^(?:~\/)?[A-Za-z0-9_./-]+$/.test(source) || source.startsWith("-") || !literalPath(target))
+    return false;
+  try {
+    const targetPath = target.replace(/\/+$/, "");
+    const targetStat = lstatSync(targetPath, { throwIfNoEntry: false });
+    if (target.endsWith("/") && !targetStat?.isDirectory()) return false;
+    const destination = targetStat?.isDirectory()
+      ? posix.join(targetPath, posix.basename(source))
+      : targetPath;
+    for (const directory of destinations) {
+      if (!literalPath(directory)) continue;
+      const root = directory.replace(/\/+$/, "");
+      if (!destination.startsWith(root + "/")) continue;
+      if (!lstatSync(root).isDirectory() || realpathSync(root) !== root) return false;
+      const parts = destination.slice(root.length + 1).split("/");
+      let current = root;
+      for (const [index, part] of parts.entries()) {
+        current += "/" + part;
+        const stat = lstatSync(current, { throwIfNoEntry: false });
+        const last = index === parts.length - 1;
+        if (!stat) return last;
+        if (stat.isSymbolicLink() || (!last && !stat.isDirectory())) return false;
+        if (realpathSync(current) !== current) return false;
+      }
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 function isLiteralHerdrPrompt(argv: string[]): boolean {
   return argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt" && argv.length >= 5;
 }
@@ -3730,6 +3856,31 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     });
     if (unterminatedQuote)
       return "cannot prove shell syntax: an unterminated quoted argument was found";
+    const chain = literalCommandChain(command);
+    if (chain?.some(({ argv }) => isLiteralHerdrPrompt(argv)) && !isStaticHerdrPrompt(command)) {
+      let copied = false;
+      for (const [index, part] of chain.entries()) {
+        const reason = getDangerousBashReason(part.source, shellDepth);
+        if (reason) return `cannot prove chain part ${index + 1} (${part.source}): ${reason}`;
+        if (
+          !part.redirects &&
+          isIndependentDataCopy(part.argv, config?.chainCopyDestinations ?? []) &&
+          !copied
+        ) {
+          copied = true;
+          continue;
+        }
+        if (
+          part.redirects ||
+          !isIndependentHerdrOperation(part.argv) ||
+          (copied && !(isLiteralHerdrPrompt(part.argv) && part.argv.length === 5))
+        )
+          return `cannot prove independent chain part ${index + 1} (${part.source}) under the environment/execution policy`;
+      }
+      if (dangerousBashPatterns.some((pattern) => pattern.test(originalCommand)))
+        return "matches a configured dangerous-command pattern";
+      return null;
+    }
     const allowPackageInventory = hasProvedPackageInventoryInvocation(originalCommand);
     const promptWords = isStaticHerdrPrompt(command)
       ? parseStaticShellCommands(command)
@@ -4140,7 +4291,24 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     if (tool === "bash") {
       const command = extractCommand(args);
 
-      const dangerousReason = getDangerousBashReason(command);
+      let dangerousReason = getDangerousBashReason(command);
+      if (dangerousReason && !dangerousReason.includes("chain part")) {
+        let unproved: string | undefined;
+        for (const [index, source] of (commandChainSources(command) ?? []).entries()) {
+          const reason = getDangerousBashReason(source);
+          const parsed = parseStaticShellCommands(source);
+          const literal = literalBindingText(source, "", "");
+          const words = parsed && typeof parsed !== "string" ? parsed.pipelines[0]?.[0] : undefined;
+          const argv = words ? unwrapProofCommand(words, "\0") : undefined;
+          if (reason) {
+            dangerousReason += `; cannot prove chain part ${index + 1} (${source}): ${reason}`;
+            break;
+          }
+          if (!unproved && (!literal || /[<>]/.test(literal.syntax) || !argv))
+            unproved = `cannot prove chain part ${index + 1} (${source}): independent composition is unproved`;
+        }
+        if (!dangerousReason.includes("chain part") && unproved) dangerousReason += `; ${unproved}`;
+      }
       if (dangerousReason) {
         throw new Error(
           `\u{1F6AB} Command blocked: ${dangerousReason}.\n\n` +
