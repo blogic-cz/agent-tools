@@ -8,7 +8,7 @@ import { GH_BINARY } from "#gh/config";
 import { ghEnvironment } from "#gh/environment";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
 import { retryTransient } from "#shared/retry-transient";
-import { githubApi } from "./api";
+import { githubApi, SessionCredential } from "./api";
 import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 import { validateOutboundText } from "#gh/text-input";
@@ -165,12 +165,13 @@ export class GitHubService extends Context.Service<
             Effect.gen(function* () {
               const ghRepo = yield* RepoTarget;
               const cache = yield* ReadCache;
+              const credential = yield* SessionCredential;
               const cacheDirectory = cache?.store?.ghCacheDirectory;
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
                 env: {
-                  ...ghEnvironment(),
+                  ...ghEnvironment(process.env, credential),
                   ...(ghRepo ? { GH_REPO: ghRepo } : {}),
                   ...(cacheDirectory === undefined ? {} : { XDG_CACHE_HOME: cacheDirectory }),
                 },

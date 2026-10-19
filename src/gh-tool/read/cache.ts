@@ -1,5 +1,5 @@
 import { Console, Context, Effect } from "effect";
-import { resolveGitHubToken } from "#gh/read/api";
+import { resolveGitHubToken, SessionCredential } from "#gh/read/api";
 import { GitHubCommandError } from "#gh/errors";
 import { digest } from "./keys";
 import type { ReadKey, RepoRef, Tag } from "./keys";
@@ -32,7 +32,10 @@ export const withReadCache = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.E
     if (token === null) return yield* effect;
     const session: CacheSession = { store: null, warned: false };
     session.store = yield* safe(session, () => FileStore.open(digest(token)));
-    return yield* effect.pipe(Effect.provideService(ReadCache, session));
+    return yield* effect.pipe(
+      Effect.provideService(ReadCache, session),
+      Effect.provideService(SessionCredential, token),
+    );
   });
 
 export type Fetched<A> =

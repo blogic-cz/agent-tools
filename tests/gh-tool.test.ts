@@ -1458,6 +1458,49 @@ describe("GitHubService.runGh() error mapping", () => {
     );
   });
 
+  it.effect("pins the active account for HTTP and gh children throughout a cache session", () => {
+    const originalEnvironment = process.env;
+    const originalFetch = globalThis.fetch;
+    const observed: ObservedGhCommand[] = [];
+    let directory: string | undefined;
+    let account = "fixture-account-A";
+    vi.stubGlobal("Bun", {
+      spawn: () => ({ stdout: new Response(account).body, exited: Promise.resolve(0) }),
+    });
+    return Effect.gen(function* () {
+      directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-pinned-account-")));
+      process.env = { GH_TOOL_CACHE_DIR: directory };
+      vi.stubGlobal("fetch", async (_url: unknown, init?: RequestInit) =>
+        Response.json(new Headers(init?.headers).get("Authorization")),
+      );
+      const service = yield* GitHubService;
+      yield* withReadCache(
+        Effect.gen(function* () {
+          const session = yield* ReadCache;
+          expect(session?.store).not.toBeNull();
+          account = "fixture-account-B";
+          expect((yield* githubApi<string>({ path: "user" })).body).toBe(
+            "Bearer fixture-account-A",
+          );
+          yield* service.runGh(["issue", "view", "1"]);
+          expect(observed[0]?.env?.["GH_TOKEN"]).toBe("fixture-account-A");
+        }),
+      );
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observed)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+      Effect.ensuring(
+        Effect.promise(async () => {
+          process.env = originalEnvironment;
+          globalThis.fetch = originalFetch;
+          vi.unstubAllGlobals();
+          if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+        }),
+      ),
+    );
+  });
+
   for (const enabled of [true, false]) {
     it.effect(`changes only gh's cache directory when cache is ${enabled ? "on" : "off"}`, () => {
       const originalEnvironment = process.env;

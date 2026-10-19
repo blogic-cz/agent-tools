@@ -1,4 +1,4 @@
-import { Clock, Effect } from "effect";
+import { Clock, Context, Effect } from "effect";
 
 import { registerResolvedSecret } from "#shared/content-security";
 import { retryTransient } from "#shared/retry-transient";
@@ -34,7 +34,16 @@ const authFailure = (message: string) =>
 // Environment first, GH_TOKEN before GITHUB_TOKEN to match the gh CLI: the active gh
 // account is directory-scoped global state and the shell exports the matching token.
 // `gh auth token` only covers shells that export none.
+export const SessionCredential = Context.Reference<string | null>(
+  "@agent-tools/SessionCredential",
+  {
+    defaultValue: () => null,
+  },
+);
+
 export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* () {
+  const pinned = yield* SessionCredential;
+  if (pinned !== null) return pinned;
   const fromEnv = [process.env["GH_TOKEN"], process.env["GITHUB_TOKEN"]].find(
     (candidate) => candidate !== undefined && candidate.length > 0,
   );
