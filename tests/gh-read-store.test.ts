@@ -5,6 +5,7 @@ import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -205,6 +206,65 @@ await store["locked"](async () => {
     } finally {
       child.kill("SIGKILL");
     }
+  },
+);
+
+it(
+  "recovers children killed at clock acquisition and release boundaries",
+  { timeout: 15000 },
+  async () => {
+    const root = await directory();
+    const store = await FileStore.open("fixture", root);
+    const script = join(root, "lock-boundaries.ts");
+    await writeFile(
+      script,
+      `
+import { mock } from "bun:test";
+import * as fs from "node:fs/promises";
+const original = { ...fs };
+let armed = false;
+const boundary = process.argv[3];
+mock.module("node:fs/promises", () => ({
+  ...original,
+  mkdir: async (path, options) => {
+    const acquiring = String(path).endsWith("clock.lock");
+    if (armed && acquiring && boundary === "acquire-before") process.kill(process.pid, "SIGKILL");
+    const result = await original.mkdir(path, options);
+    if (armed && acquiring && boundary === "acquire-after") process.kill(process.pid, "SIGKILL");
+    return result;
+  },
+  rename: async (from, to) => {
+    const operation = String(to).endsWith("clock.lock") ? "acquire" : String(from).endsWith("clock.lock") ? "release" : "other";
+    if (armed && boundary === operation + "-before") process.kill(process.pid, "SIGKILL");
+    const result = await original.rename(from, to);
+    if (armed && boundary === operation + "-after") process.kill(process.pid, "SIGKILL");
+    return result;
+  },
+}));
+const { FileStore } = await import(${JSON.stringify(resolve("src/gh-tool/read/store.ts"))});
+const store = await FileStore.open("fixture", process.argv[2]);
+armed = true;
+await store["locked"](async () => {});
+`,
+    );
+    for (const boundary of ["acquire-before", "acquire-after", "release-before", "release-after"]) {
+      const child = spawn("bun", [script, root, boundary], { stdio: "ignore" });
+      const [code, signal] = await once(child, "exit");
+      expect({ code, signal }).toEqual({ code: null, signal: "SIGKILL" });
+      const lock = join(store.directory, "clock.lock");
+      if (boundary === "acquire-after" || boundary === "release-before") {
+        const names = await readdir(lock);
+        expect(names).toHaveLength(1);
+        expect(JSON.parse(await readFile(join(lock, names[0] ?? "missing"), "utf8"))).toEqual({
+          pid: child.pid,
+          owner: expect.any(String),
+        });
+      } else
+        await expect(readFile(join(lock, "missing"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(store.readClock()).resolves.toMatchObject({ generation: 0 });
+    }
+    await mkdir(join(store.directory, "clock.lock"), { mode: 0o700 });
+    await expect(store.readClock()).resolves.toMatchObject({ generation: 0 });
   },
 );
 

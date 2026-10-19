@@ -65,7 +65,9 @@ const repeatUntil = <A>(
 const missing = (cause: unknown) =>
   cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 const exists = (cause: unknown) =>
-  cause instanceof Error && "code" in cause && cause.code === "EEXIST";
+  cause instanceof Error &&
+  "code" in cause &&
+  (cause.code === "EEXIST" || cause.code === "ENOTEMPTY");
 const atomicWrite = async (path: string, text: string): Promise<void> => {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
@@ -200,30 +202,40 @@ export class FileStore {
   private async locked<A>(body: () => Promise<A>): Promise<A> {
     const path = join(this.directory, "clock.lock");
     const owner = randomUUID();
-    const ownerPath = join(path, `${owner}.json`);
-    await repeatUntil(
-      async () => {
-        try {
-          await mkdir(path, { mode: 0o700 });
-        } catch (error) {
-          if (!exists(error)) throw error;
-          await this.recoverClockLock(path);
-          return null;
-        }
-        await writeFile(ownerPath, JSON.stringify({ pid: process.pid, owner }), {
+    const temporary = `${path}.${owner}.tmp`;
+    const tombstone = `${path}.${owner}.released`;
+    await mkdir(temporary, { mode: 0o700 });
+    try {
+      await writeFile(
+        join(temporary, `${owner}.json`),
+        JSON.stringify({ pid: process.pid, owner }),
+        {
           flag: "wx",
           mode: 0o600,
-        });
-        return true;
-      },
-      25,
-      2000,
-    );
-    try {
-      return await body();
+        },
+      );
+      await repeatUntil(
+        async () => {
+          try {
+            await rename(temporary, path);
+            return true;
+          } catch (error) {
+            if (!exists(error)) throw error;
+            await this.recoverClockLock(path);
+            return null;
+          }
+        },
+        25,
+        2000,
+      );
+      try {
+        return await body();
+      } finally {
+        await rename(path, tombstone);
+        await rm(tombstone, { recursive: true });
+      }
     } finally {
-      await rm(ownerPath);
-      await rmdir(path);
+      await rm(temporary, { recursive: true, force: true });
     }
   }
 
@@ -245,11 +257,10 @@ export class FileStore {
       } catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) return;
       }
-      // Only the remover of this unique owner's record may remove the empty directory.
       await rm(ownerPath);
       await rmdir(path);
     } catch (error) {
-      if (!missing(error)) throw error;
+      if (!missing(error) && !exists(error)) throw error;
     }
   }
 
