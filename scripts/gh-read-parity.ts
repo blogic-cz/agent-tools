@@ -10,11 +10,42 @@ const run = argument("--run");
 const job = argument("--job");
 const pr = argument("--pr");
 const issue = argument("--issue");
-if (repo === undefined || (run === undefined && pr === undefined && issue === undefined))
+const release = argument("--release");
+const gist = argument("--gist");
+const only = argument("--only");
+if (
+  repo === undefined ||
+  (run === undefined &&
+    pr === undefined &&
+    issue === undefined &&
+    release === undefined &&
+    gist === undefined)
+)
   throw new Error(
     "Usage: bun scripts/gh-read-parity.ts --repo owner/name [--run ID --job NAME] [--pr N] [--issue N]",
   );
 const cases = [
+  ["repo", "info"],
+  ["repo", "list", "--org", repo.split("/")[0] ?? "", "--limit", "1"],
+  [
+    "repo",
+    "search-code",
+    "--org",
+    repo.split("/")[0] ?? "",
+    "--query",
+    `repo:${repo} example`,
+    "--limit",
+    "1",
+  ],
+  ["release", "list", "--limit", "1"],
+  ["release", "status"],
+  ...(release === undefined ? [] : [["release", "view", "--tag", release]]),
+  ...(gist === undefined
+    ? []
+    : [
+        ["gist", "list", "--limit", "1"],
+        ["gist", "view", "--id", gist],
+      ]),
   ...(run === undefined || job === undefined
     ? []
     : [
@@ -33,6 +64,19 @@ const cases = [
         ["pr", "list", "--search", `is:pr ${pr}`, "--state", "all"],
         ["pr", "checks", "--prs", pr],
         ["pr", "checks-failed", "--pr", pr],
+        ...[
+          "threads",
+          "comments",
+          "reviews",
+          "last-human-reviewer",
+          "feedback",
+          "issue-comments",
+          "issue-comments-latest",
+          "discussion-summary",
+          "review-triage",
+        ].map((command) => ["pr", command, "--pr", pr]),
+        ["pr", "review-triage-batch", "--prs", pr],
+        ["pr", "stack", "view", "--pr", pr],
       ]),
   ...(issue === undefined
     ? []
@@ -51,11 +95,20 @@ const environment = {
     : { GH_TOOL_CACHE_DIR: process.env["GH_TOOL_CACHE_DIR"] }),
 };
 const execute = async (prefix: string[], argv: string[]) => {
-  const child = Bun.spawn([...prefix, ...argv, "--repo", repo, "--format", "json"], {
-    env: environment,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const child = Bun.spawn(
+    [
+      ...prefix,
+      ...argv,
+      ...(argv[0] === "gist" || (argv[0] === "repo" && argv[1] !== "info") ? [] : ["--repo", repo]),
+      "--format",
+      "json",
+    ],
+    {
+      env: environment,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -103,4 +156,8 @@ const compare = async (argv: string[]) => {
   );
   if (!equal || baseline.exitCode !== 0) process.exitCode = 1;
 };
-await cases.reduce((previous, argv) => previous.then(() => compare(argv)), Promise.resolve());
+const selected =
+  only === undefined
+    ? cases
+    : cases.filter((argv) => argv[0] === only || argv.slice(0, 2).join(" ") === only);
+await selected.reduce((previous, argv) => previous.then(() => compare(argv)), Promise.resolve());
