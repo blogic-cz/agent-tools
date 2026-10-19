@@ -378,7 +378,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         const failedStepLogs = yield* fetchJobLogs({
           runId,
           job: matchedJob.name,
-          jobId: matchedJob.databaseId,
+          jobRef: { id: matchedJob.databaseId, status: matchedJob.status },
           failedStepNames: matchedJob.failedSteps,
           steps: found?.stepsByJob.get(matchedJob.databaseId) ?? [],
           failedStepsOnly: true,

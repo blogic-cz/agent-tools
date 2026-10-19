@@ -7,6 +7,7 @@ import { GitHubCommandError, GitHubNotFoundError } from "./errors";
 import { GitHubService } from "./read/transport";
 import { reads, resolveRepo, waits, writes } from "./read";
 import { rawJobLog } from "./read/reads";
+import type { JobRef } from "./read/reads";
 import { repoSlug } from "./read/keys";
 import type { CheckRunAnnotation, JobAnnotations, LogDiagnosis } from "./types";
 
@@ -553,17 +554,18 @@ const resolveJob = Effect.fn("workflow.resolveJob")(function* (
   });
 });
 
-export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
-  runId: number;
-  job: string;
-  jobId?: number | null;
-  failedStepNames?: readonly string[] | null;
-  steps?: ReadonlyArray<StepTiming>;
-  failedStepsOnly: boolean;
-  diagnose?: boolean;
-  format: string;
-  repo: string | null;
-}) {
+export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (
+  opts: {
+    runId: number;
+    job: string;
+    failedStepNames?: readonly string[] | null;
+    steps?: ReadonlyArray<StepTiming>;
+    failedStepsOnly: boolean;
+    diagnose?: boolean;
+    format: string;
+    repo: string | null;
+  } & ({ jobRef: JobRef; jobId?: never } | { jobId?: number | null; jobRef?: never }),
+) {
   const gh = yield* GitHubService;
 
   let owner: string;
@@ -587,10 +589,10 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
   }
 
   const job =
-    opts.jobId === null || opts.jobId === undefined
+    opts.jobRef === undefined && (opts.jobId === null || opts.jobId === undefined)
       ? yield* resolveJob(opts.runId, opts.job, opts.repo)
       : null;
-  const jobId = opts.jobId ?? job?.databaseId;
+  const jobId = opts.jobRef?.id ?? opts.jobId ?? job?.databaseId;
   if (jobId === undefined)
     return yield* new GitHubCommandError({
       message: "Job identity unavailable",
@@ -602,7 +604,7 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
   // `gh run view --log` can omit lines, so the job log endpoint is the primary source.
   const apiLogs = reads.jobLog(
     { owner, name: repoName },
-    { id: jobId, status: job?.status ?? "unknown" },
+    opts.jobRef ?? { id: jobId, status: job?.status ?? "unknown" },
   );
   const cliLogs = fetchLogs(opts.runId, opts.failedStepsOnly, jobId, opts.repo).pipe(
     Effect.map((r) => r.log),
