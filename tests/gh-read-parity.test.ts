@@ -1,12 +1,11 @@
-import { execFile, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { expect, it } from "vitest";
 import { createReplayGh, replayCases, replayFlags } from "./fixtures/gh-read-replay";
 
-const runFile = promisify(execFile);
+import { runReplayCases } from "./fixtures/gh-read-process";
 
 it(
   "uses one cold issue-list call and zero warm calls with an explicit repository",
@@ -63,7 +62,7 @@ it(
 it(
   "replays published 1.7.5 command outputs without GitHub access",
   { timeout: 30000 },
-  async () => {
+  async ({ signal }) => {
     const root = await mkdtemp(join(tmpdir(), "gh-read-parity-"));
     try {
       const bun = spawnSync("bun", ["-e", "process.stdout.write(process.execPath)"], {
@@ -76,35 +75,28 @@ it(
         cases: { argv: string[]; stdout: string; status: number }[];
       };
       expect(fixture.cases.map((entry) => entry.argv)).toEqual(replayCases);
-      for (let offset = 0; offset < fixture.cases.length; offset += 4) {
-        await Promise.all(
-          fixture.cases.slice(offset, offset + 4).map(async (entry) => {
-            const result = await runFile(
-              bun,
-              ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(entry.argv)],
-              {
-                cwd: resolve(import.meta.dirname, ".."),
-                encoding: "utf8",
-                timeout: 15000,
-                env: {
-                  PATH: `${bin}:/usr/bin:/bin`,
-                  HOME: root,
-                  XDG_CONFIG_HOME: root,
-                  XDG_CACHE_HOME: root,
-                  GH_TOKEN: "offline-replay",
-                  GH_TOOL_CACHE: "off",
-                },
-              },
-            );
-            expect(entry.status).toBe(0);
-            expect(result.stderr).toBe("");
-            expect({ argv: entry.argv, stdout: result.stdout }).toEqual({
-              argv: entry.argv,
-              stdout: entry.stdout,
-            });
-          }),
-        );
-      }
+      await runReplayCases({
+        executable: bun,
+        cases: fixture.cases.map((entry) => ({
+          stdout: entry.stdout,
+          status: entry.status,
+          argv: ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(entry.argv)],
+        })),
+        options: {
+          cwd: resolve(import.meta.dirname, ".."),
+          encoding: "utf8",
+          timeout: 15000,
+          signal,
+          env: {
+            PATH: `${bin}:/usr/bin:/bin`,
+            HOME: root,
+            XDG_CONFIG_HOME: root,
+            XDG_CACHE_HOME: root,
+            GH_TOKEN: "offline-replay",
+            GH_TOOL_CACHE: "off",
+          },
+        },
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
