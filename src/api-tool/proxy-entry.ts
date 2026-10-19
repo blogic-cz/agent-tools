@@ -3,7 +3,9 @@ import { startProxy } from "./server";
 import { readPrivateFile } from "./store";
 import { safeError } from "./errors";
 
-if (Bun.argv.length !== 4 || Bun.argv[2] !== "--config") {
+if (Bun.argv.length === 3 && (Bun.argv[2] === "--help" || Bun.argv[2] === "-h")) {
+  process.stdout.write("Usage: api-proxy --config /operator/private/operator.json\n");
+} else if (Bun.argv.length !== 4 || Bun.argv[2] !== "--config") {
   process.stderr.write("Usage: api-proxy --config /operator/private/operator.json\n");
   process.exitCode = 1;
 } else {

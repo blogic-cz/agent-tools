@@ -168,6 +168,7 @@ After creating the files, run `bun install` in the `agent-tools/` directory (or 
 
 ```bash
 bun run agent-tools/example-tool/index.ts ping
+(cd agent-tools && bun run gh-tool --help)
 ```
 
 ## Quick Start
