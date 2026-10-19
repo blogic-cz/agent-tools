@@ -11,6 +11,7 @@ import { withRedactedOutput } from "#shared/output-boundary";
 import {
   redactSensitiveText,
   redactSensitiveValue,
+  registerResolvedSecret,
   unsafeOutboundTextReason,
 } from "#shared/content-security";
 
@@ -18,6 +19,22 @@ const githubToken = `ghp_${"A".repeat(36)}`;
 const awsKey = `AKIA${"B".repeat(16)}`;
 
 describe("shared content security", () => {
+  it("redacts and refuses registered secrets of at least eight characters", () => {
+    registerResolvedSecret("synthetic-registered-secret");
+    registerResolvedSecret("short7c");
+
+    expect(redactSensitiveText("a synthetic-registered-secret b short7c", {})).toBe(
+      "a [REDACTED] b short7c",
+    );
+    expect(unsafeOutboundTextReason("x synthetic-registered-secret", {})).toBe(
+      "a credential from the process environment",
+    );
+  });
+
+  it("redacts GitHub OAuth tokens from gh auth token", () => {
+    expect(redactSensitiveText(`login gho_${"C".repeat(36)}`, {})).toBe("login [REDACTED]");
+  });
+
   it("blocks and redacts every recognized credential occurrence", () => {
     const text = `first ${githubToken}; second ${githubToken}; AWS ${awsKey}`;
 

@@ -1,7 +1,7 @@
 /** Patterns used by the credential guard and shared output redaction. */
 export const SECRET_PATTERNS = [
   { name: "AWS Access Key", pattern: /(?:AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}/ },
-  { name: "GitHub Token", pattern: /gh[ps]_[A-Za-z0-9]{36}/ },
+  { name: "GitHub Token", pattern: /gh[opsur]_[A-Za-z0-9]{36}/ },
   { name: "GitHub PAT", pattern: /github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}/ },
   { name: "OpenAI Key", pattern: /sk-[A-Za-z0-9]{48}/ },
   {

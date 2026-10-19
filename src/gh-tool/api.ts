@@ -1,5 +1,6 @@
 import { Clock, Effect } from "effect";
 
+import { registerResolvedSecret } from "#shared/content-security";
 import { retryTransient } from "#shared/retry-transient";
 
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
@@ -57,6 +58,7 @@ export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* (
     return yield* authFailure("No GitHub token available.");
   }
 
+  registerResolvedSecret(token);
   return token;
 });
 
