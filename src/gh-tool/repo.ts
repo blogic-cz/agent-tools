@@ -30,7 +30,7 @@ export const repoInfoCommand = Command.make(
       yield* gh.withRepoTarget(
         Option.getOrNull(repo),
         Effect.gen(function* () {
-          const info = yield* gh.getRepoInfo();
+          const info = yield* passthrough.repoInfo();
           yield* logFormatted(info, format);
         }),
       );

@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { waits } from "#gh/read/waits";
 import { GitHubService } from "#gh/read/transport";
 import { writes } from "#gh/read/writes";
+import { repoSlug } from "#gh/read/keys";
 import { passthrough } from "#gh/read/catalog";
 import type { AsyncMergeResult } from "#gh/read/catalog";
 import { GitHubMergeError } from "#gh/errors";
@@ -162,7 +163,7 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
       body: { merge_method: opts.strategy, merge_action: "direct_merge" },
       alsoAcceptStatus: [202, 409],
     },
-    [`repo:${repo.owner}/${repo.name}`],
+    [`repo:${repoSlug(repo)}`],
   );
 
   // A 409 hands back an existing request whose options may differ from the ones asked
@@ -272,7 +273,7 @@ export const unstackStack = Effect.fn("pr.unstackStack")(function* (opts: {
       method: "POST",
       alsoAcceptStatus: [204],
     },
-    [`repo:${repo.owner}/${repo.name}`],
+    [`repo:${repoSlug(repo)}`],
   );
 
   return {

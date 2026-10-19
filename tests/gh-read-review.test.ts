@@ -7,7 +7,7 @@ import { GitHubService } from "#gh/read/transport";
 import type { GitHubApiRequest } from "#gh/read/api";
 import { ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
-import { fetchFeedback, postIssueComment } from "#gh/pr/review";
+import { fetchFeedback, postIssueComment, submitPendingReview } from "#gh/pr/review";
 
 it("shares feedback reads and invalidates only discussion comments after a comment", async () => {
   const root = await mkdtemp(join(tmpdir(), "gh-read-review-"));
@@ -16,18 +16,55 @@ it("shares feedback reads and invalidates only discussion comments after a comme
     const paths: string[] = [];
     let threadFetches = 0;
     let comments: unknown[] = [];
+    let inlineComments: unknown[] = [];
     const gh = GitHubService.of({
       apiRequest: <T>({ path }: GitHubApiRequest) =>
         Effect.sync(() => {
           paths.push(path);
           return {
             status: 200,
-            body: (path.includes("/issues/") ? comments : []) as T,
+            body: (path.includes("/issues/")
+              ? comments
+              : path.includes("/comments?")
+                ? inlineComments
+                : []) as T,
             etag: '"page"',
           };
         }),
-      runGraphQL: () =>
+      runGraphQL: (query) =>
         Effect.sync(() => {
+          if (query.includes("node(id: $reviewId)"))
+            return {
+              viewer: { login: "fixture" },
+              node: {
+                id: "review-1",
+                state: "PENDING",
+                body: "Pending review",
+                author: { login: "fixture" },
+                pullRequest: { number: 1, repository: { nameWithOwner: "o/r" } },
+                comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            };
+          if (query.includes("submitPullRequestReview")) {
+            inlineComments = [
+              {
+                id: 2,
+                in_reply_to_id: null,
+                user: { login: "fixture" },
+                body: "Published inline comment",
+                path: "file.ts",
+                line: 1,
+                created_at: "2026-10-19T00:00:00Z",
+                updated_at: "2026-10-19T00:00:00Z",
+                commit_id: "sha",
+              },
+            ];
+            return {
+              submitPullRequestReview: {
+                pullRequestReview: { id: "review-1", state: "COMMENTED" },
+              },
+            };
+          }
           threadFetches += 1;
           return {
             repository: {
@@ -71,6 +108,11 @@ it("shares feedback reads and invalidates only discussion comments after a comme
         expect(next.issueComments[0]?.body).toBe("Hello");
         expect(paths).toHaveLength(4);
         expect(threadFetches).toBe(1);
+        yield* submitPendingReview(1, "review-1", null);
+        const published = yield* fetchFeedback(1, "sha");
+        expect(published.inlineComments[0]?.body).toBe("Published inline comment");
+        expect(paths).toHaveLength(6);
+        expect(threadFetches).toBe(2);
       }).pipe(
         Effect.provideService(GitHubService, gh),
         Effect.provideService(ReadCache, { store, warned: false }),

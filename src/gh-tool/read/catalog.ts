@@ -291,7 +291,12 @@ const stackMergeStatus = Effect.fn("reads.stackMergeStatus")(function* (path: st
   const gh = yield* GitHubService;
   return yield* gh.apiRequest<AsyncMergeResult>({ path });
 });
+const repoInfo = Effect.fn("reads.repoInfo")(function* () {
+  const gh = yield* GitHubService;
+  return yield* gh.getRepoInfo();
+});
 export const passthrough = {
+  repoInfo,
   listOrgRepos,
   searchOrgCode,
   listReleases,

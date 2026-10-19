@@ -1,4 +1,5 @@
 import { reads, writes } from "#gh/read/index";
+import { repoSlug } from "#gh/read/keys";
 import { Command, Flag, Param } from "effect/cli";
 import { Console, Effect, Option } from "effect";
 
@@ -165,7 +166,7 @@ export const requestReview = (pr: number, reviewers: string) =>
         `repos/${repo.owner}/${repo.name}/pulls/${pr}/requested_reviewers`,
         ...submittedReviewers.flatMap((reviewer) => ["-f", `reviewers[]=${reviewer}`]),
       ],
-      [`pr:${repo.owner}/${repo.name}#${pr}`, `reviews:${repo.owner}/${repo.name}#${pr}`],
+      [`pr:${repoSlug(repo)}#${pr}`, `reviews:${repoSlug(repo)}#${pr}`],
     );
     return {
       pr,
