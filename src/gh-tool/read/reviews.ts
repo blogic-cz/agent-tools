@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { cachedRead } from "./cache";
 import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";

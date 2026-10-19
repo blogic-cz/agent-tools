@@ -72,7 +72,7 @@ import {
   releaseViewCommand,
 } from "./release";
 import { repoInfoCommand, repoListCommand, repoSearchCodeCommand } from "./repo";
-import { GitHubService } from "./service";
+import { GitHubService } from "./read/transport";
 import { withReadCache } from "./read";
 import { cacheCommand } from "./read/commands";
 import {

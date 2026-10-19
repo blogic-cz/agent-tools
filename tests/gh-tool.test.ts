@@ -33,9 +33,8 @@ import {
   GitHubNotFoundError,
   type GitHubTimeoutError,
 } from "#gh/errors";
-import { CheckStatusCacheDirectory } from "#gh/pr/check-status-cache";
-import { GitHubService } from "#gh/service";
-import { githubApi } from "#gh/api";
+import { GitHubService } from "#gh/read/transport";
+import { githubApi } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
 import { withReadCache, ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
@@ -360,8 +359,20 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
-  ).pipe(Layer.merge(Layer.succeed(CheckStatusCacheDirectory, undefined)));
+  );
 }
+
+const watchWithClock = (...args: Parameters<typeof watchPRs>) => {
+  const [prs, options, emit] = args;
+  if (options.intervalSeconds !== 0 || options.timeoutSeconds <= 0) return watchPRs(...args);
+  return Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(
+      watchPRs(prs, { ...options, intervalSeconds: 5, timeoutSeconds: 120 }, emit),
+    );
+    yield* TestClock.adjust("120 seconds");
+    return yield* Fiber.join(fiber);
+  });
+};
 
 const pendingReviewContent = () => ({
   id: "review-1",
@@ -6370,7 +6381,7 @@ describe("PR checks", () => {
           },
         });
 
-        yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 10 }, (event) =>
+        yield* watchWithClock([1, 2], { intervalSeconds: 0, timeoutSeconds: 10 }, (event) =>
           Effect.sync(() => events.push(event)),
         ).pipe(Effect.provide(layer));
 
@@ -6414,7 +6425,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       const checkCalls = new Map<number, number>();
-      yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([1, 2], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6456,7 +6467,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6489,7 +6500,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push({ ...event, checksAtEmit: checks })),
       ).pipe(
         Effect.provide(
@@ -6520,7 +6531,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6547,7 +6558,7 @@ describe("PR checks", () => {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
       let views = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6651,7 +6662,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let runViews = 0;
-      yield* watchPRs([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6694,7 +6705,7 @@ describe("PR checks", () => {
   it.effect("watch reports mixed multi-PR terminal coverage without false timeout", () =>
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
-      yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
+      yield* watchWithClock([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.flip,
@@ -9458,7 +9469,7 @@ describe("zero reported checks", () => {
       const events: Array<Record<string, unknown>> = [];
       let checkCalls = 0;
 
-      yield* watchPRs([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -9488,7 +9499,7 @@ describe("watch check events", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
 
-      yield* watchPRs([11], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([11], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(

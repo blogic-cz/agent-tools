@@ -14,7 +14,7 @@ import type {
 import type { REVIEW_EVENTS } from "#gh/config";
 
 import { GitHubCommandError } from "#gh/errors";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { repoSlug } from "#gh/read/keys";
 import type { RepoRef, Tag } from "#gh/read/keys";
 import { validateOutboundText } from "#gh/text-input";

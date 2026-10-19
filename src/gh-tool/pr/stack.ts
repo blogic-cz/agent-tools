@@ -1,7 +1,10 @@
 import { Effect } from "effect";
 
-import { pollUntilResolved } from "#shared/poll-until-resolved";
-import { GitHubService } from "#gh/service";
+import { waits } from "#gh/read/waits";
+import { GitHubService } from "#gh/read/transport";
+import { writes } from "#gh/read/writes";
+import { passthrough } from "#gh/read/catalog";
+import type { AsyncMergeResult } from "#gh/read/catalog";
 import { GitHubMergeError } from "#gh/errors";
 
 import type { MergeStrategy, StackMember, StackMergeBlocker, StackMergeResult } from "#gh/types";
@@ -10,18 +13,6 @@ import { fetchCheckResults, fetchPRView } from "./core";
 import { readStack } from "./stack-read";
 
 export { readStack };
-
-type AsyncMergeDetails = {
-  message?: string;
-  uuid?: string;
-  sha?: string;
-  merge_method?: MergeStrategy;
-};
-
-type AsyncMergeResult = {
-  status: "pending" | "merged" | "enqueued" | "failed";
-  details?: AsyncMergeDetails;
-};
 
 // One request merges every open member, so the server-side work scales with the stack;
 // the single-PR budget in core.ts is deliberately shorter.
@@ -164,12 +155,15 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
 
   const asyncPath = `repos/${repo.owner}/${repo.name}/pulls/${target.number}/merge-async`;
 
-  const requested = yield* gh.apiRequest<AsyncMergeResult>({
-    path: asyncPath,
-    method: "PUT",
-    body: { merge_method: opts.strategy, merge_action: "direct_merge" },
-    alsoAcceptStatus: [202, 409],
-  });
+  const requested = yield* writes.api<AsyncMergeResult>(
+    {
+      path: asyncPath,
+      method: "PUT",
+      body: { merge_method: opts.strategy, merge_action: "direct_merge" },
+      alsoAcceptStatus: [202, 409],
+    },
+    [`repo:${repo.owner}/${repo.name}`],
+  );
 
   // A 409 hands back an existing request whose options may differ from the ones asked
   // for, so the result reports the strategy GitHub is actually applying.
@@ -188,16 +182,19 @@ export const mergeStack = Effect.fn("pr.mergeStack")(function* (opts: {
   }
 
   if (uuid !== undefined) {
-    latest = yield* pollUntilResolved({
-      initial: latest,
-      isPending: (value) => value.status === "pending",
-      fetchLatest: () =>
-        gh
-          .apiRequest<AsyncMergeResult>({ path: `${asyncPath}/${uuid}` })
-          .pipe(Effect.map((response) => response.body)),
-      intervalMs: POLL_INTERVAL_MS,
-      budgetSeconds: MAX_WAIT_SECONDS,
-    });
+    const outcome = yield* waits.until(
+      passthrough
+        .stackMergeStatus(`${asyncPath}/${uuid}`)
+        .pipe(Effect.map((response) => response.body)),
+      (value) => value.status !== "pending",
+      {
+        initial: { value: latest },
+        intervalMs: POLL_INTERVAL_MS,
+        timeoutMs: MAX_WAIT_SECONDS * 1000,
+        readAtDeadline: true,
+      },
+    );
+    latest = outcome.kind === "done" ? outcome.value : outcome.last;
   }
 
   if (latest.status === "merged") {
@@ -269,11 +266,14 @@ export const unstackStack = Effect.fn("pr.unstackStack")(function* (opts: {
 
   // The endpoint removes every unmerged member at once; it has no per-PR form. A 204 means
   // nothing was left and the stack is gone, a 200 means some members could not be removed.
-  const result = yield* gh.apiRequest<unknown>({
-    path: `repos/${repo.owner}/${repo.name}/stacks/${view.stackNumber}/unstack`,
-    method: "POST",
-    alsoAcceptStatus: [204],
-  });
+  const result = yield* writes.api<unknown>(
+    {
+      path: `repos/${repo.owner}/${repo.name}/stacks/${view.stackNumber}/unstack`,
+      method: "POST",
+      alsoAcceptStatus: [204],
+    },
+    [`repo:${repo.owner}/${repo.name}`],
+  );
 
   return {
     ...plan,

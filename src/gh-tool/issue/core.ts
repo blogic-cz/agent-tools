@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import type { GitHubIssueCommentUrl, IssueComment, IssueCommentId, IsoTimestamp } from "#gh/types";
 
 import { GitHubCommandError } from "#gh/errors";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { reads, resolveRepo } from "#gh/read/reads";
 import { writes } from "#gh/read/writes";
 import { project } from "#gh/read/porcelain";

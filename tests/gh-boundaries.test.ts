@@ -3,7 +3,7 @@ import { afterEach, vi } from "vitest";
 import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
 
-import { githubApi, resolveGitHubToken } from "#gh/api";
+import { githubApi, resolveGitHubToken } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
 import { isSensitivePath, readValidatedOutboundFile } from "#gh/text-input";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

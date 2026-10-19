@@ -1,9 +1,9 @@
 import { Effect } from "effect";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { invalidate } from "./cache";
 import type { Tag } from "./keys";
-import type { GhError } from "#gh/service";
-import type { GitHubApiRequest } from "#gh/api";
+import type { GhError } from "#gh/read/transport";
+import type { GitHubApiRequest } from "#gh/read/api";
 
 const mutate = <A, R>(effect: Effect.Effect<A, GhError, R>, touched: readonly Tag[]) =>
   effect.pipe(

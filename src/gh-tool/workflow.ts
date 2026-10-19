@@ -4,7 +4,7 @@ import { Effect, Option } from "effect";
 import { formatOption, logFormatted, logText } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
-import { GitHubService } from "./service";
+import { GitHubService } from "./read/transport";
 import { reads, resolveRepo, waits, writes } from "./read";
 import { rawJobLog } from "./read/reads";
 import { repoSlug } from "./read/keys";

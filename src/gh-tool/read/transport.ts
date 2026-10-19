@@ -2,17 +2,17 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";
-import type { RepoInfo } from "./types";
+import type { RepoInfo } from "#gh/types";
 
-import { GH_BINARY } from "./config";
-import { ghEnvironment } from "./environment";
-import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
+import { GH_BINARY } from "#gh/config";
+import { ghEnvironment } from "#gh/environment";
+import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
 import { retryTransient } from "#shared/retry-transient";
 import { githubApi } from "./api";
 import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 import { validateOutboundText } from "#gh/text-input";
-import { ReadCache } from "./read/cache";
+import { ReadCache } from "./cache";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
 const NETWORK_ERROR_RE =

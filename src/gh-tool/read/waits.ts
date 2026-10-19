@@ -9,12 +9,17 @@ const until = <A, E, R>(
   opts: {
     readonly intervalMs: number;
     readonly timeoutMs: number;
+    readonly initial?: { readonly value: A };
+    readonly readAtDeadline?: boolean;
     readonly onValue?: (value: A) => Effect.Effect<void, never, R>;
   },
 ): Effect.Effect<WaitOutcome<A>, E, R> =>
   Effect.gen(function* () {
     const deadline = Number(yield* Clock.currentTimeMillis) + opts.timeoutMs;
-    const state = { value: yield* read, timedOut: false };
+    const state = {
+      value: opts.initial === undefined ? yield* read : opts.initial.value,
+      timedOut: false,
+    };
     if (opts.onValue !== undefined) yield* opts.onValue(state.value);
     yield* Effect.whileLoop({
       while: () => !done(state.value) && !state.timedOut,
@@ -28,7 +33,10 @@ const until = <A, E, R>(
           yield* Effect.sleep(
             Duration.millis(Math.min(Math.max(5000, opts.intervalMs), remaining)),
           );
-          if (Number(yield* Clock.currentTimeMillis) >= deadline) {
+          if (
+            Number(yield* Clock.currentTimeMillis) >= deadline &&
+            (opts.readAtDeadline !== true || remaining < 5000)
+          ) {
             state.timedOut = true;
             return;
           }

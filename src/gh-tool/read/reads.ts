@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { GitHubCommandError } from "#gh/errors";
 import type { CheckRunAnnotation } from "#gh/types";
 import { cachedRead, ReadCache } from "./cache";

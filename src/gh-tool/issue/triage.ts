@@ -4,7 +4,7 @@ import { Effect, Option, Schema } from "effect";
 import type { CheckResult, IssueComment, PRViewInfo, ReviewThread } from "#gh/types";
 
 import { formatOption, logFormatted } from "#shared";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { fetchReviewTriage } from "#gh/pr/commands";
 
 import { fetchIssueComments } from "./core";

@@ -3,10 +3,10 @@ import { Clock, Effect } from "effect";
 import { registerResolvedSecret } from "#shared/content-security";
 import { retryTransient } from "#shared/retry-transient";
 
-import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
-import type { GitHubApiError } from "./errors";
-import { ghEnvironment } from "./environment";
-import { validateOutboundText } from "./text-input";
+import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
+import type { GitHubApiError } from "#gh/errors";
+import { ghEnvironment } from "#gh/environment";
+import { validateOutboundText } from "#gh/text-input";
 
 // Direct HTTP, not `gh api`: the CLI collapses every failure into a non-zero exit and
 // loses the status code, but merge-async answers 202 (accepted), 200 (already merged or

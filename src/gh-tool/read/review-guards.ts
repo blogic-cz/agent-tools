@@ -1,11 +1,19 @@
 import { Effect } from "effect";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import type { RepoRef } from "./keys";
 import { repoSlug } from "./keys";
 import { PENDING_REVIEWS_QUERY, PENDING_REVIEW_CONTENT_QUERY } from "./review-model";
 import type { EditableComment, ReviewCommentById } from "./review-model";
 
 export const reviewGuards = {
+  requestedReviewers: (repo: RepoRef, pr: number) =>
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      return yield* gh.runGhJson<{ requested_reviewers?: unknown }>([
+        "api",
+        `repos/${repoSlug(repo)}/pulls/${pr}`,
+      ]);
+    }),
   commentById: (commentId: number) =>
     Effect.gen(function* () {
       const gh = yield* GitHubService;

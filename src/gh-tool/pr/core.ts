@@ -1,4 +1,4 @@
-import { Clock, Console, Duration, Effect, Option, Result } from "effect";
+import { Clock, Console, Effect, Option, Result } from "effect";
 
 import type {
   BranchPRDetail,
@@ -16,13 +16,11 @@ import type {
 
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
-import { GitHubService } from "#gh/service";
-import type { GhResult } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { logFormatted, logText } from "#shared";
 import { redactSensitiveText } from "#shared/content-security";
 
 import type { ButStatusJson } from "./helpers";
-import { pollUntilResolved } from "#shared/poll-until-resolved";
 import { runLocalCommand } from "./helpers";
 import { readStack } from "./stack-read";
 import {
@@ -36,8 +34,11 @@ import {
   readJobLogApi,
 } from "#gh/workflow";
 import { reads, resolveRepo } from "#gh/read/reads";
+import { waits } from "#gh/read/waits";
 import { project } from "#gh/read/porcelain";
 import { writes } from "#gh/read/writes";
+import { passthrough } from "#gh/read/catalog";
+import type { AsyncMergeResult } from "#gh/read/catalog";
 import { repoSlug } from "#gh/read/keys";
 import { stableHead as collectWithStableState } from "./snapshot";
 export { stableHead as collectWithStableState } from "./snapshot";
@@ -102,13 +103,14 @@ const resolveMergeSha = Effect.fn("pr.resolveMergeSha")(function* (
       .pipe(Effect.map((result) => result.mergeCommit?.oid ?? null));
   const result = yield* readMergeSha().pipe(
     Effect.andThen((initial) =>
-      pollUntilResolved({
-        initial,
-        isPending: (value) => value === null,
-        fetchLatest: readMergeSha,
-        intervalMs: MERGE_SHA_POLL_INTERVAL_MS,
-        budgetSeconds: MERGE_SHA_WAIT_SECONDS,
-      }),
+      waits
+        .until(readMergeSha(), (sha) => sha !== null, {
+          initial: { value: initial },
+          intervalMs: MERGE_SHA_POLL_INTERVAL_MS,
+          timeoutMs: MERGE_SHA_WAIT_SECONDS * 1000,
+          readAtDeadline: true,
+        })
+        .pipe(Effect.map((outcome) => (outcome.kind === "done" ? outcome.value : outcome.last))),
     ),
     Effect.map((sha) => ({ sha, failed: false as const })),
     Effect.catch((error) =>
@@ -522,12 +524,7 @@ export const viewPR = Effect.fn("pr.viewPR")(function* (
 
   const info = yield* fetchPRView(prNumber, consistency);
   const repo = yield* gh.getRepoInfo();
-  const baseSha = yield* gh.runGh([
-    "api",
-    `repos/${repo.owner}/${repo.name}/pulls/${info.number}`,
-    "--jq",
-    ".base.sha",
-  ]);
+  const baseSha = yield* passthrough.baseSha(repo, info.number);
   return {
     ...info,
     baseSha: baseSha.stdout.trim() || null,
@@ -728,32 +725,18 @@ export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
   timeoutSeconds: number,
 ) {
   const cappedSeconds = Math.min(timeoutSeconds, MAX_MERGEABLE_WAIT_SECONDS);
-  const start = yield* Clock.currentTimeMillis;
-  const deadlineMs = Number(start) + cappedSeconds * 1000;
-
-  // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
-  let latest = yield* viewPR(pr);
-  let timedOut = false;
-  yield* Effect.whileLoop({
-    while: () => latest.mergeable === "UNKNOWN" && !timedOut,
-    body: () =>
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        if (Number(now) >= deadlineMs) {
-          timedOut = true;
-          return;
-        }
-        // Cap the sleep to the remaining budget so the total wait doesn't overshoot the deadline.
-        const remaining = deadlineMs - Number(now);
-        yield* Effect.sleep(Duration.millis(Math.min(MERGEABLE_POLL_INTERVAL_MS, remaining)));
-        latest = yield* fetchPRView(pr).pipe(
-          Effect.map((info) => ({ ...info, baseSha: latest.baseSha })),
-        );
-      }),
-    step: () => undefined,
-  });
-
-  return latest;
+  const initial = yield* viewPR(pr, "origin");
+  const outcome = yield* waits.until(
+    fetchPRView(pr, "origin").pipe(Effect.map((info) => ({ ...info, baseSha: initial.baseSha }))),
+    (info) => info.mergeable !== "UNKNOWN",
+    {
+      initial: { value: initial },
+      intervalMs: MERGEABLE_POLL_INTERVAL_MS,
+      timeoutMs: cappedSeconds * 1000,
+      readAtDeadline: true,
+    },
+  );
+  return outcome.kind === "done" ? outcome.value : outcome.last;
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {
@@ -913,11 +896,6 @@ const ASYNC_MERGE_REQUIRED_RE = /asynchronous merge/i;
 const ASYNC_MERGE_POLL_INTERVAL_MS = 5000;
 const MAX_ASYNC_MERGE_WAIT_SECONDS = 120;
 
-type AsyncMergeResult = {
-  status: "pending" | "merged" | "enqueued" | "failed";
-  details?: { message?: string; uuid?: string; sha?: string };
-};
-
 const asyncMergeFailure = (
   pr: number,
   message: string,
@@ -946,13 +924,17 @@ const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
 
   const uuid = latest.details?.uuid;
   if (uuid !== undefined) {
-    latest = yield* pollUntilResolved({
-      initial: latest,
-      isPending: (value) => value.status === "pending",
-      fetchLatest: () => gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]),
-      intervalMs: ASYNC_MERGE_POLL_INTERVAL_MS,
-      budgetSeconds: MAX_ASYNC_MERGE_WAIT_SECONDS,
-    });
+    const outcome = yield* waits.until(
+      passthrough.asyncMergeStatus(`${asyncPath}/${uuid}`),
+      (value) => value.status !== "pending",
+      {
+        initial: { value: latest },
+        intervalMs: ASYNC_MERGE_POLL_INTERVAL_MS,
+        timeoutMs: MAX_ASYNC_MERGE_WAIT_SECONDS * 1000,
+        readAtDeadline: true,
+      },
+    );
+    latest = outcome.kind === "done" ? outcome.value : outcome.last;
   }
 
   if (latest.status === "merged") {
@@ -1483,62 +1465,44 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   timeoutSeconds: number,
   quiet = false,
 ) {
-  const gh = yield* GitHubService;
-
-  const args = ["pr", "checks"];
-  if (pr !== null) {
-    args.push(String(pr));
-  }
-
   if (watch) {
-    const watchArgs = [...args, "--watch"];
-    if (failFast) {
-      watchArgs.push("--fail-fast");
-    }
-
-    // A push can register checks after the ref lands. Wait through that window
-    // within the caller's timeout, then report the final snapshot.
-    let watchResult: GhResult | null = null;
-    let registered = false;
-    let graceExpired = false;
-    const watchThroughRegistration = Effect.gen(function* () {
-      const graceStart = yield* Clock.currentTimeMillis;
-      const graceDeadlineMs =
-        Number(graceStart) + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
-      yield* Effect.whileLoop({
-        while: () => !registered && !graceExpired,
-        body: () =>
-          gh.runGh(watchArgs).pipe(
-            Effect.flatMap((result) => {
-              watchResult = result;
-              registered = true;
-              return Effect.void;
-            }),
-            Effect.catchTag("GitHubCommandError", (error) =>
-              NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
-                ? Effect.gen(function* () {
-                    const now = yield* Clock.currentTimeMillis;
-                    if (Number(now) >= graceDeadlineMs) {
-                      graceExpired = true;
-                      return;
-                    }
-                    yield* Effect.sleep(Duration.seconds(CHECK_REGISTRATION_POLL_SECONDS));
-                  })
-                : Effect.fail(error),
-            ),
-          ),
-        step: () => undefined,
-      });
-      return watchResult;
+    const started = Number(yield* Clock.currentTimeMillis);
+    const graceDeadlineMs =
+      started + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
+    const poll = Effect.gen(function* () {
+      const checks = yield* fetchCheckResults(pr);
+      return { checks, at: Number(yield* Clock.currentTimeMillis) };
     });
-
-    const watchOutcome = yield* watchThroughRegistration.pipe(
-      Effect.timeoutOrElse({
-        duration: timeoutSeconds * 1000,
-        orElse: () => Effect.succeed(null),
-      }),
-    );
-
+    const watchOutcome = yield* waits
+      .until(
+        poll,
+        ({ checks, at }) =>
+          checks.length === 0
+            ? at >= graceDeadlineMs
+            : (failFast && checks.some((check) => check.bucket === "fail")) ||
+              checks.every((check) => check.bucket !== "pending"),
+        { intervalMs: CHECK_REGISTRATION_POLL_SECONDS * 1000, timeoutMs: timeoutSeconds * 1000 },
+      )
+      .pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutSeconds * 1000,
+          orElse: () => Effect.succeed(null),
+        }),
+      );
+    const last =
+      watchOutcome === null
+        ? null
+        : watchOutcome.kind === "done"
+          ? watchOutcome.value
+          : watchOutcome.last;
+    const graceExpired = last !== null && last.checks.length === 0 && last.at >= graceDeadlineMs;
+    if (watchOutcome?.kind === "done" && last?.checks.some((check) => check.bucket === "fail"))
+      return yield* new GitHubCommandError({
+        command: buildChecksCommand(pr, true),
+        exitCode: 1,
+        message: "",
+        stderr: "",
+      });
     const results = yield* fetchCheckResults(pr);
     if (!quiet && graceExpired) {
       const prRef = pr === null ? "<number>" : String(pr);
@@ -1549,7 +1513,10 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
           `head instead:\n   agent-tools-gh pr trigger-checks --pr ${prRef} --workflow <file.yml>`,
       );
     }
-    if (watchOutcome === null && results.some((check) => check.bucket === "pending")) {
+    if (
+      (watchOutcome === null || watchOutcome.kind === "timedOut") &&
+      results.some((check) => check.bucket === "pending")
+    ) {
       const pending = results.filter((check) => check.bucket === "pending").length;
       yield* logFormatted(results, quiet ? "json" : "toon");
       return yield* new GitHubTimeoutError({
@@ -1643,7 +1610,7 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
     initial,
     (info) => fetchCheckResults(info.number),
     (info) =>
-      fetchPRView(info.number).pipe(
+      fetchPRView(info.number, "origin").pipe(
         Effect.map((refreshed) => ({ ...refreshed, baseSha: initial.baseSha })),
       ),
     (before, after) => after.headSha === before.headSha,
@@ -1876,122 +1843,119 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
     });
 
   let timedOut = false;
-  yield* Effect.whileLoop({
-    while: () => terminal.size < prs.length && !timedOut,
-    body: () =>
-      Effect.gen(function* () {
-        for (const number of prs) {
-          if (terminal.has(number)) continue;
-          if (!(yield* beforeDeadline)) {
-            timedOut = true;
-            break;
-          }
-          const remainingMs = Math.max(1, deadline - Number(yield* Clock.currentTimeMillis));
-          const state = yield* snapshot(number).pipe(
-            Effect.timeoutOrElse({
-              duration: remainingMs,
-              orElse: () => Effect.succeed("timeout" as const),
-            }),
-          );
-          if (state === "timeout") {
-            timedOut = true;
-            break;
-          }
-          if (state === null) continue;
-          const headKey = `${number}/${state.head ?? ""}`;
-          const oldHeadKey = headByPR.get(number);
-          if (oldHeadKey !== undefined && oldHeadKey !== headKey) {
-            checksObserved.delete(oldHeadKey);
-            emptySnapshots.delete(oldHeadKey);
-          }
-          headByPR.set(number, headKey);
-          if (state.checks.length > 0) {
-            checksObserved.add(headKey);
-            emptySnapshots.set(headKey, 0);
-          } else {
-            emptySnapshots.set(headKey, (emptySnapshots.get(headKey) ?? 0) + 1);
-          }
-          for (const { check, run } of state.checks) {
-            const matches = failedJobsMatchingCheck(check.name, run?.jobs ?? []);
-            const jobId = matches.length === 1 ? (matches[0]?.databaseId ?? null) : null;
-            const fallback = jobId === null ? `${check.name}|${check.link}` : String(jobId);
-            const identity = [
-              repo.owner + "/" + repo.name,
-              number,
-              state.head ?? "",
-              run?.databaseId ?? "external",
-              run?.attempt ?? "",
-              fallback,
-            ].join("/");
-            const logical = `${number}/${check.name}`;
-            const previousIdentity = currentIdentity.get(logical);
-            const revision = `${check.state}/${check.bucket}`;
-            if (lastRevision.get(identity) !== revision) {
-              const event: Record<string, unknown> = {
-                type: "check",
-                repo: `${repo.owner}/${repo.name}`,
-                pr: number,
-                headSha: state.head,
-                ...(run?.databaseId === undefined || run.databaseId === null
-                  ? {}
-                  : { runId: run.databaseId }),
-                ...(run?.attempt === undefined || run.attempt === null
-                  ? {}
-                  : { attempt: run.attempt }),
-                ...(jobId === null ? {} : { jobId }),
-                name: check.name,
-                state: check.state,
-                bucket: check.bucket,
-                link: check.link,
-                identity,
-              };
-              if (previousIdentity !== undefined && previousIdentity !== identity) {
-                event.supersedes = previousIdentity;
-              }
-              if (!(yield* beforeDeadline)) {
-                timedOut = true;
-                break;
-              }
-              yield* emit(event);
-              lastRevision.set(identity, revision);
+  yield* waits.until(
+    Effect.gen(function* () {
+      for (const number of prs) {
+        if (terminal.has(number)) continue;
+        if (!(yield* beforeDeadline)) {
+          timedOut = true;
+          break;
+        }
+        const remainingMs = Math.max(1, deadline - Number(yield* Clock.currentTimeMillis));
+        const state = yield* snapshot(number).pipe(
+          Effect.timeoutOrElse({
+            duration: remainingMs,
+            orElse: () => Effect.succeed("timeout" as const),
+          }),
+        );
+        if (state === "timeout") {
+          timedOut = true;
+          break;
+        }
+        if (state === null) continue;
+        const headKey = `${number}/${state.head ?? ""}`;
+        const oldHeadKey = headByPR.get(number);
+        if (oldHeadKey !== undefined && oldHeadKey !== headKey) {
+          checksObserved.delete(oldHeadKey);
+          emptySnapshots.delete(oldHeadKey);
+        }
+        headByPR.set(number, headKey);
+        if (state.checks.length > 0) {
+          checksObserved.add(headKey);
+          emptySnapshots.set(headKey, 0);
+        } else {
+          emptySnapshots.set(headKey, (emptySnapshots.get(headKey) ?? 0) + 1);
+        }
+        for (const { check, run } of state.checks) {
+          const matches = failedJobsMatchingCheck(check.name, run?.jobs ?? []);
+          const jobId = matches.length === 1 ? (matches[0]?.databaseId ?? null) : null;
+          const fallback = jobId === null ? `${check.name}|${check.link}` : String(jobId);
+          const identity = [
+            repo.owner + "/" + repo.name,
+            number,
+            state.head ?? "",
+            run?.databaseId ?? "external",
+            run?.attempt ?? "",
+            fallback,
+          ].join("/");
+          const logical = `${number}/${check.name}`;
+          const previousIdentity = currentIdentity.get(logical);
+          const revision = `${check.state}/${check.bucket}`;
+          if (lastRevision.get(identity) !== revision) {
+            const event: Record<string, unknown> = {
+              type: "check",
+              repo: `${repo.owner}/${repo.name}`,
+              pr: number,
+              headSha: state.head,
+              ...(run?.databaseId === undefined || run.databaseId === null
+                ? {}
+                : { runId: run.databaseId }),
+              ...(run?.attempt === undefined || run.attempt === null
+                ? {}
+                : { attempt: run.attempt }),
+              ...(jobId === null ? {} : { jobId }),
+              name: check.name,
+              state: check.state,
+              bucket: check.bucket,
+              link: check.link,
+              identity,
+            };
+            if (previousIdentity !== undefined && previousIdentity !== identity) {
+              event.supersedes = previousIdentity;
             }
-            currentIdentity.set(logical, identity);
-          }
-          if (timedOut) break;
-          // Empty snapshots need three consecutive observations, including after checks were seen.
-          const hasTerminalCoverage =
-            state.checks.length > 0 || (emptySnapshots.get(headKey) ?? 0) >= 3;
-          const checksTerminal =
-            state.checks.length === 0 ||
-            state.checks.every(({ check }) => check.bucket !== "pending");
-          if (state.pr.state !== "OPEN" || (hasTerminalCoverage && checksTerminal)) {
             if (!(yield* beforeDeadline)) {
               timedOut = true;
               break;
             }
-            const identity = `${repo.owner}/${repo.name}/${number}/${state.head ?? ""}/terminal/${state.pr.state}`;
-            yield* emit({
-              type: "pr_terminal",
-              repo: `${repo.owner}/${repo.name}`,
-              pr: number,
-              headSha: state.head,
-              state: state.pr.state,
-              checksObserved: checksObserved.has(headKey),
-              identity,
-            });
-            terminal.add(number);
+            yield* emit(event);
+            lastRevision.set(identity, revision);
           }
+          currentIdentity.set(logical, identity);
         }
-        const now = Number(yield* Clock.currentTimeMillis);
-        timedOut = timedOut || (terminal.size < prs.length && now >= deadline);
-        if (!timedOut && terminal.size < prs.length) {
-          yield* Effect.sleep(
-            Duration.millis(Math.min(options.intervalSeconds * 1000, deadline - now)),
-          );
+        if (timedOut) break;
+        // Empty snapshots need three consecutive observations, including after checks were seen.
+        const hasTerminalCoverage =
+          state.checks.length > 0 || (emptySnapshots.get(headKey) ?? 0) >= 3;
+        const checksTerminal =
+          state.checks.length === 0 ||
+          state.checks.every(({ check }) => check.bucket !== "pending");
+        if (state.pr.state !== "OPEN" || (hasTerminalCoverage && checksTerminal)) {
+          if (!(yield* beforeDeadline)) {
+            timedOut = true;
+            break;
+          }
+          const identity = `${repo.owner}/${repo.name}/${number}/${state.head ?? ""}/terminal/${state.pr.state}`;
+          yield* emit({
+            type: "pr_terminal",
+            repo: `${repo.owner}/${repo.name}`,
+            pr: number,
+            headSha: state.head,
+            state: state.pr.state,
+            checksObserved: checksObserved.has(headKey),
+            identity,
+          });
+          terminal.add(number);
         }
-      }),
-    step: () => undefined,
-  });
+      }
+      const now = Number(yield* Clock.currentTimeMillis);
+      timedOut = timedOut || (terminal.size < prs.length && now >= deadline);
+    }),
+    () => terminal.size >= prs.length || timedOut,
+    {
+      intervalMs: options.intervalSeconds * 1000,
+      timeoutMs: options.timeoutSeconds * 1000,
+    },
+  );
   const watcherTimedOut = terminal.size < prs.length;
   yield* emit({
     type: "watcher_terminal",
@@ -2014,8 +1978,6 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
     });
   }
 });
-
-type RerunDiscovery = RerunCheckAttempt & { status?: string };
 
 const fetchAttemptJobs = (runId: string, attempt: number, repo: string) =>
   Effect.gen(function* () {
@@ -2055,23 +2017,22 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
   currentJobIds: readonly number[],
   deadline: number,
 ) {
-  let latest: RerunDiscovery | null = null;
-  while (Number(yield* Clock.currentTimeMillis) <= deadline) {
-    latest = yield* readRerunState(runId, true).pipe(
-      Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
-    );
-    if (
+  const read = readRerunState(runId, true).pipe(
+    Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+  );
+  const outcome = yield* waits.until(
+    read,
+    (latest) =>
       latest !== null &&
       ((latest.attempt ?? 0) > (currentAttempt ?? 0) ||
-        latest.jobs.some((job) => !currentJobIds.includes(job.databaseId)))
-    ) {
-      return latest;
-    }
-    const remaining = deadline - Number(yield* Clock.currentTimeMillis);
-    if (remaining <= 0) return null;
-    yield* Effect.sleep(Duration.millis(Math.min(5000, remaining)));
-  }
-  return null;
+        latest.jobs.some((job) => !currentJobIds.includes(job.databaseId))),
+    {
+      intervalMs: 5000,
+      timeoutMs: Math.max(0, deadline - Number(yield* Clock.currentTimeMillis)),
+      readAtDeadline: true,
+    },
+  );
+  return outcome.kind === "done" ? outcome.value : null;
 });
 
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
@@ -2232,15 +2193,25 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
             return;
           }
           let latest = next;
-          while (latest.status !== "completed") {
-            const remaining = deadline - Number(yield* Clock.currentTimeMillis);
-            if (remaining <= 0) break;
-            yield* Effect.sleep(Duration.millis(Math.min(5000, remaining)));
-            if (Number(yield* Clock.currentTimeMillis) >= deadline) break;
-            latest = yield* readRerunState(candidate.runId, true).pipe(
-              Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)),
-            );
-          }
+          const outcome = yield* waits.until(
+            Effect.suspend(() =>
+              readRerunState(candidate.runId, true).pipe(
+                Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)),
+                Effect.tap((refreshed) =>
+                  Effect.sync(() => {
+                    latest = refreshed;
+                  }),
+                ),
+              ),
+            ),
+            (value) => value.status === "completed",
+            {
+              initial: { value: latest },
+              intervalMs: 5000,
+              timeoutMs: Math.max(0, deadline - Number(yield* Clock.currentTimeMillis)),
+            },
+          );
+          latest = outcome.kind === "done" ? outcome.value : outcome.last;
           result.latestAttempt = latest;
           result.status = latest.status === "completed" ? "completed" : "watch_timeout";
         }),

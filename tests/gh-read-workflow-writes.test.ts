@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
 import { OPS } from "#gh/read/classes";

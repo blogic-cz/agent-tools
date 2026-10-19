@@ -1,134 +1,16 @@
+import { passthrough } from "./read/catalog";
+import type * as Catalog from "./read/catalog";
+import { writes } from "./read/writes";
 import { Command, Flag } from "effect/cli";
 import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
 import { resolveOptionalTextInput, validateOutboundText } from "#gh/text-input";
 import { GitHubCommandError } from "#gh/errors";
-import { GitHubService } from "./service";
+import { GitHubService } from "./read/transport";
 
-type ReleaseListItem = {
-  tagName: string;
-  name: string;
-  isDraft: boolean;
-  isPrerelease: boolean;
-  createdAt: string;
-  publishedAt: string | null;
-};
-
-type ReleaseAuthor = {
-  login: string;
-};
-
-type ReleaseAsset = {
-  name: string;
-  size: number;
-  downloadCount: number;
-  contentType: string;
-  createdAt: string;
-  updatedAt: string;
-  url: string;
-};
-
-type ReleaseDetail = {
-  tagName: string;
-  name: string;
-  isDraft: boolean;
-  isPrerelease: boolean;
-  createdAt: string;
-  publishedAt: string | null;
-  url: string;
-  body: string;
-  targetCommitish: string;
-  author: ReleaseAuthor | null;
-  assets: ReleaseAsset[];
-};
-
-type ReleaseCreateResult = {
-  created: true;
-  tagName: string;
-  name: string;
-  url: string;
-  isDraft: boolean;
-  isPrerelease: boolean;
-};
-
-type ReleaseEditResult = {
-  edited: true;
-  tagName: string;
-  name: string;
-  url: string;
-  isDraft: boolean;
-  isPrerelease: boolean;
-};
-
-type ReleaseDeleteResult = {
-  deleted: boolean;
-  tagName: string;
-  tagCleaned: boolean;
-  dryRun?: true;
-  message?: string;
-};
-
-type LatestRelease = {
-  tagName: string;
-  name: string;
-  createdAt: string;
-  publishedAt: string | null;
-  isLatest: boolean;
-};
-
-type ReleaseStatusResult = {
-  latestRelease: LatestRelease | null;
-  repo: {
-    owner: string;
-    name: string;
-    defaultBranch: string;
-    url: string;
-  };
-};
-
-const listReleases = Effect.fn("release.listReleases")(function* (opts: {
-  limit: number;
-  repo: string | null;
-}) {
-  const gh = yield* GitHubService;
-
-  const args = [
-    "release",
-    "list",
-    "--json",
-    "tagName,name,isDraft,isPrerelease,createdAt,publishedAt",
-    "--limit",
-    String(opts.limit),
-  ];
-
-  if (opts.repo !== null) {
-    args.push("--repo", opts.repo);
-  }
-
-  return yield* gh.runGhJson<ReleaseListItem[]>(args);
-});
-
-const viewRelease = Effect.fn("release.viewRelease")(function* (opts: {
-  tag: string;
-  repo: string | null;
-}) {
-  const gh = yield* GitHubService;
-
-  const args = [
-    "release",
-    "view",
-    opts.tag,
-    "--json",
-    "tagName,name,isDraft,isPrerelease,createdAt,publishedAt,url,body,targetCommitish,author,assets",
-  ];
-
-  if (opts.repo !== null) {
-    args.push("--repo", opts.repo);
-  }
-
-  return yield* gh.runGhJson<ReleaseDetail>(args);
-});
+const listReleases = passthrough.listReleases;
+const viewRelease = passthrough.viewRelease;
 
 export const resolveCreateNotes = (opts: {
   body: string | null;
@@ -194,7 +76,7 @@ export const createRelease = Effect.fn("release.createRelease")(function* (opts:
         ];
         if (opts.target !== null) args.push("-f", `target_commitish=${opts.target}`);
         if (opts.notesStartTag !== null) args.push("-f", `previous_tag_name=${opts.notesStartTag}`);
-        return yield* gh.runGhJson<{ name: string; body: string }>(args);
+        return yield* writes.json<{ name: string; body: string }>(args, []);
       }),
     );
     if (typeof generated?.body !== "string" || typeof generated.name !== "string") {
@@ -250,7 +132,7 @@ export const createRelease = Effect.fn("release.createRelease")(function* (opts:
     args.push("--repo", opts.repo);
   }
 
-  const result = yield* gh.runGh(args);
+  const result = yield* writes.run(args, []);
   const lines = result.stdout
     .trim()
     .split("\n")
@@ -259,7 +141,7 @@ export const createRelease = Effect.fn("release.createRelease")(function* (opts:
 
   const url = lines.length > 0 ? lines[lines.length - 1] : "";
 
-  const created: ReleaseCreateResult = {
+  const created: Catalog.ReleaseCreateResult = {
     created: true,
     tagName: opts.tag,
     name: title ?? opts.tag,
@@ -280,8 +162,6 @@ export const editRelease = Effect.fn("release.editRelease")(function* (opts: {
   latest: boolean | null;
   repo: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   if (opts.title !== null) {
     yield* validateOutboundText(opts.title, "gh-tool release edit");
   }
@@ -328,14 +208,14 @@ export const editRelease = Effect.fn("release.editRelease")(function* (opts: {
     args.push("--repo", opts.repo);
   }
 
-  yield* gh.runGh(args);
+  yield* writes.run(args, []);
 
   const updated = yield* viewRelease({
     tag: opts.tag,
     repo: opts.repo,
   });
 
-  const edited: ReleaseEditResult = {
+  const edited: Catalog.ReleaseEditResult = {
     edited: true,
     tagName: updated.tagName,
     name: updated.name,
@@ -353,13 +233,11 @@ const deleteRelease = Effect.fn("release.deleteRelease")(function* (opts: {
   confirm: boolean;
   repo: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   if (!opts.confirm) {
     const scope = opts.repo !== null ? ` in ${opts.repo}` : "";
     const cleanup = opts.cleanupTag ? " and its git tag" : "";
 
-    const dryRun: ReleaseDeleteResult = {
+    const dryRun: Catalog.ReleaseDeleteResult = {
       deleted: false,
       tagName: opts.tag,
       tagCleaned: opts.cleanupTag,
@@ -380,9 +258,9 @@ const deleteRelease = Effect.fn("release.deleteRelease")(function* (opts: {
     args.push("--repo", opts.repo);
   }
 
-  yield* gh.runGh(args);
+  yield* writes.run(args, []);
 
-  const deleted: ReleaseDeleteResult = {
+  const deleted: Catalog.ReleaseDeleteResult = {
     deleted: true,
     tagName: opts.tag,
     tagCleaned: opts.cleanupTag,
@@ -391,38 +269,7 @@ const deleteRelease = Effect.fn("release.deleteRelease")(function* (opts: {
   return deleted;
 });
 
-const releaseStatus = Effect.fn("release.releaseStatus")(function* (repo: string | null) {
-  const gh = yield* GitHubService;
-
-  const args = [
-    "release",
-    "list",
-    "--json",
-    "tagName,name,createdAt,publishedAt,isLatest",
-    "--limit",
-    "1",
-  ];
-  if (repo !== null) {
-    args.push("--repo", repo);
-  }
-
-  const [repoInfo, releases] = yield* Effect.all([
-    gh.getRepoInfo(),
-    gh.runGhJson<LatestRelease[]>(args),
-  ]);
-
-  const result: ReleaseStatusResult = {
-    latestRelease: releases.length > 0 ? releases[0] : null,
-    repo: {
-      owner: repoInfo.owner,
-      name: repoInfo.name,
-      defaultBranch: repoInfo.defaultBranch,
-      url: repoInfo.url,
-    },
-  };
-
-  return result;
-});
+const releaseStatus = passthrough.releaseStatus;
 
 export const releaseCreateCommand = Command.make(
   "create",

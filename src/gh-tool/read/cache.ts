@@ -1,5 +1,5 @@
 import { Console, Context, Effect } from "effect";
-import { resolveGitHubToken } from "#gh/api";
+import { resolveGitHubToken } from "#gh/read/api";
 import { GitHubCommandError } from "#gh/errors";
 import { digest } from "./keys";
 import type { ReadKey, RepoRef, Tag } from "./keys";
