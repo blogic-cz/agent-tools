@@ -27,4 +27,5 @@ export const OPS = {
   jobLog: { kind: "passthrough" },
   annotations: { kind: "passthrough" },
   jobIdentity: { kind: "immutable" },
+  commitAuthor: { kind: "ttl", ttlMs: 300000 },
 } as const satisfies Record<Op, CacheClass>;

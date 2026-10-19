@@ -71,7 +71,13 @@ import {
   releaseStatusCommand,
   releaseViewCommand,
 } from "./release";
-import { repoInfoCommand, repoListCommand, repoSearchCodeCommand } from "./repo";
+import {
+  repoCommitAuthorCommand,
+  repoInfoCommand,
+  repoListCommand,
+  repoSearchCodeCommand,
+} from "./repo";
+import { labelCreateCommand } from "./label";
 import { GitHubService } from "./read/transport";
 import { withReadCache } from "./read";
 import { cacheCommand } from "./read/commands";
@@ -153,7 +159,17 @@ const branchCommand = Command.make("branch", {}).pipe(
 
 const repoCommand = Command.make("repo", {}).pipe(
   Command.withDescription("Repository operations"),
-  Command.withSubcommands([repoInfoCommand, repoListCommand, repoSearchCodeCommand]),
+  Command.withSubcommands([
+    repoInfoCommand,
+    repoListCommand,
+    repoSearchCodeCommand,
+    repoCommitAuthorCommand,
+  ]),
+);
+
+const labelCommand = Command.make("label", {}).pipe(
+  Command.withDescription("Repository label operations"),
+  Command.withSubcommands([labelCreateCommand]),
 );
 
 const workflowCommand = Command.make("workflow", {}).pipe(
@@ -237,6 +253,7 @@ WORKFLOW FOR AI AGENTS:
     prCommand,
     issueCommand,
     repoCommand,
+    labelCommand,
     branchCommand,
     workflowCommand,
     releaseCommand,

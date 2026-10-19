@@ -10,6 +10,7 @@ import { parsePreserving } from "./porcelain";
 const Label = Schema.Struct({ name: Schema.String });
 const Login = Schema.Struct({ login: Schema.String });
 const IssueListItem = Schema.Struct({
+  body: Schema.optional(Schema.String),
   number: Schema.Number,
   title: Schema.String,
   state: Schema.String,
@@ -32,7 +33,12 @@ const IssueComment = Schema.Struct({
   html_url: Schema.String,
 });
 export type IssueView = typeof IssueView.Type;
-export type IssueListFilter = { state: string; labels: string | null; limit: number };
+export type IssueListFilter = {
+  state: string;
+  labels: string | null;
+  limit: number;
+  includeBody?: boolean;
+};
 export const ISSUE_LIST_FIELDS = "number,title,state,url,labels,createdAt";
 export const ISSUE_VIEW_FIELDS =
   "number,title,state,url,labels,assignees,author,body,createdAt,closedAt";
@@ -66,6 +72,7 @@ export const issueView = Effect.fn("reads.issueView")(function* (
 export const issueList = Effect.fn("reads.issueList")(function* (
   repo: RepoRef,
   filter: IssueListFilter,
+  consistency: "cached" | "origin" = "cached",
 ) {
   const gh = yield* GitHubService;
   const args = [
@@ -76,19 +83,29 @@ export const issueList = Effect.fn("reads.issueList")(function* (
     "--limit",
     String(filter.limit),
     "--json",
-    ISSUE_LIST_FIELDS,
+    filter.includeBody ? `${ISSUE_LIST_FIELDS},body` : ISSUE_LIST_FIELDS,
     "--repo",
     repoSlug(repo),
   ];
   if (filter.labels !== null) args.push("--label", filter.labels);
+  const decode = parsePreserving(
+    Schema.mutable(
+      Schema.Array(
+        filter.includeBody
+          ? Schema.Struct({ ...IssueListItem.fields, body: Schema.String })
+          : IssueListItem,
+      ),
+    ),
+  );
   return yield* cachedRead({
     key: { op: "issueList", repo, filter },
     policy: OPS.issueList,
-    decode: parsePreserving(Schema.mutable(Schema.Array(IssueListItem))),
+    consistency,
+    decode,
     fetch: () =>
       gh
         .runGhJson<Array<typeof IssueListItem.Type>>(args)
-        .pipe(Effect.map((value) => ({ kind: "fresh" as const, value }))),
+        .pipe(Effect.map((value) => ({ kind: "fresh" as const, value: decode(value) }))),
   });
 });
 

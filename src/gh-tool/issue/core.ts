@@ -52,8 +52,11 @@ export const listIssues = Effect.fn("issue.listIssues")(function* (opts: {
   state: string;
   labels: string | null;
   limit: number;
+  includeBody?: boolean;
+  fresh?: boolean;
 }) {
-  return yield* reads.issueList(yield* resolveRepo(null), opts);
+  const { fresh, ...filter } = opts;
+  return yield* reads.issueList(yield* resolveRepo(null), filter, fresh ? "origin" : "cached");
 });
 
 export const viewIssue = Effect.fn("issue.viewIssue")(function* (issueNumber: number) {

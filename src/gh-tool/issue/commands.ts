@@ -35,6 +35,14 @@ export const issueListCommand = Command.make(
   "list",
   {
     format: formatOption,
+    includeBody: Flag.Boolean("include-body").pipe(
+      Flag.withDescription("Include each issue's body in the result"),
+      Flag.withDefault(false),
+    ),
+    fresh: Flag.Boolean("fresh").pipe(
+      Flag.withDescription("Read from GitHub instead of the shared cache"),
+      Flag.withDefault(false),
+    ),
     labels: Flag.String("labels").pipe(
       Flag.withDescription("Filter by label (comma-separated)"),
       Flag.optional,
@@ -49,12 +57,14 @@ export const issueListCommand = Command.make(
       Flag.withDefault("open"),
     ),
   },
-  ({ format, labels, limit, repo, state }) =>
+  ({ format, fresh, includeBody, labels, limit, repo, state }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const issues = yield* listIssues({
           labels: Option.getOrNull(labels),
+          includeBody,
+          fresh,
           limit,
           state,
         });
