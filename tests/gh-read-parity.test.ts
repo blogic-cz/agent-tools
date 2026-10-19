@@ -62,43 +62,45 @@ it(
 it(
   "replays published 1.7.5 command outputs without GitHub access",
   { timeout: 30000 },
-  async ({ signal }) => {
+  async ({ signal, onTestFinished }) => {
     const root = await mkdtemp(join(tmpdir(), "gh-read-parity-"));
-    try {
-      const bun = spawnSync("bun", ["-e", "process.stdout.write(process.execPath)"], {
-        encoding: "utf8",
-      }).stdout;
-      const { bin, preload } = await createReplayGh(root, bun);
-      const fixture = JSON.parse(
-        await readFile(new URL("./fixtures/gh-read-parity.json", import.meta.url), "utf8"),
-      ) as {
-        cases: { argv: string[]; stdout: string; status: number }[];
-      };
-      expect(fixture.cases.map((entry) => entry.argv)).toEqual(replayCases);
-      await runReplayCases({
-        executable: bun,
-        cases: fixture.cases.map((entry) => ({
-          stdout: entry.stdout,
-          status: entry.status,
-          argv: ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(entry.argv)],
-        })),
-        options: {
-          cwd: resolve(import.meta.dirname, ".."),
-          encoding: "utf8",
-          timeout: 15000,
-          signal,
-          env: {
-            PATH: `${bin}:/usr/bin:/bin`,
-            HOME: root,
-            XDG_CONFIG_HOME: root,
-            XDG_CACHE_HOME: root,
-            GH_TOKEN: "offline-replay",
-            GH_TOOL_CACHE: "off",
-          },
-        },
-      });
-    } finally {
+    let running: Promise<void> | undefined;
+    onTestFinished(async () => {
+      if (running !== undefined) await Promise.allSettled([running]);
       await rm(root, { recursive: true, force: true });
-    }
+    });
+    const bun = spawnSync("bun", ["-e", "process.stdout.write(process.execPath)"], {
+      encoding: "utf8",
+    }).stdout;
+    const { bin, preload } = await createReplayGh(root, bun);
+    const fixture = JSON.parse(
+      await readFile(new URL("./fixtures/gh-read-parity.json", import.meta.url), "utf8"),
+    ) as {
+      cases: { argv: string[]; stdout: string; status: number }[];
+    };
+    expect(fixture.cases.map((entry) => entry.argv)).toEqual(replayCases);
+    running = runReplayCases({
+      executable: bun,
+      cases: fixture.cases.map((entry) => ({
+        stdout: entry.stdout,
+        status: entry.status,
+        argv: ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(entry.argv)],
+      })),
+      options: {
+        cwd: resolve(import.meta.dirname, ".."),
+        encoding: "utf8",
+        timeout: 15000,
+        signal,
+        env: {
+          PATH: `${bin}:/usr/bin:/bin`,
+          HOME: root,
+          XDG_CONFIG_HOME: root,
+          XDG_CACHE_HOME: root,
+          GH_TOKEN: "offline-replay",
+          GH_TOOL_CACHE: "off",
+        },
+      },
+    });
+    await running;
   },
 );
