@@ -84,7 +84,7 @@ const fetchLogs = Effect.fn("workflow.fetchLogs")(function* (
   };
 });
 
-const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
+export const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
   runId: number,
   failedOnly: boolean,
   repo: string | null,
@@ -98,7 +98,7 @@ const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
   }
 
   const target = yield* resolveRepo(repo);
-  yield* writes.run(args, [`run:${repoSlug(target)}/${runId}`, `runs:${repoSlug(target)}`]);
+  yield* writes.run(args, [`repo:${repoSlug(target)}`]);
 
   return {
     rerun: true as const,
@@ -110,14 +110,17 @@ const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
   };
 });
 
-const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo: string | null) {
+export const cancelRun = Effect.fn("workflow.cancelRun")(function* (
+  runId: number,
+  repo: string | null,
+) {
   const args = ["run", "cancel", String(runId)];
   if (repo !== null) {
     args.push("--repo", repo);
   }
 
   const target = yield* resolveRepo(repo);
-  yield* writes.run(args, [`run:${repoSlug(target)}/${runId}`, `runs:${repoSlug(target)}`]);
+  yield* writes.run(args, [`repo:${repoSlug(target)}`]);
 
   return {
     cancelled: true as const,
@@ -143,7 +146,7 @@ export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function*
   }
 
   const target = yield* resolveRepo(opts.repo);
-  yield* writes.run(args, [`runs:${repoSlug(target)}`]);
+  yield* writes.run(args, [`repo:${repoSlug(target)}`]);
 
   return {
     dispatched: true as const,
