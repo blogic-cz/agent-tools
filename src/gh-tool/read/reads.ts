@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import { GitHubService } from "#gh/service";
 import { GitHubCommandError } from "#gh/errors";
 import type { CheckRunAnnotation } from "#gh/types";
-import { cachedRead } from "./cache";
+import { cachedRead, ReadCache } from "./cache";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
 import { issueView, issueList, issueComments } from "./issues";
@@ -72,11 +72,16 @@ const runList = Effect.fn("reads.runList")(function* (
   });
 });
 
-const runView = Effect.fn("reads.runView")(function* (repo: RepoRef, runId: number) {
+const runView = Effect.fn("reads.runView")(function* (
+  repo: RepoRef,
+  runId: number,
+  consistency: "cached" | "origin" = "cached",
+) {
   const gh = yield* GitHubService;
-  return yield* cachedRead({
+  const run = yield* cachedRead({
     key: { op: "runView", repo, runId },
     policy: OPS.runView,
+    consistency,
     decode: parsePreserving(WorkflowRunDetail),
     policyForValue: (value) =>
       value.status === "completed" ? { kind: "ttl", ttlMs: 300000 } : OPS.runView,
@@ -92,6 +97,13 @@ const runView = Effect.fn("reads.runView")(function* (repo: RepoRef, runId: numb
           RUN_VIEW_FIELDS,
         ])
         .pipe(Effect.map((value) => ({ kind: "fresh" as const, value }))),
+  });
+  if (run.status !== "completed" || consistency === "origin") return run;
+  return yield* cachedRead({
+    key: { op: "runView", repo, runId, attempt: run.attempt },
+    policy: { kind: "immutable" },
+    decode: parsePreserving(WorkflowRunDetail),
+    fetch: () => Effect.succeed({ kind: "fresh" as const, value: run }),
   });
 });
 
@@ -187,7 +199,46 @@ const annotations = Effect.fn("reads.annotations")(function* (repo: RepoRef, job
   });
 });
 
+const JobIdentity = Schema.NullOr(Schema.Struct({ runId: Schema.Number, attempt: Schema.Number }));
+const jobIdentity = Effect.fn("reads.jobIdentity")(function* (repo: RepoRef, jobId: number) {
+  const gh = yield* GitHubService;
+  const session = yield* ReadCache;
+  const path = `repos/${repoSlug(repo)}/actions/jobs/${jobId}`;
+  return yield* cachedRead({
+    key: { op: "jobIdentity", repo, jobId },
+    policy: OPS.jobIdentity,
+    decode: parsePreserving(JobIdentity),
+    fetch: () =>
+      (session === null || session.store === null
+        ? gh.runGhJson<{ run_id: number; run_attempt: number }>(["api", path])
+        : gh
+            .apiRequest<{ run_id: number; run_attempt: number }>({ path })
+            .pipe(Effect.map((response) => response.body))
+      ).pipe(
+        Effect.flatMap((job) =>
+          Effect.try({
+            try: () =>
+              Schema.decodeUnknownSync(JobIdentity)({
+                runId: job.run_id,
+                attempt: job.run_attempt,
+              }),
+            catch: (error) =>
+              new GitHubCommandError({
+                command: `GET ${path}`,
+                exitCode: 0,
+                message: String(error),
+                stderr: String(error),
+              }),
+          }),
+        ),
+        Effect.catchTag("GitHubNotFoundError", () => Effect.succeed(null)),
+        Effect.map((value) => ({ kind: "fresh" as const, value })),
+      ),
+  });
+});
+
 export const reads = {
+  jobIdentity,
   reviewGuards,
   prComments,
   prReviews,

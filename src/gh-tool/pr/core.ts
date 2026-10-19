@@ -1707,7 +1707,14 @@ type WatchRun = {
   databaseId: number;
   attempt?: number | null;
   headSha?: string | null;
-  jobs?: Array<{ databaseId: number; name: string }>;
+  jobs?: ReadonlyArray<{ databaseId: number; name: string }>;
+};
+
+const checkJobId = (link: string): number | null => {
+  const modern = link.match(/github\.com\/[^/]+\/[^/]+\/actions\/runs\/\d+\/job\/(\d+)/);
+  const legacy = link.match(/github\.com\/[^/]+\/[^/]+\/runs\/(\d+)/);
+  const id = Number(modern?.[1] ?? legacy?.[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 };
 
 const watchPRState = Effect.fn("pr.watchPRState")(function* (pr: number) {
@@ -1807,38 +1814,66 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
       const { state: after, value: checks } = stableResult.success;
       const head = after.headRefOid ?? null;
       const runs = new Map<number, WatchRun | null>();
+      const identities = new Map<number, { runId: number; attempt: number } | null>();
       yield* Effect.forEach(
-        [...new Set(checks.map((check) => extractRunIdFromCheckLink(check.link)))].filter(
-          (runId): runId is number => runId !== null,
+        [...new Set(checks.map((check) => checkJobId(check.link)))].filter(
+          (id): id is number => id !== null,
         ),
+        (id) =>
+          Effect.gen(function* () {
+            if (!(yield* beforeDeadline)) return;
+            identities.set(
+              id,
+              yield* reads
+                .jobIdentity(repo, id)
+                .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null))),
+            );
+          }),
+        { concurrency: 2 },
+      );
+      yield* Effect.forEach(
+        [
+          ...new Set(
+            checks
+              .filter((check) => checkJobId(check.link) === null)
+              .map((check) => extractRunIdFromCheckLink(check.link)),
+          ),
+        ].filter((runId): runId is number => runId !== null),
         (runId) =>
           Effect.gen(function* () {
             if (!(yield* beforeDeadline)) return;
-            const run = yield* gh
-              .runGhJson<WatchRun>([
-                "run",
-                "view",
-                String(runId),
-                "--json",
-                "databaseId,attempt,headSha,jobs",
-              ])
+            const run = yield* reads
+              .runView(repo, runId)
               .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
             runs.set(runId, run);
           }),
-        { concurrency: 5 },
+        { concurrency: 2 },
       );
       if (!(yield* beforeDeadline)) return "timeout" as const;
       return {
         pr: after,
         head,
         checks: checks
-          .map((check) => ({
-            check,
-            run:
-              extractRunIdFromCheckLink(check.link) === null
-                ? null
-                : (runs.get(extractRunIdFromCheckLink(check.link) ?? -1) ?? null),
-          }))
+          .map((check) => {
+            const jobId = checkJobId(check.link);
+            const identity = jobId === null ? null : identities.get(jobId);
+            const runId = extractRunIdFromCheckLink(check.link);
+            const resolvedRunId = runId ?? identity?.runId ?? null;
+            const run: WatchRun | null =
+              jobId === null
+                ? runId === null
+                  ? null
+                  : (runs.get(runId) ?? null)
+                : resolvedRunId === null
+                  ? null
+                  : {
+                      databaseId: resolvedRunId,
+                      attempt: identity?.attempt ?? null,
+                      headSha: head,
+                      jobs: [{ databaseId: jobId, name: check.name }],
+                    };
+            return { check, run };
+          })
           .filter(({ run }) => run === null || run.headSha === null || run.headSha === head),
       };
     });

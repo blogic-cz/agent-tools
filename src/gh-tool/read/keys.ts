@@ -27,7 +27,7 @@ export type ReadKey = { readonly repo: RepoRef } & (
     }
   | { readonly op: "issueView" | "issueComments"; readonly issue: number }
   | { readonly op: "runList"; readonly filter: RunFilter }
-  | { readonly op: "runView"; readonly runId: number }
+  | { readonly op: "runView"; readonly runId: number; readonly attempt?: number }
   | { readonly op: "runJobs"; readonly runId: number; readonly attempt: number }
   | {
       readonly op: "runLog";
