@@ -2056,7 +2056,9 @@ describe("PR view", () => {
         ),
       );
 
-      yield* TestClock.adjust("3000 millis");
+      yield* TestClock.adjust("4999 millis");
+      expect(views).toBe(1);
+      yield* TestClock.adjust("1 millis");
       const result = yield* Fiber.join(fiber);
 
       expect(result.mergeable).toBe("MERGEABLE");
@@ -3355,7 +3357,9 @@ describe("PR merge logic", () => {
         ),
       );
 
-      yield* TestClock.adjust("1000 millis");
+      yield* TestClock.adjust("4999 millis");
+      expect(viewCount).toBe(2);
+      yield* TestClock.adjust("1 millis");
       const result = yield* Fiber.join(fiber);
 
       expect(result.sha).toBe("df5bce49939e0cd8d9ce73bc5555e1b11cad7e7c");
@@ -3403,7 +3407,7 @@ describe("PR merge logic", () => {
       const result = yield* Fiber.join(fiber);
 
       expect(result.sha).toBeNull();
-      expect(viewCount).toBe(7);
+      expect(viewCount).toBe(3);
       expect(errors.flat().join(" ")).toContain("merge commit SHA is still unknown");
     }),
   );
@@ -9594,6 +9598,36 @@ describe("pr trigger-checks", () => {
 });
 
 describe("dispatched run discovery", () => {
+  it.effect("polls at a five-second floor within the sixteen-second discovery budget", () =>
+    Effect.gen(function* () {
+      const times: number[] = [];
+      const fiber = yield* Effect.forkChild(
+        discoverDispatchedRun({
+          workflow: "ci.yml",
+          ref: "feat/test",
+          repo: "test-owner/test-repo",
+          knownRunIds: new Set<number>(),
+        }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.gen(function* () {
+                  times.push(Number(yield* Clock.currentTimeMillis));
+                  return [];
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("4999 millis");
+      expect(times).toEqual([0]);
+      yield* TestClock.adjust("11001 millis");
+      expect(yield* Fiber.join(fiber)).toBeNull();
+      expect(times).toEqual([0, 5000, 10000, 15000]);
+      expect(Number(yield* Clock.currentTimeMillis)).toBe(16000);
+    }),
+  );
+
   it.effect("returns the run absent from the pre-dispatch list", () =>
     Effect.gen(function* () {
       const created = yield* discoverDispatchedRun({

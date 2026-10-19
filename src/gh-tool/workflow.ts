@@ -1,5 +1,5 @@
 import { Command, Flag, Param } from "effect/cli";
-import { Duration, Effect, Option } from "effect";
+import { Clock, Duration, Effect, Option } from "effect";
 
 import { formatOption, logFormatted, logText } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
@@ -249,8 +249,8 @@ export type DispatchedRun = {
   url: string;
 };
 
-const DISPATCH_DISCOVERY_ATTEMPTS = 8;
-const DISPATCH_DISCOVERY_INTERVAL_MS = 2000;
+const DISPATCH_DISCOVERY_BUDGET_MS = 16_000;
+const DISPATCH_DISCOVERY_INTERVAL_MS = 5000;
 
 export const listDispatchedRuns = Effect.fn("workflow.listDispatchedRuns")(function* (opts: {
   workflow: string;
@@ -291,13 +291,27 @@ export const discoverDispatchedRun = Effect.fn("workflow.discoverDispatchedRun")
   repo: string | null;
   knownRunIds: ReadonlySet<number>;
 }) {
-  for (let attempt = 0; attempt < DISPATCH_DISCOVERY_ATTEMPTS; attempt += 1) {
-    const runs = yield* listDispatchedRuns(opts);
-    const created = runs.find((run) => !opts.knownRunIds.has(run.databaseId));
-    if (created !== undefined) return created;
-    yield* Effect.sleep(Duration.millis(DISPATCH_DISCOVERY_INTERVAL_MS));
-  }
-  return null;
+  const deadline = Number(yield* Clock.currentTimeMillis) + DISPATCH_DISCOVERY_BUDGET_MS;
+  const state: { created: DispatchedRun | null } = { created: null };
+  let expired = false;
+  yield* Effect.whileLoop({
+    while: () => state.created === null && !expired,
+    body: () =>
+      Effect.gen(function* () {
+        const runs = yield* listDispatchedRuns(opts);
+        state.created = runs.find((run) => !opts.knownRunIds.has(run.databaseId)) ?? null;
+        if (state.created !== null) return;
+        const remaining = deadline - Number(yield* Clock.currentTimeMillis);
+        if (remaining <= 0) {
+          expired = true;
+          return;
+        }
+        yield* Effect.sleep(Duration.millis(Math.min(DISPATCH_DISCOVERY_INTERVAL_MS, remaining)));
+        expired = Number(yield* Clock.currentTimeMillis) >= deadline;
+      }),
+    step: () => undefined,
+  });
+  return state.created;
 });
 
 // `gh run watch` has no native timeout (observed hanging 36 min). Block for the caller's --timeout,

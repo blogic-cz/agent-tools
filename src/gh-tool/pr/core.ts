@@ -49,7 +49,7 @@ const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
 const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
-const MERGE_SHA_POLL_INTERVAL_MS = 1000;
+const MERGE_SHA_POLL_INTERVAL_MS = 5000;
 const MERGE_SHA_WAIT_SECONDS = 5;
 const isFullCommitSha = (value: unknown): value is string =>
   typeof value === "string" && value.length === 40 && /^[0-9a-f]+$/i.test(value);
@@ -428,7 +428,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
       runIds,
       (runId) =>
         fetchWorkflowRunFailureContext(runId).pipe(Effect.map((found) => [runId, found] as const)),
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     ),
   );
 
@@ -716,7 +716,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
             Effect.catch(() => Effect.succeed(false)),
           ),
         },
-        { concurrency: "unbounded" },
+        { concurrency: 2 },
       ).pipe(
         Effect.map((r): BranchResult => ({
           branch: branchName,
@@ -724,7 +724,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
         })),
       ),
     ),
-    { concurrency: "unbounded" },
+    { concurrency: 2 },
   );
 
   const foundPrs = branchResults.flatMap((r) => (r.openPr === null ? [] : [r.openPr]));
@@ -782,7 +782,7 @@ export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
 
 // GitHub recomputes mergeability asynchronously after CI; poll until it settles out of "UNKNOWN".
 const MAX_MERGEABLE_WAIT_SECONDS = 180;
-const MERGEABLE_POLL_INTERVAL_MS = 3000;
+const MERGEABLE_POLL_INTERVAL_MS = 5000;
 
 export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
   pr: number | null,
@@ -983,7 +983,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
 // GitHub rejects GraphQL `mergePullRequest` for a PR that belongs to a native stack and points at
 // the asynchronous REST merge instead. `gh pr merge` only speaks GraphQL.
 const ASYNC_MERGE_REQUIRED_RE = /asynchronous merge/i;
-const ASYNC_MERGE_POLL_INTERVAL_MS = 2000;
+const ASYNC_MERGE_POLL_INTERVAL_MS = 5000;
 const MAX_ASYNC_MERGE_WAIT_SECONDS = 120;
 
 type AsyncMergeResult = {
@@ -2130,7 +2130,7 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
     }
     const remaining = deadline - Number(yield* Clock.currentTimeMillis);
     if (remaining <= 0) return null;
-    yield* Effect.sleep(Duration.millis(Math.min(1000, remaining)));
+    yield* Effect.sleep(Duration.millis(Math.min(5000, remaining)));
   }
   return null;
 });
@@ -2276,7 +2276,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
               deadline,
             )
           : Effect.succeed(null),
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     );
     yield* Effect.forEach(
       candidates,
@@ -2296,7 +2296,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
           while (latest.status !== "completed") {
             const remaining = deadline - Number(yield* Clock.currentTimeMillis);
             if (remaining <= 0) break;
-            yield* Effect.sleep(Duration.millis(Math.min(1000, remaining)));
+            yield* Effect.sleep(Duration.millis(Math.min(5000, remaining)));
             if (Number(yield* Clock.currentTimeMillis) >= deadline) break;
             latest = yield* gh
               .runGhJson<RerunDiscovery>([
@@ -2311,7 +2311,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
           result.latestAttempt = latest;
           result.status = latest.status === "completed" ? "completed" : "watch_timeout";
         }),
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     );
   }
   const report: RerunChecksReport = {

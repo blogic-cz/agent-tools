@@ -25,7 +25,7 @@ type AsyncMergeResult = {
 
 // One request merges every open member, so the server-side work scales with the stack;
 // the single-PR budget in core.ts is deliberately shorter.
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 5000;
 const MAX_WAIT_SECONDS = 300;
 
 const stackMergeFailure = (opts: {
