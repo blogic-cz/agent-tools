@@ -187,6 +187,7 @@ export type CliToolOverride = {
 export type CredentialGuardConfig = {
   /** Exact, case-sensitive names approved for static printenv reads. Empty by default. */
   allowedEnvironmentVariables?: string[];
+  chainCopyDestinations?: string[];
   additionalBlockedPaths?: string[];
   additionalAllowedPaths?: string[];
   additionalBlockedCliTools?: CliToolOverride[];
