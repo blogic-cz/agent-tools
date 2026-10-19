@@ -115,6 +115,8 @@ export class FileStore {
       }),
     );
     const store = new FileStore(join(directory, "gh-read-v1"), identity);
+    await mkdir(store.ghCacheDirectory, { recursive: true, mode: 0o700 });
+    await checkDirectory(store.ghCacheDirectory);
     await store.readClock();
     await store.prune();
     return store;
@@ -161,7 +163,7 @@ export class FileStore {
   }
 
   get ghCacheDirectory(): string {
-    return join(this.directory, "gh-xdg-cache");
+    return join(this.directory, "gh-xdg-cache", this.identity);
   }
 
   private async prune(): Promise<void> {

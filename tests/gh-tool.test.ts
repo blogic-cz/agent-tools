@@ -38,6 +38,7 @@ import { githubApi } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
 import { withReadCache, ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
+import { digest } from "#gh/read/keys";
 import { writes } from "#gh/read/writes";
 import {
   viewIssue,
@@ -1502,6 +1503,46 @@ describe("GitHubService.runGh() error mapping", () => {
     );
   });
 
+  it.effect("isolates gh child archives across resolved credential identities", () => {
+    const originalEnvironment = process.env;
+    const observed: ObservedGhCommand[] = [];
+    let directory: string | undefined;
+    return Effect.gen(function* () {
+      directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-archive-identities-")));
+      const service = yield* GitHubService;
+      const paths: string[] = [];
+      for (const token of ["archive-token-A", "archive-token-B", "archive-token-A"]) {
+        process.env = { GH_TOOL_CACHE_DIR: directory, GH_TOKEN: token };
+        yield* withReadCache(service.runGh(["run", "view", "123", "--log"]));
+        const path = observed.at(-1)?.env?.["XDG_CACHE_HOME"];
+        if (path === undefined) throw new Error("Expected child archive directory");
+        paths.push(path);
+        const archive = join(path, "run-123.zip");
+        if (paths.length === 1) yield* Effect.promise(() => writeFile(archive, "A archive"));
+        if (paths.length === 2) {
+          yield* Effect.promise(async () => {
+            await expect(readFile(archive)).rejects.toMatchObject({ code: "ENOENT" });
+            await writeFile(archive, "B archive");
+          });
+        }
+        if (paths.length === 3)
+          expect(yield* Effect.promise(() => readFile(archive, "utf8"))).toBe("A archive");
+      }
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(paths[0]).toBe(paths[2]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observed)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+      Effect.ensuring(
+        Effect.promise(async () => {
+          process.env = originalEnvironment;
+          if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+        }),
+      ),
+    );
+  });
+
   for (const enabled of [true, false]) {
     it.effect(`changes only gh's cache directory when cache is ${enabled ? "on" : "off"}`, () => {
       const originalEnvironment = process.env;
@@ -1524,7 +1565,13 @@ describe("GitHubService.runGh() error mapping", () => {
         expect(observed[0]?.env).toEqual({
           ...ghEnvironment(environment),
           GH_REPO: "selected/repo",
-          ...(enabled ? { XDG_CACHE_HOME: join(directory, "gh-read-v1", "gh-xdg-cache") } : {}),
+          ...(enabled
+            ? {
+                XDG_CACHE_HOME: (yield* Effect.promise(() =>
+                  FileStore.open(digest("synthetic-token"), directory),
+                )).ghCacheDirectory,
+              }
+            : {}),
         });
       }).pipe(
         Effect.provide(GitHubService.layer),
