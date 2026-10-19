@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Layer, Result } from "effect";
-import { TestClock } from "effect/testing";
+import { Effect, Layer, Result } from "effect";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +7,7 @@ import { join } from "node:path";
 import { GitHubService } from "#gh/read/transport";
 import type { GhError, GhResult } from "#gh/read/transport";
 import { GitHubCommandError } from "#gh/errors";
-import { createIssue, listIssues } from "#gh/issue/core";
+import { listIssues } from "#gh/issue/core";
 import { createLabel } from "#gh/label";
 import { commitAuthor } from "#gh/read/commits";
 import { ReadCache } from "#gh/read/cache";
@@ -24,13 +23,6 @@ const issue = {
   labels: [{ name: "debt" }],
   assignees: [{ login: "owner" }],
   createdAt: "2026-10-19T00:00:00Z",
-};
-const opts = {
-  idempotencyKey: "Body",
-  title: "Title",
-  body: "Body",
-  labels: "debt",
-  assignee: "owner",
 };
 const success = { stdout: issue.url, stderr: "", exitCode: 0 };
 const failure = (stderr: string) =>
@@ -56,111 +48,6 @@ const mock = (overrides: {
   );
 
 describe("issue census operations", () => {
-  it.effect.each(["body", "labels", "failed", "duplicate"])(
-    "refuses recovery when origin is %s",
-    (mode) =>
-      Effect.gen(function* () {
-        let attempts = 0;
-        const layer = mock({
-          runGh: () => {
-            attempts++;
-            return Effect.fail(failure("HTTP 429"));
-          },
-          runGhJson: (args) => {
-            if (args[1] === "list")
-              return Effect.succeed(
-                mode === "duplicate" ? [issue, { ...issue, number: 43 }] : [issue],
-              );
-            if (mode === "failed") return Effect.fail(failure("detail unavailable"));
-            return Effect.succeed(
-              mode === "body"
-                ? { ...issue, body: "Edited without marker" }
-                : { ...issue, labels: [] },
-            );
-          },
-        });
-        const fiber = yield* createIssue(opts).pipe(
-          Effect.provide(layer),
-          Effect.result,
-          Effect.forkChild,
-        );
-        yield* TestClock.adjust("60 seconds");
-        expect((yield* Fiber.join(fiber))._tag).toBe("Failure");
-        expect(attempts).toBe(1);
-      }),
-  );
-  it.effect("does not recover an old matching issue without an explicit idempotency key", () =>
-    Effect.gen(function* () {
-      let reads = 0;
-      const error = failure("secondary rate limit");
-      const result = yield* createIssue({
-        title: "Title",
-        body: "Body",
-        labels: "debt",
-        assignee: "bob",
-      }).pipe(
-        Effect.provide(
-          mock({
-            runGh: () => Effect.fail(error),
-            runGhJson: () => {
-              reads++;
-              return Effect.succeed([{ ...issue, assignees: [{ login: "alice" }] }]);
-            },
-          }),
-        ),
-        Effect.result,
-      );
-      expect(result).toEqual(Result.fail(error));
-      expect(reads).toBe(0);
-    }),
-  );
-
-  it.effect.each(["", "absent"])("rejects an invalid idempotency key %s before creating", (key) =>
-    Effect.gen(function* () {
-      let writes = 0;
-      const result = yield* createIssue({ ...opts, idempotencyKey: key }).pipe(
-        Effect.provide(
-          mock({
-            runGh: () => {
-              writes++;
-              return Effect.succeed(success);
-            },
-          }),
-        ),
-        Effect.result,
-      );
-      expect(result._tag).toBe("Failure");
-      expect(writes).toBe(0);
-    }),
-  );
-
-  it.effect.each(["assignee", "content"])(
-    "refuses recovery and retry when the key has different %s",
-    (mode) =>
-      Effect.gen(function* () {
-        let attempts = 0;
-        const other =
-          mode === "assignee"
-            ? { ...issue, assignees: [{ login: "alice" }] }
-            : { ...issue, body: "Body changed" };
-        const layer = mock({
-          runGh: () => {
-            attempts++;
-            return Effect.fail(failure("rate limit"));
-          },
-          runGhJson: (args) => Effect.succeed(args[1] === "list" ? [other] : other),
-        });
-        const fiber = yield* createIssue(opts).pipe(
-          Effect.provide(layer),
-          Effect.result,
-          Effect.forkChild,
-        );
-        yield* TestClock.adjust("60 seconds");
-        expect((yield* Fiber.join(fiber))._tag).toBe("Failure");
-        expect(attempts).toBe(1);
-      }),
-  );
-
   it.effect("propagates commit author lookup failure instead of returning null", () =>
     Effect.gen(function* () {
       const error = failure("HTTP 403");
@@ -207,113 +94,6 @@ describe("issue census operations", () => {
       yield* listIssues({ state: "open", labels: null, limit: 30 }).pipe(Effect.provide(layer));
       expect(calls[1]).toContain("number,title,state,url,labels,createdAt");
     }),
-  );
-
-  it.effect("reconciles a closed matching issue before replaying a rate-limited create", () =>
-    Effect.gen(function* () {
-      let attempts = 0;
-      const layer = mock({
-        runGh: () => {
-          attempts++;
-          return Effect.fail(failure("HTTP 403: secondary rate limit"));
-        },
-        runGhJson: (args) => Effect.succeed(args[1] === "list" ? [issue] : issue),
-      });
-      const fiber = yield* createIssue(opts).pipe(Effect.provide(layer), Effect.forkChild);
-      yield* TestClock.adjust("59 seconds");
-      expect(attempts).toBe(1);
-      yield* TestClock.adjust("1 second");
-      expect((yield* Fiber.join(fiber)).number).toBe(42);
-      expect(attempts).toBe(1);
-    }),
-  );
-
-  it.effect("retries after 60 seconds when title matches but body differs", () =>
-    Effect.gen(function* () {
-      let attempts = 0;
-      const layer = mock({
-        runGh: () =>
-          ++attempts === 1 ? Effect.fail(failure("HTTP 429")) : Effect.succeed(success),
-        runGhJson: (args) =>
-          Effect.succeed(args[1] === "list" ? [{ ...issue, body: "Other" }] : issue),
-      });
-      const fiber = yield* createIssue(opts).pipe(Effect.provide(layer), Effect.forkChild);
-      yield* TestClock.adjust("59 seconds");
-      expect(attempts).toBe(1);
-      yield* TestClock.adjust("1 second");
-      expect((yield* Fiber.join(fiber)).number).toBe(42);
-      expect(attempts).toBe(2);
-    }),
-  );
-
-  it.effect("stops after five rate-limited attempts", () =>
-    Effect.gen(function* () {
-      let attempts = 0;
-      const error = failure("secondary rate limit");
-      const layer = mock({
-        runGh: () => {
-          attempts++;
-          return Effect.fail(error);
-        },
-        runGhJson: () => Effect.succeed([]),
-      });
-      const fiber = yield* createIssue(opts).pipe(
-        Effect.provide(layer),
-        Effect.result,
-        Effect.forkChild,
-      );
-      for (const seconds of [60, 120, 180, 240]) yield* TestClock.adjust(`${seconds} seconds`);
-      expect(yield* Fiber.join(fiber)).toEqual(Result.fail(error));
-      expect(attempts).toBe(5);
-    }),
-  );
-
-  it.effect.each(["HTTP 403: Resource not accessible", "connection reset", "HTTP 502"])(
-    "does not replay %s",
-    (message) =>
-      Effect.gen(function* () {
-        let attempts = 0;
-        const error = failure(message);
-        const result = yield* createIssue(opts).pipe(
-          Effect.provide(
-            mock({
-              runGh: () => {
-                attempts++;
-                return Effect.fail(error);
-              },
-            }),
-          ),
-          Effect.result,
-        );
-        expect(result).toEqual(Result.fail(error));
-        expect(attempts).toBe(1);
-      }),
-  );
-
-  it.effect.each(["capped", "failed"] as const)(
-    "refuses a retry when reconciliation is %s",
-    (mode) =>
-      Effect.gen(function* () {
-        let attempts = 0;
-        const layer = mock({
-          runGh: () => {
-            attempts++;
-            return Effect.fail(failure("rate limit"));
-          },
-          runGhJson: () =>
-            mode === "capped"
-              ? Effect.succeed(Array.from({ length: 1000 }, () => issue))
-              : Effect.fail(failure("list failed")),
-        });
-        const fiber = yield* createIssue(opts).pipe(
-          Effect.provide(layer),
-          Effect.result,
-          Effect.forkChild,
-        );
-        yield* TestClock.adjust("60 seconds");
-        expect((yield* Fiber.join(fiber))._tag).toBe("Failure");
-        expect(attempts).toBe(1);
-      }),
   );
 
   it.effect("forwards label creation and optional force", () =>

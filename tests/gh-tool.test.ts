@@ -1404,7 +1404,13 @@ describe("GitHubService.runGh() error mapping", () => {
                 ? "search/issues"
                 : "repos/owner/repo";
           const error = yield* service.runGh(["api", endpoint]).pipe(Effect.flip);
-          expect(error.message).toContain("reset time: 2027-01-15T08:00:00Z; remaining quota: 0");
+          expect(error.message).toBe(
+            "API rate limit exceeded (HTTP 403); reset time: 2027-01-15T08:00:00Z; remaining quota: 0",
+          );
+          expect(/rate limit|secondary|abuse|403|429/i.test(error.message)).toBe(true);
+          expect(error.hint).toBe(
+            "Wait until the quota resets before you retry. The failed command was not replayed.",
+          );
           expect(calls).toHaveLength(2);
           expect(calls[0]).toEqual(["api", endpoint]);
           expect(calls[1]?.slice(0, 3)).toEqual(["api", "rate_limit", "--jq"]);

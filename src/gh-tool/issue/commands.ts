@@ -224,12 +224,6 @@ export const issueCreateCommand = Command.make(
       Flag.withDefault(false),
     ),
     format: formatOption,
-    idempotencyKey: Flag.String("idempotency-key").pipe(
-      Flag.withDescription(
-        "Body marker that identifies this issue; enables safe rate-limit retry and recovery",
-      ),
-      Flag.optional,
-    ),
     labels: Flag.String("labels").pipe(
       Flag.withDescription("Labels to apply (comma-separated)"),
       Flag.optional,
@@ -237,7 +231,7 @@ export const issueCreateCommand = Command.make(
     repo: repoOption,
     title: Flag.String("title").pipe(Flag.withDescription("Issue title")),
   },
-  ({ assignee, body, bodyFile, bodyStdin, format, idempotencyKey, labels, repo, title }) =>
+  ({ assignee, body, bodyFile, bodyStdin, format, labels, repo, title }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
@@ -258,7 +252,6 @@ export const issueCreateCommand = Command.make(
           body: resolvedBody,
           labels: Option.getOrNull(labels),
           title,
-          ...(Option.isSome(idempotencyKey) ? { idempotencyKey: idempotencyKey.value } : {}),
         });
         yield* logFormatted(result, format);
       }),
