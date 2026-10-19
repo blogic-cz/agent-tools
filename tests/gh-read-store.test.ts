@@ -1,8 +1,18 @@
 import { afterEach, expect, it } from "vitest";
 import { Console, Effect, Schema } from "effect";
 import { TestConsole } from "effect/testing";
-import { execFile } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -153,6 +163,50 @@ if (value.kind === "fetch") {
   expect(results.map((result) => result.stdout.trim())).toEqual(["same log", "same log"]);
   expect(await readFile(join(root, "fetches"), "utf8")).toBe("fetch\n");
 });
+
+it(
+  "keeps a live clock owner and recovers its lock after it is killed",
+  { timeout: 10000 },
+  async () => {
+    const root = await directory();
+    const store = await FileStore.open("fixture", root);
+    const script = join(root, "lock-owner.ts");
+    await writeFile(
+      script,
+      `
+import { FileStore } from ${JSON.stringify(resolve("src/gh-tool/read/store.ts"))};
+const store = await FileStore.open("fixture", process.argv[2]);
+await store["locked"](async () => {
+  console.log("locked");
+  await new Promise((resolve) => setTimeout(resolve, 60000));
+});
+`,
+    );
+    const child = spawn("bun", [script, root], { stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      const [ready] = await once(child.stdout, "data");
+      expect(String(ready).trim()).toBe("locked");
+      const lockPath = join(store.directory, "clock.lock");
+      const owners = await readdir(lockPath);
+      expect(owners).toHaveLength(1);
+      const old = new Date(0);
+      await utimes(lockPath, old, old);
+      await expect(store.readClock()).rejects.toThrow("Cache coordination timed out");
+      expect(await readdir(lockPath)).toEqual(owners);
+      expect(JSON.parse(await readFile(join(lockPath, owners[0] ?? "missing"), "utf8"))).toEqual({
+        pid: child.pid,
+        owner: expect.any(String),
+      });
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+      await store.bump(tagsFor(key));
+      expect(await store.readClock()).toBe(1);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  },
+);
 
 it("fetches immutable data once through the read layer and bypasses it for an origin read", async () => {
   const store = await FileStore.open("identity", await directory());

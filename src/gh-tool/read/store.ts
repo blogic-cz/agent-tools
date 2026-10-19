@@ -1,6 +1,6 @@
 import { Duration, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { CacheClass } from "./classes";
@@ -18,6 +18,7 @@ const EntrySchema = Schema.Struct({
   etag: Schema.optional(Schema.String),
 });
 const LeaseSchema = Schema.Struct({ owner: Schema.String, expiresAt: Schema.Number });
+const LockOwnerSchema = Schema.Struct({ pid: Schema.Number, owner: Schema.String });
 const CounterSchema = Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Number));
 type Entry = typeof EntrySchema.Type;
 export type StoreStats = Record<string, Record<string, number>>;
@@ -189,14 +190,22 @@ export class FileStore {
 
   private async locked<A>(body: () => Promise<A>): Promise<A> {
     const path = join(this.directory, "clock.lock");
-    const handle = await repeatUntil(
+    const owner = randomUUID();
+    const ownerPath = join(path, `${owner}.json`);
+    await repeatUntil(
       async () => {
         try {
-          return await open(path, "wx", 0o600);
+          await mkdir(path, { mode: 0o700 });
         } catch (error) {
           if (!exists(error)) throw error;
+          await this.recoverClockLock(path);
           return null;
         }
+        await writeFile(ownerPath, JSON.stringify({ pid: process.pid, owner }), {
+          flag: "wx",
+          mode: 0o600,
+        });
+        return true;
       },
       25,
       2000,
@@ -204,8 +213,34 @@ export class FileStore {
     try {
       return await body();
     } finally {
-      await handle.close();
-      await rm(path, { force: true });
+      await rm(ownerPath);
+      await rmdir(path);
+    }
+  }
+
+  private async recoverClockLock(path: string): Promise<void> {
+    try {
+      const stat = await lstat(path);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+      const names = await readdir(path);
+      if (names.length !== 1 || names[0] === undefined) return;
+      const ownerPath = join(path, names[0]);
+      const owner = Schema.decodeUnknownSync(LockOwnerSchema)(
+        JSON.parse(await readFile(ownerPath, "utf8")),
+      );
+      if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || names[0] !== `${owner.owner}.json`)
+        return;
+      try {
+        process.kill(owner.pid, 0);
+        return;
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) return;
+      }
+      // Only the remover of this unique owner's record may remove the empty directory.
+      await rm(ownerPath);
+      await rmdir(path);
+    } catch (error) {
+      if (!missing(error)) throw error;
     }
   }
 
