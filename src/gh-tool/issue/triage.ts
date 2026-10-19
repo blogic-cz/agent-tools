@@ -8,6 +8,7 @@ import { GitHubService } from "#gh/service";
 import { fetchReviewTriage } from "#gh/pr/commands";
 
 import { fetchIssueComments } from "./core";
+import { reads, resolveRepo } from "#gh/read/reads";
 
 const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),
@@ -22,19 +23,6 @@ const withRepo = <A, E, R>(repo: Option.Option<string>, effect: Effect.Effect<A,
 
 const TriageVerbosity = Schema.Literals(["compact", "full"]);
 type TriageVerbosity = typeof TriageVerbosity.Type;
-
-type RawTriageIssue = {
-  number: number;
-  title: string;
-  state: string;
-  url: string;
-  labels: Array<{ name: string }>;
-  assignees: Array<{ login: string }>;
-  author: { login: string };
-  body: string;
-  createdAt: string;
-  closedAt: string | null;
-};
 
 type TriageIssue = {
   number: number;
@@ -114,19 +102,9 @@ export const fetchIssueTriage = Effect.fn("issue.fetchIssueTriage")(function* (o
   issue: number;
   verbosity: TriageVerbosity;
 }) {
-  const gh = yield* GitHubService;
-
+  const repo = yield* resolveRepo(null);
   const [rawIssue, comments] = yield* Effect.all(
-    [
-      gh.runGhJson<RawTriageIssue>([
-        "issue",
-        "view",
-        String(opts.issue),
-        "--json",
-        "number,title,state,url,labels,assignees,author,body,createdAt,closedAt",
-      ]),
-      fetchIssueComments(opts.issue, null, null, null),
-    ],
+    [reads.issueView(repo, opts.issue), fetchIssueComments(opts.issue, null, null, null)],
     { concurrency: "unbounded" },
   );
 

@@ -8,16 +8,41 @@ const argument = (name: string): string | undefined => {
 const repo = argument("--repo");
 const run = argument("--run");
 const job = argument("--job");
-if (repo === undefined || run === undefined || job === undefined)
-  throw new Error("Usage: bun scripts/gh-read-parity.ts --repo owner/name --run ID --job NAME");
+const pr = argument("--pr");
+const issue = argument("--issue");
+if (repo === undefined || (run === undefined && pr === undefined && issue === undefined))
+  throw new Error(
+    "Usage: bun scripts/gh-read-parity.ts --repo owner/name [--run ID --job NAME] [--pr N] [--issue N]",
+  );
 const cases = [
-  ["workflow", "list", "--status", "completed", "--limit", "1"],
-  ["workflow", "view", "--run", run],
-  ["workflow", "jobs", "--run", run],
-  ["workflow", "logs", "--run", run],
-  ["workflow", "job-logs", "--run", run, "--job", job],
-  ["workflow", "annotations", "--run", run],
-  ["workflow", "watch", "--run", run, "--timeout", "1"],
+  ...(run === undefined || job === undefined
+    ? []
+    : [
+        ["workflow", "list", "--status", "completed", "--limit", "1"],
+        ["workflow", "view", "--run", run],
+        ["workflow", "jobs", "--run", run],
+        ["workflow", "logs", "--run", run],
+        ["workflow", "job-logs", "--run", run, "--job", job],
+        ["workflow", "annotations", "--run", run],
+        ["workflow", "watch", "--run", run, "--timeout", "1"],
+      ]),
+  ...(pr === undefined
+    ? []
+    : [
+        ["pr", "view", "--pr", pr],
+        ["pr", "list", "--search", `is:pr ${pr}`, "--state", "all"],
+        ["pr", "checks", "--prs", pr],
+        ["pr", "checks-failed", "--pr", pr],
+      ]),
+  ...(issue === undefined
+    ? []
+    : [
+        ["issue", "view", "--issue", issue],
+        ["issue", "list", "--state", "all", "--limit", "1"],
+        ["issue", "comments", "--issue", issue],
+        ["issue", "triage", "--issue", issue, "--verbosity", "full"],
+        ["issue", "snapshot-batch", "--issues", issue],
+      ]),
 ];
 const environment = {
   ...ghEnvironment(),
@@ -39,6 +64,14 @@ const execute = async (prefix: string[], argv: string[]) => {
   return { stdout, stderr, exitCode };
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const firstResponseId = (stdout: string): unknown => {
+  try {
+    const value = JSON.parse(stdout);
+    return Array.isArray(value) ? (value[0]?.databaseId ?? value[0]?.number ?? null) : null;
+  } catch {
+    return null;
+  }
+};
 const compare = async (argv: string[]) => {
   const baseline = await execute(
     ["bunx", "--package", "@blogic-cz/agent-tools@1.7.5", "agent-tools-gh"],
@@ -56,6 +89,16 @@ const compare = async (argv: string[]) => {
       currentBytes: Buffer.byteLength(current.stdout),
       baselineHash: hash(baseline.stdout),
       currentHash: hash(current.stdout),
+      baselineFirstId: firstResponseId(baseline.stdout),
+      currentFirstId: firstResponseId(current.stdout),
+      ...(equal
+        ? {}
+        : {
+            baselineStdout: baseline.stdout,
+            currentStdout: current.stdout,
+            baselineStderr: baseline.stderr,
+            currentStderr: current.stderr,
+          }),
     }),
   );
   if (!equal || baseline.exitCode !== 0) process.exitCode = 1;

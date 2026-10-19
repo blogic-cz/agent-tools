@@ -48,3 +48,11 @@ export const parsePreserving =
     if (Schema.is(schema)(value)) return value;
     return Schema.decodeUnknownSync(schema)(value);
   };
+
+export const project = <A extends object, K extends keyof A>(
+  value: A,
+  fields: readonly K[],
+): Pick<A, K> =>
+  Object.fromEntries(
+    Object.entries(value).filter(([key]) => fields.some((field) => field === key)),
+  ) as Pick<A, K>;

@@ -1,0 +1,125 @@
+{
+  "baseline": "@blogic-cz/agent-tools@1.7.5",
+  "cases": [
+    {
+      "argv": ["pr", "view", "--pr", "42"],
+      "stdout": "{\n  \"author\": {\n    \"login\": \"author\",\n    \"is_bot\": false\n  },\n  \"baseRefName\": \"main\",\n  \"body\": \"Example PR body.\",\n  \"headRefName\": \"feat/example\",\n  \"headRefOid\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"isDraft\": false,\n  \"mergeable\": \"MERGEABLE\",\n  \"number\": 42,\n  \"reviewDecision\": \"\",\n  \"reviewRequests\": [],\n  \"state\": \"OPEN\",\n  \"title\": \"Example PR\",\n  \"url\": \"https://github.com/owner/repo/pull/42\",\n  \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"baseSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "view", "--prs", "42,43"],
+      "stdout": "{\n  \"count\": 2,\n  \"prs\": [\n    {\n      \"pr\": 42,\n      \"info\": {\n        \"author\": {\n          \"login\": \"author\",\n          \"is_bot\": false\n        },\n        \"baseRefName\": \"main\",\n        \"body\": \"Example PR body.\",\n        \"headRefName\": \"feat/example\",\n        \"headRefOid\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"isDraft\": false,\n        \"mergeable\": \"MERGEABLE\",\n        \"number\": 42,\n        \"reviewDecision\": \"\",\n        \"reviewRequests\": [],\n        \"state\": \"OPEN\",\n        \"title\": \"Example PR\",\n        \"url\": \"https://github.com/owner/repo/pull/42\",\n        \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"baseSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n      }\n    },\n    {\n      \"pr\": 43,\n      \"info\": {\n        \"author\": {\n          \"login\": \"author\",\n          \"is_bot\": false\n        },\n        \"baseRefName\": \"main\",\n        \"body\": \"Example PR body.\",\n        \"headRefName\": \"feat/example\",\n        \"headRefOid\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"isDraft\": false,\n        \"mergeable\": \"MERGEABLE\",\n        \"number\": 43,\n        \"reviewDecision\": \"\",\n        \"reviewRequests\": [],\n        \"state\": \"OPEN\",\n        \"title\": \"Example PR\",\n        \"url\": \"https://github.com/owner/repo/pull/42\",\n        \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"baseSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n      }\n    }\n  ]\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "status"],
+      "stdout": "{\n  \"mode\": \"single\",\n  \"pr\": {\n    \"author\": {\n      \"login\": \"author\",\n      \"is_bot\": false\n    },\n    \"baseRefName\": \"main\",\n    \"body\": \"Example PR body.\",\n    \"headRefName\": \"feat/example\",\n    \"headRefOid\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"isDraft\": false,\n    \"mergeable\": \"MERGEABLE\",\n    \"number\": 42,\n    \"reviewDecision\": \"\",\n    \"reviewRequests\": [],\n    \"state\": \"OPEN\",\n    \"title\": \"Example PR\",\n    \"url\": \"https://github.com/owner/repo/pull/42\",\n    \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"baseSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n  }\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "list"],
+      "stdout": "[\n  {\n    \"author\": {\n      \"login\": \"author\",\n      \"is_bot\": false\n    },\n    \"baseRefName\": \"main\",\n    \"createdAt\": \"2026-10-01T08:00:00Z\",\n    \"headRefName\": \"feat/example\",\n    \"isDraft\": false,\n    \"number\": 42,\n    \"reviewDecision\": \"\",\n    \"state\": \"OPEN\",\n    \"title\": \"Example PR\",\n    \"url\": \"https://github.com/owner/repo/pull/42\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "wait-mergeable", "--pr", "42"],
+      "stdout": "{\n  \"author\": {\n    \"login\": \"author\",\n    \"is_bot\": false\n  },\n  \"baseRefName\": \"main\",\n  \"body\": \"Example PR body.\",\n  \"headRefName\": \"feat/example\",\n  \"headRefOid\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"isDraft\": false,\n  \"mergeable\": \"MERGEABLE\",\n  \"number\": 42,\n  \"reviewDecision\": \"\",\n  \"reviewRequests\": [],\n  \"state\": \"OPEN\",\n  \"title\": \"Example PR\",\n  \"url\": \"https://github.com/owner/repo/pull/42\",\n  \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"baseSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "checks", "--pr", "42"],
+      "stdout": "[\n  {\n    \"name\": \"Build\",\n    \"state\": \"IN_PROGRESS\",\n    \"bucket\": \"pending\",\n    \"link\": \"external\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "checks", "--prs", "42,43,44"],
+      "stdout": "{\n  \"count\": 3,\n  \"prs\": [\n    {\n      \"pr\": 42,\n      \"state\": \"OPEN\",\n      \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"checksStatus\": \"reported\",\n      \"checks\": [\n        {\n          \"name\": \"Build\",\n          \"state\": \"IN_PROGRESS\",\n          \"bucket\": \"pending\",\n          \"link\": \"external\"\n        }\n      ]\n    },\n    {\n      \"pr\": 43,\n      \"state\": \"OPEN\",\n      \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"checksStatus\": \"reported\",\n      \"checks\": [\n        {\n          \"name\": \"Build\",\n          \"state\": \"FAILURE\",\n          \"bucket\": \"fail\",\n          \"link\": \"external\"\n        }\n      ]\n    },\n    {\n      \"pr\": 44,\n      \"state\": \"OPEN\",\n      \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"checksStatus\": \"none_reported\",\n      \"reason\": \"gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.\",\n      \"checks\": null\n    }\n  ]\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["pr", "checks-failed", "--pr", "43"],
+      "stdout": "{\n  \"evidence\": {\n    \"headSha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n    \"baseSha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n  },\n  \"status\": \"failed\",\n  \"message\": \"Detected 1 failed check(s).\",\n  \"summary\": {\n    \"total\": 1,\n    \"failed\": 1,\n    \"pending\": 0,\n    \"passed\": 0\n  },\n  \"failedChecks\": [\n    {\n      \"name\": \"Build\",\n      \"state\": \"FAILURE\",\n      \"bucket\": \"fail\",\n      \"link\": \"external\",\n      \"runId\": null,\n      \"run\": null\n    }\n  ],\n  \"pendingChecks\": [],\n  \"hint\": \"Inspect the failed workflow run and failed job logs to get the first concrete error, then rerun only if the failure is understood.\",\n  \"nextCommands\": [\n    \"bun agent-tools-gh pr checks-failed --pr 43\"\n  ]\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["issue", "view", "--issue", "7"],
+      "stdout": "{\n  \"assignees\": [\n    {\n      \"login\": \"author\"\n    }\n  ],\n  \"author\": {\n    \"login\": \"author\"\n  },\n  \"closedAt\": null,\n  \"createdAt\": \"2026-10-01T08:00:00Z\",\n  \"labels\": [\n    {\n      \"name\": \"bug\"\n    }\n  ],\n  \"number\": 7,\n  \"state\": \"OPEN\",\n  \"title\": \"Example issue\",\n  \"url\": \"https://github.com/owner/repo/issues/7\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["issue", "list"],
+      "stdout": "[\n  {\n    \"createdAt\": \"2026-10-01T08:00:00Z\",\n    \"labels\": [\n      {\n        \"name\": \"bug\"\n      }\n    ],\n    \"number\": 7,\n    \"state\": \"OPEN\",\n    \"title\": \"Example issue\",\n    \"url\": \"https://github.com/owner/repo/issues/7\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["issue", "comments", "--issue", "7"],
+      "stdout": "[\n  {\n    \"id\": 17,\n    \"commitSha\": null,\n    \"feedbackOrigin\": \"unknown\",\n    \"author\": \"reviewer\",\n    \"body\": \"Example discussion.\",\n    \"createdAt\": \"2026-10-01T09:00:00Z\",\n    \"url\": \"https://github.com/owner/repo/issues/7#issuecomment-17\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["issue", "triage", "--issue", "7", "--verbosity", "full"],
+      "stdout": "{\n  \"issue\": {\n    \"number\": 7,\n    \"title\": \"Example issue\",\n    \"state\": \"OPEN\",\n    \"url\": \"https://github.com/owner/repo/issues/7\",\n    \"labels\": [\n      \"bug\"\n    ],\n    \"assignees\": [\n      \"author\"\n    ],\n    \"author\": \"author\",\n    \"createdAt\": \"2026-10-01T08:00:00Z\",\n    \"closedAt\": null\n  },\n  \"body\": \"Example issue body.\",\n  \"commentsCount\": 1,\n  \"comments\": [\n    {\n      \"id\": 17,\n      \"commitSha\": null,\n      \"feedbackOrigin\": \"unknown\",\n      \"author\": \"reviewer\",\n      \"body\": \"Example discussion.\",\n      \"createdAt\": \"2026-10-01T09:00:00Z\",\n      \"url\": \"https://github.com/owner/repo/issues/7#issuecomment-17\"\n    }\n  ]\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["issue", "snapshot-batch", "--issues", "7"],
+      "stdout": "[\n  {\n    \"issue\": {\n      \"number\": 7,\n      \"title\": \"Example issue\",\n      \"state\": \"OPEN\",\n      \"url\": \"https://github.com/owner/repo/issues/7\",\n      \"labels\": [\n        \"bug\"\n      ],\n      \"assignees\": [\n        \"author\"\n      ],\n      \"author\": \"author\",\n      \"createdAt\": \"2026-10-01T08:00:00Z\",\n      \"closedAt\": null\n    },\n    \"body\": \"Example issue body.\",\n    \"commentsCount\": 1,\n    \"comments\": [\n      {\n        \"id\": 17,\n        \"commitSha\": null,\n        \"feedbackOrigin\": \"unknown\",\n        \"author\": \"reviewer\",\n        \"body\": \"Example discussion.\",\n        \"createdAt\": \"2026-10-01T09:00:00Z\",\n        \"url\": \"https://github.com/owner/repo/issues/7#issuecomment-17\"\n      }\n    ],\n    \"eligible\": false,\n    \"linkedPullRequestNumbers\": [],\n    \"linkedPullRequests\": [],\n    \"classification\": {\n      \"status\": \"needs_investigation\",\n      \"reasons\": [\n        \"not_owned_by_automation_owner\"\n      ]\n    }\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "list"],
+      "stdout": "[\n  {\n    \"conclusion\": \"success\",\n    \"createdAt\": \"2026-10-01T08:00:00Z\",\n    \"databaseId\": 100,\n    \"displayTitle\": \"Example CI\",\n    \"event\": \"pull_request\",\n    \"headBranch\": \"feat/example\",\n    \"status\": \"completed\",\n    \"url\": \"https://github.com/owner/repo/actions/runs/100\",\n    \"workflowName\": \"CI\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "view", "--run", "100"],
+      "stdout": "{\n  \"conclusion\": \"\",\n  \"createdAt\": \"2026-10-01T08:00:00Z\",\n  \"databaseId\": 100,\n  \"displayTitle\": \"Example CI\",\n  \"event\": \"pull_request\",\n  \"headBranch\": \"feat/example\",\n  \"jobs\": [\n    {\n      \"completedAt\": null,\n      \"conclusion\": \"\",\n      \"databaseId\": 1000,\n      \"name\": \"Build\",\n      \"startedAt\": \"2026-10-01T08:00:00Z\",\n      \"status\": \"in_progress\",\n      \"steps\": [\n        {\n          \"completedAt\": \"2026-10-01T08:01:00Z\",\n          \"conclusion\": \"\",\n          \"name\": \"Compile\",\n          \"number\": 1,\n          \"startedAt\": \"2026-10-01T08:00:00Z\",\n          \"status\": \"in_progress\"\n        }\n      ],\n      \"url\": \"https://github.com/owner/repo/actions/runs/100/job/1000\"\n    }\n  ],\n  \"status\": \"in_progress\",\n  \"url\": \"https://github.com/owner/repo/actions/runs/100\",\n  \"workflowName\": \"CI\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "jobs", "--run", "100"],
+      "stdout": "[\n  {\n    \"completedAt\": null,\n    \"conclusion\": \"\",\n    \"databaseId\": 1000,\n    \"name\": \"Build\",\n    \"startedAt\": \"2026-10-01T08:00:00Z\",\n    \"status\": \"in_progress\",\n    \"steps\": [\n      {\n        \"completedAt\": \"2026-10-01T08:01:00Z\",\n        \"conclusion\": \"\",\n        \"name\": \"Compile\",\n        \"number\": 1,\n        \"startedAt\": \"2026-10-01T08:00:00Z\",\n        \"status\": \"in_progress\"\n      }\n    ],\n    \"url\": \"https://github.com/owner/repo/actions/runs/100/job/1000\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "view", "--run", "101"],
+      "stdout": "{\n  \"conclusion\": \"failure\",\n  \"createdAt\": \"2026-10-01T08:00:00Z\",\n  \"databaseId\": 101,\n  \"displayTitle\": \"Example CI\",\n  \"event\": \"pull_request\",\n  \"headBranch\": \"feat/example\",\n  \"jobs\": [\n    {\n      \"completedAt\": \"2026-10-01T08:01:00Z\",\n      \"conclusion\": \"failure\",\n      \"databaseId\": 1010,\n      \"name\": \"Build\",\n      \"startedAt\": \"2026-10-01T08:00:00Z\",\n      \"status\": \"completed\",\n      \"steps\": [\n        {\n          \"completedAt\": \"2026-10-01T08:01:00Z\",\n          \"conclusion\": \"failure\",\n          \"name\": \"Compile\",\n          \"number\": 1,\n          \"startedAt\": \"2026-10-01T08:00:00Z\",\n          \"status\": \"completed\"\n        }\n      ],\n      \"url\": \"https://github.com/owner/repo/actions/runs/100/job/1000\"\n    }\n  ],\n  \"status\": \"completed\",\n  \"url\": \"https://github.com/owner/repo/actions/runs/100\",\n  \"workflowName\": \"CI\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "jobs", "--run", "101"],
+      "stdout": "[\n  {\n    \"completedAt\": \"2026-10-01T08:01:00Z\",\n    \"conclusion\": \"failure\",\n    \"databaseId\": 1010,\n    \"name\": \"Build\",\n    \"startedAt\": \"2026-10-01T08:00:00Z\",\n    \"status\": \"completed\",\n    \"steps\": [\n      {\n        \"completedAt\": \"2026-10-01T08:01:00Z\",\n        \"conclusion\": \"failure\",\n        \"name\": \"Compile\",\n        \"number\": 1,\n        \"startedAt\": \"2026-10-01T08:00:00Z\",\n        \"status\": \"completed\"\n      }\n    ],\n    \"url\": \"https://github.com/owner/repo/actions/runs/100/job/1000\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "view", "--run", "102"],
+      "stdout": "{\n  \"conclusion\": \"success\",\n  \"createdAt\": \"2026-10-01T08:00:00Z\",\n  \"databaseId\": 102,\n  \"displayTitle\": \"Example CI\",\n  \"event\": \"pull_request\",\n  \"headBranch\": \"feat/example\",\n  \"jobs\": [\n    {\n      \"completedAt\": \"2026-10-01T08:01:00Z\",\n      \"conclusion\": \"success\",\n      \"databaseId\": 1020,\n      \"name\": \"Build\",\n      \"startedAt\": \"2026-10-01T08:00:00Z\",\n      \"status\": \"completed\",\n      \"steps\": [\n        {\n          \"completedAt\": \"2026-10-01T08:01:00Z\",\n          \"conclusion\": \"success\",\n          \"name\": \"Compile\",\n          \"number\": 1,\n          \"startedAt\": \"2026-10-01T08:00:00Z\",\n          \"status\": \"completed\"\n        }\n      ],\n      \"url\": \"https://github.com/owner/repo/actions/runs/100/job/1000\"\n    }\n  ],\n  \"status\": \"completed\",\n  \"url\": \"https://github.com/owner/repo/actions/runs/100\",\n  \"workflowName\": \"CI\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "jobs", "--run", "102"],
+      "stdout": "[\n  {\n    \"completedAt\": \"2026-10-01T08:01:00Z\",\n    \"conclusion\": \"success\",\n    \"databaseId\": 1020,\n    \"name\": \"Build\",\n    \"startedAt\": \"2026-10-01T08:00:00Z\",\n    \"status\": \"completed\",\n    \"steps\": [\n      {\n        \"completedAt\": \"2026-10-01T08:01:00Z\",\n        \"conclusion\": \"success\",\n        \"name\": \"Compile\",\n        \"number\": 1,\n        \"startedAt\": \"2026-10-01T08:00:00Z\",\n        \"status\": \"completed\"\n      }\n    ],\n    \"url\": \"https://github.com/owner/repo/actions/runs/100/job/1000\"\n  }\n]\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "watch", "--run", "102", "--timeout", "1"],
+      "stdout": "{\n  \"runId\": 102,\n  \"status\": \"completed\",\n  \"conclusion\": \"success\",\n  \"jobs\": [\n    {\n      \"name\": \"Build\",\n      \"status\": \"completed\",\n      \"conclusion\": \"success\"\n    }\n  ]\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "logs", "--run", "102"],
+      "stdout": "{\n  \"runId\": 102,\n  \"failedOnly\": true,\n  \"log\": \"Build\\tCompile\\t2026-10-01T08:00:00Z example output\\n\"\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "job-logs", "--run", "102", "--job", "Build"],
+      "stdout": "{\n  \"runId\": 102,\n  \"job\": \"Build\",\n  \"jobId\": 1020,\n  \"entries\": [\n    {\n      \"step\": \"(unknown)\",\n      \"message\": \"example output\"\n    }\n  ]\n}\n",
+      "status": 0
+    },
+    {
+      "argv": ["workflow", "annotations", "--run", "102"],
+      "stdout": "{\n  \"runId\": 102,\n  \"totalAnnotations\": 0,\n  \"jobs\": []\n}\n",
+      "status": 0
+    }
+  ]
+}

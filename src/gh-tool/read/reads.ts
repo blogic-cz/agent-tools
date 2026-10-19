@@ -5,6 +5,8 @@ import type { CheckRunAnnotation } from "#gh/types";
 import { cachedRead } from "./cache";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
+import { issueView, issueList, issueComments } from "./issues";
+import { prView, prList, prChecks } from "./pulls";
 import type { RepoRef, RunFilter } from "./keys";
 import {
   parsePreserving,
@@ -183,4 +185,17 @@ const annotations = Effect.fn("reads.annotations")(function* (repo: RepoRef, job
   });
 });
 
-export const reads = { runList, runView, runJobs, runLog, jobLog, annotations };
+export const reads = {
+  prView,
+  prList,
+  prChecks,
+  runList,
+  runView,
+  runJobs,
+  runLog,
+  jobLog,
+  annotations,
+  issueView,
+  issueList,
+  issueComments,
+};

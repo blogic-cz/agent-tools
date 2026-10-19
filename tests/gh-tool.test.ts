@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 import {
   Clock,
   Console,
@@ -36,8 +37,10 @@ import { CheckStatusCacheDirectory } from "#gh/pr/check-status-cache";
 import { GitHubService } from "#gh/service";
 import { githubApi } from "#gh/api";
 import { ghEnvironment } from "#gh/environment";
-import { withReadCache } from "#gh/read/cache";
+import { withReadCache, ReadCache } from "#gh/read/cache";
+import { FileStore } from "#gh/read/store";
 import {
+  viewIssue,
   closeIssue,
   commentOnIssue,
   createIssue,
@@ -51,10 +54,10 @@ import {
   parseIssueNumbers,
 } from "#gh/issue/triage";
 import {
+  fetchCheckResults,
   createPR,
   editPR,
   draftPR,
-  fetchCheckResults,
   fetchChecksBatch,
   fetchChecksForCommand,
   fetchFailedChecks,
@@ -2059,8 +2062,10 @@ describe("PR view", () => {
             "pr",
             "view",
             "123",
+            "--repo",
+            "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
           ],
         },
         {
@@ -2795,8 +2800,10 @@ describe("PR edit", () => {
           "pr",
           "view",
           "123",
+          "--repo",
+          "test-owner/test-repo",
           "--json",
-          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
         ],
         ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
@@ -3020,7 +3027,7 @@ describe("PR merge head condition", () => {
               "view",
               "123",
               "--json",
-              "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRefOid",
+              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
             ],
           ]);
         }),
@@ -3065,9 +3072,9 @@ describe("PR merge head condition", () => {
         const result = yield* mergePR({ ...options, deleteBranch: false, matchHeadCommit }).pipe(
           Effect.provide(
             createMockGhLayer({
-              runGhJson: (args) =>
+              runGhJson: () =>
                 Effect.succeed(
-                  args.includes("mergeCommit")
+                  mutations.length > 0
                     ? { mergeCommit: { oid: changedSha } }
                     : { ...mockPRInfo, headRefOid: reviewedSha },
                 ),
@@ -3171,7 +3178,7 @@ describe("PR merge head condition", () => {
     );
   }
 
-  it.effect("keeps the legacy view fields and merge arguments without a head condition", () =>
+  it.effect("uses the shared view fields and keeps merge arguments without a head condition", () =>
     Effect.gen(function* () {
       const reads: string[][] = [];
       const mutations: string[][] = [];
@@ -3186,7 +3193,7 @@ describe("PR merge head condition", () => {
             runGhJson: (args) => {
               reads.push(args);
               return Effect.succeed(
-                args.includes("mergeCommit") ? { mergeCommit: { oid: changedSha } } : mockPRInfo,
+                mutations.length > 0 ? { mergeCommit: { oid: changedSha } } : mockPRInfo,
               );
             },
             runGh: (args) => {
@@ -3202,7 +3209,7 @@ describe("PR merge head condition", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
+        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
       ]);
       expect(mutations).toEqual([["pr", "merge", "123", "--squash"]]);
     }),
@@ -3290,9 +3297,9 @@ describe("PR merge head condition", () => {
           Layer.merge(
             cliLayer,
             createMockGhLayer({
-              runGhJson: (args) =>
+              runGhJson: () =>
                 Effect.succeed(
-                  args.includes("mergeCommit")
+                  mutations.length > 0
                     ? { mergeCommit: { oid: changedSha } }
                     : { ...mockPRInfo, headRefOid: reviewedSha },
                 ),
@@ -3458,6 +3465,7 @@ describe("PR merge logic", () => {
   it.effect("prints one warning when the merge SHA lookup fails", () =>
     Effect.gen(function* () {
       const errors: unknown[][] = [];
+      let viewReads = 0;
       const console = yield* TestConsole.make;
       const consoleLayer = Layer.succeed(Console.Console, {
         ...console,
@@ -3474,7 +3482,7 @@ describe("PR merge logic", () => {
             createMockGhLayer({
               runGhJson: (args) => {
                 if (args[1] === "view") {
-                  return args.at(-1) === "mergeCommit"
+                  return ++viewReads > 1
                     ? Effect.fail(
                         new GitHubNotFoundError({
                           message: "temporary lookup failure",
@@ -9909,18 +9917,18 @@ describe("PR creation safety", () => {
           expect(lookup).toEqual([
             "pr",
             "list",
-            "--repo",
-            "test-owner/test-repo",
             "--state",
             "open",
-            "--head",
-            "feat/test",
-            "--base",
-            "main",
-            "--json",
-            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRepositoryOwner",
             "--limit",
             "2",
+            "--repo",
+            "test-owner/test-repo",
+            "--json",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,reviewDecision,headRepositoryOwner",
+            "--base",
+            "main",
+            "--head",
+            "feat/test",
           ]);
         }),
       );
@@ -10500,44 +10508,97 @@ describe("PR creation safety", () => {
   );
 });
 
-it.effect("expires pending cache snapshots using TestClock", () =>
+it.effect("shares the issue view with triage and invalidates it after an edit", () =>
   Effect.gen(function* () {
     const directory = yield* Effect.acquireRelease(
-      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-cache-clock-"))),
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-issue-"))),
       (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
     );
-    const previous = process.env["GH_TOKEN"];
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        process.env["GH_TOKEN"] = "cache-test-token";
-      }),
-      () =>
-        Effect.sync(() => {
-          if (previous === undefined) delete process.env["GH_TOKEN"];
-          else process.env["GH_TOKEN"] = previous;
-        }),
-    );
-    let calls = 0;
-    const pending = [{ name: "Build", state: "PENDING", bucket: "pending", link: "run" }];
-    const success = [{ name: "Build", state: "SUCCESS", bucket: "pass", link: "run" }];
-    const layer = Layer.merge(
-      createMockGhLayer({
-        runGhJson: () => {
-          calls += 1;
-          return Effect.succeed(calls === 1 ? pending : success);
-        },
-      }),
-      Layer.succeed(CheckStatusCacheDirectory, directory),
-    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let fetches = 0;
+    let title = "Before";
+    const layer = createMockGhLayer({
+      runGhJson: () => {
+        fetches += 1;
+        return Effect.succeed({
+          number: 7,
+          title,
+          state: "OPEN",
+          url: "issue-url",
+          labels: [],
+          assignees: [],
+          author: { login: "author" },
+          body: "Details",
+          createdAt: "2026-10-01T00:00:00Z",
+          closedAt: null,
+        });
+      },
+      runGh: (args) => {
+        if (args[0] === "issue") title = "After";
+        return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+      },
+    });
     yield* Effect.gen(function* () {
-      const options = { headSha: "clock-test", watchPending: true };
-      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
-      yield* TestClock.adjust("5 seconds");
-      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
+      const view = yield* viewIssue(7);
+      expect(view.title).toBe("Before");
+      expect(view).not.toHaveProperty("body");
+      const triage = yield* fetchIssueTriage({ issue: 7, verbosity: "full" });
+      expect(triage.body).toBe("Details");
+      expect(fetches).toBe(1);
+      const edited = yield* editIssue({
+        issue: 7,
+        title: "After",
+        body: null,
+        addLabels: null,
+        removeLabels: null,
+        addAssignee: null,
+        removeAssignee: null,
+      });
+      expect(edited.title).toBe("After");
+      expect(fetches).toBe(2);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
+  }).pipe(Effect.scoped),
+);
+
+it.effect("expires shared pending checks at five seconds and separates heads", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-checks-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    let now = 0;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockImplementation(() => now)),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let calls = 0;
+    const layer = createMockGhLayer({
+      runGhJson: () => {
+        calls += 1;
+        return Effect.succeed([
+          {
+            name: "Build",
+            state: calls === 1 ? "PENDING" : "SUCCESS",
+            bucket: calls === 1 ? "pending" : "pass",
+            link: "external",
+          },
+        ]);
+      },
+    });
+    yield* Effect.gen(function* () {
+      const read = fetchCheckResults(123, { headSha: "first", watchPending: true });
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      yield* TestClock.adjust("4999 millis");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pending");
       expect(calls).toBe(1);
-      yield* TestClock.adjust("1 second");
-      expect(yield* fetchCheckResults(123, options)).toEqual(success);
+      yield* TestClock.adjust("1 millis");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pass");
       expect(calls).toBe(2);
-    }).pipe(Effect.provide(layer));
+      yield* fetchCheckResults(123, { headSha: "second" });
+      expect(calls).toBe(3);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
   }).pipe(Effect.scoped),
 );

@@ -4,6 +4,10 @@ import type { GitHubIssueCommentUrl, IssueComment, IssueCommentId, IsoTimestamp 
 
 import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import { reads, resolveRepo } from "#gh/read/reads";
+import { writes } from "#gh/read/writes";
+import { project } from "#gh/read/porcelain";
+import { repoSlug } from "#gh/read/keys";
 
 export type IssueInfo = {
   number: number;
@@ -34,52 +38,6 @@ export type RawIssueComment = {
   html_url: string;
 };
 
-const REST_PAGE_SIZE = 100;
-
-const parseJson = <T>(
-  stdout: string,
-  command: string,
-  parseFailurePrefix: string,
-): Effect.Effect<T, GitHubCommandError> =>
-  Effect.try({
-    try: () => JSON.parse(stdout) as T,
-    catch: (error) =>
-      new GitHubCommandError({
-        command,
-        exitCode: 0,
-        stderr: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
-        message: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
-      }),
-  });
-
-const fetchAllRestPages = Effect.fn("issue.fetchAllRestPages")(function* <T>(
-  endpoint: string,
-  command: string,
-  parseFailurePrefix: string,
-) {
-  const service = yield* GitHubService;
-
-  const results: T[] = [];
-  let page = 1;
-
-  while (true) {
-    const separator = endpoint.includes("?") ? "&" : "?";
-    const result = yield* service.runGh([
-      "api",
-      `${endpoint}${separator}per_page=${REST_PAGE_SIZE}&page=${page}`,
-    ]);
-
-    const rawPage = yield* parseJson<T[]>(result.stdout, command, parseFailurePrefix);
-    results.push(...rawPage);
-
-    if (rawPage.length < REST_PAGE_SIZE) {
-      return results;
-    }
-
-    page += 1;
-  }
-});
-
 const mapRawIssueComment = (comment: RawIssueComment): IssueComment => ({
   id: comment.id as IssueCommentId,
   commitSha: null,
@@ -95,35 +53,21 @@ export const listIssues = Effect.fn("issue.listIssues")(function* (opts: {
   labels: string | null;
   limit: number;
 }) {
-  const gh = yield* GitHubService;
-
-  const args = [
-    "issue",
-    "list",
-    "--state",
-    opts.state,
-    "--limit",
-    String(opts.limit),
-    "--json",
-    "number,title,state,url,labels,createdAt",
-  ];
-
-  if (opts.labels !== null) {
-    args.push("--label", opts.labels);
-  }
-
-  return yield* gh.runGhJson<IssueListItem[]>(args);
+  return yield* reads.issueList(yield* resolveRepo(null), opts);
 });
 
 export const viewIssue = Effect.fn("issue.viewIssue")(function* (issueNumber: number) {
-  const gh = yield* GitHubService;
-
-  return yield* gh.runGhJson<IssueInfo>([
-    "issue",
-    "view",
-    String(issueNumber),
-    "--json",
-    "number,title,state,url,labels,assignees,author,createdAt,closedAt",
+  const value = yield* reads.issueView(yield* resolveRepo(null), issueNumber);
+  return project(value, [
+    "number",
+    "title",
+    "state",
+    "url",
+    "labels",
+    "assignees",
+    "author",
+    "createdAt",
+    "closedAt",
   ]);
 });
 
@@ -133,14 +77,7 @@ export const fetchIssueComments = Effect.fn("issue.fetchIssueComments")(function
   author: string | null,
   bodyContains: string | null,
 ) {
-  const gh = yield* GitHubService;
-  const repoInfo = yield* gh.getRepoInfo();
-
-  const raw = yield* fetchAllRestPages<RawIssueComment>(
-    `repos/${repoInfo.owner}/${repoInfo.name}/issues/${issueNumber}/comments`,
-    "gh-tool issue comments",
-    "Failed to parse response",
-  );
+  const raw = yield* reads.issueComments(yield* resolveRepo(null), issueNumber);
 
   let comments = raw.map(mapRawIssueComment);
 
@@ -167,46 +104,40 @@ export const closeIssue = Effect.fn("issue.closeIssue")(function* (opts: {
   comment: string | null;
   reason: string;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["issue", "close", String(opts.issue), "--reason", opts.reason];
 
   if (opts.comment !== null) {
     args.push("--comment", opts.comment);
   }
 
-  yield* gh.runGh(args);
-
-  return yield* gh.runGhJson<IssueInfo>([
-    "issue",
-    "view",
-    String(opts.issue),
-    "--json",
-    "number,title,state,url,labels,assignees,author,createdAt,closedAt",
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(args, [
+    `issue:${repoSlug(repo)}#${opts.issue}`,
+    `issues:${repoSlug(repo)}`,
+    `issue-comments:${repoSlug(repo)}#${opts.issue}`,
   ]);
+
+  return yield* viewIssue(opts.issue);
 });
 
 export const reopenIssue = Effect.fn("issue.reopenIssue")(function* (opts: {
   issue: number;
   comment: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["issue", "reopen", String(opts.issue)];
 
   if (opts.comment !== null) {
     args.push("--comment", opts.comment);
   }
 
-  yield* gh.runGh(args);
-
-  return yield* gh.runGhJson<IssueInfo>([
-    "issue",
-    "view",
-    String(opts.issue),
-    "--json",
-    "number,title,state,url,labels,assignees,author,createdAt,closedAt",
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(args, [
+    `issue:${repoSlug(repo)}#${opts.issue}`,
+    `issues:${repoSlug(repo)}`,
+    `issue-comments:${repoSlug(repo)}#${opts.issue}`,
   ]);
+
+  return yield* viewIssue(opts.issue);
 });
 
 export const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts: {
@@ -227,14 +158,20 @@ export const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts:
     );
   }
 
-  const result = yield* gh.runGh([
-    "api",
-    "-X",
-    "POST",
-    `repos/${repoInfo.owner}/${repoInfo.name}/issues/${opts.issue}/comments`,
-    "-f",
-    `body=${opts.body}`,
-  ]);
+  const result = yield* writes.run(
+    [
+      "api",
+      "-X",
+      "POST",
+      `repos/${repoInfo.owner}/${repoInfo.name}/issues/${opts.issue}/comments`,
+      "-f",
+      `body=${opts.body}`,
+    ],
+    [
+      `issue-comments:${repoInfo.owner.toLowerCase()}/${repoInfo.name.toLowerCase()}#${opts.issue}`,
+      `issue:${repoInfo.owner.toLowerCase()}/${repoInfo.name.toLowerCase()}#${opts.issue}`,
+    ],
+  );
 
   const rawComment = yield* Effect.try({
     try: () => JSON.parse(result.stdout) as RawIssueComment,
@@ -262,8 +199,6 @@ export const createIssue = Effect.fn("issue.createIssue")(function* (opts: {
   assignee: string | null;
   labels: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["issue", "create", "--title", opts.title, "--body", opts.body];
 
   if (opts.assignee !== null) {
@@ -273,7 +208,8 @@ export const createIssue = Effect.fn("issue.createIssue")(function* (opts: {
     args.push("--label", opts.labels);
   }
 
-  const result = yield* gh.runGh(args);
+  const repo = yield* resolveRepo(null);
+  const result = yield* writes.run(args, [`repo:${repoSlug(repo)}`]);
 
   const urlMatch = result.stdout.match(/\/issues\/(\d+)/);
   if (!urlMatch?.[1]) {
@@ -299,8 +235,6 @@ export const editIssue = Effect.fn("issue.editIssue")(function* (opts: {
   addAssignee: string | null;
   removeAssignee: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["issue", "edit", String(opts.issue)];
 
   if (opts.title !== null) {
@@ -322,13 +256,12 @@ export const editIssue = Effect.fn("issue.editIssue")(function* (opts: {
     args.push("--remove-assignee", opts.removeAssignee);
   }
 
-  yield* gh.runGh(args);
-
-  return yield* gh.runGhJson<IssueInfo>([
-    "issue",
-    "view",
-    String(opts.issue),
-    "--json",
-    "number,title,state,url,labels,assignees,author,createdAt,closedAt",
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(args, [
+    `issue:${repoSlug(repo)}#${opts.issue}`,
+    `issues:${repoSlug(repo)}`,
+    `issue-comments:${repoSlug(repo)}#${opts.issue}`,
   ]);
+
+  return yield* viewIssue(opts.issue);
 });

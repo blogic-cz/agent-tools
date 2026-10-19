@@ -12,7 +12,6 @@ export type ReadKey = { readonly repo: RepoRef } & (
   | {
       readonly op:
         | "prView"
-        | "prChecks"
         | "prHead"
         | "prComments"
         | "prReviews"
@@ -20,6 +19,7 @@ export type ReadKey = { readonly repo: RepoRef } & (
         | "lastHumanReviewer";
       readonly pr: number;
     }
+  | { readonly op: "prChecks"; readonly pr: number; readonly headSha: string }
   | { readonly op: "checkSignal"; readonly sha: string }
   | {
       readonly op: "prList" | "issueList";

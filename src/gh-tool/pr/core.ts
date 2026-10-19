@@ -1,5 +1,4 @@
 import { Clock, Console, Duration, Effect, Option, Result } from "effect";
-import { createHash } from "node:crypto";
 
 import type {
   BranchPRDetail,
@@ -9,7 +8,6 @@ import type {
   MergeResult,
   MergeStrategy,
   PRInfo,
-  PRViewInfo,
   RerunCheckAttempt,
   RerunChecksReport,
   RerunChecksRun,
@@ -20,12 +18,11 @@ import type {
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
-import { resolveGitHubToken } from "#gh/api";
 import type { GhResult } from "#gh/service";
 import { logFormatted, logText } from "#shared";
 import { redactSensitiveText } from "#shared/content-security";
 
-import type { ButStatusJson, PRViewJsonResult } from "./helpers";
+import type { ButStatusJson } from "./helpers";
 import { pollUntilResolved } from "#shared/poll-until-resolved";
 import { runLocalCommand } from "./helpers";
 import { readStack } from "./stack-read";
@@ -39,13 +36,11 @@ import {
   parseRawJobLogs,
   readJobLogApi,
 } from "#gh/workflow";
-import {
-  CheckStatusCacheDirectory,
-  readCheckStatusCache,
-  writeCheckStatusCache,
-} from "./check-status-cache";
+import { reads, resolveRepo } from "#gh/read/reads";
+import { project } from "#gh/read/porcelain";
+import { writes } from "#gh/read/writes";
+import { repoSlug } from "#gh/read/keys";
 
-const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
 const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
@@ -101,16 +96,9 @@ const resolveMergeSha = Effect.fn("pr.resolveMergeSha")(function* (
     return knownSha;
   }
 
-  const gh = yield* GitHubService;
   const readMergeSha = () =>
-    gh
-      .runGhJson<{ mergeCommit: { oid: string } | null }>([
-        "pr",
-        "view",
-        String(pr),
-        "--json",
-        "mergeCommit",
-      ])
+    reads
+      .prView(null, { by: "number", number: pr }, "origin")
       .pipe(Effect.map((result) => result.mergeCommit?.oid ?? null));
   const result = yield* readMergeSha().pipe(
     Effect.andThen((initial) =>
@@ -319,52 +307,8 @@ export const fetchCheckReport = Effect.fn("pr.fetchCheckReport")(function* (
   pr: number | null,
   cache?: { headSha: string; watchPending?: boolean },
 ) {
-  const gh = yield* GitHubService;
-
-  const args = ["pr", "checks"];
-  if (pr !== null) {
-    args.push(String(pr));
-  }
-
-  const directory = yield* CheckStatusCacheDirectory;
-  const now = yield* Clock.currentTimeMillis;
-  let repo: string | null = null;
-  let identity: string | null = null;
-  if (cache !== undefined && pr !== null && directory !== undefined) {
-    const repoInfo = yield* gh.getRepoInfo().pipe(Effect.result);
-    const token = yield* resolveGitHubToken().pipe(Effect.result);
-    if (Result.isSuccess(repoInfo) && Result.isSuccess(token)) {
-      const host = yield* Effect.try({
-        try: () => new URL(repoInfo.success.url).host,
-        catch: () => "",
-      }).pipe(Effect.orElseSucceed(() => ""));
-      if (host.length > 0) {
-        const cacheRepo = `${host}/${repoInfo.success.owner}/${repoInfo.success.name}`;
-        const cacheIdentity = createHash("sha256").update(token.success).digest("hex");
-        const cached = yield* Effect.tryPromise({
-          try: () =>
-            readCheckStatusCache(
-              cacheIdentity,
-              cacheRepo,
-              pr,
-              cache.headSha,
-              now,
-              cache.watchPending,
-              directory,
-            ),
-          catch: () => null,
-        }).pipe(Effect.orElseSucceed(() => null));
-        if (cached !== null)
-          return { checksStatus: "reported", checks: cached } satisfies CheckReport;
-        repo = cacheRepo;
-        identity = cacheIdentity;
-      }
-    }
-  }
-
-  const fetchedAt = yield* Clock.currentTimeMillis;
-  const checks = yield* gh
-    .runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS])
+  const checks = yield* reads
+    .prChecks(yield* resolveRepo(null), pr, cache?.headSha ?? null)
     .pipe(
       Effect.catchTag("GitHubCommandError", (error) =>
         NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
@@ -378,19 +322,6 @@ export const fetchCheckReport = Effect.fn("pr.fetchCheckReport")(function* (
       reason: NO_CHECKS_REPORTED_REASON,
       checks: null,
     } satisfies CheckReport;
-  }
-  if (
-    cache !== undefined &&
-    pr !== null &&
-    repo !== null &&
-    identity !== null &&
-    checks.length > 0
-  ) {
-    yield* Effect.tryPromise({
-      try: () =>
-        writeCheckStatusCache(identity, repo, pr, cache.headSha, checks, fetchedAt, directory),
-      catch: () => undefined,
-    }).pipe(Effect.orElseSucceed(() => undefined));
   }
   return { checksStatus: "reported", checks } satisfies CheckReport;
 });
@@ -557,19 +488,32 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   };
 });
 
-export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: number | null) {
-  const gh = yield* GitHubService;
-
-  const args = ["pr", "view"];
-  if (prNumber !== null) {
-    args.push(String(prNumber));
-  }
-  args.push(
-    "--json",
-    "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (
+  prNumber: number | null,
+  consistency: "cached" | "origin" = "cached",
+) {
+  const raw = yield* reads.prView(
+    yield* resolveRepo(null),
+    prNumber === null ? { by: "currentBranch" } : { by: "number", number: prNumber },
+    consistency,
   );
-
-  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string }>(args);
+  const info = project(raw, [
+    "number",
+    "url",
+    "title",
+    "headRefName",
+    "baseRefName",
+    "headRefOid",
+    "state",
+    "isDraft",
+    "mergeable",
+    "body",
+    "author",
+    "reviewDecision",
+    "reviewRequests",
+    "headSha",
+    "baseSha",
+  ]);
   return {
     ...info,
     body: info.body ?? "",
@@ -578,10 +522,13 @@ export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: numb
   };
 });
 
-export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null) {
+export const viewPR = Effect.fn("pr.viewPR")(function* (
+  prNumber: number | null,
+  consistency: "cached" | "origin" = "cached",
+) {
   const gh = yield* GitHubService;
 
-  const info = yield* fetchPRView(prNumber);
+  const info = yield* fetchPRView(prNumber, consistency);
   const repo = yield* gh.getRepoInfo();
   const baseSha = yield* gh.runGh([
     "api",
@@ -648,7 +595,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
     ),
   ];
 
-  const gh = yield* GitHubService;
+  const repo = yield* resolveRepo(null);
 
   type BranchResult = {
     branch: string;
@@ -665,40 +612,41 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
     branchNames.map((branchName) =>
       Effect.all(
         {
-          openPr: gh
-            .runGhJson<PRInfo[]>([
-              "pr",
-              "list",
-              "--head",
-              branchName,
-              "--json",
-              "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
-              "--limit",
-              "1",
-            ])
+          openPr: reads
+            .prList(repo, {
+              state: "open",
+              limit: 1,
+              author: null,
+              base: null,
+              head: branchName,
+              search: null,
+            })
             .pipe(
-              Effect.map((prs) => prs[0] ?? null),
+              Effect.map((prs) =>
+                prs[0] === undefined
+                  ? null
+                  : project(prs[0], [
+                      "number",
+                      "url",
+                      "title",
+                      "headRefName",
+                      "baseRefName",
+                      "state",
+                      "isDraft",
+                      "mergeable",
+                    ]),
+              ),
               Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
             ),
-          closedPr: gh
-            .runGhJson<
-              Array<{
-                number: number;
-                url: string;
-                state: string;
-              }>
-            >([
-              "pr",
-              "list",
-              "--head",
-              branchName,
-              "--state",
-              "closed",
-              "--json",
-              "number,url,state",
-              "--limit",
-              "1",
-            ])
+          closedPr: reads
+            .prList(repo, {
+              state: "closed",
+              limit: 1,
+              author: null,
+              base: null,
+              head: branchName,
+              search: null,
+            })
             .pipe(
               Effect.map((prs) => {
                 const pr = prs[0];
@@ -762,22 +710,21 @@ export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
   head: string | null;
   search: string | null;
 }) {
-  const gh = yield* GitHubService;
-  const args = [
-    "pr",
-    "list",
-    "--state",
-    opts.state,
-    "--limit",
-    String(opts.limit),
-    "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,author,createdAt,reviewDecision",
-  ];
-  if (opts.author !== null) args.push("--author", opts.author);
-  if (opts.base !== null) args.push("--base", opts.base);
-  if (opts.head !== null) args.push("--head", opts.head);
-  if (opts.search !== null) args.push("--search", opts.search);
-  return yield* gh.runGhJson<PRInfo[]>(args);
+  const values = yield* reads.prList(yield* resolveRepo(null), opts);
+  return values.map((value) =>
+    project(value, [
+      "number",
+      "url",
+      "title",
+      "headRefName",
+      "baseRefName",
+      "state",
+      "isDraft",
+      "author",
+      "createdAt",
+      "reviewDecision",
+    ]),
+  );
 });
 
 // GitHub recomputes mergeability asynchronously after CI; poll until it settles out of "UNKNOWN".
@@ -839,24 +786,12 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     headSeparator === -1 ? repo.owner : head.slice(0, headSeparator)
   ).toLowerCase();
   const headBranch = headSeparator === -1 ? head : head.slice(headSeparator + 1);
-  const lookupArgs = [
-    "pr",
-    "list",
-    "--repo",
-    `${repo.owner}/${repo.name}`,
-    "--state",
-    "open",
-    "--head",
-    headBranch,
-    "--base",
-    baseBranch,
-    "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRepositoryOwner",
-    "--limit",
-    "2",
-  ];
-  type Candidate = PRInfo & { headRepositoryOwner?: { login: string } };
-  const candidates = yield* gh.runGhJson<Candidate[]>(lookupArgs);
+  const lookup = reads.prList(
+    repo,
+    { state: "open", head: headBranch, base: baseBranch, limit: 2, author: null, search: null },
+    "origin",
+  );
+  const candidates = yield* lookup;
   // The limited query may include another fork's branch. Refuse a saturated result
   // rather than assuming an owner-filtered match beyond the limit does not exist.
   if (candidates.length > 1) {
@@ -910,7 +845,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
         hint: "Use --update-if-exists to update it, or 'pr edit --pr <number>'.",
       });
     }
-    const current = yield* fetchPRView(existing.number);
+    const current = yield* fetchPRView(existing.number, "origin");
     if (
       current.state !== "OPEN" ||
       current.headRefName !== headBranch ||
@@ -952,14 +887,14 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     createArgs.push("--draft");
   }
 
-  const createResult = yield* gh.runGh(createArgs);
+  const createResult = yield* writes.run(createArgs, [`repo:${repoSlug(repo)}`]);
 
   const urlMatch = createResult.stdout.match(/\/pull\/(\d+)/);
   if (urlMatch?.[1]) {
     return { ...(yield* viewPR(Number(urlMatch[1]))), updated: false };
   }
 
-  const prs = yield* gh.runGhJson<Candidate[]>(lookupArgs);
+  const prs = yield* lookup;
   if (
     prs.length === 1 &&
     prs[0]?.state === "OPEN" &&
@@ -1079,27 +1014,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     });
   }
 
-  const info = yield* gh
-    .runGhJson<PRViewJsonResult & { headRefOid?: unknown }>([
-      "pr",
-      "view",
-      String(opts.pr),
-      "--json",
-      "number,url,title,headRefName,baseRefName,state,isDraft,mergeable" +
-        (matchHeadCommit !== undefined ? ",headRefOid" : ""),
-    ])
-    .pipe(
-      Effect.mapError((error) =>
-        matchHeadCommit === undefined
-          ? error
-          : new GitHubMergeError({
-              message: `Could not verify the head commit of PR #${opts.pr}: ${error.message}`,
-              reason: "unknown",
-              hint: "The merge is refused while the head is unknown. Re-read the PR and verify its reviewed head before retrying.",
-              nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
-            }),
-      ),
-    );
+  const info = yield* reads.prView(null, { by: "number", number: opts.pr }, "origin").pipe(
+    Effect.mapError((error) =>
+      matchHeadCommit === undefined
+        ? error
+        : new GitHubMergeError({
+            message: `Could not verify the head commit of PR #${opts.pr}: ${error.message}`,
+            reason: "unknown",
+            hint: "The merge is refused while the head is unknown. Re-read the PR and verify its reviewed head before retrying.",
+            nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+          }),
+    ),
+  );
 
   if (
     matchHeadCommit !== undefined &&
@@ -1181,18 +1107,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // branch if EVERY retarget succeeds (fail-closed).
   const dependentOpenPrs =
     opts.deleteBranch && !headIsLongLived && info.headRefName
-      ? yield* gh.runGhJson<Array<{ number: number; headRefName: string; baseRefName: string }>>([
-          "pr",
-          "list",
-          "--base",
-          info.headRefName,
-          "--state",
-          "open",
-          "--limit",
-          "100",
-          "--json",
-          "number,headRefName,baseRefName",
-        ])
+      ? yield* reads.prList(
+          yield* resolveRepo(null),
+          {
+            state: "open",
+            limit: 100,
+            base: info.headRefName,
+            head: null,
+            author: null,
+            search: null,
+          },
+          "origin",
+        )
       : [];
 
   if (!opts.confirm) {
@@ -1434,8 +1360,6 @@ export const closePR = Effect.fn("pr.closePR")(function* (opts: {
   comment: string | null;
   deleteBranch: boolean;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["pr", "close", String(opts.pr)];
 
   if (opts.comment !== null) {
@@ -1446,15 +1370,18 @@ export const closePR = Effect.fn("pr.closePR")(function* (opts: {
     args.push("--delete-branch");
   }
 
-  yield* gh.runGh(args);
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(args, [
+    `pr:${repoSlug(repo)}#${opts.pr}`,
+    `pulls:${repoSlug(repo)}`,
+    `issue-comments:${repoSlug(repo)}#${opts.pr}`,
+  ]);
 
   return yield* viewPR(opts.pr);
 });
 
 export const readyPR = Effect.fn("pr.readyPR")(function* (opts: { pr: number | null }) {
-  const gh = yield* GitHubService;
-
-  const info = yield* viewPR(opts.pr);
+  const info = yield* viewPR(opts.pr, "origin");
 
   // Idempotent: a PR that's already ready needs no mutation, and `gh pr ready` on a
   // non-draft PR is a no-op that would just add a pointless call.
@@ -1462,22 +1389,28 @@ export const readyPR = Effect.fn("pr.readyPR")(function* (opts: { pr: number | n
     return { ...info, wasAlreadyReady: true };
   }
 
-  yield* gh.runGh(["pr", "ready", String(info.number)]);
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(
+    ["pr", "ready", String(info.number)],
+    [`pr:${repoSlug(repo)}#${info.number}`, `pulls:${repoSlug(repo)}`],
+  );
 
   const updated = yield* viewPR(info.number);
   return { ...updated, wasAlreadyReady: false };
 });
 
 export const draftPR = Effect.fn("pr.draftPR")(function* (opts: { pr: number | null }) {
-  const gh = yield* GitHubService;
-
-  const info = yield* viewPR(opts.pr);
+  const info = yield* viewPR(opts.pr, "origin");
 
   if (info.isDraft) {
     return { ...info, wasAlreadyDraft: true };
   }
 
-  yield* gh.runGh(["pr", "ready", String(info.number), "--undo"]);
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(
+    ["pr", "ready", String(info.number), "--undo"],
+    [`pr:${repoSlug(repo)}#${info.number}`, `pulls:${repoSlug(repo)}`],
+  );
 
   const updated = yield* viewPR(info.number);
   return { ...updated, wasAlreadyDraft: false };
@@ -1540,7 +1473,7 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
     editArgs.push("-f", `base=${opts.base}`);
   }
 
-  yield* gh.runGh(editArgs);
+  yield* writes.run(editArgs, [`pr:${repoSlug(repo)}#${opts.pr}`, `pulls:${repoSlug(repo)}`]);
 
   return yield* viewPR(opts.pr);
 });
@@ -1786,7 +1719,6 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
   return yield* Effect.fail(watchedChecks.failure);
 });
 
-type WatchPR = { number: number; state: string; headRefOid?: string | null };
 type WatchRun = {
   databaseId: number;
   attempt?: number | null;
@@ -1795,14 +1727,10 @@ type WatchRun = {
 };
 
 const watchPRState = Effect.fn("pr.watchPRState")(function* (pr: number) {
-  const gh = yield* GitHubService;
-  return yield* gh.runGhJson<WatchPR>([
-    "pr",
-    "view",
-    String(pr),
-    "--json",
-    "number,state,headRefOid",
-  ]);
+  return project(
+    yield* reads.prView(yield* resolveRepo(null), { by: "number", number: pr }, "origin"),
+    ["number", "state", "headRefOid"],
+  );
 });
 
 export const fetchChecksBatch = Effect.fn("pr.fetchChecksBatch")(function* (
