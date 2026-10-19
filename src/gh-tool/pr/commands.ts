@@ -166,7 +166,7 @@ export const requestReview = (pr: number, reviewers: string) =>
         `repos/${repo.owner}/${repo.name}/pulls/${pr}/requested_reviewers`,
         ...submittedReviewers.flatMap((reviewer) => ["-f", `reviewers[]=${reviewer}`]),
       ],
-      [`pr:${repoSlug(repo)}#${pr}`, `reviews:${repoSlug(repo)}#${pr}`],
+      [`pr:${repoSlug(repo)}#${pr}`, `reviews:${repoSlug(repo)}#${pr}`, `pulls:${repoSlug(repo)}`],
     );
     return {
       pr,

@@ -43,6 +43,7 @@ const reviewTags = (
       ? [`issue-comments:${repoSlug(repo)}#${pr}`]
       : facet === "reviews"
         ? [
+            `pulls:${repoSlug(repo)}`,
             `reviews:${repoSlug(repo)}#${pr}`,
             `review-comments:${repoSlug(repo)}#${pr}`,
             `pr:${repoSlug(repo)}#${pr}`,
