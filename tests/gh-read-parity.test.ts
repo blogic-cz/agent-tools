@@ -5,6 +5,54 @@ import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 import { createReplayGh, replayCases, replayFlags } from "./fixtures/gh-read-replay";
 
+it("uses one cold issue-list call and zero warm calls with an explicit repository", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gh-read-call-trace-"));
+  try {
+    const trace = join(root, "calls.jsonl");
+    const { bin, preload } = await createReplayGh(root, process.execPath, trace);
+    const bun = spawnSync("bun", ["-e", "process.stdout.write(process.execPath)"], {
+      encoding: "utf8",
+    }).stdout;
+    const run = () =>
+      spawnSync(
+        bun,
+        ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(["issue", "list"])],
+        {
+          cwd: resolve(import.meta.dirname, ".."),
+          encoding: "utf8",
+          timeout: 15000,
+          env: {
+            PATH: `${bin}:/usr/bin:/bin`,
+            HOME: root,
+            GH_TOKEN: "offline-replay",
+            GH_TOOL_CACHE_DIR: root,
+          },
+        },
+      );
+    const cold = run();
+    expect({ status: cold.status, stderr: cold.stderr, error: cold.error }).toEqual({
+      status: 0,
+      stderr: "",
+      error: undefined,
+    });
+    const coldTrace = (await readFile(trace, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(coldTrace.map((args) => args.slice(0, 2))).toEqual([["issue", "list"]]);
+    const warm = run();
+    expect({
+      status: warm.status,
+      stderr: warm.stderr,
+      stdout: warm.stdout,
+      error: warm.error,
+    }).toEqual({ status: 0, stderr: "", stdout: cold.stdout, error: undefined });
+    expect((await readFile(trace, "utf8")).trim().split("\n")).toHaveLength(1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it(
   "replays published 1.7.5 command outputs without GitHub access",
   { timeout: 30000 },

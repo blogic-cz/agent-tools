@@ -55,6 +55,7 @@ it("seeds a branch-selected number and resolves checks without a supplied head",
       runGh: () => Effect.die("Unexpected raw request"),
       runGraphQL: () => Effect.die("Unexpected GraphQL request"),
       getRepoInfo: () => Effect.die("Unexpected repo request"),
+      getRepoRef: () => Effect.die("Unexpected repo request"),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });
@@ -97,6 +98,7 @@ it("does not publish checks under a head that moved during porcelain", async () 
       runGh: () => Effect.die("Unexpected raw request"),
       runGraphQL: () => Effect.die("Unexpected GraphQL request"),
       getRepoInfo: () => Effect.die("Unexpected repo request"),
+      getRepoRef: () => Effect.die("Unexpected repo request"),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });

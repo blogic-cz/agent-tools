@@ -127,7 +127,7 @@ export const replayFlags = (argv: readonly string[]) => [
   "json",
 ];
 
-export const createReplayGh = async (root: string, interpreter: string) => {
+export const createReplayGh = async (root: string, interpreter: string, tracePath?: string) => {
   const bin = join(root, "bin");
   await mkdir(bin);
   const path = join(bin, "gh");
@@ -149,6 +149,7 @@ const gist = { id: "example", description: "Example gist", public: true, html_ur
   created_at: "2026-10-01T08:00:00Z", updated_at: "2026-10-01T09:00:00Z", owner: { login: "owner" },
   files: { "example.ts": { filename: "example.ts", language: "TypeScript", type: "text/plain", size: 12, content: "example text" } } };
 const args = process.argv.slice(2);
+${tracePath === undefined ? "" : `require("node:fs").appendFileSync(${JSON.stringify(tracePath)}, JSON.stringify(args) + "\\n");`}
 const fields = args[args.indexOf("--json") + 1];
 const project = (value) => Object.fromEntries(Object.keys(value).sort().filter((key) => fields.split(",").includes(key)).map((key) => [key, value[key]]));
 const print = (value) => console.log(JSON.stringify(value));

@@ -89,6 +89,8 @@ it("shares completed logs across concurrent and repeated checks-failed diagnosis
         }),
       getRepoInfo: () =>
         Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
+      getRepoRef: () =>
+        Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });

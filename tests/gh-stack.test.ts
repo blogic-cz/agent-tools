@@ -30,6 +30,7 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
       apiRequest: githubApi,
       getRepoConfig: () => Effect.succeed(undefined as GitHubRepoConfig | undefined),
       getRepoInfo: () => Effect.succeed(mockRepoInfo),
+      getRepoRef: () => Effect.succeed(mockRepoInfo),
       withRepoTarget: (_target, effect) => effect,
     }),
   );
@@ -49,6 +50,7 @@ const ghLayerWith = (overrides: {
       apiRequest: githubApi,
       getRepoConfig: () => Effect.succeed(undefined),
       getRepoInfo: () => Effect.succeed(mockRepoInfo),
+      getRepoRef: () => Effect.succeed(mockRepoInfo),
       withRepoTarget: (_target, effect) => effect,
     }),
   );

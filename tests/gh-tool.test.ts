@@ -357,6 +357,7 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
           ))) as <T>(opts: { path: string }) => Effect.Effect<{ status: number; body: T }, GhError>,
       getRepoConfig: overrides.getRepoConfig ?? (() => Effect.succeed(undefined)),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
+      getRepoRef: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
   );

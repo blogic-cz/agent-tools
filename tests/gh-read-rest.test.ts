@@ -40,6 +40,7 @@ it("origin reads validate stored ETags inside the TTL and refuse stale data on f
       runGhJson: () => Effect.die("Unexpected porcelain request"),
       runGraphQL: () => Effect.die("Unexpected GraphQL request"),
       getRepoInfo: () => Effect.die("Unexpected repo request"),
+      getRepoRef: () => Effect.die("Unexpected repo request"),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });
@@ -81,6 +82,7 @@ it("revalidates every page and handles changed and removed trailing pages", asyn
       runGhJson: () => Effect.die("Unexpected porcelain request"),
       runGraphQL: () => Effect.die("Unexpected GraphQL request"),
       getRepoInfo: () => Effect.die("Unexpected repo request"),
+      getRepoRef: () => Effect.die("Unexpected repo request"),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });

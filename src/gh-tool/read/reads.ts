@@ -78,8 +78,7 @@ export const resolveRepo = Effect.fn("reads.resolveRepo")(function* (repo: strin
     });
   }
   const gh = yield* GitHubService;
-  const info = yield* gh.getRepoInfo();
-  return { owner: info.owner, name: info.name };
+  return yield* gh.getRepoRef();
 });
 
 const runList = Effect.fn("reads.runList")(function* (

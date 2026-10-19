@@ -29,6 +29,7 @@ it("refetches a growing active attempt and freezes only a verified completed att
       runGraphQL: () => Effect.die("Unexpected GraphQL read"),
       apiRequest: () => Effect.die("Unexpected HTTP read"),
       getRepoInfo: () => Effect.die("Unexpected repo read"),
+      getRepoRef: () => Effect.die("Unexpected repo read"),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });

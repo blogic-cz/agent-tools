@@ -3,6 +3,7 @@ import { Context, Effect, Layer, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
+import type { RepoRef } from "./keys";
 
 import { GH_BINARY } from "#gh/config";
 import { ghEnvironment } from "#gh/environment";
@@ -93,6 +94,7 @@ export class GitHubService extends Context.Service<
     ) => Effect.Effect<GitHubApiResponse<T>, GhError>;
     readonly getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
+    readonly getRepoRef: () => Effect.Effect<RepoRef, GhError>;
     readonly withRepoTarget: <A, E, R>(
       target: string | null,
       effect: Effect.Effect<A, E, R>,
@@ -413,6 +415,16 @@ export class GitHubService extends Context.Service<
           apiRequest: githubApi,
           getRepoConfig,
           getRepoInfo,
+          getRepoRef: () =>
+            Effect.gen(function* () {
+              const target = yield* RepoTarget;
+              if (target !== undefined) {
+                const [owner, name, extra] = target.split("/");
+                if (owner && name && extra === undefined) return { owner, name };
+              }
+              const info = yield* getRepoInfo();
+              return { owner: info.owner, name: info.name };
+            }),
           withRepoTarget,
         };
       }),

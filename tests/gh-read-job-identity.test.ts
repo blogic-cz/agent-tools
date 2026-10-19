@@ -66,6 +66,8 @@ it("modern and legacy job links retain identity without run views and cache exte
       runGraphQL: () => Effect.die("Unexpected GraphQL read"),
       getRepoInfo: () =>
         Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
+      getRepoRef: () =>
+        Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });

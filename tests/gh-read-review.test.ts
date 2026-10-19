@@ -70,6 +70,8 @@ it("refreshes PR list decisions after direct reviews, pending reviews and review
       apiRequest: <T>() => Effect.succeed({ status: 200, body: { users: [], teams: [] } as T }),
       getRepoInfo: () =>
         Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
+      getRepoRef: () =>
+        Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });
@@ -179,6 +181,8 @@ it("shares feedback reads and invalidates only discussion comments after a comme
         }),
       runGhJson: () => Effect.die("Unexpected porcelain read"),
       getRepoInfo: () =>
+        Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
+      getRepoRef: () =>
         Effect.succeed({ owner: "o", name: "r", defaultBranch: "main", url: "url" }),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,

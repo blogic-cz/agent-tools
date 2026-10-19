@@ -34,6 +34,7 @@ it.each([
       runGraphQL: () => Effect.die("Unexpected read"),
       apiRequest: () => Effect.die("Unexpected read"),
       getRepoInfo: () => Effect.die("Unexpected read"),
+      getRepoRef: () => Effect.die("Unexpected read"),
       getRepoConfig: () => Effect.succeed(undefined),
       withRepoTarget: (_target, effect) => effect,
     });
