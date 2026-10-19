@@ -66,43 +66,55 @@ jobs:
 
           if is_published; then
             echo "${PACKAGE_NAME}@${VERSION} is already published. Skipping publish."
-            exit 0
-          fi
+          else
+            ATTEMPTS=3
+            PUBLISHED=0
 
-          ATTEMPTS=3
-          for attempt in $(seq 1 "$ATTEMPTS"); do
-            echo "Publish attempt ${attempt}/${ATTEMPTS} for ${PACKAGE_NAME}@${VERSION}"
+            for attempt in $(seq 1 "$ATTEMPTS"); do
+              echo "Publish attempt ${attempt}/${ATTEMPTS} for ${PACKAGE_NAME}@${VERSION}"
 
-            set +e
-            PUBLISH_OUTPUT=$("${NPM[@]}" publish --access public --provenance 2>&1)
-            PUBLISH_STATUS=$?
-            set -e
+              set +e
+              PUBLISH_OUTPUT=$("${NPM[@]}" publish --access public --provenance 2>&1)
+              PUBLISH_STATUS=$?
+              set -e
 
-            printf '%s\n' "$PUBLISH_OUTPUT"
+              printf '%s\n' "$PUBLISH_OUTPUT"
 
-            if [ "$PUBLISH_STATUS" -eq 0 ]; then
-              exit 0
-            fi
-
-            for verify_attempt in 1 2 3; do
-              sleep 10
-
-              if is_published; then
-                echo "${PACKAGE_NAME}@${VERSION} became visible on npm after a failed publish exit code. Continuing."
-                exit 0
+              if [ "$PUBLISH_STATUS" -eq 0 ]; then
+                PUBLISHED=1
+                break
               fi
 
-              echo "Publish verification ${verify_attempt}/3 did not find ${PACKAGE_NAME}@${VERSION} on npm yet."
+              for verify_attempt in 1 2 3; do
+                sleep 10
+
+                if is_published; then
+                  echo "${PACKAGE_NAME}@${VERSION} became visible on npm after a failed publish exit code. Continuing."
+                  PUBLISHED=1
+                  break
+                fi
+
+                echo "Publish verification ${verify_attempt}/3 did not find ${PACKAGE_NAME}@${VERSION} on npm yet."
+              done
+
+              if [ "$PUBLISHED" -eq 1 ]; then
+                break
+              fi
+
+              if [ "$attempt" -lt "$ATTEMPTS" ]; then
+                echo "Publish attempt ${attempt} failed and version is still not on npm. Retrying in 15 seconds."
+                sleep 15
+              fi
             done
 
-            if [ "$attempt" -lt "$ATTEMPTS" ]; then
-              echo "Publish attempt ${attempt} failed and version is still not on npm. Retrying in 15 seconds."
-              sleep 15
+            if [ "$PUBLISHED" -ne 1 ]; then
+              echo "Failed to publish ${PACKAGE_NAME}@${VERSION} after ${ATTEMPTS} attempts."
+              exit "$PUBLISH_STATUS"
             fi
-          done
+          fi
 
-          echo "Failed to publish ${PACKAGE_NAME}@${VERSION} after ${ATTEMPTS} attempts."
-          exit "$PUBLISH_STATUS"
+          TARBALL_URL="https://registry.npmjs.org/${PACKAGE_NAME}/-/${PACKAGE_NAME##*/}-${VERSION}.tgz"
+          bun scripts/wait-for-npm-tarball.ts "$TARBALL_URL"
 
       - name: Generate changelog
         id: changelog
