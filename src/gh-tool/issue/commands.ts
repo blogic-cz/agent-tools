@@ -35,6 +35,14 @@ export const issueListCommand = Command.make(
   "list",
   {
     format: formatOption,
+    includeBody: Flag.Boolean("include-body").pipe(
+      Flag.withDescription("Include each issue's body in the result"),
+      Flag.withDefault(false),
+    ),
+    fresh: Flag.Boolean("fresh").pipe(
+      Flag.withDescription("Read from GitHub instead of the shared cache"),
+      Flag.withDefault(false),
+    ),
     labels: Flag.String("labels").pipe(
       Flag.withDescription("Filter by label (comma-separated)"),
       Flag.optional,
@@ -49,12 +57,14 @@ export const issueListCommand = Command.make(
       Flag.withDefault("open"),
     ),
   },
-  ({ format, labels, limit, repo, state }) =>
+  ({ format, fresh, includeBody, labels, limit, repo, state }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const issues = yield* listIssues({
           labels: Option.getOrNull(labels),
+          includeBody,
+          fresh,
           limit,
           state,
         });
@@ -214,6 +224,12 @@ export const issueCreateCommand = Command.make(
       Flag.withDefault(false),
     ),
     format: formatOption,
+    idempotencyKey: Flag.String("idempotency-key").pipe(
+      Flag.withDescription(
+        "Body marker that identifies this issue; enables safe rate-limit retry and recovery",
+      ),
+      Flag.optional,
+    ),
     labels: Flag.String("labels").pipe(
       Flag.withDescription("Labels to apply (comma-separated)"),
       Flag.optional,
@@ -221,7 +237,7 @@ export const issueCreateCommand = Command.make(
     repo: repoOption,
     title: Flag.String("title").pipe(Flag.withDescription("Issue title")),
   },
-  ({ assignee, body, bodyFile, bodyStdin, format, labels, repo, title }) =>
+  ({ assignee, body, bodyFile, bodyStdin, format, idempotencyKey, labels, repo, title }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
@@ -242,6 +258,7 @@ export const issueCreateCommand = Command.make(
           body: resolvedBody,
           labels: Option.getOrNull(labels),
           title,
+          ...(Option.isSome(idempotencyKey) ? { idempotencyKey: idempotencyKey.value } : {}),
         });
         yield* logFormatted(result, format);
       }),

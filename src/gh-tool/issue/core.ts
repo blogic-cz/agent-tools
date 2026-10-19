@@ -4,6 +4,7 @@ import type { GitHubIssueCommentUrl, IssueComment, IssueCommentId, IsoTimestamp 
 
 import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/read/transport";
+import type { GhResult } from "#gh/read/transport";
 import { reads, resolveRepo } from "#gh/read/reads";
 import { writes } from "#gh/read/writes";
 import { project } from "#gh/read/porcelain";
@@ -52,23 +53,28 @@ export const listIssues = Effect.fn("issue.listIssues")(function* (opts: {
   state: string;
   labels: string | null;
   limit: number;
+  includeBody?: boolean;
+  fresh?: boolean;
 }) {
-  return yield* reads.issueList(yield* resolveRepo(null), opts);
+  const { fresh, ...filter } = opts;
+  return yield* reads.issueList(yield* resolveRepo(null), filter, fresh ? "origin" : "cached");
 });
+
+const ISSUE_INFO_FIELDS = [
+  "number",
+  "title",
+  "state",
+  "url",
+  "labels",
+  "assignees",
+  "author",
+  "createdAt",
+  "closedAt",
+] as const;
 
 export const viewIssue = Effect.fn("issue.viewIssue")(function* (issueNumber: number) {
   const value = yield* reads.issueView(yield* resolveRepo(null), issueNumber);
-  return project(value, [
-    "number",
-    "title",
-    "state",
-    "url",
-    "labels",
-    "assignees",
-    "author",
-    "createdAt",
-    "closedAt",
-  ]);
+  return project(value, ISSUE_INFO_FIELDS);
 });
 
 export const fetchIssueComments = Effect.fn("issue.fetchIssueComments")(function* (
@@ -198,7 +204,19 @@ export const createIssue = Effect.fn("issue.createIssue")(function* (opts: {
   body: string;
   assignee: string | null;
   labels: string | null;
+  idempotencyKey?: string;
 }) {
+  if (
+    opts.idempotencyKey !== undefined &&
+    (opts.idempotencyKey.trim().length === 0 || !opts.body.includes(opts.idempotencyKey))
+  ) {
+    return yield* new GitHubCommandError({
+      command: "gh-tool issue create",
+      exitCode: 1,
+      message: "The idempotency key must be nonempty and present in the issue body.",
+      stderr: "The idempotency key must be nonempty and present in the issue body.",
+    });
+  }
   const args = ["issue", "create", "--title", opts.title, "--body", opts.body];
 
   if (opts.assignee !== null) {
@@ -209,9 +227,101 @@ export const createIssue = Effect.fn("issue.createIssue")(function* (opts: {
   }
 
   const repo = yield* resolveRepo(null);
-  const result = yield* writes.run(args, [`repo:${repoSlug(repo)}`]);
+  const creation: { result: GhResult | null; recoveredIssue: IssueInfo | null } = {
+    result: null,
+    recoveredIssue: null,
+  };
+  let attempt = 0;
+  yield* Effect.whileLoop({
+    while: () => creation.result === null && creation.recoveredIssue === null,
+    body: () =>
+      Effect.gen(function* () {
+        attempt += 1;
+        const outcome = yield* writes.run(args, [`repo:${repoSlug(repo)}`]).pipe(Effect.result);
+        if (outcome._tag === "Success") {
+          creation.result = outcome.success;
+          return;
+        }
+        const error = outcome.failure;
+        if (
+          !(error instanceof GitHubCommandError) ||
+          opts.idempotencyKey === undefined ||
+          attempt >= 5 ||
+          !/rate limit|secondary rate|abuse detection|HTTP 429/i.test(
+            `${error.message}\n${error.stderr}`,
+          )
+        ) {
+          return yield* Effect.fail(error);
+        }
+        yield* Effect.sleep(60_000 * attempt);
+        const existing = yield* reads.issueList(
+          repo,
+          {
+            state: "all",
+            labels: opts.labels,
+            limit: 1000,
+            includeBody: true,
+          },
+          "origin",
+        );
+        if (existing.length >= 1000) {
+          return yield* new GitHubCommandError({
+            command: "gh-tool issue create",
+            exitCode: 1,
+            message:
+              "Cannot safely retry issue creation: reconciliation reached its 1000 issue limit.",
+            stderr:
+              "Cannot safely retry issue creation: reconciliation reached its 1000 issue limit.",
+          });
+        }
+        const idempotencyKey = opts.idempotencyKey;
+        const matches = existing.filter((item) => item.body?.includes(idempotencyKey));
+        if (matches.length > 1) {
+          return yield* new GitHubCommandError({
+            command: "gh-tool issue create",
+            exitCode: 1,
+            message: "Multiple issues have this idempotency key. Refusing to recover or retry.",
+            stderr: "Multiple issues have this idempotency key. Refusing to recover or retry.",
+          });
+        }
+        for (const item of matches) {
+          const candidate = yield* reads.issueView(repo, item.number, "origin");
+          const expected = (opts.assignee ?? "")
+            .split(",")
+            .filter(Boolean)
+            .map((login) => login.toLowerCase())
+            .toSorted();
+          const actual = candidate.assignees.map(({ login }) => login.toLowerCase()).toSorted();
+          const labels = (opts.labels ?? "")
+            .split(",")
+            .filter(Boolean)
+            .map((name) => name.toLowerCase());
+          if (
+            candidate.title !== opts.title ||
+            candidate.body !== opts.body ||
+            expected.length !== actual.length ||
+            !expected.every((login, index) => login === actual[index]) ||
+            !labels.every((name) =>
+              candidate.labels.some((label) => label.name.toLowerCase() === name),
+            )
+          ) {
+            return yield* new GitHubCommandError({
+              command: "gh-tool issue create",
+              exitCode: 1,
+              message:
+                "An issue with this idempotency key has different content, labels, or assignees. Refusing to recover or retry.",
+              stderr:
+                "An issue with this idempotency key has different content, labels, or assignees. Refusing to recover or retry.",
+            });
+          }
+          creation.recoveredIssue = project(candidate, ISSUE_INFO_FIELDS);
+        }
+      }),
+    step: () => undefined,
+  });
+  if (creation.recoveredIssue !== null) return creation.recoveredIssue;
 
-  const urlMatch = result.stdout.match(/\/issues\/(\d+)/);
+  const urlMatch = creation.result?.stdout.match(/\/issues\/(\d+)/);
   if (!urlMatch?.[1]) {
     return yield* Effect.fail(
       new GitHubCommandError({

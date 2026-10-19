@@ -4,6 +4,8 @@ import { Effect, Option } from "effect";
 import { formatOption, logFormatted } from "#shared";
 import { passthrough } from "./read/catalog";
 import { GitHubService } from "./read/transport";
+import { commitAuthor } from "./read/commits";
+import { resolveRepo } from "./read/reads";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,6 +22,25 @@ const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),
   Flag.optional,
 );
+
+export const repoCommitAuthorCommand = Command.make(
+  "commit-author",
+  {
+    sha: Flag.String("sha").pipe(Flag.withDescription("Commit SHA")),
+    repo: repoOption,
+    format: formatOption,
+  },
+  ({ sha, repo, format }) =>
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      yield* gh.withRepoTarget(
+        Option.getOrNull(repo),
+        Effect.gen(function* () {
+          yield* logFormatted(yield* commitAuthor(yield* resolveRepo(null), sha), format);
+        }),
+      );
+    }),
+).pipe(Command.withDescription("Look up a commit's GitHub author through the shared read cache"));
 
 export const repoInfoCommand = Command.make(
   "info",

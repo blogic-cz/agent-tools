@@ -21,6 +21,7 @@ export type ReadKey = { readonly repo: RepoRef } & (
     }
   | { readonly op: "prChecks"; readonly pr: number; readonly headSha: string }
   | { readonly op: "checkSignal"; readonly sha: string }
+  | { readonly op: "commitAuthor"; readonly sha: string }
   | {
       readonly op: "prList" | "issueList";
       readonly filter: Readonly<Record<string, string | number | boolean | null>>;
@@ -93,6 +94,7 @@ export const tagsFor = (key: ReadKey): readonly Tag[] => {
     case "jobLog":
     case "annotations":
     case "jobIdentity":
+    case "commitAuthor":
       return [fallback];
     default: {
       const exhaustive: never = key;
