@@ -1,5 +1,4 @@
-import { Clock, Console, Duration, Effect, Option, Result } from "effect";
-import { createHash } from "node:crypto";
+import { Clock, Console, Effect, Option, Result } from "effect";
 
 import type {
   BranchPRDetail,
@@ -9,24 +8,19 @@ import type {
   MergeResult,
   MergeStrategy,
   PRInfo,
-  PRViewInfo,
   RerunCheckAttempt,
   RerunChecksReport,
   RerunChecksRun,
   RerunRetryEvidence,
-  WorkflowRunDetail,
 } from "#gh/types";
 
 import type { GitHubAuthError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubCommandError, GitHubMergeError, GitHubTimeoutError } from "#gh/errors";
-import { GitHubService } from "#gh/service";
-import { resolveGitHubToken } from "#gh/api";
-import type { GhResult } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { logFormatted, logText } from "#shared";
 import { redactSensitiveText } from "#shared/content-security";
 
-import type { ButStatusJson, PRViewJsonResult } from "./helpers";
-import { pollUntilResolved } from "#shared/poll-until-resolved";
+import type { ButStatusJson } from "./helpers";
 import { runLocalCommand } from "./helpers";
 import { readStack } from "./stack-read";
 import {
@@ -39,17 +33,19 @@ import {
   parseRawJobLogs,
   readJobLogApi,
 } from "#gh/workflow";
-import {
-  CheckStatusCacheDirectory,
-  readCheckStatusCache,
-  writeCheckStatusCache,
-} from "./check-status-cache";
+import { reads, resolveRepo } from "#gh/read/reads";
+import { waits } from "#gh/read/waits";
+import { project } from "#gh/read/porcelain";
+import { writes } from "#gh/read/writes";
+import { passthrough } from "#gh/read/catalog";
+import type { AsyncMergeResult } from "#gh/read/catalog";
+import { repoSlug } from "#gh/read/keys";
+import { stableHead as collectWithStableState } from "./snapshot";
+export { stableHead as collectWithStableState } from "./snapshot";
 
-const CHECK_JSON_FIELDS = "name,state,bucket,link";
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
-const STABLE_SNAPSHOT_ATTEMPTS = 3;
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
-const MERGE_SHA_POLL_INTERVAL_MS = 1000;
+const MERGE_SHA_POLL_INTERVAL_MS = 5000;
 const MERGE_SHA_WAIT_SECONDS = 5;
 const isFullCommitSha = (value: unknown): value is string =>
   typeof value === "string" && value.length === 40 && /^[0-9a-f]+$/i.test(value);
@@ -101,26 +97,20 @@ const resolveMergeSha = Effect.fn("pr.resolveMergeSha")(function* (
     return knownSha;
   }
 
-  const gh = yield* GitHubService;
   const readMergeSha = () =>
-    gh
-      .runGhJson<{ mergeCommit: { oid: string } | null }>([
-        "pr",
-        "view",
-        String(pr),
-        "--json",
-        "mergeCommit",
-      ])
+    reads
+      .prView(null, { by: "number", number: pr }, "origin")
       .pipe(Effect.map((result) => result.mergeCommit?.oid ?? null));
   const result = yield* readMergeSha().pipe(
     Effect.andThen((initial) =>
-      pollUntilResolved({
-        initial,
-        isPending: (value) => value === null,
-        fetchLatest: readMergeSha,
-        intervalMs: MERGE_SHA_POLL_INTERVAL_MS,
-        budgetSeconds: MERGE_SHA_WAIT_SECONDS,
-      }),
+      waits
+        .until(readMergeSha(), (sha) => sha !== null, {
+          initial: { value: initial },
+          intervalMs: MERGE_SHA_POLL_INTERVAL_MS,
+          timeoutMs: MERGE_SHA_WAIT_SECONDS * 1000,
+          readAtDeadline: true,
+        })
+        .pipe(Effect.map((outcome) => (outcome.kind === "done" ? outcome.value : outcome.last))),
     ),
     Effect.map((sha) => ({ sha, failed: false as const })),
     Effect.catch((error) =>
@@ -218,16 +208,8 @@ const matchFailedJobForCheck = <Job extends { name: string }>(
 const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureContext")(function* (
   runId: number,
 ) {
-  const gh = yield* GitHubService;
-
-  const run = yield* gh
-    .runGhJson<WorkflowRunDetail>([
-      "run",
-      "view",
-      String(runId),
-      "--json",
-      "databaseId,attempt,headSha,url,workflowName,status,conclusion,jobs",
-    ])
+  const run = yield* reads
+    .runView(yield* resolveRepo(null), runId)
     .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
 
   if (run === null) {
@@ -319,52 +301,8 @@ export const fetchCheckReport = Effect.fn("pr.fetchCheckReport")(function* (
   pr: number | null,
   cache?: { headSha: string; watchPending?: boolean },
 ) {
-  const gh = yield* GitHubService;
-
-  const args = ["pr", "checks"];
-  if (pr !== null) {
-    args.push(String(pr));
-  }
-
-  const directory = yield* CheckStatusCacheDirectory;
-  const now = yield* Clock.currentTimeMillis;
-  let repo: string | null = null;
-  let identity: string | null = null;
-  if (cache !== undefined && pr !== null && directory !== undefined) {
-    const repoInfo = yield* gh.getRepoInfo().pipe(Effect.result);
-    const token = yield* resolveGitHubToken().pipe(Effect.result);
-    if (Result.isSuccess(repoInfo) && Result.isSuccess(token)) {
-      const host = yield* Effect.try({
-        try: () => new URL(repoInfo.success.url).host,
-        catch: () => "",
-      }).pipe(Effect.orElseSucceed(() => ""));
-      if (host.length > 0) {
-        const cacheRepo = `${host}/${repoInfo.success.owner}/${repoInfo.success.name}`;
-        const cacheIdentity = createHash("sha256").update(token.success).digest("hex");
-        const cached = yield* Effect.tryPromise({
-          try: () =>
-            readCheckStatusCache(
-              cacheIdentity,
-              cacheRepo,
-              pr,
-              cache.headSha,
-              now,
-              cache.watchPending,
-              directory,
-            ),
-          catch: () => null,
-        }).pipe(Effect.orElseSucceed(() => null));
-        if (cached !== null)
-          return { checksStatus: "reported", checks: cached } satisfies CheckReport;
-        repo = cacheRepo;
-        identity = cacheIdentity;
-      }
-    }
-  }
-
-  const fetchedAt = yield* Clock.currentTimeMillis;
-  const checks = yield* gh
-    .runGhJson<CheckResult[]>([...args, "--json", CHECK_JSON_FIELDS])
+  const checks = yield* reads
+    .prChecks(yield* resolveRepo(null), pr, cache?.headSha ?? null)
     .pipe(
       Effect.catchTag("GitHubCommandError", (error) =>
         NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
@@ -378,19 +316,6 @@ export const fetchCheckReport = Effect.fn("pr.fetchCheckReport")(function* (
       reason: NO_CHECKS_REPORTED_REASON,
       checks: null,
     } satisfies CheckReport;
-  }
-  if (
-    cache !== undefined &&
-    pr !== null &&
-    repo !== null &&
-    identity !== null &&
-    checks.length > 0
-  ) {
-    yield* Effect.tryPromise({
-      try: () =>
-        writeCheckStatusCache(identity, repo, pr, cache.headSha, checks, fetchedAt, directory),
-      catch: () => undefined,
-    }).pipe(Effect.orElseSucceed(() => undefined));
   }
   return { checksStatus: "reported", checks } satisfies CheckReport;
 });
@@ -428,7 +353,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
       runIds,
       (runId) =>
         fetchWorkflowRunFailureContext(runId).pipe(Effect.map((found) => [runId, found] as const)),
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     ),
   );
 
@@ -453,7 +378,7 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         const failedStepLogs = yield* fetchJobLogs({
           runId,
           job: matchedJob.name,
-          jobId: matchedJob.databaseId,
+          jobRef: { id: matchedJob.databaseId, status: matchedJob.status },
           failedStepNames: matchedJob.failedSteps,
           steps: found?.stepsByJob.get(matchedJob.databaseId) ?? [],
           failedStepsOnly: true,
@@ -557,19 +482,32 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
   };
 });
 
-export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: number | null) {
-  const gh = yield* GitHubService;
-
-  const args = ["pr", "view"];
-  if (prNumber !== null) {
-    args.push(String(prNumber));
-  }
-  args.push(
-    "--json",
-    "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (
+  prNumber: number | null,
+  consistency: "cached" | "origin" = "cached",
+) {
+  const raw = yield* reads.prView(
+    yield* resolveRepo(null),
+    prNumber === null ? { by: "currentBranch" } : { by: "number", number: prNumber },
+    consistency,
   );
-
-  const info = yield* gh.runGhJson<PRViewInfo & { headRefOid?: string }>(args);
+  const info = project(raw, [
+    "number",
+    "url",
+    "title",
+    "headRefName",
+    "baseRefName",
+    "headRefOid",
+    "state",
+    "isDraft",
+    "mergeable",
+    "body",
+    "author",
+    "reviewDecision",
+    "reviewRequests",
+    "headSha",
+    "baseSha",
+  ]);
   return {
     ...info,
     body: info.body ?? "",
@@ -578,17 +516,15 @@ export const fetchPRView = Effect.fn("pr.fetchPRView")(function* (prNumber: numb
   };
 });
 
-export const viewPR = Effect.fn("pr.viewPR")(function* (prNumber: number | null) {
+export const viewPR = Effect.fn("pr.viewPR")(function* (
+  prNumber: number | null,
+  consistency: "cached" | "origin" = "cached",
+) {
   const gh = yield* GitHubService;
 
-  const info = yield* fetchPRView(prNumber);
+  const info = yield* fetchPRView(prNumber, consistency);
   const repo = yield* gh.getRepoInfo();
-  const baseSha = yield* gh.runGh([
-    "api",
-    `repos/${repo.owner}/${repo.name}/pulls/${info.number}`,
-    "--jq",
-    ".base.sha",
-  ]);
+  const baseSha = yield* passthrough.baseSha(repo, info.number);
   return {
     ...info,
     baseSha: baseSha.stdout.trim() || null,
@@ -648,7 +584,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
     ),
   ];
 
-  const gh = yield* GitHubService;
+  const repo = yield* resolveRepo(null);
 
   type BranchResult = {
     branch: string;
@@ -665,40 +601,41 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
     branchNames.map((branchName) =>
       Effect.all(
         {
-          openPr: gh
-            .runGhJson<PRInfo[]>([
-              "pr",
-              "list",
-              "--head",
-              branchName,
-              "--json",
-              "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
-              "--limit",
-              "1",
-            ])
+          openPr: reads
+            .prList(repo, {
+              state: "open",
+              limit: 1,
+              author: null,
+              base: null,
+              head: branchName,
+              search: null,
+            })
             .pipe(
-              Effect.map((prs) => prs[0] ?? null),
+              Effect.map((prs) =>
+                prs[0] === undefined
+                  ? null
+                  : project(prs[0], [
+                      "number",
+                      "url",
+                      "title",
+                      "headRefName",
+                      "baseRefName",
+                      "state",
+                      "isDraft",
+                      "mergeable",
+                    ]),
+              ),
               Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
             ),
-          closedPr: gh
-            .runGhJson<
-              Array<{
-                number: number;
-                url: string;
-                state: string;
-              }>
-            >([
-              "pr",
-              "list",
-              "--head",
-              branchName,
-              "--state",
-              "closed",
-              "--json",
-              "number,url,state",
-              "--limit",
-              "1",
-            ])
+          closedPr: reads
+            .prList(repo, {
+              state: "closed",
+              limit: 1,
+              author: null,
+              base: null,
+              head: branchName,
+              search: null,
+            })
             .pipe(
               Effect.map((prs) => {
                 const pr = prs[0];
@@ -716,7 +653,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
             Effect.catch(() => Effect.succeed(false)),
           ),
         },
-        { concurrency: "unbounded" },
+        { concurrency: 2 },
       ).pipe(
         Effect.map((r): BranchResult => ({
           branch: branchName,
@@ -724,7 +661,7 @@ export const detectPRStatus = Effect.fn("pr.detectPRStatus")(function* () {
         })),
       ),
     ),
-    { concurrency: "unbounded" },
+    { concurrency: 2 },
   );
 
   const foundPrs = branchResults.flatMap((r) => (r.openPr === null ? [] : [r.openPr]));
@@ -762,59 +699,44 @@ export const listPRs = Effect.fn("pr.listPRs")(function* (opts: {
   head: string | null;
   search: string | null;
 }) {
-  const gh = yield* GitHubService;
-  const args = [
-    "pr",
-    "list",
-    "--state",
-    opts.state,
-    "--limit",
-    String(opts.limit),
-    "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,author,createdAt,reviewDecision",
-  ];
-  if (opts.author !== null) args.push("--author", opts.author);
-  if (opts.base !== null) args.push("--base", opts.base);
-  if (opts.head !== null) args.push("--head", opts.head);
-  if (opts.search !== null) args.push("--search", opts.search);
-  return yield* gh.runGhJson<PRInfo[]>(args);
+  const values = yield* reads.prList(yield* resolveRepo(null), opts);
+  return values.map((value) =>
+    project(value, [
+      "number",
+      "url",
+      "title",
+      "headRefName",
+      "baseRefName",
+      "state",
+      "isDraft",
+      "author",
+      "createdAt",
+      "reviewDecision",
+    ]),
+  );
 });
 
 // GitHub recomputes mergeability asynchronously after CI; poll until it settles out of "UNKNOWN".
 const MAX_MERGEABLE_WAIT_SECONDS = 180;
-const MERGEABLE_POLL_INTERVAL_MS = 3000;
+const MERGEABLE_POLL_INTERVAL_MS = 5000;
 
 export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
   pr: number | null,
   timeoutSeconds: number,
 ) {
   const cappedSeconds = Math.min(timeoutSeconds, MAX_MERGEABLE_WAIT_SECONDS);
-  const start = yield* Clock.currentTimeMillis;
-  const deadlineMs = Number(start) + cappedSeconds * 1000;
-
-  // Effect.whileLoop (not recursion) so TestClock.adjust can advance Effect.sleep without real waits.
-  let latest = yield* viewPR(pr);
-  let timedOut = false;
-  yield* Effect.whileLoop({
-    while: () => latest.mergeable === "UNKNOWN" && !timedOut,
-    body: () =>
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        if (Number(now) >= deadlineMs) {
-          timedOut = true;
-          return;
-        }
-        // Cap the sleep to the remaining budget so the total wait doesn't overshoot the deadline.
-        const remaining = deadlineMs - Number(now);
-        yield* Effect.sleep(Duration.millis(Math.min(MERGEABLE_POLL_INTERVAL_MS, remaining)));
-        latest = yield* fetchPRView(pr).pipe(
-          Effect.map((info) => ({ ...info, baseSha: latest.baseSha })),
-        );
-      }),
-    step: () => undefined,
-  });
-
-  return latest;
+  const initial = yield* viewPR(pr, "origin");
+  const outcome = yield* waits.until(
+    fetchPRView(pr, "origin").pipe(Effect.map((info) => ({ ...info, baseSha: initial.baseSha }))),
+    (info) => info.mergeable !== "UNKNOWN",
+    {
+      initial: { value: initial },
+      intervalMs: MERGEABLE_POLL_INTERVAL_MS,
+      timeoutMs: cappedSeconds * 1000,
+      readAtDeadline: true,
+    },
+  );
+  return outcome.kind === "done" ? outcome.value : outcome.last;
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {
@@ -839,24 +761,12 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     headSeparator === -1 ? repo.owner : head.slice(0, headSeparator)
   ).toLowerCase();
   const headBranch = headSeparator === -1 ? head : head.slice(headSeparator + 1);
-  const lookupArgs = [
-    "pr",
-    "list",
-    "--repo",
-    `${repo.owner}/${repo.name}`,
-    "--state",
-    "open",
-    "--head",
-    headBranch,
-    "--base",
-    baseBranch,
-    "--json",
-    "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRepositoryOwner",
-    "--limit",
-    "2",
-  ];
-  type Candidate = PRInfo & { headRepositoryOwner?: { login: string } };
-  const candidates = yield* gh.runGhJson<Candidate[]>(lookupArgs);
+  const lookup = reads.prList(
+    repo,
+    { state: "open", head: headBranch, base: baseBranch, limit: 2, author: null, search: null },
+    "origin",
+  );
+  const candidates = yield* lookup;
   // The limited query may include another fork's branch. Refuse a saturated result
   // rather than assuming an owner-filtered match beyond the limit does not exist.
   if (candidates.length > 1) {
@@ -910,7 +820,7 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
         hint: "Use --update-if-exists to update it, or 'pr edit --pr <number>'.",
       });
     }
-    const current = yield* fetchPRView(existing.number);
+    const current = yield* fetchPRView(existing.number, "origin");
     if (
       current.state !== "OPEN" ||
       current.headRefName !== headBranch ||
@@ -952,14 +862,14 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
     createArgs.push("--draft");
   }
 
-  const createResult = yield* gh.runGh(createArgs);
+  const createResult = yield* writes.run(createArgs, [`repo:${repoSlug(repo)}`]);
 
   const urlMatch = createResult.stdout.match(/\/pull\/(\d+)/);
   if (urlMatch?.[1]) {
     return { ...(yield* viewPR(Number(urlMatch[1]))), updated: false };
   }
 
-  const prs = yield* gh.runGhJson<Candidate[]>(lookupArgs);
+  const prs = yield* lookup;
   if (
     prs.length === 1 &&
     prs[0]?.state === "OPEN" &&
@@ -983,13 +893,8 @@ export const createPR = Effect.fn("pr.createPR")(function* (opts: {
 // GitHub rejects GraphQL `mergePullRequest` for a PR that belongs to a native stack and points at
 // the asynchronous REST merge instead. `gh pr merge` only speaks GraphQL.
 const ASYNC_MERGE_REQUIRED_RE = /asynchronous merge/i;
-const ASYNC_MERGE_POLL_INTERVAL_MS = 2000;
+const ASYNC_MERGE_POLL_INTERVAL_MS = 5000;
 const MAX_ASYNC_MERGE_WAIT_SECONDS = 120;
-
-type AsyncMergeResult = {
-  status: "pending" | "merged" | "enqueued" | "failed";
-  details?: { message?: string; uuid?: string; sha?: string };
-};
 
 const asyncMergeFailure = (
   pr: number,
@@ -1012,24 +917,24 @@ const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
   const repo = yield* gh.getRepoInfo();
   const asyncPath = `repos/${repo.owner}/${repo.name}/pulls/${opts.pr}/merge-async`;
 
-  let latest = yield* gh.runGhJson<AsyncMergeResult>([
-    "api",
-    "--method",
-    "PUT",
-    asyncPath,
-    "-f",
-    `merge_method=${opts.strategy}`,
-  ]);
+  let latest = yield* writes.json<AsyncMergeResult>(
+    ["api", "--method", "PUT", asyncPath, "-f", `merge_method=${opts.strategy}`],
+    [`pr:${repoSlug(repo)}#${opts.pr}`, `pulls:${repoSlug(repo)}`],
+  );
 
   const uuid = latest.details?.uuid;
   if (uuid !== undefined) {
-    latest = yield* pollUntilResolved({
-      initial: latest,
-      isPending: (value) => value.status === "pending",
-      fetchLatest: () => gh.runGhJson<AsyncMergeResult>(["api", `${asyncPath}/${uuid}`]),
-      intervalMs: ASYNC_MERGE_POLL_INTERVAL_MS,
-      budgetSeconds: MAX_ASYNC_MERGE_WAIT_SECONDS,
-    });
+    const outcome = yield* waits.until(
+      passthrough.asyncMergeStatus(`${asyncPath}/${uuid}`),
+      (value) => value.status !== "pending",
+      {
+        initial: { value: latest },
+        intervalMs: ASYNC_MERGE_POLL_INTERVAL_MS,
+        timeoutMs: MAX_ASYNC_MERGE_WAIT_SECONDS * 1000,
+        readAtDeadline: true,
+      },
+    );
+    latest = outcome.kind === "done" ? outcome.value : outcome.last;
   }
 
   if (latest.status === "merged") {
@@ -1079,27 +984,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     });
   }
 
-  const info = yield* gh
-    .runGhJson<PRViewJsonResult & { headRefOid?: unknown }>([
-      "pr",
-      "view",
-      String(opts.pr),
-      "--json",
-      "number,url,title,headRefName,baseRefName,state,isDraft,mergeable" +
-        (matchHeadCommit !== undefined ? ",headRefOid" : ""),
-    ])
-    .pipe(
-      Effect.mapError((error) =>
-        matchHeadCommit === undefined
-          ? error
-          : new GitHubMergeError({
-              message: `Could not verify the head commit of PR #${opts.pr}: ${error.message}`,
-              reason: "unknown",
-              hint: "The merge is refused while the head is unknown. Re-read the PR and verify its reviewed head before retrying.",
-              nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
-            }),
-      ),
-    );
+  const info = yield* reads.prView(null, { by: "number", number: opts.pr }, "origin").pipe(
+    Effect.mapError((error) =>
+      matchHeadCommit === undefined
+        ? error
+        : new GitHubMergeError({
+            message: `Could not verify the head commit of PR #${opts.pr}: ${error.message}`,
+            reason: "unknown",
+            hint: "The merge is refused while the head is unknown. Re-read the PR and verify its reviewed head before retrying.",
+            nextCommand: `agent-tools-gh pr view --pr ${opts.pr}`,
+          }),
+    ),
+  );
 
   if (
     matchHeadCommit !== undefined &&
@@ -1181,18 +1077,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // branch if EVERY retarget succeeds (fail-closed).
   const dependentOpenPrs =
     opts.deleteBranch && !headIsLongLived && info.headRefName
-      ? yield* gh.runGhJson<Array<{ number: number; headRefName: string; baseRefName: string }>>([
-          "pr",
-          "list",
-          "--base",
-          info.headRefName,
-          "--state",
-          "open",
-          "--limit",
-          "100",
-          "--json",
-          "number,headRefName,baseRefName",
-        ])
+      ? yield* reads.prList(
+          yield* resolveRepo(null),
+          {
+            state: "open",
+            limit: 100,
+            base: info.headRefName,
+            head: null,
+            author: null,
+            search: null,
+          },
+          "origin",
+        )
       : [];
 
   if (!opts.confirm) {
@@ -1242,15 +1138,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // closed.
   if (willDeleteBranch && dependentOpenPrs.length > 0 && repo) {
     for (const child of dependentOpenPrs) {
-      const retargeted = yield* gh
-        .runGh([
-          "api",
-          "--method",
-          "PATCH",
-          `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
-          "-f",
-          `base=${info.baseRefName}`,
-        ])
+      const retargeted = yield* writes
+        .run(
+          [
+            "api",
+            "--method",
+            "PATCH",
+            `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
+            "-f",
+            `base=${info.baseRefName}`,
+          ],
+          [`pr:${repoSlug(repo)}#${child.number}`, `pulls:${repoSlug(repo)}`],
+        )
         .pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
@@ -1272,15 +1171,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
       return failed;
     }
     for (const child of retargetedChildren) {
-      const rolledBack = yield* gh
-        .runGh([
-          "api",
-          "--method",
-          "PATCH",
-          `repos/${repo.owner}/${repo.name}/pulls/${child}`,
-          "-f",
-          `base=${info.headRefName}`,
-        ])
+      const rolledBack = yield* writes
+        .run(
+          [
+            "api",
+            "--method",
+            "PATCH",
+            `repos/${repo.owner}/${repo.name}/pulls/${child}`,
+            "-f",
+            `base=${info.headRefName}`,
+          ],
+          [`pr:${repoSlug(repo)}#${child}`, `pulls:${repoSlug(repo)}`],
+        )
         .pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
@@ -1292,13 +1194,14 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     return failed;
   });
 
+  const mergeRepo = yield* resolveRepo(null);
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
   if (matchHeadCommit !== undefined) {
     mergeArgs.push("--match-head-commit", matchHeadCommit);
   }
 
-  const shaFromAsyncMerge = yield* gh
-    .runGh(mergeArgs)
+  const shaFromAsyncMerge = yield* writes
+    .run(mergeArgs, [`pr:${repoSlug(mergeRepo)}#${opts.pr}`, `pulls:${repoSlug(mergeRepo)}`])
     .pipe(
       Effect.map(() => null),
       Effect.catchTag("GitHubCommandError", (error) =>
@@ -1400,13 +1303,16 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // `gh pr merge --delete-branch` aborts its remote delete when the head branch is checked out in a
   // worktree; deleting the remote ref explicitly is worktree-independent. Local cleanup is separate.
   if (willDeleteBranch && repo && info.headRefName) {
-    const remoteDeleted = yield* gh
-      .runGh([
-        "api",
-        "--method",
-        "DELETE",
-        `repos/${repo.owner}/${repo.name}/git/refs/heads/${info.headRefName}`,
-      ])
+    const remoteDeleted = yield* writes
+      .run(
+        [
+          "api",
+          "--method",
+          "DELETE",
+          `repos/${repo.owner}/${repo.name}/git/refs/heads/${info.headRefName}`,
+        ],
+        [`pr:${repoSlug(repo)}#${opts.pr}`, `pulls:${repoSlug(repo)}`],
+      )
       .pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
@@ -1434,8 +1340,6 @@ export const closePR = Effect.fn("pr.closePR")(function* (opts: {
   comment: string | null;
   deleteBranch: boolean;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["pr", "close", String(opts.pr)];
 
   if (opts.comment !== null) {
@@ -1446,15 +1350,18 @@ export const closePR = Effect.fn("pr.closePR")(function* (opts: {
     args.push("--delete-branch");
   }
 
-  yield* gh.runGh(args);
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(args, [
+    `pr:${repoSlug(repo)}#${opts.pr}`,
+    `pulls:${repoSlug(repo)}`,
+    `issue-comments:${repoSlug(repo)}#${opts.pr}`,
+  ]);
 
   return yield* viewPR(opts.pr);
 });
 
 export const readyPR = Effect.fn("pr.readyPR")(function* (opts: { pr: number | null }) {
-  const gh = yield* GitHubService;
-
-  const info = yield* viewPR(opts.pr);
+  const info = yield* viewPR(opts.pr, "origin");
 
   // Idempotent: a PR that's already ready needs no mutation, and `gh pr ready` on a
   // non-draft PR is a no-op that would just add a pointless call.
@@ -1462,22 +1369,28 @@ export const readyPR = Effect.fn("pr.readyPR")(function* (opts: { pr: number | n
     return { ...info, wasAlreadyReady: true };
   }
 
-  yield* gh.runGh(["pr", "ready", String(info.number)]);
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(
+    ["pr", "ready", String(info.number)],
+    [`pr:${repoSlug(repo)}#${info.number}`, `pulls:${repoSlug(repo)}`],
+  );
 
   const updated = yield* viewPR(info.number);
   return { ...updated, wasAlreadyReady: false };
 });
 
 export const draftPR = Effect.fn("pr.draftPR")(function* (opts: { pr: number | null }) {
-  const gh = yield* GitHubService;
-
-  const info = yield* viewPR(opts.pr);
+  const info = yield* viewPR(opts.pr, "origin");
 
   if (info.isDraft) {
     return { ...info, wasAlreadyDraft: true };
   }
 
-  yield* gh.runGh(["pr", "ready", String(info.number), "--undo"]);
+  const repo = yield* resolveRepo(null);
+  yield* writes.run(
+    ["pr", "ready", String(info.number), "--undo"],
+    [`pr:${repoSlug(repo)}#${info.number}`, `pulls:${repoSlug(repo)}`],
+  );
 
   const updated = yield* viewPR(info.number);
   return { ...updated, wasAlreadyDraft: false };
@@ -1540,7 +1453,7 @@ export const editPR = Effect.fn("pr.editPR")(function* (opts: {
     editArgs.push("-f", `base=${opts.base}`);
   }
 
-  yield* gh.runGh(editArgs);
+  yield* writes.run(editArgs, [`pr:${repoSlug(repo)}#${opts.pr}`, `pulls:${repoSlug(repo)}`]);
 
   return yield* viewPR(opts.pr);
 });
@@ -1552,62 +1465,44 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   timeoutSeconds: number,
   quiet = false,
 ) {
-  const gh = yield* GitHubService;
-
-  const args = ["pr", "checks"];
-  if (pr !== null) {
-    args.push(String(pr));
-  }
-
   if (watch) {
-    const watchArgs = [...args, "--watch"];
-    if (failFast) {
-      watchArgs.push("--fail-fast");
-    }
-
-    // A push can register checks after the ref lands. Wait through that window
-    // within the caller's timeout, then report the final snapshot.
-    let watchResult: GhResult | null = null;
-    let registered = false;
-    let graceExpired = false;
-    const watchThroughRegistration = Effect.gen(function* () {
-      const graceStart = yield* Clock.currentTimeMillis;
-      const graceDeadlineMs =
-        Number(graceStart) + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
-      yield* Effect.whileLoop({
-        while: () => !registered && !graceExpired,
-        body: () =>
-          gh.runGh(watchArgs).pipe(
-            Effect.flatMap((result) => {
-              watchResult = result;
-              registered = true;
-              return Effect.void;
-            }),
-            Effect.catchTag("GitHubCommandError", (error) =>
-              NO_CHECKS_REPORTED_RE.test(error.stderr) || NO_CHECKS_REPORTED_RE.test(error.message)
-                ? Effect.gen(function* () {
-                    const now = yield* Clock.currentTimeMillis;
-                    if (Number(now) >= graceDeadlineMs) {
-                      graceExpired = true;
-                      return;
-                    }
-                    yield* Effect.sleep(Duration.seconds(CHECK_REGISTRATION_POLL_SECONDS));
-                  })
-                : Effect.fail(error),
-            ),
-          ),
-        step: () => undefined,
-      });
-      return watchResult;
+    const started = Number(yield* Clock.currentTimeMillis);
+    const graceDeadlineMs =
+      started + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
+    const poll = Effect.gen(function* () {
+      const checks = yield* fetchCheckResults(pr);
+      return { checks, at: Number(yield* Clock.currentTimeMillis) };
     });
-
-    const watchOutcome = yield* watchThroughRegistration.pipe(
-      Effect.timeoutOrElse({
-        duration: timeoutSeconds * 1000,
-        orElse: () => Effect.succeed(null),
-      }),
-    );
-
+    const watchOutcome = yield* waits
+      .until(
+        poll,
+        ({ checks, at }) =>
+          checks.length === 0
+            ? at >= graceDeadlineMs
+            : (failFast && checks.some((check) => check.bucket === "fail")) ||
+              checks.every((check) => check.bucket !== "pending"),
+        { intervalMs: CHECK_REGISTRATION_POLL_SECONDS * 1000, timeoutMs: timeoutSeconds * 1000 },
+      )
+      .pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutSeconds * 1000,
+          orElse: () => Effect.succeed(null),
+        }),
+      );
+    const last =
+      watchOutcome === null
+        ? null
+        : watchOutcome.kind === "done"
+          ? watchOutcome.value
+          : watchOutcome.last;
+    const graceExpired = last !== null && last.checks.length === 0 && last.at >= graceDeadlineMs;
+    if (watchOutcome?.kind === "done" && last?.checks.some((check) => check.bucket === "fail"))
+      return yield* new GitHubCommandError({
+        command: buildChecksCommand(pr, true),
+        exitCode: 1,
+        message: "",
+        stderr: "",
+      });
     const results = yield* fetchCheckResults(pr);
     if (!quiet && graceExpired) {
       const prRef = pr === null ? "<number>" : String(pr);
@@ -1618,7 +1513,10 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
           `head instead:\n   agent-tools-gh pr trigger-checks --pr ${prRef} --workflow <file.yml>`,
       );
     }
-    if (watchOutcome === null && results.some((check) => check.bucket === "pending")) {
+    if (
+      (watchOutcome === null || watchOutcome.kind === "timedOut") &&
+      results.some((check) => check.bucket === "pending")
+    ) {
       const pending = results.filter((check) => check.bucket === "pending").length;
       yield* logFormatted(results, quiet ? "json" : "toon");
       return yield* new GitHubTimeoutError({
@@ -1702,23 +1600,6 @@ export const triggerChecks = Effect.fn("pr.triggerChecks")(function* (
   };
 });
 
-export const collectWithStableState = <S, A, E1, R1, E2, R2>(
-  initial: S,
-  collect: (state: S) => Effect.Effect<A, E1, R1>,
-  refresh: (state: S) => Effect.Effect<S, E2, R2>,
-  unchanged: (before: S, after: S) => boolean,
-): Effect.Effect<{ state: S; value: A } | null, E1 | E2, R1 | R2> =>
-  Effect.gen(function* () {
-    let before = initial;
-    for (let attempt = 0; attempt < STABLE_SNAPSHOT_ATTEMPTS; attempt += 1) {
-      const value = yield* collect(before);
-      const after = yield* refresh(before);
-      if (unchanged(before, after)) return { state: after, value };
-      before = after;
-    }
-    return null;
-  });
-
 export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
   pr: number | null,
   withLogs = false,
@@ -1729,7 +1610,7 @@ export const fetchFailedChecks = Effect.fn("pr.fetchFailedChecks")(function* (
     initial,
     (info) => fetchCheckResults(info.number),
     (info) =>
-      fetchPRView(info.number).pipe(
+      fetchPRView(info.number, "origin").pipe(
         Effect.map((refreshed) => ({ ...refreshed, baseSha: initial.baseSha })),
       ),
     (before, after) => after.headSha === before.headSha,
@@ -1786,23 +1667,25 @@ export const fetchChecksForCommand = Effect.fn("pr.fetchChecksForCommand")(funct
   return yield* Effect.fail(watchedChecks.failure);
 });
 
-type WatchPR = { number: number; state: string; headRefOid?: string | null };
 type WatchRun = {
   databaseId: number;
   attempt?: number | null;
   headSha?: string | null;
-  jobs?: Array<{ databaseId: number; name: string }>;
+  jobs?: ReadonlyArray<{ databaseId: number; name: string }>;
+};
+
+const checkJobId = (link: string): number | null => {
+  const modern = link.match(/github\.com\/[^/]+\/[^/]+\/actions\/runs\/\d+\/job\/(\d+)/);
+  const legacy = link.match(/github\.com\/[^/]+\/[^/]+\/runs\/(\d+)/);
+  const id = Number(modern?.[1] ?? legacy?.[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 };
 
 const watchPRState = Effect.fn("pr.watchPRState")(function* (pr: number) {
-  const gh = yield* GitHubService;
-  return yield* gh.runGhJson<WatchPR>([
-    "pr",
-    "view",
-    String(pr),
-    "--json",
-    "number,state,headRefOid",
-  ]);
+  return project(
+    yield* reads.prView(yield* resolveRepo(null), { by: "number", number: pr }, "origin"),
+    ["number", "state", "headRefOid"],
+  );
 });
 
 export const fetchChecksBatch = Effect.fn("pr.fetchChecksBatch")(function* (
@@ -1895,159 +1778,184 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
       const { state: after, value: checks } = stableResult.success;
       const head = after.headRefOid ?? null;
       const runs = new Map<number, WatchRun | null>();
+      const identities = new Map<number, { runId: number; attempt: number } | null>();
       yield* Effect.forEach(
-        [...new Set(checks.map((check) => extractRunIdFromCheckLink(check.link)))].filter(
-          (runId): runId is number => runId !== null,
+        [...new Set(checks.map((check) => checkJobId(check.link)))].filter(
+          (id): id is number => id !== null,
         ),
+        (id) =>
+          Effect.gen(function* () {
+            if (!(yield* beforeDeadline)) return;
+            identities.set(
+              id,
+              yield* reads
+                .jobIdentity(repo, id)
+                .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null))),
+            );
+          }),
+        { concurrency: 2 },
+      );
+      yield* Effect.forEach(
+        [
+          ...new Set(
+            checks
+              .filter((check) => checkJobId(check.link) === null)
+              .map((check) => extractRunIdFromCheckLink(check.link)),
+          ),
+        ].filter((runId): runId is number => runId !== null),
         (runId) =>
           Effect.gen(function* () {
             if (!(yield* beforeDeadline)) return;
-            const run = yield* gh
-              .runGhJson<WatchRun>([
-                "run",
-                "view",
-                String(runId),
-                "--json",
-                "databaseId,attempt,headSha,jobs",
-              ])
+            const run = yield* reads
+              .runView(repo, runId)
               .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
             runs.set(runId, run);
           }),
-        { concurrency: 5 },
+        { concurrency: 2 },
       );
       if (!(yield* beforeDeadline)) return "timeout" as const;
       return {
         pr: after,
         head,
         checks: checks
-          .map((check) => ({
-            check,
-            run:
-              extractRunIdFromCheckLink(check.link) === null
-                ? null
-                : (runs.get(extractRunIdFromCheckLink(check.link) ?? -1) ?? null),
-          }))
+          .map((check) => {
+            const jobId = checkJobId(check.link);
+            const identity = jobId === null ? null : identities.get(jobId);
+            const runId = extractRunIdFromCheckLink(check.link);
+            const resolvedRunId = runId ?? identity?.runId ?? null;
+            const run: WatchRun | null =
+              jobId === null
+                ? runId === null
+                  ? null
+                  : (runs.get(runId) ?? null)
+                : resolvedRunId === null
+                  ? null
+                  : {
+                      databaseId: resolvedRunId,
+                      attempt: identity?.attempt ?? null,
+                      headSha: head,
+                      jobs: [{ databaseId: jobId, name: check.name }],
+                    };
+            return { check, run };
+          })
           .filter(({ run }) => run === null || run.headSha === null || run.headSha === head),
       };
     });
 
   let timedOut = false;
-  yield* Effect.whileLoop({
-    while: () => terminal.size < prs.length && !timedOut,
-    body: () =>
-      Effect.gen(function* () {
-        for (const number of prs) {
-          if (terminal.has(number)) continue;
-          if (!(yield* beforeDeadline)) {
-            timedOut = true;
-            break;
-          }
-          const remainingMs = Math.max(1, deadline - Number(yield* Clock.currentTimeMillis));
-          const state = yield* snapshot(number).pipe(
-            Effect.timeoutOrElse({
-              duration: remainingMs,
-              orElse: () => Effect.succeed("timeout" as const),
-            }),
-          );
-          if (state === "timeout") {
-            timedOut = true;
-            break;
-          }
-          if (state === null) continue;
-          const headKey = `${number}/${state.head ?? ""}`;
-          const oldHeadKey = headByPR.get(number);
-          if (oldHeadKey !== undefined && oldHeadKey !== headKey) {
-            checksObserved.delete(oldHeadKey);
-            emptySnapshots.delete(oldHeadKey);
-          }
-          headByPR.set(number, headKey);
-          if (state.checks.length > 0) {
-            checksObserved.add(headKey);
-            emptySnapshots.set(headKey, 0);
-          } else {
-            emptySnapshots.set(headKey, (emptySnapshots.get(headKey) ?? 0) + 1);
-          }
-          for (const { check, run } of state.checks) {
-            const matches = failedJobsMatchingCheck(check.name, run?.jobs ?? []);
-            const jobId = matches.length === 1 ? (matches[0]?.databaseId ?? null) : null;
-            const fallback = jobId === null ? `${check.name}|${check.link}` : String(jobId);
-            const identity = [
-              repo.owner + "/" + repo.name,
-              number,
-              state.head ?? "",
-              run?.databaseId ?? "external",
-              run?.attempt ?? "",
-              fallback,
-            ].join("/");
-            const logical = `${number}/${check.name}`;
-            const previousIdentity = currentIdentity.get(logical);
-            const revision = `${check.state}/${check.bucket}`;
-            if (lastRevision.get(identity) !== revision) {
-              const event: Record<string, unknown> = {
-                type: "check",
-                repo: `${repo.owner}/${repo.name}`,
-                pr: number,
-                headSha: state.head,
-                ...(run?.databaseId === undefined || run.databaseId === null
-                  ? {}
-                  : { runId: run.databaseId }),
-                ...(run?.attempt === undefined || run.attempt === null
-                  ? {}
-                  : { attempt: run.attempt }),
-                ...(jobId === null ? {} : { jobId }),
-                name: check.name,
-                state: check.state,
-                bucket: check.bucket,
-                link: check.link,
-                identity,
-              };
-              if (previousIdentity !== undefined && previousIdentity !== identity) {
-                event.supersedes = previousIdentity;
-              }
-              if (!(yield* beforeDeadline)) {
-                timedOut = true;
-                break;
-              }
-              yield* emit(event);
-              lastRevision.set(identity, revision);
+  yield* waits.until(
+    Effect.gen(function* () {
+      for (const number of prs) {
+        if (terminal.has(number)) continue;
+        if (!(yield* beforeDeadline)) {
+          timedOut = true;
+          break;
+        }
+        const remainingMs = Math.max(1, deadline - Number(yield* Clock.currentTimeMillis));
+        const state = yield* snapshot(number).pipe(
+          Effect.timeoutOrElse({
+            duration: remainingMs,
+            orElse: () => Effect.succeed("timeout" as const),
+          }),
+        );
+        if (state === "timeout") {
+          timedOut = true;
+          break;
+        }
+        if (state === null) continue;
+        const headKey = `${number}/${state.head ?? ""}`;
+        const oldHeadKey = headByPR.get(number);
+        if (oldHeadKey !== undefined && oldHeadKey !== headKey) {
+          checksObserved.delete(oldHeadKey);
+          emptySnapshots.delete(oldHeadKey);
+        }
+        headByPR.set(number, headKey);
+        if (state.checks.length > 0) {
+          checksObserved.add(headKey);
+          emptySnapshots.set(headKey, 0);
+        } else {
+          emptySnapshots.set(headKey, (emptySnapshots.get(headKey) ?? 0) + 1);
+        }
+        for (const { check, run } of state.checks) {
+          const matches = failedJobsMatchingCheck(check.name, run?.jobs ?? []);
+          const jobId = matches.length === 1 ? (matches[0]?.databaseId ?? null) : null;
+          const fallback = jobId === null ? `${check.name}|${check.link}` : String(jobId);
+          const identity = [
+            repo.owner + "/" + repo.name,
+            number,
+            state.head ?? "",
+            run?.databaseId ?? "external",
+            run?.attempt ?? "",
+            fallback,
+          ].join("/");
+          const logical = `${number}/${check.name}`;
+          const previousIdentity = currentIdentity.get(logical);
+          const revision = `${check.state}/${check.bucket}`;
+          if (lastRevision.get(identity) !== revision) {
+            const event: Record<string, unknown> = {
+              type: "check",
+              repo: `${repo.owner}/${repo.name}`,
+              pr: number,
+              headSha: state.head,
+              ...(run?.databaseId === undefined || run.databaseId === null
+                ? {}
+                : { runId: run.databaseId }),
+              ...(run?.attempt === undefined || run.attempt === null
+                ? {}
+                : { attempt: run.attempt }),
+              ...(jobId === null ? {} : { jobId }),
+              name: check.name,
+              state: check.state,
+              bucket: check.bucket,
+              link: check.link,
+              identity,
+            };
+            if (previousIdentity !== undefined && previousIdentity !== identity) {
+              event.supersedes = previousIdentity;
             }
-            currentIdentity.set(logical, identity);
-          }
-          if (timedOut) break;
-          // Empty snapshots need three consecutive observations, including after checks were seen.
-          const hasTerminalCoverage =
-            state.checks.length > 0 || (emptySnapshots.get(headKey) ?? 0) >= 3;
-          const checksTerminal =
-            state.checks.length === 0 ||
-            state.checks.every(({ check }) => check.bucket !== "pending");
-          if (state.pr.state !== "OPEN" || (hasTerminalCoverage && checksTerminal)) {
             if (!(yield* beforeDeadline)) {
               timedOut = true;
               break;
             }
-            const identity = `${repo.owner}/${repo.name}/${number}/${state.head ?? ""}/terminal/${state.pr.state}`;
-            yield* emit({
-              type: "pr_terminal",
-              repo: `${repo.owner}/${repo.name}`,
-              pr: number,
-              headSha: state.head,
-              state: state.pr.state,
-              checksObserved: checksObserved.has(headKey),
-              identity,
-            });
-            terminal.add(number);
+            yield* emit(event);
+            lastRevision.set(identity, revision);
           }
+          currentIdentity.set(logical, identity);
         }
-        const now = Number(yield* Clock.currentTimeMillis);
-        timedOut = timedOut || (terminal.size < prs.length && now >= deadline);
-        if (!timedOut && terminal.size < prs.length) {
-          yield* Effect.sleep(
-            Duration.millis(Math.min(options.intervalSeconds * 1000, deadline - now)),
-          );
+        if (timedOut) break;
+        // Empty snapshots need three consecutive observations, including after checks were seen.
+        const hasTerminalCoverage =
+          state.checks.length > 0 || (emptySnapshots.get(headKey) ?? 0) >= 3;
+        const checksTerminal =
+          state.checks.length === 0 ||
+          state.checks.every(({ check }) => check.bucket !== "pending");
+        if (state.pr.state !== "OPEN" || (hasTerminalCoverage && checksTerminal)) {
+          if (!(yield* beforeDeadline)) {
+            timedOut = true;
+            break;
+          }
+          const identity = `${repo.owner}/${repo.name}/${number}/${state.head ?? ""}/terminal/${state.pr.state}`;
+          yield* emit({
+            type: "pr_terminal",
+            repo: `${repo.owner}/${repo.name}`,
+            pr: number,
+            headSha: state.head,
+            state: state.pr.state,
+            checksObserved: checksObserved.has(headKey),
+            identity,
+          });
+          terminal.add(number);
         }
-      }),
-    step: () => undefined,
-  });
+      }
+      const now = Number(yield* Clock.currentTimeMillis);
+      timedOut = timedOut || (terminal.size < prs.length && now >= deadline);
+    }),
+    () => terminal.size >= prs.length || timedOut,
+    {
+      intervalMs: options.intervalSeconds * 1000,
+      timeoutMs: options.timeoutSeconds * 1000,
+    },
+  );
   const watcherTimedOut = terminal.size < prs.length;
   yield* emit({
     type: "watcher_terminal",
@@ -2071,27 +1979,21 @@ export const watchPRs = Effect.fn("pr.watchPRs")(function* (
   }
 });
 
-type RerunDiscovery = RerunCheckAttempt & { status?: string };
-
-const fetchAttemptJobs = Effect.fn("pr.fetchAttemptJobs")(function* (
-  runId: string,
-  attempt: number,
-  repo: string,
-) {
-  const gh = yield* GitHubService;
-  const jobs: Array<{ id: number; name: string }> = [];
-  for (let page = 1; ; page += 1) {
-    const response = yield* gh
-      .runGhJson<{ jobs?: Array<{ id: number; name: string }> }>([
-        "api",
-        `repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
-      ])
+const fetchAttemptJobs = (runId: string, attempt: number, repo: string) =>
+  Effect.gen(function* () {
+    return yield* reads
+      .completedAttemptJobs(yield* resolveRepo(repo), Number(runId), attempt)
       .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
-    if (response?.jobs === undefined) return null;
-    jobs.push(...response.jobs);
-    if (response.jobs.length < 100) return jobs;
-  }
-});
+  });
+
+const readRerunState = (runId: string, withStatus: boolean) =>
+  Effect.gen(function* () {
+    const run = yield* reads.runView(yield* resolveRepo(null), Number(runId), "origin");
+    const fields = withStatus
+      ? (["databaseId", "attempt", "status", "jobs"] as const)
+      : (["databaseId", "attempt", "jobs"] as const);
+    return project(run, fields);
+  });
 
 const readJobDiagnosis = Effect.fn("pr.readJobDiagnosis")(function* (
   runId: string,
@@ -2115,24 +2017,22 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
   currentJobIds: readonly number[],
   deadline: number,
 ) {
-  const gh = yield* GitHubService;
-  let latest: RerunDiscovery | null = null;
-  while (Number(yield* Clock.currentTimeMillis) <= deadline) {
-    latest = yield* gh
-      .runGhJson<RerunDiscovery>(["run", "view", runId, "--json", "databaseId,attempt,status,jobs"])
-      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
-    if (
+  const read = readRerunState(runId, true).pipe(
+    Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+  );
+  const outcome = yield* waits.until(
+    read,
+    (latest) =>
       latest !== null &&
       ((latest.attempt ?? 0) > (currentAttempt ?? 0) ||
-        latest.jobs.some((job) => !currentJobIds.includes(job.databaseId)))
-    ) {
-      return latest;
-    }
-    const remaining = deadline - Number(yield* Clock.currentTimeMillis);
-    if (remaining <= 0) return null;
-    yield* Effect.sleep(Duration.millis(Math.min(1000, remaining)));
-  }
-  return null;
+        latest.jobs.some((job) => !currentJobIds.includes(job.databaseId))),
+    {
+      intervalMs: 5000,
+      timeoutMs: Math.max(0, deadline - Number(yield* Clock.currentTimeMillis)),
+      readAtDeadline: true,
+    },
+  );
+  return outcome.kind === "done" ? outcome.value : null;
 });
 
 export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
@@ -2166,9 +2066,9 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
     evidence: RerunRetryEvidence;
   }> = [];
   for (const [runId, runChecks] of checksByRun) {
-    const run = yield* gh
-      .runGhJson<RerunCheckAttempt>(["run", "view", runId, "--json", "databaseId,attempt,jobs"])
-      .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
+    const run = yield* readRerunState(runId, false).pipe(
+      Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
+    );
     let evidence: RerunRetryEvidence = { state: "eligible", diagnosis: diagnoseLogEntries([]) };
     if (failedOnly) {
       const jobIds = run === null ? null : resolveJobIdsForFailedChecks(runChecks, run.jobs);
@@ -2248,8 +2148,8 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
   const deadline = Number(yield* Clock.currentTimeMillis) + (options.timeoutSeconds ?? 60) * 1000;
   const results: RerunChecksRun[] = [];
   for (const candidate of candidates) {
-    const success = yield* gh
-      .runGh(["run", "rerun", candidate.runId, ...(failedOnly ? ["--failed"] : [])])
+    const success = yield* writes
+      .run(["run", "rerun", candidate.runId, ...(failedOnly ? ["--failed"] : [])], [`repo:${repo}`])
       .pipe(
         Effect.as(true),
         Effect.catch(() => Effect.succeed(false)),
@@ -2276,7 +2176,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
               deadline,
             )
           : Effect.succeed(null),
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     );
     yield* Effect.forEach(
       candidates,
@@ -2293,25 +2193,29 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
             return;
           }
           let latest = next;
-          while (latest.status !== "completed") {
-            const remaining = deadline - Number(yield* Clock.currentTimeMillis);
-            if (remaining <= 0) break;
-            yield* Effect.sleep(Duration.millis(Math.min(1000, remaining)));
-            if (Number(yield* Clock.currentTimeMillis) >= deadline) break;
-            latest = yield* gh
-              .runGhJson<RerunDiscovery>([
-                "run",
-                "view",
-                candidate.runId,
-                "--json",
-                "databaseId,attempt,status,jobs",
-              ])
-              .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)));
-          }
+          const outcome = yield* waits.until(
+            Effect.suspend(() =>
+              readRerunState(candidate.runId, true).pipe(
+                Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)),
+                Effect.tap((refreshed) =>
+                  Effect.sync(() => {
+                    latest = refreshed;
+                  }),
+                ),
+              ),
+            ),
+            (value) => value.status === "completed",
+            {
+              initial: { value: latest },
+              intervalMs: 5000,
+              timeoutMs: Math.max(0, deadline - Number(yield* Clock.currentTimeMillis)),
+            },
+          );
+          latest = outcome.kind === "done" ? outcome.value : outcome.last;
           result.latestAttempt = latest;
           result.status = latest.status === "completed" ? "completed" : "watch_timeout";
         }),
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     );
   }
   const report: RerunChecksReport = {

@@ -1,49 +1,19 @@
 import { Command, Flag, Param } from "effect/cli";
-import { Duration, Effect, Option } from "effect";
+import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted, logText } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
 import { GitHubCommandError, GitHubNotFoundError } from "./errors";
-import { GitHubService } from "./service";
+import { GitHubService } from "./read/transport";
+import { reads, resolveRepo, waits, writes } from "./read";
+import { rawJobLog } from "./read/reads";
+import type { JobRef } from "./read/reads";
+import { repoSlug } from "./read/keys";
 import type { CheckRunAnnotation, JobAnnotations, LogDiagnosis } from "./types";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-type WorkflowRun = {
-  databaseId: number;
-  displayTitle: string;
-  status: string;
-  conclusion: string | null;
-  headBranch: string;
-  createdAt: string;
-  event: string;
-  url: string;
-  workflowName: string;
-};
-
-type WorkflowJob = {
-  databaseId: number;
-  name: string;
-  status: string;
-  conclusion: string | null;
-  startedAt: string;
-  completedAt: string | null;
-  url: string;
-  steps: Array<{
-    name: string;
-    status: string;
-    conclusion: string | null;
-    number: number;
-    startedAt: string | null;
-    completedAt: string | null;
-  }>;
-};
-
-type WorkflowRunDetail = WorkflowRun & {
-  jobs: WorkflowJob[];
-};
 
 export type LogEntry = {
   step: string;
@@ -62,6 +32,7 @@ const resolveRepoArg = Effect.fn("workflow.resolveRepoArg")(function* (
   if (target === null) {
     return null;
   }
+  if (/^[^/\s]+\/[^/\s]+$/.test(target)) return target;
 
   const gh = yield* GitHubService;
   const info = yield* gh.withRepoTarget(target, gh.getRepoInfo());
@@ -78,66 +49,26 @@ const listRuns = Effect.fn("workflow.listRuns")(function* (opts: {
   limit: number;
   repo: string | null;
 }) {
-  const gh = yield* GitHubService;
-
-  const args = [
-    "run",
-    "list",
-    "--json",
-    "databaseId,displayTitle,status,conclusion,headBranch,createdAt,event,url,workflowName",
-    "--limit",
-    String(opts.limit),
-  ];
-
-  if (opts.repo !== null) {
-    args.push("--repo", opts.repo);
-  }
-
-  if (opts.workflow !== null) {
-    args.push("--workflow", opts.workflow);
-  }
-
-  if (opts.branch !== null) {
-    args.push("--branch", opts.branch);
-  }
-
-  if (opts.status !== null) {
-    args.push("--status", opts.status);
-  }
-
-  return yield* gh.runGhJson<WorkflowRun[]>(args);
+  const repo = yield* resolveRepo(opts.repo);
+  const runs = yield* reads.runList(repo, {
+    workflow: opts.workflow,
+    branch: opts.branch,
+    status: opts.status,
+    event: null,
+    limit: opts.limit,
+  });
+  return runs.map(({ headSha: _headSha, ...run }) => run);
 });
 
 const viewRun = Effect.fn("workflow.viewRun")(function* (runId: number, repo: string | null) {
-  const gh = yield* GitHubService;
-
-  const args = [
-    "run",
-    "view",
-    String(runId),
-    "--json",
-    "databaseId,displayTitle,status,conclusion,headBranch,createdAt,event,url,workflowName,jobs",
-  ];
-  if (repo !== null) {
-    args.push("--repo", repo);
-  }
-
-  return yield* gh.runGhJson<WorkflowRunDetail>(args);
+  const target = yield* resolveRepo(repo);
+  const detail = yield* reads.runView(target, runId);
+  const { attempt: _attempt, headSha: _headSha, ...snapshot } = detail;
+  return snapshot;
 });
 
 const listJobs = Effect.fn("workflow.listJobs")(function* (runId: number, repo: string | null) {
-  const gh = yield* GitHubService;
-
-  const args = ["run", "view", String(runId), "--json", "jobs"];
-  if (repo !== null) {
-    args.push("--repo", repo);
-  }
-
-  const run = yield* gh.runGhJson<{
-    jobs: WorkflowJob[];
-  }>(args);
-
-  return run.jobs;
+  return yield* reads.runJobs(yield* resolveRepo(repo), runId);
 });
 
 const fetchLogs = Effect.fn("workflow.fetchLogs")(function* (
@@ -146,36 +77,19 @@ const fetchLogs = Effect.fn("workflow.fetchLogs")(function* (
   jobId: number | null = null,
   repo: string | null = null,
 ) {
-  const gh = yield* GitHubService;
-  const args = ["run", "view", String(runId)];
-
-  if (repo !== null) {
-    args.push("--repo", repo);
-  }
-
-  if (jobId !== null) {
-    args.push(failedOnly ? "--log-failed" : "--log", "--job", String(jobId));
-  } else if (failedOnly) {
-    args.push("--log-failed");
-  } else {
-    args.push("--log");
-  }
-
-  const result = yield* gh.runGh(args);
+  const log = yield* reads.runLog(yield* resolveRepo(repo), runId, failedOnly, jobId);
   return {
     runId,
     failedOnly,
-    log: result.stdout,
+    log,
   };
 });
 
-const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
+export const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
   runId: number,
   failedOnly: boolean,
   repo: string | null,
 ) {
-  const gh = yield* GitHubService;
-
   const args = ["run", "rerun", String(runId)];
   if (failedOnly) {
     args.push("--failed");
@@ -184,7 +98,8 @@ const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
     args.push("--repo", repo);
   }
 
-  yield* gh.runGh(args);
+  const target = yield* resolveRepo(repo);
+  yield* writes.run(args, [`repo:${repoSlug(target)}`]);
 
   return {
     rerun: true as const,
@@ -196,15 +111,17 @@ const rerunWorkflow = Effect.fn("workflow.rerunWorkflow")(function* (
   };
 });
 
-const cancelRun = Effect.fn("workflow.cancelRun")(function* (runId: number, repo: string | null) {
-  const gh = yield* GitHubService;
-
+export const cancelRun = Effect.fn("workflow.cancelRun")(function* (
+  runId: number,
+  repo: string | null,
+) {
   const args = ["run", "cancel", String(runId)];
   if (repo !== null) {
     args.push("--repo", repo);
   }
 
-  yield* gh.runGh(args);
+  const target = yield* resolveRepo(repo);
+  yield* writes.run(args, [`repo:${repoSlug(target)}`]);
 
   return {
     cancelled: true as const,
@@ -219,7 +136,6 @@ export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function*
   fields: ReadonlyArray<string>;
   repo: string | null;
 }) {
-  const gh = yield* GitHubService;
   const args = ["workflow", "run", opts.workflow, "--ref", opts.ref];
 
   if (opts.repo !== null) {
@@ -230,7 +146,8 @@ export const dispatchWorkflow = Effect.fn("workflow.dispatchWorkflow")(function*
     args.push("-f", field);
   }
 
-  yield* gh.runGh(args);
+  const target = yield* resolveRepo(opts.repo);
+  yield* writes.run(args, [`repo:${repoSlug(target)}`]);
 
   return {
     dispatched: true as const,
@@ -249,36 +166,38 @@ export type DispatchedRun = {
   url: string;
 };
 
-const DISPATCH_DISCOVERY_ATTEMPTS = 8;
-const DISPATCH_DISCOVERY_INTERVAL_MS = 2000;
+const DISPATCH_DISCOVERY_BUDGET_MS = 16_000;
+const DISPATCH_DISCOVERY_INTERVAL_MS = 5000;
 
 export const listDispatchedRuns = Effect.fn("workflow.listDispatchedRuns")(function* (opts: {
   workflow: string;
   ref: string;
   repo: string | null;
 }) {
-  const gh = yield* GitHubService;
-  const args = [
-    "run",
-    "list",
-    "--json",
-    "databaseId,headSha,status,conclusion,url",
-    "--limit",
-    "20",
-    "--workflow",
-    opts.workflow,
-    "--branch",
-    opts.ref,
-    "--event",
-    "workflow_dispatch",
-  ];
-
-  if (opts.repo !== null) {
-    args.push("--repo", opts.repo);
-  }
-
-  return yield* gh
-    .runGhJson<DispatchedRun[]>(args)
+  const repo = yield* resolveRepo(opts.repo);
+  return yield* reads
+    .runList(
+      repo,
+      {
+        workflow: opts.workflow,
+        branch: opts.ref,
+        status: null,
+        event: "workflow_dispatch",
+        limit: 20,
+      },
+      "origin",
+    )
+    .pipe(
+      Effect.map((runs) =>
+        runs.map((run) => ({
+          conclusion: run.conclusion,
+          databaseId: run.databaseId,
+          headSha: run.headSha,
+          status: run.status,
+          url: run.url,
+        })),
+      ),
+    )
     .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed<DispatchedRun[]>([])));
 });
 
@@ -291,13 +210,13 @@ export const discoverDispatchedRun = Effect.fn("workflow.discoverDispatchedRun")
   repo: string | null;
   knownRunIds: ReadonlySet<number>;
 }) {
-  for (let attempt = 0; attempt < DISPATCH_DISCOVERY_ATTEMPTS; attempt += 1) {
-    const runs = yield* listDispatchedRuns(opts);
-    const created = runs.find((run) => !opts.knownRunIds.has(run.databaseId));
-    if (created !== undefined) return created;
-    yield* Effect.sleep(Duration.millis(DISPATCH_DISCOVERY_INTERVAL_MS));
-  }
-  return null;
+  const outcome = yield* waits.until(
+    listDispatchedRuns(opts),
+    (runs) => runs.some((run) => !opts.knownRunIds.has(run.databaseId)),
+    { intervalMs: DISPATCH_DISCOVERY_INTERVAL_MS, timeoutMs: DISPATCH_DISCOVERY_BUDGET_MS },
+  );
+  const runs = outcome.kind === "done" ? outcome.value : outcome.last;
+  return runs.find((run) => !opts.knownRunIds.has(run.databaseId)) ?? null;
 });
 
 // `gh run watch` has no native timeout (observed hanging 36 min). Block for the caller's --timeout,
@@ -338,37 +257,29 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
   timeoutSeconds: number,
   frames: boolean,
 ) {
-  const gh = yield* GitHubService;
-
-  const watchArgs = ["run", "watch", String(runId), "--exit-status"];
-  if (repo !== null) {
-    watchArgs.push("--repo", repo);
-  }
-
-  const result = yield* gh.runGh(watchArgs).pipe(
-    Effect.catchTag("GitHubCommandError", (error) => {
-      // exit-status returns non-zero if run failed, but we still want the output
-      if (error.exitCode > 0 && error.stderr === "") {
-        return Effect.succeed({
-          stdout: "",
-          stderr: "",
-          exitCode: error.exitCode,
-        });
-      }
-      return Effect.fail(error);
-    }),
-    Effect.timeoutOrElse({
-      duration: timeoutSeconds * 1000,
-      orElse: () => Effect.succeed(null),
-    }),
+  const target = yield* resolveRepo(repo);
+  const progress: string[] = [];
+  let previous = "";
+  const outcome = yield* waits.until(
+    reads.runView(target, runId),
+    (run) => run.status === "completed",
+    {
+      intervalMs: 5000,
+      timeoutMs: timeoutSeconds * 1000,
+      onValue: (run) =>
+        Effect.sync(() => {
+          const frame = `${run.status} ${run.conclusion ?? ""}\n${run.jobs.map((job) => `${job.name}: ${job.status} ${job.conclusion ?? ""}`).join("\n")}`;
+          if (frames && frame !== previous) progress.push(frame);
+          previous = frame;
+        }),
+    },
   );
-
-  const finalState = yield* viewRun(runId, repo);
+  const finalState = outcome.kind === "done" ? outcome.value : outcome.last;
 
   return buildWatchResult(
     runId,
     finalState,
-    result === null ? null : result.stdout,
+    outcome.kind === "timedOut" ? null : progress.join("\n"),
     frames,
     timeoutSeconds,
   );
@@ -405,18 +316,14 @@ const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts:
 
   let targetJobs = jobs;
   if (opts.job !== null) {
-    const jobId = yield* resolveJobId(opts.runId, opts.job, opts.repo);
-    targetJobs = jobs.filter((j) => j.databaseId === jobId);
+    const selected = yield* resolveJob(opts.runId, opts.job, opts.repo);
+    targetJobs = jobs.filter((j) => j.databaseId === selected.databaseId);
   }
 
   const results: JobAnnotations[] = [];
   for (const job of targetJobs) {
-    const annotations = yield* gh
-      .runGhJson<CheckRunAnnotation[]>([
-        "api",
-        `repos/${owner}/${repoName}/check-runs/${job.databaseId}/annotations`,
-        "--paginate",
-      ])
+    const annotations = yield* reads
+      .annotations({ owner, name: repoName }, { id: job.databaseId, status: job.status })
       .pipe(
         Effect.catchTag("GitHubCommandError", () => Effect.succeed([] as CheckRunAnnotation[])),
       );
@@ -425,7 +332,7 @@ const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts:
       results.push({
         jobId: job.databaseId,
         jobName: job.name,
-        annotations,
+        annotations: [...annotations],
       });
     }
   }
@@ -457,8 +364,8 @@ export function cleanLogLine(line: string): string {
 type StepTiming = {
   name: string;
   conclusion: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 };
 
 type StepWindow = { name: string; failed: boolean; start: number; end: number };
@@ -466,18 +373,7 @@ type StepWindow = { name: string; failed: boolean; start: number; end: number };
 const LINE_SECOND_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/;
 
 // Older gh versions reject --allow-escape-sequences; they print escapes without it.
-export const readJobLogApi = Effect.fn("workflow.readJobLogApi")(function* (path: string) {
-  const gh = yield* GitHubService;
-  return yield* gh
-    .runGh(["api", path, "--allow-escape-sequences"])
-    .pipe(
-      Effect.catchTag("GitHubCommandError", (error) =>
-        `${error.stderr}${error.message}`.includes("unknown flag: --allow-escape-sequences")
-          ? gh.runGh(["api", path])
-          : Effect.fail(error),
-      ),
-    );
-});
+export const readJobLogApi = rawJobLog;
 
 // Step times have one-second precision and several steps can share a second, so a
 // boundary line goes to the failed step: a few extra lines beat a lost final error.
@@ -621,7 +517,7 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
   };
 };
 
-const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
+const resolveJob = Effect.fn("workflow.resolveJob")(function* (
   runId: number,
   jobName: string,
   repo: string | null,
@@ -630,13 +526,13 @@ const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
 
   // Exact match first
   const exact = jobs.find((j) => j.name === jobName);
-  if (exact) return exact.databaseId;
+  if (exact) return exact;
 
   // Case-insensitive partial match
   const lower = jobName.toLowerCase();
   const partial = jobs.filter((j) => j.name.toLowerCase().includes(lower));
 
-  if (partial.length === 1) return partial[0].databaseId;
+  if (partial.length === 1) return partial[0];
 
   if (partial.length > 1) {
     return yield* new GitHubCommandError({
@@ -658,17 +554,18 @@ const resolveJobId = Effect.fn("workflow.resolveJobId")(function* (
   });
 });
 
-export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: {
-  runId: number;
-  job: string;
-  jobId?: number | null;
-  failedStepNames?: readonly string[] | null;
-  steps?: ReadonlyArray<StepTiming>;
-  failedStepsOnly: boolean;
-  diagnose?: boolean;
-  format: string;
-  repo: string | null;
-}) {
+export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (
+  opts: {
+    runId: number;
+    job: string;
+    failedStepNames?: readonly string[] | null;
+    steps?: ReadonlyArray<StepTiming>;
+    failedStepsOnly: boolean;
+    diagnose?: boolean;
+    format: string;
+    repo: string | null;
+  } & ({ jobRef: JobRef; jobId?: never } | { jobId?: number | null; jobRef?: never }),
+) {
   const gh = yield* GitHubService;
 
   let owner: string;
@@ -691,11 +588,23 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (opts: 
     repoName = info.name;
   }
 
-  const jobId = opts.jobId ?? (yield* resolveJobId(opts.runId, opts.job, opts.repo));
+  const job =
+    opts.jobRef === undefined && (opts.jobId === null || opts.jobId === undefined)
+      ? yield* resolveJob(opts.runId, opts.job, opts.repo)
+      : null;
+  const jobId = opts.jobRef?.id ?? opts.jobId ?? job?.databaseId;
+  if (jobId === undefined)
+    return yield* new GitHubCommandError({
+      message: "Job identity unavailable",
+      command: "workflow job-logs",
+      exitCode: 1,
+      stderr: "",
+    });
 
   // `gh run view --log` can omit lines, so the job log endpoint is the primary source.
-  const apiLogs = readJobLogApi(`repos/${owner}/${repoName}/actions/jobs/${jobId}/logs`).pipe(
-    Effect.map((r) => r.stdout),
+  const apiLogs = reads.jobLog(
+    { owner, name: repoName },
+    opts.jobRef ?? { id: jobId, status: job?.status ?? "unknown" },
   );
   const cliLogs = fetchLogs(opts.runId, opts.failedStepsOnly, jobId, opts.repo).pipe(
     Effect.map((r) => r.log),

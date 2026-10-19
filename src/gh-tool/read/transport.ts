@@ -2,16 +2,18 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";
-import type { RepoInfo } from "./types";
+import type { RepoInfo } from "#gh/types";
+import type { RepoRef } from "./keys";
 
-import { GH_BINARY } from "./config";
-import { ghEnvironment } from "./environment";
-import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
+import { GH_BINARY } from "#gh/config";
+import { ghEnvironment } from "#gh/environment";
+import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
 import { retryTransient } from "#shared/retry-transient";
-import { githubApi } from "./api";
+import { githubApi, SessionCredential } from "./api";
 import type { GitHubApiRequest, GitHubApiResponse } from "./api";
 import { ConfigService, getGitHubConfig, resolveGitHubRepoTarget } from "#config";
 import { validateOutboundText } from "#gh/text-input";
+import { ReadCache } from "./cache";
 
 // Transient GitHub-side failures worth a silent retry (vs. a hard error the agent must act on).
 const NETWORK_ERROR_RE =
@@ -92,6 +94,7 @@ export class GitHubService extends Context.Service<
     ) => Effect.Effect<GitHubApiResponse<T>, GhError>;
     readonly getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
     readonly getRepoInfo: () => Effect.Effect<RepoInfo, GhError>;
+    readonly getRepoRef: () => Effect.Effect<RepoRef, GhError>;
     readonly withRepoTarget: <A, E, R>(
       target: string | null,
       effect: Effect.Effect<A, E, R>,
@@ -163,10 +166,17 @@ export class GitHubService extends Context.Service<
           Effect.scoped(
             Effect.gen(function* () {
               const ghRepo = yield* RepoTarget;
+              const cache = yield* ReadCache;
+              const credential = yield* SessionCredential;
+              const cacheDirectory = cache?.store?.ghCacheDirectory;
               const command = ChildProcess.make(GH_BINARY, args, {
                 stdout: "pipe",
                 stderr: "pipe",
-                env: { ...ghEnvironment(), ...(ghRepo ? { GH_REPO: ghRepo } : {}) },
+                env: {
+                  ...ghEnvironment(process.env, credential),
+                  ...(ghRepo ? { GH_REPO: ghRepo } : {}),
+                  ...(cacheDirectory === undefined ? {} : { XDG_CACHE_HOME: cacheDirectory }),
+                },
                 extendEnv: false,
               });
 
@@ -405,6 +415,16 @@ export class GitHubService extends Context.Service<
           apiRequest: githubApi,
           getRepoConfig,
           getRepoInfo,
+          getRepoRef: () =>
+            Effect.gen(function* () {
+              const target = yield* RepoTarget;
+              if (target !== undefined) {
+                const [owner, name, extra] = target.split("/");
+                if (owner && name && extra === undefined) return { owner, name };
+              }
+              const info = yield* getRepoInfo();
+              return { owner: info.owner, name: info.name };
+            }),
           withRepoTarget,
         };
       }),

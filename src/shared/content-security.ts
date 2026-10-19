@@ -8,11 +8,20 @@ const isSensitiveEnvironmentName = (name: string) =>
   name !== "CODEX_SESSION_ID" &&
   SENSITIVE_ENV_NAME.test(name);
 
+const MIN_SECRET_LENGTH = 8;
+const resolvedSecrets = new Set<string>();
+
+/** Redact a credential a tool resolved outside a sensitively named environment variable. */
+export const registerResolvedSecret = (value: string) => {
+  if (value.length >= MIN_SECRET_LENGTH) resolvedSecrets.add(value);
+};
+
 const sensitiveEnvironmentValues = (environment: Record<string, string | undefined>) =>
   Object.entries(environment)
     .flatMap(([name, value]) =>
-      isSensitiveEnvironmentName(name) && value && value.length >= 8 ? [value] : [],
+      isSensitiveEnvironmentName(name) && value && value.length >= MIN_SECRET_LENGTH ? [value] : [],
     )
+    .concat([...resolvedSecrets])
     .toSorted((left, right) => right.length - left.length);
 
 export function unsafeOutboundTextReason(

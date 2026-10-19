@@ -3,7 +3,7 @@ import { afterEach, vi } from "vitest";
 import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
 
-import { githubApi, resolveGitHubToken } from "#gh/api";
+import { githubApi, resolveGitHubToken } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
 import { isSensitivePath, readValidatedOutboundFile } from "#gh/text-input";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -140,6 +140,37 @@ describe("GitHub request snapshots", () => {
       expect(fetch.mock.calls[0]?.[1]).not.toHaveProperty("body");
       expect(fetch.mock.calls[0]?.[1].headers).not.toHaveProperty("Content-Type");
       expect(fetch.mock.calls[1]?.[1].body).toBe("null");
+    }),
+  );
+
+  it.effect("preserves conditional GET validators and response metadata on 304", () =>
+    Effect.gen(function* () {
+      process.env = { GH_TOKEN: "synthetic-auth" };
+      const fetch = vi.fn<ApiFetch>().mockResolvedValue(
+        new Response(null, {
+          status: 304,
+          headers: {
+            etag: 'W/"current"',
+            link: '<https://api.github.com/next>; rel="next"',
+            "x-ratelimit-resource": "core",
+            "x-ratelimit-used": "17",
+          },
+        }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const result = yield* githubApi({
+        path: "repos/owner/repo/pulls/42",
+        ifNoneMatch: 'W/"current"',
+      });
+      expect(fetch.mock.calls[0]?.[1].headers).toHaveProperty("If-None-Match", 'W/"current"');
+      expect(result).toEqual({
+        status: 304,
+        body: null,
+        etag: 'W/"current"',
+        link: '<https://api.github.com/next>; rel="next"',
+        rateLimitResource: "core",
+        rateLimitUsed: "17",
+      });
     }),
   );
 });

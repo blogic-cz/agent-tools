@@ -635,7 +635,7 @@ export AGENT_TOOLS_DB_PASSWORD="your-password"
 export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
 ```
 
-The wrappers check outgoing user content and redact recognized credentials in agent-facing output, errors, and audit records. Detection uses credential patterns and exact values of sensitive process environment variables of at least eight characters. Unknown credentials and transformed or encoded values may evade detection.
+The wrappers check outgoing user content and redact recognized credentials in agent-facing output, errors, and audit records. Detection uses credential patterns and exact values of at least eight characters from sensitive process environment variables and from credentials the tools resolve themselves (database passwords, observability tokens, and the `gh auth token` fallback). Unknown credentials and transformed or encoded values may evade detection.
 
 ## Credential Guard
 

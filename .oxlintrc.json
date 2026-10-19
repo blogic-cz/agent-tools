@@ -46,6 +46,46 @@
   },
   "overrides": [
     {
+      "files": ["src/gh-tool/**/*.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/read/api", "#gh/read/api"],
+                "importNames": ["githubApi"],
+                "message": "Raw GitHub HTTP belongs inside gh-tool/read."
+              }
+            ]
+          }
+        ],
+        "eslint/no-restricted-properties": [
+          "error",
+          {
+            "property": "runGh",
+            "message": "Use a typed read or writes operation from gh-tool/read."
+          },
+          {
+            "property": "runGhJson",
+            "message": "Use a typed read or writes operation from gh-tool/read."
+          },
+          {
+            "property": "runGraphQL",
+            "message": "Use a typed read or writes operation from gh-tool/read."
+          },
+          {
+            "property": "apiRequest",
+            "message": "Use a typed read or writes operation from gh-tool/read."
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/gh-tool/read/**/*.ts"],
+      "rules": { "eslint/no-restricted-properties": "off", "eslint/no-restricted-imports": "off" }
+    },
+    {
       "files": ["**/*.test.ts", "**/*.test.tsx", "**/__tests__/**", "**/e2e/**"],
       "rules": {
         "eslint/no-await-in-loop": "off",

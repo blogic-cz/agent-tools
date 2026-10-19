@@ -18,7 +18,7 @@ import {
   reopenIssue,
   viewIssue,
 } from "./core";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 
 const repoOption = Flag.String("repo").pipe(
   Flag.withDescription("Target repository profile name or owner/name"),

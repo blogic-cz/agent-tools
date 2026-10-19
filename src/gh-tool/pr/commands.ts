@@ -1,10 +1,12 @@
+import { reads, writes } from "#gh/read/index";
+import { repoSlug } from "#gh/read/keys";
 import { Command, Flag, Param } from "effect/cli";
 import { Console, Effect, Option } from "effect";
 
 import type { CheckResult, PRStatusResult } from "#gh/types";
 
 import { formatOption, logFormatted, logText } from "#shared";
-import { GitHubService } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
 import { GitHubCommandError } from "#gh/errors";
 
 const emptyBatchError = (batch: string) =>
@@ -152,20 +154,20 @@ export const requestReview = (pr: number, reviewers: string) =>
     const repo = yield* gh.getRepoInfo();
     // ponytail: not atomic — a concurrent request between GET and POST misreports newlyRequested.
     const pendingBefore = new Set(
-      (yield* confirmedReviewers(
-        yield* gh.runGhJson<RequestedReviewersResponse>([
-          "api",
-          `repos/${repo.owner}/${repo.name}/pulls/${pr}`,
-        ]),
-      )).map((login) => login.toLowerCase()),
+      (yield* confirmedReviewers(yield* reads.reviewGuards.requestedReviewers(repo, pr))).map(
+        (login) => login.toLowerCase(),
+      ),
     );
-    const response = yield* gh.runGhJson<RequestedReviewersResponse>([
-      "api",
-      "--method",
-      "POST",
-      `repos/${repo.owner}/${repo.name}/pulls/${pr}/requested_reviewers`,
-      ...submittedReviewers.flatMap((reviewer) => ["-f", `reviewers[]=${reviewer}`]),
-    ]);
+    const response = yield* writes.json<RequestedReviewersResponse>(
+      [
+        "api",
+        "--method",
+        "POST",
+        `repos/${repo.owner}/${repo.name}/pulls/${pr}/requested_reviewers`,
+        ...submittedReviewers.flatMap((reviewer) => ["-f", `reviewers[]=${reviewer}`]),
+      ],
+      [`pr:${repoSlug(repo)}#${pr}`, `reviews:${repoSlug(repo)}#${pr}`, `pulls:${repoSlug(repo)}`],
+    );
     return {
       pr,
       submittedReviewers,
@@ -239,7 +241,7 @@ const withStableHead = Effect.fn("pr.withStableHead")(function* <A, E, R>(
     initial,
     (info) => collect(info.number, info.headSha),
     (info) =>
-      fetchPRView(info.number).pipe(
+      fetchPRView(info.number, "origin").pipe(
         Effect.map((refreshed) => ({ ...refreshed, baseSha: initial.baseSha })),
       ),
     (before, after) => after.headSha === before.headSha,

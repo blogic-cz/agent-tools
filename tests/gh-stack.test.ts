@@ -3,10 +3,10 @@ import { Clock, Console, Effect, Fiber, Layer } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 
 import type { GitHubRepoConfig } from "#config/types";
-import { GitHubService } from "#gh/service";
-import type { GhError, GhResult } from "#gh/service";
+import { GitHubService } from "#gh/read/transport";
+import type { GhError, GhResult } from "#gh/read/transport";
 import { GitHubCommandError } from "#gh/errors";
-import { githubApi } from "#gh/api";
+import { githubApi } from "#gh/read/api";
 import { mergeStack, unstackStack } from "#gh/pr/stack";
 import { fetchChecks, mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
@@ -30,6 +30,7 @@ const ghServiceLayer = (runGhJson: (args: string[]) => Effect.Effect<unknown, ne
       apiRequest: githubApi,
       getRepoConfig: () => Effect.succeed(undefined as GitHubRepoConfig | undefined),
       getRepoInfo: () => Effect.succeed(mockRepoInfo),
+      getRepoRef: () => Effect.succeed(mockRepoInfo),
       withRepoTarget: (_target, effect) => effect,
     }),
   );
@@ -49,6 +50,7 @@ const ghLayerWith = (overrides: {
       apiRequest: githubApi,
       getRepoConfig: () => Effect.succeed(undefined),
       getRepoInfo: () => Effect.succeed(mockRepoInfo),
+      getRepoRef: () => Effect.succeed(mockRepoInfo),
       withRepoTarget: (_target, effect) => effect,
     }),
   );
@@ -819,26 +821,24 @@ describe("pr checks --watch registration window", () => {
         fetchChecks(123, true, false, 300, true).pipe(
           Effect.provide(
             ghLayerWith({
-              runGh: (args) => {
-                if (!args.includes("--watch")) {
-                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
-                }
+              runGh: () => Effect.die("Watch must use typed reads"),
+              runGhJson: () => {
                 watchAttempts += 1;
                 return watchAttempts === 1
                   ? noChecksYet()
-                  : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+                  : Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]);
               },
-              runGhJson: () =>
-                Effect.succeed([{ name: "build", state: "SUCCESS", bucket: "pass", link: "" }]),
             }),
           ),
         ),
       );
 
-      yield* TestClock.adjust("6 seconds");
+      yield* TestClock.adjust("4999 millis");
+      expect(watchAttempts).toBe(1);
+      yield* TestClock.adjust("1001 millis");
       const results = yield* Fiber.join(fiber);
 
-      expect(watchAttempts).toBe(2);
+      expect(watchAttempts).toBe(3);
       expect(results.map((check) => check.bucket)).toEqual(["pass"]);
     }),
   );
@@ -858,14 +858,11 @@ describe("pr checks --watch registration window", () => {
           Effect.provide(consoleLayer),
           Effect.provide(
             ghLayerWith({
-              runGh: (args) => {
-                if (!args.includes("--watch")) {
-                  return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
-                }
+              runGh: () => Effect.die("Watch must use typed reads"),
+              runGhJson: () => {
                 watchAttempts += 1;
                 return noChecksYet();
               },
-              runGhJson: () => Effect.succeed([]),
             }),
           ),
         ),
@@ -891,18 +888,16 @@ describe("pr checks --watch registration window", () => {
       const error = yield* fetchChecks(123, true, false, 300, true).pipe(
         Effect.provide(
           ghLayerWith({
-            runGh: (args) =>
-              args.includes("--watch")
-                ? Effect.fail(
-                    new GitHubCommandError({
-                      command: "gh pr checks --watch",
-                      exitCode: 1,
-                      stderr: "could not resolve to a PullRequest",
-                      message: "could not resolve to a PullRequest",
-                    }),
-                  )
-                : Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
-            runGhJson: () => Effect.succeed([]),
+            runGh: () => Effect.die("Watch must use typed reads"),
+            runGhJson: () =>
+              Effect.fail(
+                new GitHubCommandError({
+                  command: "gh pr checks",
+                  exitCode: 1,
+                  stderr: "could not resolve to a PullRequest",
+                  message: "could not resolve to a PullRequest",
+                }),
+              ),
           }),
         ),
         Effect.flip,

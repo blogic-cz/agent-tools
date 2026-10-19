@@ -27,6 +27,7 @@ import {
   resolvePortOverride,
 } from "#db/service";
 import { DbSqlClient, type DbConnection } from "#db/sql-client";
+import { redactSensitiveText } from "#shared/content-security";
 
 /**
  * Mock DbService layer factory for testing
@@ -716,6 +717,59 @@ describe("DbService", () => {
           createRealDbServiceLayer(
             {},
             databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+  });
+
+  describe("resolved password redaction", () => {
+    const passwordConfig = (auth: Partial<DatabaseConfig["environments"][string]>) => ({
+      environments: {
+        local: { host: "127.0.0.1", port: 40543, user: "app", database: "app", ...auth },
+      },
+    });
+
+    it.effect("redacts a literal config password from later output", () => {
+      const observedSql: ObservedSql[] = [];
+      const password = "synthetic-literal-db-password";
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        yield* service.executeQuery("local", "SELECT 1");
+
+        expect(redactSensitiveText(`row: ${password}`, {})).toBe("row: [REDACTED]");
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            passwordConfig({ password }),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("redacts a password read from a non-sensitive variable name", () => {
+      const observedSql: ObservedSql[] = [];
+      const password = "synthetic-plain-name-db-password";
+
+      return withEnvVars(
+        { AGENT_TOOLS_TEST_DB_PW_PLAIN: password },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+
+          expect(redactSensitiveText(`row: ${password}`, {})).toBe("row: [REDACTED]");
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            passwordConfig({ passwordEnvVar: "AGENT_TOOLS_TEST_DB_PW_PLAIN" }),
             { "SELECT 1": { rows: [{ "?column?": 1 }] } },
             observedSql,
           ),

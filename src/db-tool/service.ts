@@ -6,7 +6,7 @@ import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./t
 import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { resolveEnvTemplate } from "#shared/env-template";
-import { unsafeOutboundTextReason } from "#shared/content-security";
+import { registerResolvedSecret, unsafeOutboundTextReason } from "#shared/content-security";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
@@ -227,18 +227,21 @@ export class DbService extends Context.Service<
           env: string,
         ) {
           if (config.password) {
+            registerResolvedSecret(config.password);
             return config.password;
           }
 
           if (config.passwordEnvVar) {
             const fromEnv = process.env[config.passwordEnvVar];
             if (fromEnv) {
+              registerResolvedSecret(fromEnv);
               return fromEnv;
             }
 
             const zshrcEnv = yield* loadEnvFromZshrc();
             const fromZsh = zshrcEnv[config.passwordEnvVar];
             if (fromZsh) {
+              registerResolvedSecret(fromZsh);
               return fromZsh;
             }
 

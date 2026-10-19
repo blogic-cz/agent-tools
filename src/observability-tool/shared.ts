@@ -5,7 +5,7 @@ import { ConfigService, getToolConfig } from "#config";
 import type { ObservabilityConfig } from "#config";
 
 import { ObservabilityToolError } from "./errors";
-import { unsafeOutboundTextReason } from "#shared/content-security";
+import { registerResolvedSecret, unsafeOutboundTextReason } from "#shared/content-security";
 import type {
   DsQueryOpts,
   DsQueryResponse,
@@ -58,6 +58,7 @@ function resolveToken(tokenEnvVar?: string): string | undefined {
     throw new Error(`${tokenEnvVar} environment variable is not set`);
   }
 
+  registerResolvedSecret(token);
   return token;
 }
 

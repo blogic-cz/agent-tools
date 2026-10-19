@@ -184,7 +184,7 @@ export type RerunCheckJob = {
 export type RerunCheckAttempt = {
   databaseId: number;
   attempt?: number | null;
-  jobs: RerunCheckJob[];
+  jobs: readonly RerunCheckJob[];
   status?: string;
 };
 

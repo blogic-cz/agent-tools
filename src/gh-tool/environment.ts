@@ -41,10 +41,11 @@ const GH_ENVIRONMENT_NAMES = [
 
 export const ghEnvironment = (
   environment: Record<string, string | undefined> = process.env,
+  credential: string | null = null,
 ): Record<string, string> =>
   Object.fromEntries(
     GH_ENVIRONMENT_NAMES.flatMap((name) => {
-      const value = environment[name];
+      const value = name === "GH_TOKEN" && credential !== null ? credential : environment[name];
       return value === undefined ? [] : [[name, value]];
     }),
   );

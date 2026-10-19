@@ -3,7 +3,9 @@ import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted } from "#shared";
 import type { BranchRenameResult } from "./types";
-import { GitHubService } from "./service";
+import { writes } from "./read/writes";
+import { resolveRepo } from "./read/reads";
+import { repoSlug } from "./read/keys";
 
 // ---------------------------------------------------------------------------
 // Internal handlers
@@ -15,8 +17,6 @@ export const renameBranch = Effect.fn("branch.renameBranch")(function* (opts: {
   confirm: boolean;
   repo: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   if (!opts.confirm) {
     const scope = opts.repo !== null ? ` in ${opts.repo}` : "";
 
@@ -31,10 +31,7 @@ export const renameBranch = Effect.fn("branch.renameBranch")(function* (opts: {
     return dryRun;
   }
 
-  const repoInfo =
-    opts.repo !== null
-      ? opts.repo
-      : yield* gh.getRepoInfo().pipe(Effect.map((r) => `${r.owner}/${r.name}`));
+  const repoInfo = opts.repo !== null ? opts.repo : repoSlug(yield* resolveRepo(null));
 
   const args = [
     "api",
@@ -45,7 +42,7 @@ export const renameBranch = Effect.fn("branch.renameBranch")(function* (opts: {
     `new_name=${opts.newName}`,
   ];
 
-  yield* gh.runGh(args);
+  yield* writes.run(args, [`repo:${repoInfo.toLowerCase()}`]);
 
   const result: BranchRenameResult = {
     renamed: true,
