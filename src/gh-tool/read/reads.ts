@@ -28,12 +28,19 @@ const completedAttemptJobs = Effect.fn("reads.completedAttemptJobs")(function* (
 ) {
   const gh = yield* GitHubService;
   const Job = Schema.Struct({ id: Schema.Number, name: Schema.String });
-  return yield* cachedRead({
+  const result = yield* cachedRead({
     key: { op: "completedAttemptJobs", repo, runId, attempt },
     policy: OPS.completedAttemptJobs,
-    decode: parsePreserving(Schema.mutable(Schema.Array(Job))),
+    decode: parsePreserving(
+      Schema.Struct({ jobs: Schema.mutable(Schema.Array(Job)), completed: Schema.Boolean }),
+    ),
+    cacheableWhen: (value) => value.completed,
     fetch: () =>
       Effect.gen(function* () {
+        const run = yield* gh.runGhJson<{ status?: string }>([
+          "api",
+          `repos/${repoSlug(repo)}/actions/runs/${runId}/attempts/${attempt}`,
+        ]);
         const jobs: Array<typeof Job.Type> = [];
         for (let page = 1; ; page += 1) {
           const response = yield* gh.runGhJson<{ jobs?: Array<typeof Job.Type> }>([
@@ -48,10 +55,15 @@ const completedAttemptJobs = Effect.fn("reads.completedAttemptJobs")(function* (
               stderr: "Attempt jobs unavailable",
             });
           jobs.push(...response.jobs);
-          if (response.jobs.length < 100) return { kind: "fresh" as const, value: jobs };
+          if (response.jobs.length < 100)
+            return {
+              kind: "fresh" as const,
+              value: { jobs, completed: run.status === "completed" },
+            };
         }
       }),
   });
+  return result.jobs;
 });
 
 export const resolveRepo = Effect.fn("reads.resolveRepo")(function* (repo: string | null) {
