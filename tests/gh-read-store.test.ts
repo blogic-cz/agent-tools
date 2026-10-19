@@ -28,6 +28,25 @@ afterEach(async () => {
 const decode = Schema.decodeUnknownSync(Schema.String);
 const key: ReadKey = { op: "runView", repo: { owner: "owner", name: "repo" }, runId: 123 };
 
+it("rejects an expired owner after a replacement publishes newer data", async () => {
+  const store = await FileStore.open("identity", await directory());
+  const first = await store.prepare(key, OPS.runView, decode);
+  if (first.kind !== "fetch") throw new Error("Expected first miss");
+  await writeFile(
+    join(store.directory, "leases", `${first.key}.json`),
+    JSON.stringify({ owner: first.owner, expiresAt: 0 }),
+  );
+  expect(await store.put(first, "expired", false)).toBe(false);
+  const replacement = await store.prepare(key, OPS.runView, decode);
+  if (replacement.kind !== "fetch") throw new Error("Expected replacement miss");
+  expect(await store.put(replacement, "newer", false)).toBe(true);
+  expect(await store.put(first, "older", false)).toBe(false);
+  await store.release(first.key, first.owner);
+  await store.release(replacement.key, replacement.owner);
+  expect(await store.put(first, "released", false)).toBe(false);
+  expect(await store.prepare(key, OPS.runView, decode)).toEqual({ kind: "hit", value: "newer" });
+});
+
 it("rejects a fetch that started before a write and leaves another run cached", async () => {
   const store = await FileStore.open("identity", await directory());
   const other: ReadKey = { ...key, runId: 456 };

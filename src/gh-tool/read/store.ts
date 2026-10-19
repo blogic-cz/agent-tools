@@ -347,6 +347,17 @@ export class FileStore {
     etag?: string,
   ): Promise<boolean> {
     return this.locked(async () => {
+      try {
+        const lease = Schema.decodeUnknownSync(LeaseSchema)(
+          JSON.parse(
+            await readFile(join(this.directory, "leases", `${prepared.key}.json`), "utf8"),
+          ),
+        );
+        if (lease.owner !== prepared.owner || lease.expiresAt <= Date.now()) return false;
+      } catch (error) {
+        if (missing(error)) return false;
+        throw error;
+      }
       if (
         !immutable &&
         (await this.maxGeneration(tagsFor(prepared.readKey))) > prepared.startedAtClock
