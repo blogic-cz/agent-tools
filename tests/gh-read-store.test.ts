@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { Effect, Schema } from "effect";
+import { Console, Effect, Schema } from "effect";
+import { TestConsole } from "effect/testing";
 import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -151,6 +152,56 @@ it("propagates an upstream error without turning it into a second fetch", async 
   expect(await Effect.runPromise(read)).toEqual(error);
   expect(upstream).toBe(1);
 });
+
+it.each(["none", "before", "during"] as const)(
+  "serves rate-limited stale data only without a write, invalidation %s",
+  async (invalidation) => {
+    const store = await FileStore.open("identity", await directory());
+    const session = { store, warned: false };
+    const errors: unknown[][] = [];
+    const console = await Effect.runPromise(TestConsole.make);
+    const error = new GitHubCommandError({
+      message: "API rate limit exceeded",
+      command: "fixture",
+      exitCode: 403,
+      stderr: "API rate limit exceeded",
+    });
+    const seed = cachedRead({
+      key,
+      policy: { kind: "ttl", ttlMs: 0 },
+      decode,
+      fetch: () => Effect.succeed({ kind: "fresh" as const, value: "stored" }),
+    });
+    await Effect.runPromise(seed.pipe(Effect.provideService(ReadCache, session)));
+    if (invalidation === "before") await store.bump(tagsFor(key));
+    const read = cachedRead({
+      key,
+      policy: { kind: "ttl", ttlMs: 0 },
+      decode,
+      fetch: () =>
+        Effect.gen(function* () {
+          if (invalidation === "during") yield* Effect.promise(() => store.bump(tagsFor(key)));
+          return yield* Effect.fail(error);
+        }),
+    }).pipe(
+      Effect.provideService(ReadCache, session),
+      Effect.provideService(Console.Console, {
+        ...console,
+        error: (...args) => errors.push([...args]),
+      }),
+      Effect.result,
+    );
+    const result = await Effect.runPromise(read);
+    if (invalidation === "none") {
+      expect(result).toMatchObject({ success: "stored" });
+      expect(await Effect.runPromise(read)).toMatchObject({ success: "stored" });
+      expect(errors).toEqual([["gh-tool: served cached runView (rate limited)"]]);
+    } else {
+      expect(result).toMatchObject({ failure: error });
+      expect(errors).toEqual([]);
+    }
+  },
+);
 
 it("clears only the selected repository and identity", async () => {
   const root = await directory();

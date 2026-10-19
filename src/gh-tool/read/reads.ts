@@ -6,7 +6,7 @@ import { cachedRead } from "./cache";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
 import { issueView, issueList, issueComments } from "./issues";
-import { prView, prList, prChecks } from "./pulls";
+import { prView, prList, prChecks, prHead, checkSignal } from "./pulls";
 import type { RepoRef, RunFilter } from "./keys";
 import {
   parsePreserving,
@@ -189,6 +189,8 @@ export const reads = {
   prView,
   prList,
   prChecks,
+  prHead,
+  checkSignal,
   runList,
   runView,
   runJobs,

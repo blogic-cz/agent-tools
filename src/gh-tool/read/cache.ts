@@ -1,11 +1,12 @@
 import { Console, Context, Effect } from "effect";
 import { resolveGitHubToken } from "#gh/api";
+import { GitHubCommandError } from "#gh/errors";
 import { digest } from "./keys";
 import type { ReadKey, RepoRef, Tag } from "./keys";
 import type { CacheClass } from "./classes";
 import { FileStore } from "./store";
 
-type CacheSession = { store: FileStore | null; warned: boolean };
+type CacheSession = { store: FileStore | null; warned: boolean; staleWarned?: boolean };
 export const ReadCache = Context.Reference<CacheSession | null>("@agent-tools/ReadCache", {
   defaultValue: () => null,
 });
@@ -41,7 +42,9 @@ export const cachedRead = <A, E, R>(opts: {
   readonly key: ReadKey;
   readonly policy: CacheClass;
   readonly decode: (value: unknown) => A;
-  readonly fetch: (previous: { value: A; etag?: string } | null) => Effect.Effect<Fetched<A>, E, R>;
+  readonly fetch: (
+    previous: { value: A; etag?: string; valid: boolean } | null,
+  ) => Effect.Effect<Fetched<A>, E, R>;
   readonly immutableWhen?: (value: A) => boolean;
   readonly policyForValue?: (value: A) => CacheClass;
   readonly consistency?: "cached" | "origin";
@@ -74,7 +77,13 @@ export const cachedRead = <A, E, R>(opts: {
     if (prepared.kind === "hit") return prepared.value;
     return yield* Effect.gen(function* () {
       yield* safe(session, () => store.record(opts.key.op, "fetch"));
-      const fetched = yield* opts.fetch(prepared.previous);
+      const previousValid =
+        prepared.previous === null
+          ? false
+          : yield* safe(session, () => store.canServeStale(prepared));
+      const fetched = yield* opts.fetch(
+        prepared.previous === null ? null : { ...prepared.previous, valid: previousValid === true },
+      );
       if (fetched.kind === "unchanged") {
         if (prepared.previous === null)
           return yield* Effect.die(new Error("304 without a cached value"));
@@ -94,7 +103,26 @@ export const cachedRead = <A, E, R>(opts: {
         ),
       );
       return fetched.value;
-    }).pipe(Effect.ensuring(safe(session, () => store.release(prepared.key, prepared.owner))));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          const rateLimited =
+            error instanceof GitHubCommandError &&
+            (error.exitCode === 429 ||
+              /rate limit|abuse detection/i.test(`${error.message}\n${error.stderr}`));
+          if (!rateLimited || prepared.previous === null) return yield* Effect.fail(error);
+          const valid = yield* safe(session, () => store.canServeStale(prepared));
+          if (valid !== true) return yield* Effect.fail(error);
+          if (!session.staleWarned) {
+            session.staleWarned = true;
+            yield* Console.error(`gh-tool: served cached ${opts.key.op} (rate limited)`);
+          }
+          yield* safe(session, () => store.record(opts.key.op, "stale"));
+          return prepared.previous.value;
+        }),
+      ),
+      Effect.ensuring(safe(session, () => store.release(prepared.key, prepared.owner))),
+    );
   });
 
 export const invalidate = (tags: readonly Tag[]) =>

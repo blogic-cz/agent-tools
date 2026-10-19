@@ -216,7 +216,7 @@ export class FileStore {
 
   async record(
     op: string,
-    outcome: "hit" | "fetch" | "wait" | "notModified" | "failopen",
+    outcome: "hit" | "fetch" | "wait" | "notModified" | "failopen" | "stale",
   ): Promise<void> {
     const counters = this.counters[op] ?? (this.counters[op] = {});
     counters[outcome] = (counters[outcome] ?? 0) + 1;
@@ -365,6 +365,15 @@ export class FileStore {
       );
       return true;
     });
+  }
+
+  async canServeStale<A>(prepared: Extract<Prepared<A>, { kind: "fetch" }>): Promise<boolean> {
+    const previous = prepared.previous;
+    return (
+      previous !== null &&
+      (previous.immutable ||
+        previous.startedAtClock >= (await this.maxGeneration(tagsFor(prepared.readKey))))
+    );
   }
 
   async release(key: string, owner: string): Promise<void> {

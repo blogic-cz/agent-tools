@@ -39,6 +39,7 @@ import { githubApi } from "#gh/api";
 import { ghEnvironment } from "#gh/environment";
 import { withReadCache, ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
+import { writes } from "#gh/read/writes";
 import {
   viewIssue,
   closeIssue,
@@ -10560,7 +10561,7 @@ it.effect("shares the issue view with triage and invalidates it after an edit", 
   }).pipe(Effect.scoped),
 );
 
-it.effect("expires shared pending checks at five seconds and separates heads", () =>
+it.effect("gates shared pending checks and separates heads", () =>
   Effect.gen(function* () {
     const directory = yield* Effect.acquireRelease(
       Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-checks-"))),
@@ -10574,6 +10575,7 @@ it.effect("expires shared pending checks at five seconds and separates heads", (
     const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
     let calls = 0;
     const layer = createMockGhLayer({
+      apiRequest: () => Effect.succeed({ status: 200, body: { check_runs: [], statuses: [] } }),
       runGhJson: () => {
         calls += 1;
         return Effect.succeed([
@@ -10595,10 +10597,70 @@ it.effect("expires shared pending checks at five seconds and separates heads", (
       expect(calls).toBe(1);
       yield* TestClock.adjust("1 millis");
       now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      expect(calls).toBe(1);
+      yield* TestClock.adjust("10 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
       expect((yield* read)[0]?.bucket).toBe("pass");
       expect(calls).toBe(2);
       yield* fetchCheckResults(123, { headSha: "second" });
       expect(calls).toBe(3);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
+  }).pipe(Effect.scoped),
+);
+
+it.effect("refreshes checks for a commit status change and a write with unchanged signals", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-signals-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    let now = 0;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockImplementation(() => now)),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let state = "pending";
+    let fetches = 0;
+    const paths: string[] = [];
+    const layer = createMockGhLayer({
+      apiRequest: ({ path }) => {
+        paths.push(path);
+        return Effect.succeed({
+          status: 200,
+          body: path.includes("check-runs") ? { check_runs: [] } : { statuses: [{ state }] },
+        });
+      },
+      runGhJson: () => {
+        fetches += 1;
+        return Effect.succeed([
+          {
+            name: "Status",
+            state,
+            bucket: state === "pending" ? "pending" : "pass",
+            link: "external",
+          },
+        ]);
+      },
+    });
+    yield* Effect.gen(function* () {
+      const read = fetchCheckResults(123, { headSha: "head" });
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      state = "success";
+      yield* TestClock.adjust("5 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pass");
+      expect(fetches).toBe(2);
+      expect(paths).toEqual([
+        "repos/test-owner/test-repo/commits/head/check-runs?per_page=100&page=1",
+        "repos/test-owner/test-repo/commits/head/status?per_page=100&page=1",
+        "repos/test-owner/test-repo/commits/head/check-runs?per_page=100&page=1",
+        "repos/test-owner/test-repo/commits/head/status?per_page=100&page=1",
+      ]);
+      yield* writes.run(["pr", "ready", "123"], ["pr:test-owner/test-repo#123"]);
+      yield* read;
+      expect(fetches).toBe(3);
     }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
   }).pipe(Effect.scoped),
 );

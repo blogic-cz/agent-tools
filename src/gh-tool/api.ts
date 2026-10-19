@@ -18,6 +18,10 @@ const GITHUB_API_VERSION = "2022-11-28";
 export type GitHubApiResponse<T> = {
   status: number;
   body: T;
+  etag?: string;
+  link?: string;
+  rateLimitResource?: string;
+  rateLimitUsed?: string;
 };
 
 const authFailure = (message: string) =>
@@ -67,6 +71,7 @@ export type GitHubApiRequest = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   alsoAcceptStatus?: number[];
+  ifNoneMatch?: string;
 };
 
 const MAX_API_RETRIES = 2;
@@ -100,6 +105,7 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
           Accept: GITHUB_ACCEPT,
           Authorization: `Bearer ${token}`,
           "X-GitHub-Api-Version": GITHUB_API_VERSION,
+          ...(opts.ifNoneMatch === undefined ? {} : { "If-None-Match": opts.ifNoneMatch }),
           ...(serializedBody === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(serializedBody === undefined ? {} : { body: serializedBody }),
@@ -128,9 +134,23 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
   });
   const parsed: unknown = text.length === 0 ? null : safeJsonParse(text);
 
-  const accepted = new Set([200, ...(opts.alsoAcceptStatus ?? [])]);
+  const accepted = new Set([
+    200,
+    ...(opts.alsoAcceptStatus ?? []),
+    ...(method === "GET" && opts.ifNoneMatch !== undefined ? [304] : []),
+  ]);
   if (accepted.has(response.status)) {
-    return { status: response.status, body: parsed as T };
+    const metadata = {
+      etag: response.headers.get("etag"),
+      link: response.headers.get("link"),
+      rateLimitResource: response.headers.get("x-ratelimit-resource"),
+      rateLimitUsed: response.headers.get("x-ratelimit-used"),
+    };
+    return {
+      status: response.status,
+      body: parsed as T,
+      ...Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)),
+    };
   }
 
   if (response.status === 401) {
@@ -195,10 +215,12 @@ export const githubApi = <T>(
         const path = opts.path;
         const method = opts.method ?? "GET";
         const alsoAcceptStatus = opts.alsoAcceptStatus;
+        const ifNoneMatch = opts.ifNoneMatch;
         const request = {
           path,
           method,
           ...(alsoAcceptStatus === undefined ? {} : { alsoAcceptStatus: [...alsoAcceptStatus] }),
+          ...(ifNoneMatch === undefined ? {} : { ifNoneMatch }),
         };
         const body = opts.body;
         if (body === undefined) return { request, serialized: undefined, decoded: "" };
