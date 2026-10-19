@@ -1,3 +1,6 @@
+import { passthrough } from "./read/catalog";
+import type { GistApi } from "./read/catalog";
+import { writes } from "./read/writes";
 import { Command, Flag } from "effect/cli";
 import { Effect, Option } from "effect";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -11,33 +14,12 @@ import {
   resolveOptionalTextInput,
 } from "#gh/text-input";
 import { GitHubCommandError } from "./errors";
-import { GitHubService } from "./service";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 // `gh gist list/view` have no --json, so reads go through `gh api gists` (REST shape).
-type GistApiFile = {
-  filename: string;
-  language: string | null;
-  type: string;
-  size: number;
-  truncated?: boolean;
-  content?: string;
-};
-
-type GistApi = {
-  id: string;
-  description: string | null;
-  public: boolean;
-  html_url: string;
-  created_at: string;
-  updated_at: string;
-  owner: { login: string } | null;
-  files: Record<string, GistApiFile>;
-};
-
 type GistListItem = {
   id: string;
   description: string | null;
@@ -247,9 +229,7 @@ const listGists = Effect.fn("gist.listGists")(function* (opts: {
   limit: number;
   visibility: string | null;
 }) {
-  const gh = yield* GitHubService;
-
-  const gists = yield* gh.runGhJson<GistApi[]>(["api", `gists?per_page=${opts.limit}`]);
+  const gists = yield* passthrough.gistList(opts.limit);
 
   return gists
     .filter(
@@ -264,9 +244,7 @@ const viewGist = Effect.fn("gist.viewGist")(function* (opts: {
   filename: string | null;
   withContent: boolean;
 }) {
-  const gh = yield* GitHubService;
-
-  const gist = yield* gh.runGhJson<GistApi>(["api", `gists/${opts.id}`]);
+  const gist = yield* passthrough.gistView(opts.id);
 
   return toGistDetail(gist, { filename: opts.filename, withContent: opts.withContent });
 });
@@ -276,7 +254,6 @@ export const createGist = Effect.fn("gist.createGist")(function* (opts: {
   description: string | null;
   public: boolean;
 }) {
-  const gh = yield* GitHubService;
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const snapshots: string[] = [];
@@ -298,7 +275,7 @@ export const createGist = Effect.fn("gist.createGist")(function* (opts: {
         args.push("--public");
       }
 
-      const result = yield* gh.runGh(args);
+      const result = yield* writes.run(args, []);
       const url =
         result.stdout
           .trim()
@@ -333,8 +310,6 @@ export const editGist = Effect.fn("gist.editGist")(function* (opts: {
   filename: string | null;
   sourcePath: string | null;
 }) {
-  const gh = yield* GitHubService;
-
   const args = ["gist", "edit", opts.id];
   const changes: string[] = [];
 
@@ -371,7 +346,7 @@ export const editGist = Effect.fn("gist.editGist")(function* (opts: {
     args.push("--filename", opts.filename);
   }
 
-  yield* gh.runGh(args);
+  yield* writes.run(args, []);
 
   const edited: GistEditResult = { edited: true, id: opts.id, changes };
 
@@ -379,8 +354,6 @@ export const editGist = Effect.fn("gist.editGist")(function* (opts: {
 });
 
 const deleteGist = Effect.fn("gist.deleteGist")(function* (opts: { id: string; confirm: boolean }) {
-  const gh = yield* GitHubService;
-
   if (!opts.confirm) {
     const dryRun: GistDeleteResult = {
       deleted: false,
@@ -392,7 +365,7 @@ const deleteGist = Effect.fn("gist.deleteGist")(function* (opts: { id: string; c
     return dryRun;
   }
 
-  yield* gh.runGh(["gist", "delete", opts.id, "--yes"]);
+  yield* writes.run(["gist", "delete", opts.id, "--yes"], []);
 
   const deleted: GistDeleteResult = { deleted: true, id: opts.id };
 

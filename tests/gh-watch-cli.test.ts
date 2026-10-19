@@ -61,6 +61,7 @@ if (args[0] === "repo" && args[1] === "view") {
               XDG_CONFIG_HOME: root,
               XDG_CACHE_HOME: root,
               GH_TOKEN: "synthetic-offline-token",
+              GH_TOOL_CACHE: "off",
             },
           },
         );

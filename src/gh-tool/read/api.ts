@@ -1,12 +1,12 @@
-import { Clock, Effect } from "effect";
+import { Clock, Context, Effect } from "effect";
 
 import { registerResolvedSecret } from "#shared/content-security";
 import { retryTransient } from "#shared/retry-transient";
 
-import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "./errors";
-import type { GitHubApiError } from "./errors";
-import { ghEnvironment } from "./environment";
-import { validateOutboundText } from "./text-input";
+import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
+import type { GitHubApiError } from "#gh/errors";
+import { ghEnvironment } from "#gh/environment";
+import { validateOutboundText } from "#gh/text-input";
 
 // Direct HTTP, not `gh api`: the CLI collapses every failure into a non-zero exit and
 // loses the status code, but merge-async answers 202 (accepted), 200 (already merged or
@@ -18,6 +18,10 @@ const GITHUB_API_VERSION = "2022-11-28";
 export type GitHubApiResponse<T> = {
   status: number;
   body: T;
+  etag?: string;
+  link?: string;
+  rateLimitResource?: string;
+  rateLimitUsed?: string;
 };
 
 const authFailure = (message: string) =>
@@ -30,7 +34,16 @@ const authFailure = (message: string) =>
 // Environment first, GH_TOKEN before GITHUB_TOKEN to match the gh CLI: the active gh
 // account is directory-scoped global state and the shell exports the matching token.
 // `gh auth token` only covers shells that export none.
+export const SessionCredential = Context.Reference<string | null>(
+  "@agent-tools/SessionCredential",
+  {
+    defaultValue: () => null,
+  },
+);
+
 export const resolveGitHubToken = Effect.fn("gh.resolveGitHubToken")(function* () {
+  const pinned = yield* SessionCredential;
+  if (pinned !== null) return pinned;
   const fromEnv = [process.env["GH_TOKEN"], process.env["GITHUB_TOKEN"]].find(
     (candidate) => candidate !== undefined && candidate.length > 0,
   );
@@ -67,6 +80,7 @@ export type GitHubApiRequest = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   alsoAcceptStatus?: number[];
+  ifNoneMatch?: string;
 };
 
 const MAX_API_RETRIES = 2;
@@ -100,6 +114,7 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
           Accept: GITHUB_ACCEPT,
           Authorization: `Bearer ${token}`,
           "X-GitHub-Api-Version": GITHUB_API_VERSION,
+          ...(opts.ifNoneMatch === undefined ? {} : { "If-None-Match": opts.ifNoneMatch }),
           ...(serializedBody === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(serializedBody === undefined ? {} : { body: serializedBody }),
@@ -128,9 +143,23 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
   });
   const parsed: unknown = text.length === 0 ? null : safeJsonParse(text);
 
-  const accepted = new Set([200, ...(opts.alsoAcceptStatus ?? [])]);
+  const accepted = new Set([
+    200,
+    ...(opts.alsoAcceptStatus ?? []),
+    ...(method === "GET" && opts.ifNoneMatch !== undefined ? [304] : []),
+  ]);
   if (accepted.has(response.status)) {
-    return { status: response.status, body: parsed as T };
+    const metadata = {
+      etag: response.headers.get("etag"),
+      link: response.headers.get("link"),
+      rateLimitResource: response.headers.get("x-ratelimit-resource"),
+      rateLimitUsed: response.headers.get("x-ratelimit-used"),
+    };
+    return {
+      status: response.status,
+      body: parsed as T,
+      ...Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)),
+    };
   }
 
   if (response.status === 401) {
@@ -195,10 +224,12 @@ export const githubApi = <T>(
         const path = opts.path;
         const method = opts.method ?? "GET";
         const alsoAcceptStatus = opts.alsoAcceptStatus;
+        const ifNoneMatch = opts.ifNoneMatch;
         const request = {
           path,
           method,
           ...(alsoAcceptStatus === undefined ? {} : { alsoAcceptStatus: [...alsoAcceptStatus] }),
+          ...(ifNoneMatch === undefined ? {} : { ifNoneMatch }),
         };
         const body = opts.body;
         if (body === undefined) return { request, serialized: undefined, decoded: "" };

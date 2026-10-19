@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 import {
   Clock,
   Console,
@@ -32,11 +33,15 @@ import {
   GitHubNotFoundError,
   type GitHubTimeoutError,
 } from "#gh/errors";
-import { CheckStatusCacheDirectory } from "#gh/pr/check-status-cache";
-import { GitHubService } from "#gh/service";
-import { githubApi } from "#gh/api";
+import { GitHubService } from "#gh/read/transport";
+import { githubApi } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
+import { withReadCache, ReadCache } from "#gh/read/cache";
+import { FileStore } from "#gh/read/store";
+import { digest } from "#gh/read/keys";
+import { writes } from "#gh/read/writes";
 import {
+  viewIssue,
   closeIssue,
   commentOnIssue,
   createIssue,
@@ -50,10 +55,10 @@ import {
   parseIssueNumbers,
 } from "#gh/issue/triage";
 import {
+  fetchCheckResults,
   createPR,
   editPR,
   draftPR,
-  fetchCheckResults,
   fetchChecksBatch,
   fetchChecksForCommand,
   fetchFailedChecks,
@@ -353,10 +358,23 @@ function createMockGhLayer(overrides: MockGhOverrides = {}) {
           ))) as <T>(opts: { path: string }) => Effect.Effect<{ status: number; body: T }, GhError>,
       getRepoConfig: overrides.getRepoConfig ?? (() => Effect.succeed(undefined)),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
+      getRepoRef: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       withRepoTarget: overrides.withRepoTarget ?? ((_target, effect) => effect),
     }),
-  ).pipe(Layer.merge(Layer.succeed(CheckStatusCacheDirectory, undefined)));
+  );
 }
+
+const watchWithClock = (...args: Parameters<typeof watchPRs>) => {
+  const [prs, options, emit] = args;
+  if (options.intervalSeconds !== 0 || options.timeoutSeconds <= 0) return watchPRs(...args);
+  return Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(
+      watchPRs(prs, { ...options, intervalSeconds: 5, timeoutSeconds: 120 }, emit),
+    );
+    yield* TestClock.adjust("120 seconds");
+    return yield* Fiber.join(fiber);
+  });
+};
 
 const pendingReviewContent = () => ({
   id: "review-1",
@@ -1442,6 +1460,137 @@ describe("GitHubService.runGh() error mapping", () => {
     );
   });
 
+  it.effect("pins the active account for HTTP and gh children throughout a cache session", () => {
+    const originalEnvironment = process.env;
+    const originalFetch = globalThis.fetch;
+    const observed: ObservedGhCommand[] = [];
+    let directory: string | undefined;
+    let account = "fixture-account-A";
+    vi.stubGlobal("Bun", {
+      spawn: () => ({ stdout: new Response(account).body, exited: Promise.resolve(0) }),
+    });
+    return Effect.gen(function* () {
+      directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-pinned-account-")));
+      process.env = { GH_TOOL_CACHE_DIR: directory };
+      vi.stubGlobal("fetch", async (_url: unknown, init?: RequestInit) =>
+        Response.json(new Headers(init?.headers).get("Authorization")),
+      );
+      const service = yield* GitHubService;
+      yield* withReadCache(
+        Effect.gen(function* () {
+          const session = yield* ReadCache;
+          expect(session?.store).not.toBeNull();
+          account = "fixture-account-B";
+          expect((yield* githubApi<string>({ path: "user" })).body).toBe(
+            "Bearer fixture-account-A",
+          );
+          yield* service.runGh(["issue", "view", "1"]);
+          expect(observed[0]?.env?.["GH_TOKEN"]).toBe("fixture-account-A");
+        }),
+      );
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observed)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+      Effect.ensuring(
+        Effect.promise(async () => {
+          process.env = originalEnvironment;
+          globalThis.fetch = originalFetch;
+          vi.unstubAllGlobals();
+          if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+        }),
+      ),
+    );
+  });
+
+  it.effect("isolates gh child archives across resolved credential identities", () => {
+    const originalEnvironment = process.env;
+    const observed: ObservedGhCommand[] = [];
+    let directory: string | undefined;
+    return Effect.gen(function* () {
+      directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-archive-identities-")));
+      const service = yield* GitHubService;
+      const paths: string[] = [];
+      for (const token of ["archive-token-A", "archive-token-B", "archive-token-A"]) {
+        process.env = { GH_TOOL_CACHE_DIR: directory, GH_TOKEN: token };
+        yield* withReadCache(service.runGh(["run", "view", "123", "--log"]));
+        const path = observed.at(-1)?.env?.["XDG_CACHE_HOME"];
+        if (path === undefined) throw new Error("Expected child archive directory");
+        paths.push(path);
+        const archive = join(path, "run-123.zip");
+        if (paths.length === 1) yield* Effect.promise(() => writeFile(archive, "A archive"));
+        if (paths.length === 2) {
+          yield* Effect.promise(async () => {
+            await expect(readFile(archive)).rejects.toMatchObject({ code: "ENOENT" });
+            await writeFile(archive, "B archive");
+          });
+        }
+        if (paths.length === 3)
+          expect(yield* Effect.promise(() => readFile(archive, "utf8"))).toBe("A archive");
+      }
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(paths[0]).toBe(paths[2]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observed)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+      Effect.ensuring(
+        Effect.promise(async () => {
+          process.env = originalEnvironment;
+          if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+        }),
+      ),
+    );
+  });
+
+  for (const enabled of [true, false]) {
+    it.effect(`changes only gh's cache directory when cache is ${enabled ? "on" : "off"}`, () => {
+      const originalEnvironment = process.env;
+      const observed: ObservedGhCommand[] = [];
+      let directory: string | undefined;
+      return Effect.gen(function* () {
+        directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-child-cache-")));
+        const environment = {
+          HOME: "/synthetic/home",
+          GH_TOKEN: "synthetic-token",
+          GH_TOOL_CACHE: enabled ? "on" : "off",
+          GH_TOOL_CACHE_DIR: directory,
+          GH_CONFIG_DIR: "/synthetic/config",
+          XDG_CONFIG_HOME: "/synthetic/xdg-config",
+          XDG_DATA_HOME: "/synthetic/xdg-data",
+        };
+        process.env = environment;
+        const service = yield* GitHubService;
+        yield* withReadCache(service.runGh(["issue", "view", "1"]));
+        expect(observed[0]?.env).toEqual({
+          ...ghEnvironment(environment),
+          GH_REPO: "selected/repo",
+          ...(enabled
+            ? {
+                XDG_CACHE_HOME: (yield* Effect.promise(() =>
+                  FileStore.open(digest("synthetic-token"), directory),
+                )).ghCacheDirectory,
+              }
+            : {}),
+        });
+      }).pipe(
+        Effect.provide(GitHubService.layer),
+        Effect.provide(createMockGhSpawnerLayer(observed)),
+        Effect.provide(
+          Layer.succeed(ConfigService, {
+            github: { default: { owner: "selected", repo: "repo" } },
+          }),
+        ),
+        Effect.ensuring(
+          Effect.promise(async () => {
+            process.env = originalEnvironment;
+            if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+          }),
+        ),
+      );
+    });
+  }
+
   it.effect("rejects a credential in a title before spawning gh", () => {
     const observedGhCommands: ObservedGhCommand[] = [];
     return Effect.gen(function* () {
@@ -2016,8 +2165,10 @@ describe("PR view", () => {
             "pr",
             "view",
             "123",
+            "--repo",
+            "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
           ],
         },
         {
@@ -2056,7 +2207,9 @@ describe("PR view", () => {
         ),
       );
 
-      yield* TestClock.adjust("3000 millis");
+      yield* TestClock.adjust("4999 millis");
+      expect(views).toBe(1);
+      yield* TestClock.adjust("1 millis");
       const result = yield* Fiber.join(fiber);
 
       expect(result.mergeable).toBe("MERGEABLE");
@@ -2750,8 +2903,10 @@ describe("PR edit", () => {
           "pr",
           "view",
           "123",
+          "--repo",
+          "test-owner/test-repo",
           "--json",
-          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests",
+          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
         ],
         ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
@@ -2975,7 +3130,7 @@ describe("PR merge head condition", () => {
               "view",
               "123",
               "--json",
-              "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRefOid",
+              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
             ],
           ]);
         }),
@@ -3020,9 +3175,9 @@ describe("PR merge head condition", () => {
         const result = yield* mergePR({ ...options, deleteBranch: false, matchHeadCommit }).pipe(
           Effect.provide(
             createMockGhLayer({
-              runGhJson: (args) =>
+              runGhJson: () =>
                 Effect.succeed(
-                  args.includes("mergeCommit")
+                  mutations.length > 0
                     ? { mergeCommit: { oid: changedSha } }
                     : { ...mockPRInfo, headRefOid: reviewedSha },
                 ),
@@ -3126,7 +3281,7 @@ describe("PR merge head condition", () => {
     );
   }
 
-  it.effect("keeps the legacy view fields and merge arguments without a head condition", () =>
+  it.effect("uses the shared view fields and keeps merge arguments without a head condition", () =>
     Effect.gen(function* () {
       const reads: string[][] = [];
       const mutations: string[][] = [];
@@ -3141,7 +3296,7 @@ describe("PR merge head condition", () => {
             runGhJson: (args) => {
               reads.push(args);
               return Effect.succeed(
-                args.includes("mergeCommit") ? { mergeCommit: { oid: changedSha } } : mockPRInfo,
+                mutations.length > 0 ? { mergeCommit: { oid: changedSha } } : mockPRInfo,
               );
             },
             runGh: (args) => {
@@ -3157,7 +3312,7 @@ describe("PR merge head condition", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,state,isDraft,mergeable",
+        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
       ]);
       expect(mutations).toEqual([["pr", "merge", "123", "--squash"]]);
     }),
@@ -3245,9 +3400,9 @@ describe("PR merge head condition", () => {
           Layer.merge(
             cliLayer,
             createMockGhLayer({
-              runGhJson: (args) =>
+              runGhJson: () =>
                 Effect.succeed(
-                  args.includes("mergeCommit")
+                  mutations.length > 0
                     ? { mergeCommit: { oid: changedSha } }
                     : { ...mockPRInfo, headRefOid: reviewedSha },
                 ),
@@ -3355,7 +3510,9 @@ describe("PR merge logic", () => {
         ),
       );
 
-      yield* TestClock.adjust("1000 millis");
+      yield* TestClock.adjust("4999 millis");
+      expect(viewCount).toBe(2);
+      yield* TestClock.adjust("1 millis");
       const result = yield* Fiber.join(fiber);
 
       expect(result.sha).toBe("df5bce49939e0cd8d9ce73bc5555e1b11cad7e7c");
@@ -3403,7 +3560,7 @@ describe("PR merge logic", () => {
       const result = yield* Fiber.join(fiber);
 
       expect(result.sha).toBeNull();
-      expect(viewCount).toBe(7);
+      expect(viewCount).toBe(3);
       expect(errors.flat().join(" ")).toContain("merge commit SHA is still unknown");
     }),
   );
@@ -3411,6 +3568,7 @@ describe("PR merge logic", () => {
   it.effect("prints one warning when the merge SHA lookup fails", () =>
     Effect.gen(function* () {
       const errors: unknown[][] = [];
+      let viewReads = 0;
       const console = yield* TestConsole.make;
       const consoleLayer = Layer.succeed(Console.Console, {
         ...console,
@@ -3427,7 +3585,7 @@ describe("PR merge logic", () => {
             createMockGhLayer({
               runGhJson: (args) => {
                 if (args[1] === "view") {
-                  return args.at(-1) === "mergeCommit"
+                  return ++viewReads > 1
                     ? Effect.fail(
                         new GitHubNotFoundError({
                           message: "temporary lookup failure",
@@ -5997,6 +6155,7 @@ describe("PR checks", () => {
               conclusion: "failure",
               jobs: [
                 {
+                  databaseId: 20,
                   name: "lint",
                   status: "completed",
                   conclusion: "failure",
@@ -6313,7 +6472,7 @@ describe("PR checks", () => {
           },
         });
 
-        yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 10 }, (event) =>
+        yield* watchWithClock([1, 2], { intervalSeconds: 0, timeoutSeconds: 10 }, (event) =>
           Effect.sync(() => events.push(event)),
         ).pipe(Effect.provide(layer));
 
@@ -6357,7 +6516,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       const checkCalls = new Map<number, number>();
-      yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([1, 2], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6399,7 +6558,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6432,7 +6591,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push({ ...event, checksAtEmit: checks })),
       ).pipe(
         Effect.provide(
@@ -6463,7 +6622,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6490,7 +6649,7 @@ describe("PR checks", () => {
       const events: Array<Record<string, unknown>> = [];
       let checks = 0;
       let views = 0;
-      yield* watchPRs([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([7], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6594,7 +6753,7 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
       let runViews = 0;
-      yield* watchPRs([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -6637,7 +6796,7 @@ describe("PR checks", () => {
   it.effect("watch reports mixed multi-PR terminal coverage without false timeout", () =>
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
-      yield* watchPRs([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
+      yield* watchWithClock([1, 2], { intervalSeconds: 0, timeoutSeconds: 0 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.flip,
@@ -9401,7 +9560,7 @@ describe("zero reported checks", () => {
       const events: Array<Record<string, unknown>> = [];
       let checkCalls = 0;
 
-      yield* watchPRs([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([9], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -9431,7 +9590,7 @@ describe("watch check events", () => {
     Effect.gen(function* () {
       const events: Array<Record<string, unknown>> = [];
 
-      yield* watchPRs([11], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
+      yield* watchWithClock([11], { intervalSeconds: 0, timeoutSeconds: 5 }, (event) =>
         Effect.sync(() => events.push(event)),
       ).pipe(
         Effect.provide(
@@ -9594,6 +9753,36 @@ describe("pr trigger-checks", () => {
 });
 
 describe("dispatched run discovery", () => {
+  it.effect("polls at a five-second floor within the sixteen-second discovery budget", () =>
+    Effect.gen(function* () {
+      const times: number[] = [];
+      const fiber = yield* Effect.forkChild(
+        discoverDispatchedRun({
+          workflow: "ci.yml",
+          ref: "feat/test",
+          repo: "test-owner/test-repo",
+          knownRunIds: new Set<number>(),
+        }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.gen(function* () {
+                  times.push(Number(yield* Clock.currentTimeMillis));
+                  return [];
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("4999 millis");
+      expect(times).toEqual([0]);
+      yield* TestClock.adjust("11001 millis");
+      expect(yield* Fiber.join(fiber)).toBeNull();
+      expect(times).toEqual([0, 5000, 10000, 15000]);
+      expect(Number(yield* Clock.currentTimeMillis)).toBe(16000);
+    }),
+  );
+
   it.effect("returns the run absent from the pre-dispatch list", () =>
     Effect.gen(function* () {
       const created = yield* discoverDispatchedRun({
@@ -9831,18 +10020,18 @@ describe("PR creation safety", () => {
           expect(lookup).toEqual([
             "pr",
             "list",
-            "--repo",
-            "test-owner/test-repo",
             "--state",
             "open",
-            "--head",
-            "feat/test",
-            "--base",
-            "main",
-            "--json",
-            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,headRepositoryOwner",
             "--limit",
             "2",
+            "--repo",
+            "test-owner/test-repo",
+            "--json",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,reviewDecision,headRepositoryOwner",
+            "--base",
+            "main",
+            "--head",
+            "feat/test",
           ]);
         }),
       );
@@ -10422,44 +10611,172 @@ describe("PR creation safety", () => {
   );
 });
 
-it.effect("expires pending cache snapshots using TestClock", () =>
+it.effect("shares the issue view with triage and invalidates it after an edit", () =>
   Effect.gen(function* () {
     const directory = yield* Effect.acquireRelease(
-      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-cache-clock-"))),
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-issue-"))),
       (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
     );
-    const previous = process.env["GH_TOKEN"];
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        process.env["GH_TOKEN"] = "cache-test-token";
-      }),
-      () =>
-        Effect.sync(() => {
-          if (previous === undefined) delete process.env["GH_TOKEN"];
-          else process.env["GH_TOKEN"] = previous;
-        }),
-    );
-    let calls = 0;
-    const pending = [{ name: "Build", state: "PENDING", bucket: "pending", link: "run" }];
-    const success = [{ name: "Build", state: "SUCCESS", bucket: "pass", link: "run" }];
-    const layer = Layer.merge(
-      createMockGhLayer({
-        runGhJson: () => {
-          calls += 1;
-          return Effect.succeed(calls === 1 ? pending : success);
-        },
-      }),
-      Layer.succeed(CheckStatusCacheDirectory, directory),
-    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let fetches = 0;
+    let title = "Before";
+    const layer = createMockGhLayer({
+      apiRequest: () => Effect.succeed({ status: 200, body: [] }),
+      runGhJson: () => {
+        fetches += 1;
+        return Effect.succeed({
+          number: 7,
+          title,
+          state: "OPEN",
+          url: "issue-url",
+          labels: [],
+          assignees: [],
+          author: { login: "author" },
+          body: "Details",
+          createdAt: "2026-10-01T00:00:00Z",
+          closedAt: null,
+        });
+      },
+      runGh: (args) => {
+        if (args[0] === "issue") title = "After";
+        return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+      },
+    });
     yield* Effect.gen(function* () {
-      const options = { headSha: "clock-test", watchPending: true };
-      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
-      yield* TestClock.adjust("5 seconds");
-      expect(yield* fetchCheckResults(123, options)).toEqual(pending);
+      const view = yield* viewIssue(7);
+      expect(view.title).toBe("Before");
+      expect(view).not.toHaveProperty("body");
+      const triage = yield* fetchIssueTriage({ issue: 7, verbosity: "full" });
+      expect(triage.body).toBe("Details");
+      expect(fetches).toBe(1);
+      const edited = yield* editIssue({
+        issue: 7,
+        title: "After",
+        body: null,
+        addLabels: null,
+        removeLabels: null,
+        addAssignee: null,
+        removeAssignee: null,
+      });
+      expect(edited.title).toBe("After");
+      expect(fetches).toBe(2);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
+  }).pipe(Effect.scoped),
+);
+
+it.effect("gates shared pending checks and separates heads", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-checks-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    let now = 0;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockImplementation(() => now)),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let calls = 0;
+    let currentHead = "first";
+    const layer = createMockGhLayer({
+      apiRequest: ({ path }) =>
+        Effect.succeed({
+          status: 200,
+          body: path.includes("/pulls/")
+            ? { head: { sha: currentHead }, base: { sha: "base" } }
+            : { check_runs: [], statuses: [] },
+        }),
+      runGhJson: () => {
+        calls += 1;
+        return Effect.succeed([
+          {
+            name: "Build",
+            state: calls === 1 ? "PENDING" : "SUCCESS",
+            bucket: calls === 1 ? "pending" : "pass",
+            link: "external",
+          },
+        ]);
+      },
+    });
+    yield* Effect.gen(function* () {
+      const read = fetchCheckResults(123, { headSha: "first", watchPending: true });
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      yield* TestClock.adjust("4999 millis");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pending");
       expect(calls).toBe(1);
-      yield* TestClock.adjust("1 second");
-      expect(yield* fetchCheckResults(123, options)).toEqual(success);
+      yield* TestClock.adjust("1 millis");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      expect(calls).toBe(1);
+      yield* TestClock.adjust("10 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pass");
       expect(calls).toBe(2);
-    }).pipe(Effect.provide(layer));
+      currentHead = "second";
+      yield* fetchCheckResults(123, { headSha: "second" });
+      expect(calls).toBe(3);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
+  }).pipe(Effect.scoped),
+);
+
+it.effect("refreshes checks for a commit status change and a write with unchanged signals", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-signals-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    let now = 0;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockImplementation(() => now)),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let state = "pending";
+    let fetches = 0;
+    const paths: string[] = [];
+    const layer = createMockGhLayer({
+      apiRequest: ({ path }) => {
+        if (path.includes("/pulls/"))
+          return Effect.succeed({
+            status: 200,
+            body: { head: { sha: "head" }, base: { sha: "base" } },
+          });
+        paths.push(path);
+        return Effect.succeed({
+          status: 200,
+          body: path.includes("check-runs") ? { check_runs: [] } : { statuses: [{ state }] },
+        });
+      },
+      runGhJson: () => {
+        fetches += 1;
+        return Effect.succeed([
+          {
+            name: "Status",
+            state,
+            bucket: state === "pending" ? "pending" : "pass",
+            link: "external",
+          },
+        ]);
+      },
+    });
+    yield* Effect.gen(function* () {
+      const read = fetchCheckResults(123, { headSha: "head" });
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      state = "success";
+      yield* TestClock.adjust("5 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pass");
+      expect(fetches).toBe(2);
+      expect(paths).toEqual([
+        "repos/test-owner/test-repo/commits/head/check-runs?per_page=100&page=1",
+        "repos/test-owner/test-repo/commits/head/status?per_page=100&page=1",
+        "repos/test-owner/test-repo/commits/head/check-runs?per_page=100&page=1",
+        "repos/test-owner/test-repo/commits/head/status?per_page=100&page=1",
+      ]);
+      yield* writes.run(["pr", "ready", "123"], ["pr:test-owner/test-repo#123"]);
+      yield* read;
+      expect(fetches).toBe(3);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
   }).pipe(Effect.scoped),
 );
