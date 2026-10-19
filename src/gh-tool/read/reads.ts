@@ -7,6 +7,8 @@ import { OPS } from "./classes";
 import { repoSlug } from "./keys";
 import { issueView, issueList, issueComments } from "./issues";
 import { prView, prList, prChecks, prHead, checkSignal } from "./pulls";
+import { prComments, prReviews, reviewThreads, lastHumanReviewer } from "./reviews";
+import { reviewGuards } from "./review-guards";
 import type { RepoRef, RunFilter } from "./keys";
 import {
   parsePreserving,
@@ -186,6 +188,11 @@ const annotations = Effect.fn("reads.annotations")(function* (repo: RepoRef, job
 });
 
 export const reads = {
+  reviewGuards,
+  prComments,
+  prReviews,
+  reviewThreads,
+  lastHumanReviewer,
   prView,
   prList,
   prChecks,

@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { GitHubService } from "#gh/service";
-import { GitHubCommandError } from "#gh/errors";
+import { restSnapshot } from "./rest";
 import { cachedRead } from "./cache";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
@@ -96,37 +96,12 @@ export const issueComments = Effect.fn("reads.issueComments")(function* (
   repo: RepoRef,
   issue: number,
 ) {
-  const gh = yield* GitHubService;
-  return yield* cachedRead({
-    key: { op: "issueComments", repo, issue },
-    policy: OPS.issueComments,
-    decode: parsePreserving(Schema.mutable(Schema.Array(IssueComment))),
-    fetch: () =>
-      Effect.gen(function* () {
-        const value: Array<typeof IssueComment.Type> = [];
-        let page = 1;
-        while (true) {
-          const result = yield* gh.runGh([
-            "api",
-            `repos/${repoSlug(repo)}/issues/${issue}/comments?per_page=100&page=${page}`,
-          ]);
-          const items = yield* Effect.try({
-            try: () =>
-              Schema.decodeUnknownSync(Schema.mutable(Schema.Array(IssueComment)))(
-                JSON.parse(result.stdout),
-              ),
-            catch: (error) =>
-              new GitHubCommandError({
-                command: "gh-tool issue comments",
-                exitCode: 0,
-                stderr: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-                message: `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
-              }),
-          });
-          value.push(...items);
-          if (items.length < 100) return { kind: "fresh" as const, value };
-          page += 1;
-        }
-      }),
-  });
+  const snapshot = yield* restSnapshot({ op: "issueComments", repo, issue }, [
+    {
+      kind: "pages",
+      path: `repos/${repoSlug(repo)}/issues/${issue}/comments`,
+      items: Schema.decodeUnknownSync(Schema.Array(Schema.Unknown)),
+    },
+  ]);
+  return snapshot.pages.flatMap((page) => page.body as Array<typeof IssueComment.Type>);
 });

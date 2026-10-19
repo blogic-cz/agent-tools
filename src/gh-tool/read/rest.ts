@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { GitHubService } from "#gh/service";
 import { GitHubCommandError } from "#gh/errors";
-import { cachedRead } from "./cache";
+import { cachedRead, ReadCache } from "./cache";
 import { OPS } from "./classes";
 import { digest } from "./keys";
 import type { ReadKey } from "./keys";
@@ -28,6 +28,7 @@ export const restSnapshot = Effect.fn("reads.restSnapshot")(function* (
   consistency: "cached" | "origin" = "cached",
 ) {
   const gh = yield* GitHubService;
+  const session = yield* ReadCache;
   return yield* cachedRead({
     key,
     policy: OPS[key.op],
@@ -46,12 +47,32 @@ export const restSnapshot = Effect.fn("reads.restSnapshot")(function* (
                 ? source.path
                 : `${source.path}${source.path.includes("?") ? "&" : "?"}per_page=100&page=${page}`;
             const prior = previous?.value.pages.find((item) => item.path === path);
-            const response = yield* gh.apiRequest<unknown>({
+            const request = {
               path,
               ...(prior?.etag === null || prior?.etag === undefined
                 ? {}
                 : { ifNoneMatch: prior.etag }),
-            });
+            };
+            const response = yield* session?.store === null || session === null
+              ? gh.runGh(["api", path]).pipe(
+                  Effect.flatMap((result) =>
+                    Effect.try({
+                      try: () => ({
+                        status: 200,
+                        body: JSON.parse(result.stdout) as unknown,
+                        etag: undefined,
+                      }),
+                      catch: (error) =>
+                        new GitHubCommandError({
+                          command: `GET ${path}`,
+                          exitCode: 0,
+                          message: `Failed to parse response: ${String(error)}`,
+                          stderr: `Failed to parse response: ${String(error)}`,
+                        }),
+                    }),
+                  ),
+                )
+              : gh.apiRequest<unknown>(request);
             if (response.status === 304 && prior === undefined)
               return yield* new GitHubCommandError({
                 command: `GET ${path}`,

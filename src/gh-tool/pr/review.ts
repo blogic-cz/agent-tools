@@ -15,300 +15,48 @@ import type { REVIEW_EVENTS } from "#gh/config";
 
 import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/service";
+import { repoSlug } from "#gh/read/keys";
+import type { RepoRef, Tag } from "#gh/read/keys";
 import { validateOutboundText } from "#gh/text-input";
 
 import { viewPR } from "./core";
+import { reads, resolveRepo, writes } from "#gh/read/index";
+import { RESOLVE_THREAD_MUTATION, SUBMIT_REVIEW_MUTATION } from "#gh/read/review-model";
+import type {
+  ThreadNode,
+  RawIssueComment,
+  EditableComment,
+  RequestedReviewerNode,
+  ResolveThreadResult,
+  PendingReviewsQueryResult,
+  PendingReviewContentQueryResult,
+  SubmitReviewResult,
+} from "#gh/read/review-model";
+const reviewTags = (
+  repo: RepoRef,
+  pr: number | null,
+  facet: "issue-comments" | "review-comments" | "reviews",
+): readonly Tag[] =>
+  pr === null
+    ? [`repo:${repoSlug(repo)}`]
+    : facet === "issue-comments"
+      ? [`issue-comments:${repoSlug(repo)}#${pr}`]
+      : facet === "reviews"
+        ? [
+            `reviews:${repoSlug(repo)}#${pr}`,
+            `pr:${repoSlug(repo)}#${pr}`,
+            `threads:${repoSlug(repo)}#${pr}`,
+          ]
+        : [`review-comments:${repoSlug(repo)}#${pr}`, `threads:${repoSlug(repo)}#${pr}`];
+
+const fetchAllThreadNodes = (pr: number) =>
+  Effect.gen(function* () {
+    return yield* reads.reviewThreads(yield* resolveRepo(null), pr);
+  });
 
 // ---------------------------------------------------------------------------
 // GraphQL queries & mutations
 // ---------------------------------------------------------------------------
-
-const REVIEW_THREADS_QUERY = `
-  query($owner: String!, $name: String!, $pr: Int!, $after: String) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100, after: $after) {
-          nodes {
-            id
-            isResolved
-            comments(first: 100) {
-              nodes {
-                id
-                databaseId
-                path
-                line
-                body
-                author { login }
-                commit { oid }
-              }
-              pageInfo { hasNextPage endCursor }
-            }
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-    }
-  }
-`;
-
-const REVIEW_THREAD_COMMENTS_QUERY = `
-  query($threadId: ID!, $after: String) {
-    node(id: $threadId) {
-      ... on PullRequestReviewThread {
-        comments(first: 100, after: $after) {
-          nodes {
-            id
-            databaseId
-            path
-            line
-            body
-            author { login }
-            commit { oid }
-          }
-          pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-  }
-`;
-
-const RESOLVE_THREAD_MUTATION = `
-  mutation($threadId: ID!) {
-    resolveReviewThread(input: {threadId: $threadId}) {
-      thread { id isResolved }
-    }
-  }
-`;
-
-const PENDING_REVIEWS_QUERY = `
-  query($owner: String!, $name: String!, $pr: Int!, $after: String) {
-    viewer { login }
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $pr) {
-        reviews(first: 100, after: $after, states: [PENDING]) {
-          nodes {
-            id
-            state
-            author { login }
-          }
-          pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-  }
-`;
-
-const PENDING_REVIEW_CONTENT_QUERY = `
-  query($reviewId: ID!, $after: String) {
-    viewer { login }
-    node(id: $reviewId) {
-      ... on PullRequestReview {
-        id
-        state
-        body
-        author { login }
-        pullRequest {
-          number
-          repository { nameWithOwner }
-        }
-        comments(first: 100, after: $after) {
-          nodes { body }
-          pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-  }
-`;
-
-const SUBMIT_REVIEW_MUTATION = `
-  mutation($reviewId: ID!, $event: PullRequestReviewEvent!, $body: String) {
-    submitPullRequestReview(input: { pullRequestReviewId: $reviewId, event: $event, body: $body }) {
-      pullRequestReview { id state }
-    }
-  }
-`;
-
-const LAST_HUMAN_REVIEWER_QUERY = `
-  query($owner: String!, $name: String!, $pr: Int!) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $pr) {
-        reviewRequests(first: 100) {
-          nodes {
-            requestedReviewer {
-              __typename
-              ... on User { login }
-              ... on Team { name }
-              ... on Bot { login }
-            }
-          }
-        }
-        reviews(last: 100) {
-          nodes {
-            author { login }
-            state
-            submittedAt
-          }
-        }
-      }
-    }
-  }
-`;
-
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-type ThreadNode = {
-  id: string;
-  isResolved: boolean;
-  comments: {
-    nodes: Array<{
-      id: string;
-      databaseId: number;
-      path: string;
-      line: number;
-      body: string;
-      author: { login: string };
-      commit: { oid: string } | null;
-    }>;
-    pageInfo?: { hasNextPage: boolean; endCursor: string | null };
-  };
-};
-
-type ThreadCommentsQueryResult = {
-  node: { comments: ThreadNode["comments"] } | null;
-};
-
-type ThreadsQueryResult = {
-  repository: {
-    pullRequest: {
-      reviewThreads: {
-        nodes: ThreadNode[];
-        pageInfo: {
-          hasNextPage: boolean;
-          endCursor: string | null;
-        };
-      };
-    };
-  };
-};
-
-type ResolveThreadResult = {
-  resolveReviewThread: {
-    thread: { id: string; isResolved: boolean };
-  };
-};
-
-type PendingReviewsQueryResult = {
-  viewer: { login: string };
-  repository: {
-    pullRequest: {
-      reviews: {
-        nodes: Array<{
-          id: string;
-          state: string;
-          author: { login: string };
-        }>;
-        pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      };
-    };
-  };
-};
-
-type PendingReviewContentQueryResult = {
-  viewer: { login: string };
-  node: {
-    id: string;
-    state: string;
-    body: string | null;
-    author: { login: string };
-    pullRequest: { number: number; repository: { nameWithOwner: string } };
-    comments: {
-      nodes: Array<{ body: string }>;
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    };
-  } | null;
-};
-
-type SubmitReviewResult = {
-  submitPullRequestReview: {
-    pullRequestReview: { id: string; state: string };
-  };
-};
-
-type RequestedReviewerNode = {
-  __typename: string;
-  login?: string;
-  name?: string;
-} | null;
-
-type LastHumanReviewerQueryResult = {
-  repository: {
-    pullRequest: {
-      reviewRequests: {
-        nodes: Array<{ requestedReviewer: RequestedReviewerNode }>;
-      };
-      reviews: {
-        nodes: Array<{
-          author: { login: string } | null;
-          state: string;
-          submittedAt: string | null;
-        }>;
-      };
-    };
-  };
-};
-
-type RawReviewComment = {
-  id: number;
-  in_reply_to_id: number | null;
-  user: { login: string };
-  body: string;
-  path: string;
-  line: number;
-  created_at: string;
-  updated_at: string;
-  pull_request_review_id?: number | null;
-  commit_id?: string | null;
-};
-
-type RawIssueComment = {
-  id: number;
-  user: { login: string };
-  body: string;
-  created_at: string;
-  html_url: string;
-};
-
-type RawPullRequestReview = {
-  id: number;
-  user: { login: string } | null;
-  state: string;
-  body: string | null;
-  submitted_at: string | null;
-  html_url: string;
-  commit_id?: string | null;
-};
-
-type ReviewCommentById = {
-  id: number;
-  in_reply_to_id: number | null;
-  pull_request_url: string;
-};
-
-type EditableComment = {
-  id: number;
-  user: { login: string };
-  html_url: string;
-  updated_at: string;
-  pull_request_url?: string;
-  issue_url?: string;
-};
-
-const REST_PAGE_SIZE = 100;
 
 const feedbackOrigin = (commitSha: string | null, currentHeadSha: string | null): FeedbackOrigin =>
   commitSha === null || currentHeadSha === null
@@ -316,89 +64,6 @@ const feedbackOrigin = (commitSha: string | null, currentHeadSha: string | null)
     : commitSha === currentHeadSha
       ? "current_head"
       : "pre_existing";
-
-const parseJson = <T>(
-  stdout: string,
-  command: string,
-  parseFailurePrefix: string,
-): Effect.Effect<T, GitHubCommandError> =>
-  Effect.try({
-    try: () => JSON.parse(stdout) as T,
-    catch: (error) =>
-      new GitHubCommandError({
-        command,
-        exitCode: 0,
-        stderr: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
-        message: `${parseFailurePrefix}: ${error instanceof Error ? error.message : String(error)}`,
-      }),
-  });
-
-const fetchAllRestPages = Effect.fn("pr.fetchAllRestPages")(function* <T>(
-  endpoint: string,
-  command: string,
-  parseFailurePrefix: string,
-) {
-  const service = yield* GitHubService;
-
-  const results: T[] = [];
-  let page = 1;
-
-  while (true) {
-    const separator = endpoint.includes("?") ? "&" : "?";
-    const result = yield* service.runGh([
-      "api",
-      `${endpoint}${separator}per_page=${REST_PAGE_SIZE}&page=${page}`,
-    ]);
-
-    const rawPage = yield* parseJson<T[]>(result.stdout, command, parseFailurePrefix);
-    results.push(...rawPage);
-
-    if (rawPage.length < REST_PAGE_SIZE) {
-      return results;
-    }
-
-    page += 1;
-  }
-});
-
-const fetchAllThreadNodes = Effect.fn("pr.fetchAllThreadNodes")(function* (pr: number) {
-  const service = yield* GitHubService;
-  const repoInfo = yield* service.getRepoInfo();
-
-  const nodes: ThreadNode[] = [];
-  let after: string | null = null;
-
-  while (true) {
-    const response = (yield* service.runGraphQL(REVIEW_THREADS_QUERY, {
-      owner: repoInfo.owner,
-      name: repoInfo.name,
-      pr,
-      after,
-    })) as ThreadsQueryResult;
-
-    const page = response.repository.pullRequest.reviewThreads;
-    for (const node of page.nodes) {
-      let commentsAfter = node.comments.pageInfo?.endCursor ?? null;
-      while (node.comments.pageInfo?.hasNextPage && commentsAfter !== null) {
-        const commentsResponse = (yield* service.runGraphQL(REVIEW_THREAD_COMMENTS_QUERY, {
-          threadId: node.id,
-          after: commentsAfter,
-        })) as ThreadCommentsQueryResult;
-        if (commentsResponse.node === null) break;
-        node.comments.nodes.push(...commentsResponse.node.comments.nodes);
-        node.comments.pageInfo = commentsResponse.node.comments.pageInfo;
-        commentsAfter = commentsResponse.node.comments.pageInfo?.endCursor ?? null;
-      }
-      nodes.push(node);
-    }
-
-    if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) {
-      return nodes;
-    }
-
-    after = page.pageInfo.endCursor;
-  }
-});
 
 const enrichThreads = (
   threads: ThreadNode[],
@@ -464,7 +129,7 @@ const enrichThreads = (
   const dedupedByKey = new Map<string, number>();
   const deduped: ReviewThread[] = [];
   for (const thread of mapped) {
-    const key = `${thread.path} ${thread.line} ${thread.body.trim()}`;
+    const key = `${thread.path}\u0000${thread.line}\u0000${thread.body.trim()}`;
     const existingIndex = dedupedByKey.get(key);
     if (existingIndex === undefined) {
       dedupedByKey.set(key, deduped.length);
@@ -546,11 +211,7 @@ export const fetchComments = Effect.fn("pr.fetchComments")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const raw = yield* fetchAllRestPages<RawReviewComment>(
-    `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/comments`,
-    "gh-tool pr comments",
-    "Failed to parse response",
-  );
+  const raw = yield* reads.prComments({ owner: repoInfo.owner, name: repoInfo.name }, resolvedPr);
 
   const comments: ReviewComment[] = raw.map((c) => ({
     id: c.id,
@@ -589,10 +250,9 @@ export const fetchIssueComments = Effect.fn("pr.fetchIssueComments")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const raw = yield* fetchAllRestPages<RawIssueComment>(
-    `repos/${repoInfo.owner}/${repoInfo.name}/issues/${resolvedPr}/comments`,
-    "gh-tool pr issue-comments",
-    "Failed to parse response",
+  const raw = yield* reads.issueComments(
+    { owner: repoInfo.owner, name: repoInfo.name },
+    resolvedPr,
   );
 
   let comments = raw.map(mapRawIssueComment);
@@ -632,11 +292,7 @@ export const fetchReviews = Effect.fn("pr.fetchReviews")(function* (
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const raw = yield* fetchAllRestPages<RawPullRequestReview>(
-    `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/reviews`,
-    "gh-tool pr reviews",
-    "Failed to parse response",
-  );
+  const raw = yield* reads.prReviews({ owner: repoInfo.owner, name: repoInfo.name }, resolvedPr);
 
   let reviews: PullRequestReview[] = raw
     .map((review) => ({
@@ -727,14 +383,17 @@ export const postIssueComment = Effect.fn("pr.postIssueComment")(function* (
     );
   }
 
-  const result = yield* service.runGh([
-    "api",
-    "-X",
-    "POST",
-    `repos/${repoInfo.owner}/${repoInfo.name}/issues/${resolvedPr}/comments`,
-    "-f",
-    `body=${body}`,
-  ]);
+  const result = yield* writes.run(
+    [
+      "api",
+      "-X",
+      "POST",
+      `repos/${repoInfo.owner}/${repoInfo.name}/issues/${resolvedPr}/comments`,
+      "-f",
+      `body=${body}`,
+    ],
+    reviewTags(repoInfo, resolvedPr, "issue-comments"),
+  );
 
   const rawComment = yield* Effect.try({
     try: () => JSON.parse(result.stdout) as RawIssueComment,
@@ -796,18 +455,7 @@ export const fetchDiscussionSummary = Effect.fn("pr.fetchDiscussionSummary")(fun
   };
 });
 
-const fetchReviewCommentById = Effect.fn("pr.fetchReviewCommentById")(function* (
-  commentId: number,
-) {
-  const service = yield* GitHubService;
-
-  const comment = yield* service.runGhJson<ReviewCommentById>([
-    "api",
-    `repos/{owner}/{repo}/pulls/comments/${commentId}`,
-  ]);
-
-  return comment;
-});
+const fetchReviewCommentById = reads.reviewGuards.commentById;
 
 export const editComment = Effect.fn("pr.editComment")(function* (
   commentId: number,
@@ -846,8 +494,8 @@ export const editComment = Effect.fn("pr.editComment")(function* (
   }
 
   const endpoint = `repos/${repoInfo.owner}/${repoInfo.name}/${kind === "review" ? "pulls" : "issues"}/comments/${commentId}`;
-  const target = yield* service.runGhJson<EditableComment>(["api", endpoint]);
-  const viewer = yield* service.runGhJson<{ login: string }>(["api", "user"]);
+  const target = yield* reads.reviewGuards.editableComment(repoInfo, kind, commentId);
+  const viewer = yield* reads.reviewGuards.viewer();
   if (target.user.login.toLowerCase() !== viewer.login.toLowerCase()) {
     return yield* Effect.fail(
       new GitHubCommandError({
@@ -873,10 +521,7 @@ export const editComment = Effect.fn("pr.editComment")(function* (
     );
   }
   if (kind === "issue" && pr !== null) {
-    const pullRequest = yield* service.runGhJson<{ number: number }>([
-      "api",
-      `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${pr}`,
-    ]);
+    const pullRequest = yield* reads.reviewGuards.pullNumber(repoInfo, pr);
     if (pullRequest.number !== pr) {
       return yield* Effect.fail(
         new GitHubCommandError({
@@ -890,14 +535,10 @@ export const editComment = Effect.fn("pr.editComment")(function* (
     }
   }
 
-  const updated = yield* service.runGhJson<EditableComment>([
-    "api",
-    "-X",
-    "PATCH",
-    endpoint,
-    "-f",
-    `body=${body}`,
-  ]);
+  const updated = yield* writes.json<EditableComment>(
+    ["api", "-X", "PATCH", endpoint, "-f", `body=${body}`],
+    reviewTags(repoInfo, pr, kind === "review" ? "review-comments" : "issue-comments"),
+  );
   return {
     commentId: updated.id,
     url: updated.html_url,
@@ -948,15 +589,18 @@ export const replyToComment = Effect.fn("pr.replyToComment")(function* (
     );
   }
 
-  const result = yield* service
-    .runGh([
-      "api",
-      "-X",
-      "POST",
-      `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/comments/${rootCommentId}/replies`,
-      "-f",
-      `body=${body}`,
-    ])
+  const result = yield* writes
+    .run(
+      [
+        "api",
+        "-X",
+        "POST",
+        `repos/${repoInfo.owner}/${repoInfo.name}/pulls/${resolvedPr}/comments/${rootCommentId}/replies`,
+        "-f",
+        `body=${body}`,
+      ],
+      reviewTags(repoInfo, resolvedPr, "review-comments"),
+    )
     .pipe(
       Effect.catchTag("GitHubCommandError", (error) => {
         if (error.stderr.includes("can only have one pending review per pull request")) {
@@ -1105,11 +749,15 @@ export const replyAndResolveComment = Effect.fn("pr.replyAndResolveComment")(fun
  * Resolve a review thread via GraphQL mutation.
  */
 export const resolveThread = Effect.fn("pr.resolveThread")(function* (threadId: string) {
-  const service = yield* GitHubService;
+  const repo = yield* resolveRepo(null);
 
-  const response = (yield* service.runGraphQL(RESOLVE_THREAD_MUTATION, {
-    threadId,
-  })) as ResolveThreadResult;
+  const response = (yield* writes.graphql(
+    RESOLVE_THREAD_MUTATION,
+    {
+      threadId,
+    },
+    [`repo:${repoSlug(repo)}`],
+  )) as ResolveThreadResult;
 
   return {
     resolved: response.resolveReviewThread.thread.isResolved,
@@ -1195,11 +843,11 @@ export const createReview = Effect.fn("pr.createReview")(function* (opts: {
     args.push("-f", `body=${opts.body}`);
   }
 
-  const result = yield* service.runGhJson<{
+  const result = yield* writes.json<{
     id: number;
     state: string;
     html_url: string;
-  }>(args);
+  }>(args, reviewTags(repoInfo, resolvedPr, "reviews"));
 
   return {
     submitted: true as const,
@@ -1235,12 +883,11 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
     const seenPendingCursors = new Set<string>();
 
     while (hasNextPage) {
-      const pending = (yield* service.runGraphQL(PENDING_REVIEWS_QUERY, {
-        owner: repoInfo.owner,
-        name: repoInfo.name,
-        pr: resolvedPr,
+      const pending = (yield* reads.reviewGuards.pendingReviews(
+        repoInfo,
+        resolvedPr,
         after,
-      })) as PendingReviewsQueryResult;
+      )) as PendingReviewsQueryResult;
 
       if (
         typeof pending.viewer?.login !== "string" ||
@@ -1326,10 +973,10 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
   let commentsHaveNextPage = true;
   const seenCommentCursors = new Set<string>();
   while (commentsHaveNextPage) {
-    const pendingReview = (yield* service.runGraphQL(PENDING_REVIEW_CONTENT_QUERY, {
-      reviewId: targetReviewId,
-      after: afterComment,
-    })) as PendingReviewContentQueryResult;
+    const pendingReview = (yield* reads.reviewGuards.pendingReviewContent(
+      targetReviewId,
+      afterComment,
+    )) as PendingReviewContentQueryResult;
 
     const review = pendingReview?.node;
     if (
@@ -1400,11 +1047,15 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
     if (commentsHaveNextPage && afterComment !== null) seenCommentCursors.add(afterComment);
   }
 
-  const result = (yield* service.runGraphQL(SUBMIT_REVIEW_MUTATION, {
-    reviewId: targetReviewId,
-    event: REVIEW_EVENT_API[event],
-    body: body ?? "",
-  })) as SubmitReviewResult;
+  const result = (yield* writes.graphql(
+    SUBMIT_REVIEW_MUTATION,
+    {
+      reviewId: targetReviewId,
+      event: REVIEW_EVENT_API[event],
+      body: body ?? "",
+    },
+    reviewTags(repoInfo, resolvedPr, "reviews"),
+  )) as SubmitReviewResult;
 
   return {
     submitted: true as const,
@@ -1434,11 +1085,10 @@ export const fetchLastHumanReviewer = Effect.fn("pr.fetchLastHumanReviewer")(fun
 
   const resolvedPr = pr ?? (yield* viewPR(null)).number;
 
-  const response = (yield* service.runGraphQL(LAST_HUMAN_REVIEWER_QUERY, {
-    owner: repoInfo.owner,
-    name: repoInfo.name,
-    pr: resolvedPr,
-  })) as LastHumanReviewerQueryResult;
+  const response = yield* reads.lastHumanReviewer(
+    { owner: repoInfo.owner, name: repoInfo.name },
+    resolvedPr,
+  );
 
   const prNode = response.repository.pullRequest;
 

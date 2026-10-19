@@ -10519,6 +10519,7 @@ it.effect("shares the issue view with triage and invalidates it after an edit", 
     let fetches = 0;
     let title = "Before";
     const layer = createMockGhLayer({
+      apiRequest: () => Effect.succeed({ status: 200, body: [] }),
       runGhJson: () => {
         fetches += 1;
         return Effect.succeed({
