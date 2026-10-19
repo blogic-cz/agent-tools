@@ -101,17 +101,29 @@ esac
       `#!/bin/sh
 case "$1 $2" in
   "repo view") echo '{"owner":{"login":"o"},"name":"r","defaultBranchRef":{"name":"main"},"url":"https://github.com/o/r"}' ;;
-  "pr view") echo '{"number":1,"state":"OPEN","headRefOid":"sha"}' ;;
+  "pr view") echo '{"number":1,"url":"https://github.com/o/r/pull/1","title":"Test","state":"OPEN","headRefOid":"sha","headRefName":"feature","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","body":"","author":{"login":"fixture","is_bot":false},"reviewDecision":"","reviewRequests":[]}' ;;
   "pr checks") echo '[{"name":"CI","state":"completed","bucket":"pass","link":"external"}]' ;;
   *) exit 1 ;;
 esac
 `,
     );
     await chmod(gh, 0o755);
+    const preload = join(directory, "offline.ts");
+    const fetches = join(directory, "fetches.txt");
+    await writeFile(
+      preload,
+      `import { appendFileSync } from "node:fs";
+globalThis.fetch = async () => {
+  appendFileSync(${JSON.stringify(fetches)}, "signal\\n");
+  return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+};`,
+    );
     try {
       const result = spawnSync(
         "bun",
         [
+          "--preload",
+          preload,
           `./src/gh-tool/index.ts`,
           "pr",
           "watch",
@@ -126,11 +138,18 @@ esac
         ],
         {
           encoding: "utf8",
-          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH}`,
+            GH_TOKEN: "offline-fixture",
+            GH_TOOL_CACHE: "on",
+            GH_TOOL_CACHE_DIR: join(directory, "cache"),
+          },
           timeout: 15000,
         },
       );
-      expect(result.status).toBe(0);
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(await readFile(fetches, "utf8")).toContain("signal");
       expect(result.stderr).toBe("");
       const lines = result.stdout
         .trim()

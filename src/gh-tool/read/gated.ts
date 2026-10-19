@@ -32,10 +32,11 @@ export const gatedRead = <A, E, R, E2, R2>(opts: {
       },
       fetch: (previous: { value: Envelope<A>; valid: boolean } | null) =>
         Effect.gen(function* () {
-          const signal = yield* opts.signal;
+          const signal = yield* opts.signal.pipe(Effect.orElseSucceed(() => null));
           const now = Date.now();
           if (
             previous !== null &&
+            signal !== null &&
             previous.valid &&
             previous.value.signal === signal &&
             now >= previous.value.originFetchedAt &&
@@ -43,7 +44,10 @@ export const gatedRead = <A, E, R, E2, R2>(opts: {
           )
             return { kind: "fresh" as const, value: previous.value };
           const data = yield* opts.fetch;
-          return { kind: "fresh" as const, value: { data, originFetchedAt: now, signal } };
+          return {
+            kind: "fresh" as const,
+            value: { data, originFetchedAt: now, signal: signal ?? "" },
+          };
         }),
     });
     return value.data;
