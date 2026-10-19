@@ -939,14 +939,10 @@ const mergeViaAsyncApi = Effect.fn("pr.mergeViaAsyncApi")(function* (opts: {
   const repo = yield* gh.getRepoInfo();
   const asyncPath = `repos/${repo.owner}/${repo.name}/pulls/${opts.pr}/merge-async`;
 
-  let latest = yield* gh.runGhJson<AsyncMergeResult>([
-    "api",
-    "--method",
-    "PUT",
-    asyncPath,
-    "-f",
-    `merge_method=${opts.strategy}`,
-  ]);
+  let latest = yield* writes.json<AsyncMergeResult>(
+    ["api", "--method", "PUT", asyncPath, "-f", `merge_method=${opts.strategy}`],
+    [`pr:${repoSlug(repo)}#${opts.pr}`, `pulls:${repoSlug(repo)}`],
+  );
 
   const uuid = latest.details?.uuid;
   if (uuid !== undefined) {
@@ -1160,15 +1156,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // closed.
   if (willDeleteBranch && dependentOpenPrs.length > 0 && repo) {
     for (const child of dependentOpenPrs) {
-      const retargeted = yield* gh
-        .runGh([
-          "api",
-          "--method",
-          "PATCH",
-          `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
-          "-f",
-          `base=${info.baseRefName}`,
-        ])
+      const retargeted = yield* writes
+        .run(
+          [
+            "api",
+            "--method",
+            "PATCH",
+            `repos/${repo.owner}/${repo.name}/pulls/${child.number}`,
+            "-f",
+            `base=${info.baseRefName}`,
+          ],
+          [`pr:${repoSlug(repo)}#${child.number}`, `pulls:${repoSlug(repo)}`],
+        )
         .pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
@@ -1190,15 +1189,18 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
       return failed;
     }
     for (const child of retargetedChildren) {
-      const rolledBack = yield* gh
-        .runGh([
-          "api",
-          "--method",
-          "PATCH",
-          `repos/${repo.owner}/${repo.name}/pulls/${child}`,
-          "-f",
-          `base=${info.headRefName}`,
-        ])
+      const rolledBack = yield* writes
+        .run(
+          [
+            "api",
+            "--method",
+            "PATCH",
+            `repos/${repo.owner}/${repo.name}/pulls/${child}`,
+            "-f",
+            `base=${info.headRefName}`,
+          ],
+          [`pr:${repoSlug(repo)}#${child}`, `pulls:${repoSlug(repo)}`],
+        )
         .pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
@@ -1210,13 +1212,14 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     return failed;
   });
 
+  const mergeRepo = yield* resolveRepo(null);
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
   if (matchHeadCommit !== undefined) {
     mergeArgs.push("--match-head-commit", matchHeadCommit);
   }
 
-  const shaFromAsyncMerge = yield* gh
-    .runGh(mergeArgs)
+  const shaFromAsyncMerge = yield* writes
+    .run(mergeArgs, [`pr:${repoSlug(mergeRepo)}#${opts.pr}`, `pulls:${repoSlug(mergeRepo)}`])
     .pipe(
       Effect.map(() => null),
       Effect.catchTag("GitHubCommandError", (error) =>
@@ -1318,13 +1321,16 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // `gh pr merge --delete-branch` aborts its remote delete when the head branch is checked out in a
   // worktree; deleting the remote ref explicitly is worktree-independent. Local cleanup is separate.
   if (willDeleteBranch && repo && info.headRefName) {
-    const remoteDeleted = yield* gh
-      .runGh([
-        "api",
-        "--method",
-        "DELETE",
-        `repos/${repo.owner}/${repo.name}/git/refs/heads/${info.headRefName}`,
-      ])
+    const remoteDeleted = yield* writes
+      .run(
+        [
+          "api",
+          "--method",
+          "DELETE",
+          `repos/${repo.owner}/${repo.name}/git/refs/heads/${info.headRefName}`,
+        ],
+        [`pr:${repoSlug(repo)}#${opts.pr}`, `pulls:${repoSlug(repo)}`],
+      )
       .pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
@@ -2181,8 +2187,8 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
   const deadline = Number(yield* Clock.currentTimeMillis) + (options.timeoutSeconds ?? 60) * 1000;
   const results: RerunChecksRun[] = [];
   for (const candidate of candidates) {
-    const success = yield* gh
-      .runGh(["run", "rerun", candidate.runId, ...(failedOnly ? ["--failed"] : [])])
+    const success = yield* writes
+      .run(["run", "rerun", candidate.runId, ...(failedOnly ? ["--failed"] : [])], [`repo:${repo}`])
       .pipe(
         Effect.as(true),
         Effect.catch(() => Effect.succeed(false)),

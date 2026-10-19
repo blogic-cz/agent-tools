@@ -3,6 +3,7 @@ import { GitHubService } from "#gh/service";
 import { invalidate } from "./cache";
 import type { Tag } from "./keys";
 import type { GhError } from "#gh/service";
+import type { GitHubApiRequest } from "#gh/api";
 
 const mutate = <A, R>(effect: Effect.Effect<A, GhError, R>, touched: readonly Tag[]) =>
   effect.pipe(
@@ -28,4 +29,9 @@ const graphql = (
     const gh = yield* GitHubService;
     return yield* mutate(gh.runGraphQL(query, variables), touched);
   });
-export const writes = { run, json, graphql };
+const api = <A>(request: GitHubApiRequest, touched: readonly Tag[]) =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubService;
+    return yield* mutate(gh.apiRequest<A>(request), touched);
+  });
+export const writes = { run, json, graphql, api };
