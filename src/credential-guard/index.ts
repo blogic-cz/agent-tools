@@ -2558,6 +2558,63 @@ function hasStaticEnvironmentRead(
   );
 }
 
+type LiteralChainPart = { source: string; argv: string[]; redirects: boolean };
+
+function literalCommandChain(command: string): LiteralChainPart[] | undefined {
+  const literal = literalBindingText(command, "", "");
+  if (!literal || /[|&\r\n]/.test(literal.syntax.replaceAll("&&", ""))) return undefined;
+  const boundaries = [...literal.syntax.matchAll(/&&|;/g)];
+  if (!boundaries.length || boundaries.length > 31) return undefined;
+  const parts: LiteralChainPart[] = [];
+  let start = 0;
+  for (const end of [...boundaries.map((match) => match.index), command.length]) {
+    const source = command.slice(start, end).trim();
+    const parsed = parseStaticShellCommands(source);
+    if (
+      !parsed ||
+      typeof parsed === "string" ||
+      parsed.pipelines.length !== 1 ||
+      parsed.pipelines[0]?.length !== 1
+    )
+      return undefined;
+    const argv = unwrapProofCommand(parsed.pipelines[0][0] ?? [], "\0");
+    if (!argv) return undefined;
+    parts.push({ source, argv, redirects: parsed.redirects.length > 0 });
+    start = end + (literal.syntax.startsWith("&&", end) ? 2 : 1);
+  }
+  return parts;
+}
+
+function isIndependentHerdrOperation(argv: string[]): boolean {
+  if (isLiteralHerdrPrompt(argv)) return argv.length === 5;
+  if (argv[0] !== "herdr") return false;
+  if (argv[1] === "agent" && argv[2] === "start")
+    return (
+      argv.length > 4 && argv.includes("--kind") && argv[argv.indexOf("--kind") + 1] === "codex"
+    );
+  if (argv[1] !== "pane") return false;
+  if (argv[2] === "run")
+    return argv.length === 5 && argv[4] === "exec bash ~/.codex/codex-clean.sh bash --norc -i";
+  if (argv[2] !== "wait-output" || argv.length < 6) return false;
+  for (let index = 4; index < argv.length; index += 2) {
+    if (!["--match", "--regex", "--timeout"].includes(argv[index] ?? "") || !argv[index + 1])
+      return false;
+    if (argv[index] === "--timeout" && !/^\d+$/.test(argv[index + 1] ?? "")) return false;
+  }
+  return true;
+}
+
+function isIndependentDataCopy(argv: string[]): boolean {
+  if (argv[0] !== "cp" || argv.length !== 3) return false;
+  const source = argv[1] ?? "";
+  const target = argv[2] ?? "";
+  const path = /^(?:~\/)?[A-Za-z0-9_./-]+$/;
+  if (!path.test(source) || !path.test(target) || source.startsWith("-") || target.startsWith("-"))
+    return false;
+  // Only prose destinations cannot replace a later command's binary or startup configuration.
+  return source.endsWith(".md") && (target.endsWith("/") || target.endsWith(".md"));
+}
+
 function isLiteralHerdrPrompt(argv: string[]): boolean {
   return argv[0] === "herdr" && argv[1] === "agent" && argv[2] === "prompt" && argv.length >= 5;
 }
@@ -3730,6 +3787,27 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     });
     if (unterminatedQuote)
       return "cannot prove shell syntax: an unterminated quoted argument was found";
+    const chain = literalCommandChain(command);
+    if (chain?.some(({ argv }) => isLiteralHerdrPrompt(argv)) && !isStaticHerdrPrompt(command)) {
+      let copied = false;
+      for (const [index, part] of chain.entries()) {
+        const reason = getDangerousBashReason(part.source, shellDepth);
+        if (reason) return `cannot prove chain part ${index + 1} (${part.source}): ${reason}`;
+        if (!part.redirects && isIndependentDataCopy(part.argv) && !copied) {
+          copied = true;
+          continue;
+        }
+        if (
+          part.redirects ||
+          !isIndependentHerdrOperation(part.argv) ||
+          (copied && !(isLiteralHerdrPrompt(part.argv) && part.argv.length === 5))
+        )
+          return `cannot prove independent chain part ${index + 1} (${part.source}) under the environment/execution policy`;
+      }
+      if (dangerousBashPatterns.some((pattern) => pattern.test(originalCommand)))
+        return "matches a configured dangerous-command pattern";
+      return null;
+    }
     const allowPackageInventory = hasProvedPackageInventoryInvocation(originalCommand);
     const promptWords = isStaticHerdrPrompt(command)
       ? parseStaticShellCommands(command)
@@ -4140,7 +4218,15 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     if (tool === "bash") {
       const command = extractCommand(args);
 
-      const dangerousReason = getDangerousBashReason(command);
+      let dangerousReason = getDangerousBashReason(command);
+      if (dangerousReason && !dangerousReason.includes("chain part")) {
+        for (const [index, part] of (literalCommandChain(command) ?? []).entries()) {
+          const reason = getDangerousBashReason(part.source);
+          if (!reason) continue;
+          dangerousReason = `cannot prove chain part ${index + 1} (${part.source}): ${reason}`;
+          break;
+        }
+      }
       if (dangerousReason) {
         throw new Error(
           `\u{1F6AB} Command blocked: ${dangerousReason}.\n\n` +
