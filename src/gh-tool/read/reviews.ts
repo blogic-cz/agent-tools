@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import { GitHubService } from "#gh/read/transport";
+import { GitHubCommandError } from "#gh/errors";
 import { cachedRead } from "./cache";
 import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";
@@ -19,6 +20,28 @@ import type {
   RawReviewComment,
   RawPullRequestReview,
 } from "./review-model";
+
+const CachedThreads = Schema.Array(
+  Schema.Struct({
+    id: Schema.String,
+    isResolved: Schema.Boolean,
+    comments: Schema.Struct({
+      nodes: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          databaseId: Schema.Number.check(
+            Schema.makeFilter((id) => Number.isSafeInteger(id) && id > 0),
+          ),
+          path: Schema.String,
+          line: Schema.NullOr(Schema.Number),
+          body: Schema.String,
+          author: Schema.Struct({ login: Schema.String }),
+          commit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
+        }),
+      ),
+    }),
+  }),
+);
 
 const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
   repoInfo: RepoRef,
@@ -50,7 +73,27 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
         node.comments.pageInfo = commentsResponse.node.comments.pageInfo;
         commentsAfter = commentsResponse.node.comments.pageInfo?.endCursor ?? null;
       }
-      nodes.push(node);
+      const comments: ThreadNode["comments"]["nodes"] = [];
+      for (const comment of node.comments.nodes) {
+        // fullDatabaseId is a GraphQL BigInt string, aliased to the existing internal key.
+        const rawId: unknown = comment.databaseId;
+        const databaseId = typeof rawId === "string" ? Number(rawId) : rawId;
+        if (
+          typeof databaseId !== "number" ||
+          !Number.isSafeInteger(databaseId) ||
+          databaseId < 1 ||
+          (typeof rawId === "string" && String(databaseId) !== rawId)
+        ) {
+          return yield* new GitHubCommandError({
+            command: "gh api graphql",
+            exitCode: 1,
+            message: "GitHub returned a missing or unsafe review comment ID",
+            stderr: "Cannot represent fullDatabaseId as a positive safe integer",
+          });
+        }
+        comments.push({ ...comment, databaseId });
+      }
+      nodes.push({ ...node, comments: { ...node.comments, nodes: comments } });
     }
 
     if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) {
@@ -86,7 +129,10 @@ export const reviewThreads = Effect.fn("reads.reviewThreads")(function* (
   return yield* gatedRead({
     key: { op: "reviewThreads", repo, pr },
     consistency,
-    decode: (raw) => Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(raw) as ThreadNode[],
+    decode: (raw): ThreadNode[] => {
+      Schema.decodeUnknownSync(CachedThreads)(raw);
+      return raw as ThreadNode[];
+    },
     fetch: originThreads(repo, pr),
     signal: reviewPages(repo, pr, "prComments").pipe(Effect.map(snapshotDigest)),
     maxAgeMs: () => OPS.reviewThreads.maxAgeMs,
