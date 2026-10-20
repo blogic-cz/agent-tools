@@ -5900,6 +5900,76 @@ describe("watch polling budget", () => {
 });
 
 describe("watch timeout failures", () => {
+  it.effect("fails when the final deadline snapshot contains a failed check", () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 30, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.gen(function* () {
+                  const failed = Number(yield* Clock.currentTimeMillis) >= 21_000;
+                  return [
+                    {
+                      name: "CI",
+                      state: failed ? "FAILURE" : "IN_PROGRESS",
+                      bucket: failed ? "fail" : "pending",
+                      link: "external",
+                    },
+                  ];
+                }),
+            }),
+          ),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("30 seconds");
+      const result = yield* Fiber.join(fiber);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure._tag).toBe("GitHubCommandError");
+    }),
+  );
+
+  it.effect("keeps timeout when the final snapshot has both failed and pending checks", () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 30, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.gen(function* () {
+                  const atDeadline = Number(yield* Clock.currentTimeMillis) >= 30_000;
+                  return atDeadline
+                    ? [
+                        { name: "CI", state: "FAILURE", bucket: "fail", link: "external" },
+                        {
+                          name: "Deploy",
+                          state: "IN_PROGRESS",
+                          bucket: "pending",
+                          link: "external",
+                        },
+                      ]
+                    : [
+                        {
+                          name: "CI",
+                          state: "IN_PROGRESS",
+                          bucket: "pending",
+                          link: "external",
+                        },
+                      ];
+                }),
+            }),
+          ),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("30 seconds");
+      const result = yield* Fiber.join(fiber);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure._tag).toBe("GitHubTimeoutError");
+    }),
+  );
+
   it.effect("checks watch fails at its deadline while a check remains pending", () =>
     Effect.gen(function* () {
       const fiber = yield* Effect.forkChild(
@@ -10744,15 +10814,57 @@ it.effect("gates shared pending checks and separates heads", () =>
       expect(calls).toBe(1);
       yield* TestClock.adjust("10 seconds");
       now = Number(yield* Clock.currentTimeMillis);
-      expect((yield* read)[0]?.bucket).toBe("pending");
-      expect(calls).toBe(1);
-      yield* TestClock.adjust("45 seconds");
-      now = Number(yield* Clock.currentTimeMillis);
       expect((yield* read)[0]?.bucket).toBe("pass");
       expect(calls).toBe(2);
       currentHead = "second";
       yield* fetchCheckResults(123, { headSha: "second" });
       expect(calls).toBe(3);
+    }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
+  }).pipe(Effect.scoped),
+);
+
+it.effect("refreshes empty checks before the third ten-second snapshot", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "gh-read-empty-checks-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    let now = 0;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(Date, "now").mockImplementation(() => now)),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const store = yield* Effect.promise(() => FileStore.open("fixture", directory));
+    let calls = 0;
+    const layer = createMockGhLayer({
+      apiRequest: ({ path }) =>
+        Effect.succeed({
+          status: 200,
+          body: path.includes("/pulls/")
+            ? { head: { sha: "head" }, base: { sha: "base" } }
+            : { check_runs: [], statuses: [] },
+        }),
+      runGhJson: () => {
+        calls += 1;
+        return Effect.succeed(
+          calls === 1
+            ? []
+            : [{ name: "Build", state: "IN_PROGRESS", bucket: "pending", link: "external" }],
+        );
+      },
+    });
+    yield* Effect.gen(function* () {
+      const read = fetchCheckResults(123, { headSha: "head", watchPending: true });
+      expect(yield* read).toEqual([]);
+      yield* TestClock.adjust("10 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect(yield* read).toEqual([]);
+      expect(calls).toBe(1);
+      yield* TestClock.adjust("10 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      expect(calls).toBe(2);
+      expect((yield* read)[0]?.bucket).toBe("pending");
     }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
   }).pipe(Effect.scoped),
 );

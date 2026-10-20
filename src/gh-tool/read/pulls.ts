@@ -252,7 +252,10 @@ export const prChecks = Effect.fn("reads.prChecks")(function* (
     fetch: stableFetch,
     cacheableWhen: () => verified,
     signal: checkSignal(repo, sha),
-    maxAgeMs: () => OPS.prChecks.maxAgeMs,
+    maxAgeMs: (value) =>
+      value.length === 0 || value.some((check) => check.bucket === "pending")
+        ? 15000
+        : OPS.prChecks.maxAgeMs,
   });
 });
 

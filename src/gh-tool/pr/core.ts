@@ -1518,6 +1518,16 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
         stderr: "",
       });
     const results = yield* fetchCheckResults(pr);
+    if (
+      results.some((check) => check.bucket === "fail") &&
+      (failFast || !results.some((check) => check.bucket === "pending"))
+    )
+      return yield* new GitHubCommandError({
+        command: buildChecksCommand(pr, true),
+        exitCode: 1,
+        message: "",
+        stderr: "",
+      });
     if (!quiet && graceExpired) {
       const prRef = pr === null ? "<number>" : String(pr);
       yield* Console.warn(
