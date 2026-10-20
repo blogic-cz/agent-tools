@@ -143,7 +143,7 @@
     },
     {
       "argv": ["issue", "list"],
-      "stdout": "[\n  {\n    \"createdAt\": \"2026-10-01T08:00:00Z\",\n    \"labels\": [\n      {\n        \"name\": \"bug\"\n      }\n    ],\n    \"number\": 7,\n    \"state\": \"OPEN\",\n    \"title\": \"Example issue\",\n    \"url\": \"https://github.com/owner/repo/issues/7\"\n  }\n]\n",
+      "stdout": "[\n  {\n    \"assignees\": [\n      {\n        \"login\": \"author\"\n      }\n    ],\n    \"createdAt\": \"2026-10-01T08:00:00Z\",\n    \"labels\": [\n      {\n        \"name\": \"bug\"\n      }\n    ],\n    \"number\": 7,\n    \"state\": \"OPEN\",\n    \"title\": \"Example issue\",\n    \"url\": \"https://github.com/owner/repo/issues/7\"\n  }\n]\n",
       "status": 0
     },
     {

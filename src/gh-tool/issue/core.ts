@@ -27,6 +27,7 @@ export type IssueListItem = {
   state: string;
   url: string;
   labels: Array<{ name: string }>;
+  assignees: Array<{ login: string }>;
   createdAt: string;
 };
 

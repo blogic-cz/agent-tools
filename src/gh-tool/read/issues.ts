@@ -16,11 +16,11 @@ const IssueListItem = Schema.Struct({
   state: Schema.String,
   url: Schema.String,
   labels: Schema.mutable(Schema.Array(Label)),
+  assignees: Schema.mutable(Schema.Array(Login)),
   createdAt: Schema.String,
 });
 const IssueView = Schema.Struct({
   ...IssueListItem.fields,
-  assignees: Schema.mutable(Schema.Array(Login)),
   author: Login,
   body: Schema.String,
   closedAt: Schema.NullOr(Schema.String),
@@ -39,7 +39,7 @@ export type IssueListFilter = {
   limit: number;
   includeBody?: boolean;
 };
-export const ISSUE_LIST_FIELDS = "number,title,state,url,labels,createdAt";
+export const ISSUE_LIST_FIELDS = "number,title,state,url,labels,assignees,createdAt";
 export const ISSUE_VIEW_FIELDS =
   "number,title,state,url,labels,assignees,author,body,createdAt,closedAt";
 

@@ -85,14 +85,14 @@ describe("issue census operations", () => {
         "--limit",
         "1000",
         "--json",
-        "number,title,state,url,labels,createdAt,body",
+        "number,title,state,url,labels,assignees,createdAt,body",
         "--repo",
         "owner/repo",
         "--label",
         "debt",
       ]);
       yield* listIssues({ state: "open", labels: null, limit: 30 }).pipe(Effect.provide(layer));
-      expect(calls[1]).toContain("number,title,state,url,labels,createdAt");
+      expect(calls[1]).toContain("number,title,state,url,labels,assignees,createdAt");
     }),
   );
 
