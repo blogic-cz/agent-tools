@@ -21,6 +21,28 @@ import type {
   RawPullRequestReview,
 } from "./review-model";
 
+const CachedThreads = Schema.Array(
+  Schema.Struct({
+    id: Schema.String,
+    isResolved: Schema.Boolean,
+    comments: Schema.Struct({
+      nodes: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          databaseId: Schema.Number.check(
+            Schema.makeFilter((id) => Number.isSafeInteger(id) && id > 0),
+          ),
+          path: Schema.String,
+          line: Schema.NullOr(Schema.Number),
+          body: Schema.String,
+          author: Schema.Struct({ login: Schema.String }),
+          commit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
+        }),
+      ),
+    }),
+  }),
+);
+
 const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
   repoInfo: RepoRef,
   pr: number,
@@ -107,7 +129,10 @@ export const reviewThreads = Effect.fn("reads.reviewThreads")(function* (
   return yield* gatedRead({
     key: { op: "reviewThreads", repo, pr },
     consistency,
-    decode: (raw) => Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(raw) as ThreadNode[],
+    decode: (raw): ThreadNode[] => {
+      Schema.decodeUnknownSync(CachedThreads)(raw);
+      return raw as ThreadNode[];
+    },
     fetch: originThreads(repo, pr),
     signal: reviewPages(repo, pr, "prComments").pipe(Effect.map(snapshotDigest)),
     maxAgeMs: () => OPS.reviewThreads.maxAgeMs,
