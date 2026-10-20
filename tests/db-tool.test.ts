@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer, Sink, Stream } from "effect";
 import type { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process";
+import { spawnSync } from "node:child_process";
 
 import type { DbError } from "#db/errors";
 import type { QueryResult } from "#db/types";
@@ -26,8 +27,9 @@ import {
   resolveHostOverride,
   resolvePortOverride,
 } from "#db/service";
-import { DbSqlClient, type DbConnection } from "#db/sql-client";
-import { redactSensitiveText } from "#shared/content-security";
+import { DbSqlClient, toDbQueryError, type DbConnection } from "#db/sql-client";
+import { redactSensitiveText, registerResolvedSecret } from "#shared/content-security";
+import { SecretEnvResolver, type ZshRunner } from "#shared/secret-env";
 
 /**
  * Mock DbService layer factory for testing
@@ -185,10 +187,12 @@ function createRealDbServiceLayer(
   observedSql: Array<ObservedSql>,
   shellResponses: Record<string, ShellResult> = {},
   observedShellCommands: Array<string> = [],
+  resolverRunner: ZshRunner = async () => ({ _tag: "absent" }),
 ) {
   return DbService.layer.pipe(
     Layer.provide(createMockSqlClientLayer(sqlResponses, observedSql)),
     Layer.provide(createMockChildProcessSpawnerLayer(shellResponses, observedShellCommands)),
+    Layer.provide(SecretEnvResolver.testLayer(resolverRunner)),
     Layer.provide(Layer.succeed(ConfigService, config)),
     Layer.provide(Layer.succeed(DbConfigService, databaseConfig)),
   );
@@ -723,6 +727,75 @@ describe("DbService", () => {
         ),
       );
     });
+
+    it.effect("refuses a failed port lookup instead of using the literal port", () => {
+      const observedSql: ObservedSql[] = [];
+      const fake = `fake-secret-${crypto.randomUUID()}`;
+
+      return withEnvVars(
+        { [PORT_VAR]: undefined, [HOST_VAR]: undefined },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          const result = yield* service.executeQuery("local", "SELECT 1").pipe(Effect.result);
+          let connectionError: DbConnectionError | undefined;
+          Result.match(result, {
+            onFailure: (error) => {
+              expect(error._tag).toBe("DbConnectionError");
+              expect(error.message).toContain(PORT_VAR);
+              expect(String(error)).not.toContain(fake);
+              connectionError = error as DbConnectionError;
+            },
+            onSuccess: () => expect.fail("Expected failed override lookup"),
+          });
+          expect(observedSql).toEqual([]);
+          expect(connectionError).toBeInstanceOf(DbConnectionError);
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            overridableConfig(),
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+            {},
+            [],
+            async (name) =>
+              name === PORT_VAR ? { _tag: "failed", reason: fake } : { _tag: "absent" },
+          ),
+        ),
+      );
+    });
+
+    it.effect("resolves lowercase config template names from the process environment", () => {
+      const observedSql: ObservedSql[] = [];
+      const userTemplate = `\${agent_tools_review_user}`;
+      return withEnvVars(
+        { agent_tools_review_user: "app" },
+        Effect.gen(function* () {
+          const service = yield* DbService;
+          yield* service.executeQuery("local", "SELECT 1");
+          expect(observedSql[0].connection.user).toBe("app");
+        }),
+      ).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            {
+              environments: {
+                local: {
+                  host: "127.0.0.1",
+                  port: 40543,
+                  user: userTemplate,
+                  database: "app",
+                },
+              },
+            },
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
   });
 
   describe("resolved password redaction", () => {
@@ -730,6 +803,45 @@ describe("DbService", () => {
       environments: {
         local: { host: "127.0.0.1", port: 40543, user: "app", database: "app", ...auth },
       },
+    });
+
+    it.effect("rejects empty process and zsh passwords before calling SQL", () => {
+      const passwordEnvVar = "AGENT_TOOLS_TEST_DB_EMPTY_PASSWORD";
+
+      return Effect.gen(function* () {
+        for (const source of ["process", "zsh"] as const) {
+          const observedSql: ObservedSql[] = [];
+          const result = yield* withEnvVars(
+            { [passwordEnvVar]: source === "process" ? "" : undefined },
+            Effect.gen(function* () {
+              const service = yield* DbService;
+              return yield* service.executeQuery("local", "SELECT 1").pipe(Effect.result);
+            }),
+          ).pipe(
+            Effect.provide(
+              createRealDbServiceLayer(
+                {},
+                passwordConfig({ passwordEnvVar }),
+                { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+                observedSql,
+                {},
+                [],
+                async () => ({ _tag: "found", value: "" }),
+              ),
+            ),
+          );
+
+          Result.match(result, {
+            onFailure: (error) => {
+              expect(error._tag).toBe("DbConnectionError");
+              expect(error.message).toContain(passwordEnvVar);
+              expect(String(error)).not.toContain("fake-secret-");
+            },
+            onSuccess: () => expect.fail(`Expected empty ${source} password to fail`),
+          });
+          expect(observedSql).toEqual([]);
+        }
+      });
     });
 
     it.effect("redacts a literal config password from later output", () => {
@@ -776,6 +888,31 @@ describe("DbService", () => {
         ),
       );
     });
+
+    it("redacts a short secret from DB driver error fields", () => {
+      const fake = `s${crypto.randomUUID().slice(0, 6)}`;
+      registerResolvedSecret(fake, { allowShort: true });
+      const error = toDbQueryError(new Error(`driver echoed ${fake}`), "SELECT 1");
+      expect(error.message).not.toContain(fake);
+      expect(error.stderr).not.toContain(fake);
+    });
+  });
+
+  it("renders a DbConnectionError to stderr without a secret", () => {
+    const fake = `fake-secret-${crypto.randomUUID()}`;
+    const script = `
+      import { Cause, Effect } from "effect";
+      import { DbConnectionError } from "./src/db-tool/errors.ts";
+      import { renderCauseToStderr } from "./src/shared/error-renderer.ts";
+      const error = new DbConnectionError({ message: "AGENT_TOOLS_TEST_PG_PORT lookup failed", environment: "local" });
+      await Effect.runPromise(renderCauseToStderr(Cause.fail(error)));
+      console.log("database command failed");
+    `;
+    const result = spawnSync("bun", ["-e", script], { cwd: process.cwd(), encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("database command failed");
+    expect(result.stderr).toContain("DbConnectionError");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(fake);
   });
 
   describe("executeQuery", () => {

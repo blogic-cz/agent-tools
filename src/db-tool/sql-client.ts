@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 
 import { DbQueryError } from "./errors";
+import { redactSensitiveText } from "#shared/content-security";
 
 export type DbConnection = {
   readonly host: string;
@@ -21,6 +22,11 @@ type BunQueryResult = unknown[] & { count?: number; command?: string };
 
 export const toErrorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
+
+export const toDbQueryError = (cause: unknown, sql: string): DbQueryError => {
+  const message = redactSensitiveText(toErrorMessage(cause));
+  return new DbQueryError({ message, sql, stderr: message });
+};
 
 const runWithBunSql = (connection: DbConnection, sql: string) =>
   Effect.tryPromise({
@@ -61,10 +67,7 @@ const runWithBunSql = (connection: DbConnection, sql: string) =>
         await client.close().catch(() => undefined);
       }
     },
-    catch: (cause) => {
-      const message = toErrorMessage(cause);
-      return new DbQueryError({ message, sql, stderr: message });
-    },
+    catch: (cause) => toDbQueryError(cause, sql),
   });
 
 export class DbSqlClient extends Context.Service<

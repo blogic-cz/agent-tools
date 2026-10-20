@@ -12,8 +12,13 @@ const MIN_SECRET_LENGTH = 8;
 const resolvedSecrets = new Set<string>();
 
 /** Redact a credential a tool resolved outside a sensitively named environment variable. */
-export const registerResolvedSecret = (value: string) => {
-  if (value.length >= MIN_SECRET_LENGTH) resolvedSecrets.add(value);
+export const registerResolvedSecret = (
+  value: string,
+  options: { readonly allowShort?: boolean } = {},
+) => {
+  if (value.length > 0 && (options.allowShort === true || value.length >= MIN_SECRET_LENGTH)) {
+    resolvedSecrets.add(value);
+  }
 };
 
 const sensitiveEnvironmentValues = (environment: Record<string, string | undefined>) =>

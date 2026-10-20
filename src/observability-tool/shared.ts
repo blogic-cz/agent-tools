@@ -5,7 +5,8 @@ import { ConfigService, getToolConfig } from "#config";
 import type { ObservabilityConfig } from "#config";
 
 import { ObservabilityToolError } from "./errors";
-import { registerResolvedSecret, unsafeOutboundTextReason } from "#shared/content-security";
+import { redactSensitiveText, unsafeOutboundTextReason } from "#shared/content-security";
+import { SecretEnvResolver } from "#shared/secret-env";
 import type {
   DsQueryOpts,
   DsQueryResponse,
@@ -48,18 +49,15 @@ export const profileOption = Flag.optional(
   ),
 );
 
-function resolveToken(tokenEnvVar?: string): string | undefined {
+function resolveToken(
+  resolver: SecretEnvResolver["Service"],
+  tokenEnvVar?: string,
+): Promise<string | undefined> {
   if (!tokenEnvVar) {
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
-  const token = process.env[tokenEnvVar];
-  if (!token) {
-    throw new Error(`${tokenEnvVar} environment variable is not set`);
-  }
-
-  registerResolvedSecret(token);
-  return token;
+  return resolver.resolveSecretEnv(tokenEnvVar);
 }
 
 async function discoverDatasources(url: string, token?: string): Promise<GrafanaDatasource[]> {
@@ -68,7 +66,9 @@ async function discoverDatasources(url: string, token?: string): Promise<Grafana
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Grafana API ${response.status}: /api/datasources — ${body}`);
+    throw new Error(
+      redactSensitiveText(`Grafana API ${response.status}: /api/datasources — ${body}`),
+    );
   }
 
   return (await response.json()) as GrafanaDatasource[];
@@ -102,13 +102,14 @@ export function requireTempoUid(
 async function resolveFromProfile(
   profile: ObservabilityConfig | undefined,
   env: string,
+  resolver: SecretEnvResolver["Service"],
 ): Promise<ObservabilityEnvConfig | undefined> {
   const environment = profile?.environments[env];
   if (!environment) {
     return undefined;
   }
 
-  const token = resolveToken(environment.tokenEnvVar);
+  const token = await resolveToken(resolver, environment.tokenEnvVar);
   const datasources = await discoverDatasources(environment.url, token);
 
   // Tempo is optional: metrics/logs work on Grafana instances without it (e.g. Percona PMM).
@@ -157,6 +158,7 @@ function resolveFromEnv(
 export const resolveConfig = (env: string, profile: Option.Option<string>) =>
   Effect.gen(function* () {
     const config = yield* ConfigService;
+    const secretEnvResolver = yield* SecretEnvResolver;
     const profileName = Option.getOrUndefined(profile);
     const observabilityConfig = getToolConfig<ObservabilityConfig>(
       config,
@@ -166,7 +168,11 @@ export const resolveConfig = (env: string, profile: Option.Option<string>) =>
 
     return yield* Effect.tryPromise({
       try: async () => {
-        const profileResolved = await resolveFromProfile(observabilityConfig, env);
+        const profileResolved = await resolveFromProfile(
+          observabilityConfig,
+          env,
+          secretEnvResolver,
+        );
         if (profileResolved) {
           return profileResolved;
         }
@@ -258,7 +264,7 @@ export function observabilityFetch<T>(
 
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        throw new Error(`Grafana API ${response.status}: ${path} — ${body}`);
+        throw new Error(redactSensitiveText(`Grafana API ${response.status}: ${path} — ${body}`));
       }
 
       return (await response.json()) as T;
