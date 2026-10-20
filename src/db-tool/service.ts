@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { Clock, Context, Duration, Effect, Layer, Ref, Result, Stream } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Result, Stream } from "effect";
 
 import type { DbConfig, DbMutationOperation, QueryResult, SchemaMode } from "./types";
 
@@ -7,6 +7,7 @@ import { ConfigService } from "#config";
 import { isPrerequisiteRunError } from "#shared/prerequisites/errors";
 import { resolveEnvTemplate } from "#shared/env-template";
 import { registerResolvedSecret, unsafeOutboundTextReason } from "#shared/content-security";
+import { SecretEnvResolver } from "#shared/secret-env";
 import { resolveEnvironmentScopedPrerequisites } from "#shared/prerequisites/config";
 import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
@@ -42,12 +43,6 @@ const LOCALHOST_HOSTS = new Set(["localhost", "127.0.0.1"]);
 const MIN_TCP_PORT = 1;
 const MAX_TCP_PORT = 65535;
 const INTEGER_ONLY = /^\d+$/;
-
-// Bun.env is the primary source: it carries the values Bun loads from a .env file, which is where
-// a per-worktree host/port lives. It aliases process.env, which is also the only one that exists
-// when this module runs outside Bun (the vitest runner).
-const readProcessEnv = (envVar: string): string | undefined =>
-  (typeof Bun === "undefined" ? process.env : Bun.env)[envVar];
 
 export type ResolvedPortOverride =
   | { readonly ok: true; readonly port: number }
@@ -159,6 +154,7 @@ export class DbService extends Context.Service<
       Effect.gen(function* () {
         const executor = yield* ChildProcessSpawner.ChildProcessSpawner;
         const sqlClient = yield* DbSqlClient;
+        const secretEnvResolver = yield* SecretEnvResolver;
         const agentToolsConfig = yield* ConfigService;
         const dbConfig = yield* DbConfigService;
 
@@ -185,152 +181,138 @@ export class DbService extends Context.Service<
         const apiProbeTimeoutMs = dbConfig.apiProbeTimeoutMs ?? 2000;
         const remotePort = dbConfig.remotePort ?? 5432;
 
-        const zshrcEnvCache = yield* Ref.make<Record<string, string> | null>(null);
         const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
-
-        const loadEnvFromZshrc = Effect.fn("DbService.loadEnvFromZshrc")(function* () {
-          const cached = yield* Ref.get(zshrcEnvCache);
-          if (cached !== null) {
-            return cached;
-          }
-
-          const home = process.env.HOME;
-          if (!home || home.trim() === "") {
-            yield* Ref.set(zshrcEnvCache, {});
-            return {};
-          }
-
-          const zshrcPath = `${home}/.zshrc`;
-          const content = yield* Effect.tryPromise(async () => {
-            const file = Bun.file(zshrcPath);
-            if (!(await file.exists())) {
-              return "";
-            }
-            return await file.text();
-          }).pipe(Effect.orElseSucceed(() => ""));
-
-          const envVars: Record<string, string> = {};
-          const regex = /^export\s+([A-Z_][A-Z0-9_]*)=["']?([^"'\n]+)["']?/gm;
-          let match = regex.exec(content);
-
-          while (match !== null) {
-            envVars[match[1]] = match[2];
-            match = regex.exec(content);
-          }
-
-          yield* Ref.set(zshrcEnvCache, envVars);
-          return envVars;
-        });
-
-        const resolvePassword = Effect.fn("DbService.resolvePassword")(function* (
-          config: DbConfig,
-          env: string,
-        ) {
-          if (config.password) {
-            registerResolvedSecret(config.password);
-            return config.password;
-          }
-
-          if (config.passwordEnvVar) {
-            const fromEnv = process.env[config.passwordEnvVar];
-            if (fromEnv) {
-              registerResolvedSecret(fromEnv);
-              return fromEnv;
-            }
-
-            const zshrcEnv = yield* loadEnvFromZshrc();
-            const fromZsh = zshrcEnv[config.passwordEnvVar];
-            if (fromZsh) {
-              registerResolvedSecret(fromZsh);
-              return fromZsh;
-            }
-
-            return yield* new DbConnectionError({
-              message: `Environment variable ${config.passwordEnvVar} is not set.`,
-              environment: env,
-            });
-          }
-
-          // Local databases typically don't need a password
-          return "";
-        });
-
-        const resolveConfigString = Effect.fn("DbService.resolveConfigString")(function* (
-          value: string,
-          env: string,
-          label: string,
-          zshrcEnv: Record<string, string>,
-        ) {
-          const match = value.match(envTemplateRegex);
-          if (!match) return value;
-
-          const envVar = match[1];
-          const fromEnv = Bun.env[envVar];
-          if (fromEnv !== undefined) return fromEnv;
-
-          const fromZsh = zshrcEnv[envVar];
-          if (fromZsh !== undefined) return fromZsh;
-
-          return yield* new DbConnectionError({
-            message: `Environment variable ${envVar} (required for '${label}' config field) is not set in environment ${env}.`,
-            environment: env,
+        const lookupConfigEnv = (name: string) =>
+          Effect.tryPromise({
+            try: () => secretEnvResolver.lookupConfigEnv(name),
+            catch: () => new Error(`${name} lookup failed`),
           });
-        });
 
-        const lookupEnvOverride = (envVar: string, zshrcEnv: Record<string, string>) =>
-          readProcessEnv(envVar) ?? zshrcEnv[envVar];
+        const resolvePassword = (config: DbConfig, env: string) =>
+          Effect.gen(function* () {
+            if (config.password) {
+              registerResolvedSecret(config.password);
+              return config.password;
+            }
 
-        const resolveDbConfig = Effect.fn("DbService.resolveDbConfig")(function* (
-          config: DbConfig,
-          env: string,
-        ) {
-          const needsEnvResolution =
-            envTemplateRegex.test(config.user) ||
-            envTemplateRegex.test(config.database) ||
-            config.hostEnvVar !== undefined ||
-            config.portEnvVar !== undefined;
-          const zshrcEnv = needsEnvResolution ? yield* loadEnvFromZshrc() : {};
+            const passwordEnvVar = config.passwordEnvVar;
+            if (passwordEnvVar) {
+              return yield* Effect.tryPromise({
+                try: () => secretEnvResolver.resolveSecretEnv(passwordEnvVar),
+                catch: () =>
+                  new Error(
+                    `${passwordEnvVar} is not in the environment or in the interactive zsh`,
+                  ),
+              }).pipe(
+                Effect.mapError(
+                  () =>
+                    new DbConnectionError({
+                      message: `${passwordEnvVar} is not in the environment or in the interactive zsh`,
+                      environment: env,
+                    }),
+                ),
+              );
+            }
 
-          const host = resolveHostOverride(
-            config.host,
-            config.hostEnvVar,
-            config.hostEnvVar ? lookupEnvOverride(config.hostEnvVar, zshrcEnv) : undefined,
-          );
-          const portOverride = resolvePortOverride(
-            env,
-            config.port,
-            config.portEnvVar,
-            config.portEnvVar ? lookupEnvOverride(config.portEnvVar, zshrcEnv) : undefined,
-          );
+            // Local databases typically don't need a password
+            return "";
+          });
 
-          if (!portOverride.ok) {
-            return yield* new DbConnectionError({
-              message: portOverride.message,
-              environment: env,
-            });
-          }
+        const resolveConfigString = (value: string, env: string, label: string) =>
+          Effect.gen(function* () {
+            const match = value.match(envTemplateRegex);
+            if (!match) return value;
 
-          // A host override can flip the tunnel decision (a forwarded localhost port vs a directly
-          // reachable host), so re-derive the access mode whenever the override changed the host.
-          const needsTunnel =
-            host === config.host
-              ? config.needsTunnel
-              : resolveDbAccessMode(
-                  env,
-                  host,
-                  dbConfig.kubectl !== undefined,
-                  config.allowedMutations,
-                ).needsTunnel;
+            const envVar = match[1];
+            const result = yield* lookupConfigEnv(envVar).pipe(
+              Effect.mapError(
+                () =>
+                  new DbConnectionError({
+                    message: `${envVar} lookup failed (required for '${label}' config field) in environment ${env}.`,
+                    environment: env,
+                  }),
+              ),
+            );
+            if (result._tag === "failed") {
+              return yield* new DbConnectionError({
+                message: `${envVar} lookup failed (required for '${label}' config field) in environment ${env}.`,
+                environment: env,
+              });
+            }
+            if (result._tag === "absent") {
+              return yield* new DbConnectionError({
+                message: `${envVar} is not in the environment or in the interactive zsh (required for '${label}' config field) in environment ${env}.`,
+                environment: env,
+              });
+            }
+            return result.value;
+          });
 
-          return {
-            ...config,
-            host,
-            port: portOverride.port,
-            needsTunnel,
-            user: yield* resolveConfigString(config.user, env, "user", zshrcEnv),
-            database: yield* resolveConfigString(config.database, env, "database", zshrcEnv),
-          };
-        });
+        const resolveDbConfig = (config: DbConfig, env: string) =>
+          Effect.gen(function* () {
+            const resolveOverride = (name: string | undefined) => {
+              if (!name) return Effect.succeed(undefined);
+              return lookupConfigEnv(name).pipe(
+                Effect.flatMap((result) => {
+                  if (result._tag === "absent") return Effect.succeed(undefined);
+                  if (result._tag === "failed") {
+                    return Effect.fail(
+                      new DbConnectionError({
+                        message: `${name} lookup failed in environment ${env}.`,
+                        environment: env,
+                      }),
+                    );
+                  }
+                  return Effect.succeed(result.value);
+                }),
+                Effect.mapError(
+                  () =>
+                    new DbConnectionError({
+                      message: `${name} lookup failed in environment ${env}.`,
+                      environment: env,
+                    }),
+                ),
+              );
+            };
+            const hostValue = yield* resolveOverride(config.hostEnvVar);
+            const portValue = yield* resolveOverride(config.portEnvVar);
+
+            const host = resolveHostOverride(config.host, config.hostEnvVar, hostValue);
+            const portOverride = resolvePortOverride(
+              env,
+              config.port,
+              config.portEnvVar,
+              portValue,
+            );
+
+            if (!portOverride.ok) {
+              return yield* new DbConnectionError({
+                message: portOverride.message,
+                environment: env,
+              });
+            }
+
+            // A host override can flip the tunnel decision (a forwarded localhost port vs a directly
+            // reachable host), so re-derive the access mode whenever the override changed the host.
+            const needsTunnel =
+              host === config.host
+                ? config.needsTunnel
+                : resolveDbAccessMode(
+                    env,
+                    host,
+                    dbConfig.kubectl !== undefined,
+                    config.allowedMutations,
+                  ).needsTunnel;
+
+            return {
+              ...config,
+              host,
+              port: portOverride.port,
+              needsTunnel,
+              user: yield* resolveConfigString(config.user, env, "user"),
+              database: yield* resolveConfigString(config.database, env, "database"),
+            };
+          });
 
         const executeShellCommand = (command: ChildProcess.Command) =>
           Effect.scoped(

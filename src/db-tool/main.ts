@@ -14,6 +14,7 @@ import {
   VERSION,
 } from "#shared";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { SecretEnvResolver } from "#shared/secret-env";
 import { withRedactedOutput } from "#shared/output-boundary";
 import { ConfigService, ConfigServiceLayer, getDefaultEnvironment } from "#config";
 import { DbConfigService, makeDbConfigLayer } from "./config-service";
@@ -248,6 +249,7 @@ const MainLayer = DbService.layer.pipe(
   // provideMerge (not provide) so DbConfigService stays in the program context for the `envs` command,
   // which reads it directly rather than going through DbService.
   Layer.provideMerge(DbSqlClient.layer),
+  Layer.provideMerge(SecretEnvResolver.liveLayer),
   Layer.provideMerge(dbConfigLayer),
   Layer.provideMerge(ConfigServiceLayer),
   Layer.provideMerge(BunServices.layer),

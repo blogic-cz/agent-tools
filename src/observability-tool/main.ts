@@ -7,6 +7,7 @@ import { Command } from "effect/cli";
 import { ConfigServiceLayer } from "#config";
 import { AuditServiceLayer, withAudit } from "#shared/audit";
 import { withRedactedOutput } from "#shared/output-boundary";
+import { SecretEnvResolver } from "#shared/secret-env";
 import { makeSchemaCommand, renderCauseToStderr, VERSION } from "#shared";
 
 import { metricsCommand } from "./metrics";
@@ -24,7 +25,12 @@ const mainCommand = Command.make("observability-tool", {}).pipe(
 
 const cli = Command.run(mainCommand, { version: VERSION, renderErrors: false });
 
-const MainLayer = Layer.mergeAll(BunServices.layer, ConfigServiceLayer, AuditServiceLayer);
+const MainLayer = Layer.mergeAll(
+  BunServices.layer,
+  ConfigServiceLayer,
+  AuditServiceLayer,
+  SecretEnvResolver.liveLayer,
+);
 
 const program = withRedactedOutput(withAudit("observability", cli)).pipe(
   Effect.provide(MainLayer),

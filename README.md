@@ -547,6 +547,8 @@ Each tool uses its own auth method — no unified token store:
 | `api-tool`           | Caller capability and proxy HTTPS origin in client configuration                             |
 | `api-proxy`          | Private operator store and policy under a separated service identity                         |
 
+Set `tokenEnvVar` and `passwordEnvVar` to names that match `^[A-Z_][A-Z0-9_]*$`.
+
 The REST proxy uses its separate private operator store described in [REST proxy setup](docs/rest-api-proxy.md). Other tool configs reference credential sources. Provider secrets are **never** stored in the caller client config file. The `db-tool` config references env var **names** only:
 
 ```json5
@@ -574,7 +576,8 @@ These are **overrides with fallback**, not requirements — the opposite of `pas
 - variable unset or empty → the literal `host` / `port` in the config is used, and no error is raised;
 - `portEnvVar` set to something that is not an integer between 1 and 65535 → the command **fails**. It never falls back to the literal, because that would query a different database while you believe the override applied.
 
-The variable is read from the process environment first (Bun loads `.env` files into it), then from `~/.zshrc` exports.
+The variable is read from the process environment first (Bun loads `.env` files into it), then from the interactive zsh environment.
+The zsh child receives only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_ALL`, `TMPDIR`, `XDG_CONFIG_HOME`, and `ZDOTDIR`. If an rc file needs another parent process variable to select or load a value, that value will not resolve.
 
 The typical use is a repository where every git worktree runs its own database container on its own host port, published by that worktree's `.env`:
 
