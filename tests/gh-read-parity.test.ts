@@ -60,7 +60,7 @@ it(
 );
 
 it(
-  "replays published 1.7.5 command outputs without GitHub access",
+  "replays published 1.7.5 outputs with original review location fields without GitHub access",
   { timeout: 30000 },
   async ({ signal, onTestFinished }) => {
     const root = await mkdtemp(join(tmpdir(), "gh-read-parity-"));
@@ -81,11 +81,23 @@ it(
     expect(fixture.cases.map((entry) => entry.argv)).toEqual(replayCases);
     running = runReplayCases({
       executable: bun,
-      cases: fixture.cases.map((entry) => ({
-        stdout: entry.stdout,
-        status: entry.status,
-        argv: ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(entry.argv)],
-      })),
+      cases: fixture.cases.map((entry) => {
+        let stdout = entry.stdout;
+        if (entry.argv[0] === "pr") {
+          stdout = stdout.replace(
+            /^( +)"line": (null|\d+),$/gm,
+            '$&\n$1"originalLine": null,\n$1"originalCommitSha": null,\n$1"diffHunk": null,',
+          );
+          if (["review-triage", "review-triage-batch"].includes(entry.argv[1] ?? "")) {
+            stdout = stdout.replace(/^( +)"reviews": \[$/gm, '$1"checksStatus": "reported",\n$&');
+          }
+        }
+        return {
+          stdout,
+          status: entry.status,
+          argv: ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(entry.argv)],
+        };
+      }),
       options: {
         cwd: resolve(import.meta.dirname, ".."),
         encoding: "utf8",
