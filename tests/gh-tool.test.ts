@@ -56,6 +56,7 @@ import {
 } from "#gh/issue/triage";
 import {
   fetchCheckResults,
+  fetchChecks,
   createPR,
   editPR,
   draftPR,
@@ -5866,6 +5867,38 @@ describe("Issue triage", () => {
   );
 });
 
+describe("watch polling budget", () => {
+  it.effect("backs off unchanged pending checks and caps the interval at one minute", () =>
+    Effect.gen(function* () {
+      const times: number[] = [];
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, false, 300, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.gen(function* () {
+                  const at = Number(yield* Clock.currentTimeMillis);
+                  times.push(at);
+                  return [
+                    {
+                      name: "CI",
+                      state: at < 165_000 ? "IN_PROGRESS" : "SUCCESS",
+                      bucket: at < 165_000 ? "pending" : "pass",
+                      link: "external",
+                    },
+                  ];
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("165 seconds");
+      expect(times).toEqual([0, 15_000, 45_000, 105_000, 165_000, 165_000]);
+      expect((yield* Fiber.join(fiber))[0]?.bucket).toBe("pass");
+    }),
+  );
+});
+
 describe("watch timeout failures", () => {
   it.effect("checks watch fails at its deadline while a check remains pending", () =>
     Effect.gen(function* () {
@@ -10710,6 +10743,10 @@ it.effect("gates shared pending checks and separates heads", () =>
       expect((yield* read)[0]?.bucket).toBe("pending");
       expect(calls).toBe(1);
       yield* TestClock.adjust("10 seconds");
+      now = Number(yield* Clock.currentTimeMillis);
+      expect((yield* read)[0]?.bucket).toBe("pending");
+      expect(calls).toBe(1);
+      yield* TestClock.adjust("45 seconds");
       now = Number(yield* Clock.currentTimeMillis);
       expect((yield* read)[0]?.bucket).toBe("pass");
       expect(calls).toBe(2);

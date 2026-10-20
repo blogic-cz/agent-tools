@@ -276,6 +276,10 @@ describe("rate-limit error details", () => {
       }).pipe(Effect.flip);
       expect(error.message).toContain("reset time: 2027-01-15T08:00:00.000Z");
       expect(error.message).toContain("remaining quota: 0");
+      expect(error).toMatchObject({
+        hint: expect.stringContaining("Wait for the reset"),
+        nextCommand: "gh api rate_limit",
+      });
       expect(fetchCalls).toHaveLength(1);
     }),
   );

@@ -208,6 +208,12 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,
+    ...(rateLimit
+      ? {
+          hint: "Wait for the reset before retrying. Check the remaining quota once with the shown command; it does not consume the quota.",
+          nextCommand: "gh api rate_limit",
+        }
+      : {}),
     ...(response.status >= 500 || (rateLimit && canWait) ? { retryable: true } : {}),
   });
   if (rateLimit && canWait && waitMs !== undefined) rateLimitRetryDelays.set(error, waitMs);
