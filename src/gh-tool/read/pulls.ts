@@ -227,7 +227,10 @@ export const prChecks = Effect.fn("reads.prChecks")(function* (
   const sha = head.headSha;
   let verified = true;
   const stableFetch = Effect.gen(function* () {
-    const before = yield* prHead(repo, number, "origin").pipe(Effect.orElseSucceed(() => null));
+    const before =
+      headSha === null
+        ? head
+        : yield* prHead(repo, number, "origin").pipe(Effect.orElseSucceed(() => null));
     if (before !== null && before.headSha !== sha) return yield* movedHead(number);
     const value = yield* gh.runGhJson<CheckResult[]>([
       "pr",

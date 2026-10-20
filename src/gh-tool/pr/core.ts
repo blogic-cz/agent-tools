@@ -257,6 +257,8 @@ export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 // for the caller's whole --timeout.
 const CHECK_REGISTRATION_POLL_SECONDS = 5;
 const CHECK_REGISTRATION_GRACE_SECONDS = 60;
+const CHECK_POLL_INTERVAL_MS = 15_000;
+const CHECK_POLL_MAX_INTERVAL_MS = 60_000;
 const NO_CHECKS_REPORTED_REASON =
   "gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.";
 
@@ -1469,9 +1471,21 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     const started = Number(yield* Clock.currentTimeMillis);
     const graceDeadlineMs =
       started + Math.min(CHECK_REGISTRATION_GRACE_SECONDS, timeoutSeconds) * 1000;
+    let previousChecks = "";
+    let intervalMs = CHECK_POLL_INTERVAL_MS;
     const poll = Effect.gen(function* () {
       const checks = yield* fetchCheckResults(pr);
-      return { checks, at: Number(yield* Clock.currentTimeMillis) };
+      const signature = JSON.stringify(checks);
+      intervalMs =
+        signature === previousChecks
+          ? Math.min(CHECK_POLL_MAX_INTERVAL_MS, intervalMs * 2)
+          : CHECK_POLL_INTERVAL_MS;
+      previousChecks = signature;
+      return {
+        checks,
+        at: Number(yield* Clock.currentTimeMillis),
+        intervalMs: checks.length === 0 ? CHECK_REGISTRATION_POLL_SECONDS * 1000 : intervalMs,
+      };
     });
     const watchOutcome = yield* waits
       .until(
@@ -1481,7 +1495,7 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
             ? at >= graceDeadlineMs
             : (failFast && checks.some((check) => check.bucket === "fail")) ||
               checks.every((check) => check.bucket !== "pending"),
-        { intervalMs: CHECK_REGISTRATION_POLL_SECONDS * 1000, timeoutMs: timeoutSeconds * 1000 },
+        { intervalMs: (value) => value.intervalMs, timeoutMs: timeoutSeconds * 1000 },
       )
       .pipe(
         Effect.timeoutOrElse({
@@ -1504,6 +1518,16 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
         stderr: "",
       });
     const results = yield* fetchCheckResults(pr);
+    if (
+      results.some((check) => check.bucket === "fail") &&
+      (failFast || !results.some((check) => check.bucket === "pending"))
+    )
+      return yield* new GitHubCommandError({
+        command: buildChecksCommand(pr, true),
+        exitCode: 1,
+        message: "",
+        stderr: "",
+      });
     if (!quiet && graceExpired) {
       const prRef = pr === null ? "<number>" : String(pr);
       yield* Console.warn(

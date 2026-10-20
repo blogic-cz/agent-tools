@@ -7,7 +7,7 @@ const until = <A, E, R>(
   read: Effect.Effect<A, E, R>,
   done: (value: A) => boolean,
   opts: {
-    readonly intervalMs: number;
+    readonly intervalMs: number | ((value: A) => number);
     readonly timeoutMs: number;
     readonly initial?: { readonly value: A };
     readonly readAtDeadline?: boolean;
@@ -31,7 +31,17 @@ const until = <A, E, R>(
             return;
           }
           yield* Effect.sleep(
-            Duration.millis(Math.min(Math.max(5000, opts.intervalMs), remaining)),
+            Duration.millis(
+              Math.min(
+                Math.max(
+                  5000,
+                  typeof opts.intervalMs === "number"
+                    ? opts.intervalMs
+                    : opts.intervalMs(state.value),
+                ),
+                remaining,
+              ),
+            ),
           );
           if (
             Number(yield* Clock.currentTimeMillis) >= deadline &&
