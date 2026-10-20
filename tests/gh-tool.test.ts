@@ -6079,6 +6079,41 @@ describe("PR checks", () => {
     }),
   );
 
+  it.effect("checks-failed reports no checks as an unknown CI state", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchFailedChecks(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  headRefOid: "head-sha",
+                  baseRefOid: "base-sha",
+                });
+              }
+              if (args[0] === "pr" && args[1] === "checks") return noChecksFailure();
+              return Effect.succeed({});
+            },
+          }),
+        ),
+      );
+
+      expect(result).toEqual({
+        evidence: { headSha: "head-sha", baseSha: null },
+        status: "none_reported",
+        reason:
+          "gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.",
+        message: "No checks were reported for this PR head.",
+        summary: { total: 0, failed: 0, pending: 0, passed: 0 },
+        failedChecks: [],
+        pendingChecks: [],
+        hint: "This is not a CI verdict. Check whether CI exists or has registered for this head.",
+        nextCommands: ["bun agent-tools-gh pr checks --pr 123"],
+      });
+    }),
+  );
+
   it.effect("checks-failed does not fetch failed-step logs by default", () =>
     Effect.gen(function* () {
       const layer = createMockGhLayer({
@@ -7526,7 +7561,6 @@ describe("PR composite commands", () => {
       blocking: [],
       reasons: [],
     },
-    { name: "no checks", checks: [], blocking: [], reasons: [] },
   ]) {
     it.effect(`review-triage readiness handles ${name}`, () =>
       Effect.gen(function* () {
@@ -7536,7 +7570,7 @@ describe("PR composite commands", () => {
           name: `CI-${index}`,
           link: "https://example.test/check",
         }));
-        const result = yield* fetchReviewTriage(123, "json").pipe(
+        const result = yield* fetchReviewTriage(123).pipe(
           Effect.provide(
             createMockGhLayer({
               runGhJson: (args) => {
@@ -7583,11 +7617,100 @@ describe("PR composite commands", () => {
     );
   }
 
+  it.effect("review-triage reports missing checks without calling them failures", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchReviewTriage(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: "MERGEABLE",
+                  headRefOid: "stable-head",
+                  reviewDecision: "APPROVED",
+                });
+              }
+              if (args[0] === "pr" && args[1] === "checks") return noChecksFailure();
+              return Effect.succeed({});
+            },
+            runGraphQL: () =>
+              Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                  },
+                },
+              }),
+            runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({
+        ready: {
+          ready: false,
+          mergeable: "MERGEABLE",
+          reviewDecision: "APPROVED",
+          blocking: ["checks_not_reported"],
+        },
+        classification: { status: "needs_investigation", reasons: ["checks_not_reported"] },
+        checks: [],
+        checksStatus: "none_reported",
+        checksReason:
+          "gh reported no checks for this head. Checks may not be registered yet, the PR may have no CI, or GitHub returned an empty rollup. This is not a CI verdict.",
+      });
+    }),
+  );
+
+  it.effect("review-triage keeps reported passing checks ready", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchReviewTriage(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: "MERGEABLE",
+                  headRefOid: "stable-head",
+                  reviewDecision: "APPROVED",
+                });
+              }
+              if (args[0] === "pr" && args[1] === "checks") {
+                return Effect.succeed([
+                  { name: "CI", state: "SUCCESS", bucket: "pass", link: "https://example.test" },
+                ]);
+              }
+              return Effect.succeed({});
+            },
+            runGraphQL: () =>
+              Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                  },
+                },
+              }),
+            runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+
+      expect(result.ready.ready).toBe(true);
+      expect(result.classification).toEqual({ status: "clear", reasons: [] });
+      expect(result.checksStatus).toBe("reported");
+      expect(result.checks).toEqual([
+        { name: "CI", state: "SUCCESS", bucket: "pass", link: "https://example.test" },
+      ]);
+    }),
+  );
+
   it.effect("review-triage discards checks and feedback collected across a push race", () =>
     Effect.gen(function* () {
       let views = 0;
       let snapshots = 0;
-      const result = yield* fetchReviewTriage(123, "json").pipe(
+      const result = yield* fetchReviewTriage(123).pipe(
         Effect.provide(
           createMockGhLayer({
             runGhJson: (args) => {
@@ -7676,8 +7799,8 @@ describe("PR composite commands", () => {
           warn: (...args: unknown[]) => warnings.push(args),
         });
         const [result, batch] = yield* Effect.all([
-          fetchReviewTriage(123, "json"),
-          Effect.all([fetchReviewTriage(123, "json"), fetchReviewTriage(124, "json")]),
+          fetchReviewTriage(123),
+          Effect.all([fetchReviewTriage(123), fetchReviewTriage(124)]),
         ]).pipe(Effect.provide(layer), Effect.provide(consoleLayer));
         expect(warnings).toEqual([]);
         expect(batch.map((item) => item.feedbackOriginCounts)).toEqual([

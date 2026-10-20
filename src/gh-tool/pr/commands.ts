@@ -41,7 +41,7 @@ import {
   detectPRStatus,
   editPR,
   fetchPRView,
-  fetchChecks,
+  fetchCheckReport,
   fetchChecksBatch,
   fetchChecksForCommand,
   fetchFailedChecks,
@@ -191,8 +191,10 @@ type ReviewTriageClassification = {
 export const classifyReviewTriage = (
   summary: ReviewTriageSummary,
   checks: readonly CheckResult[],
+  checksStatus: "reported" | "none_reported" = "reported",
 ): ReviewTriageClassification => {
   const reasons = [
+    ...(checksStatus === "none_reported" ? ["checks_not_reported"] : []),
     ...(checks.some((check) => check.bucket === "fail") ? ["failed_checks"] : []),
     ...(checks.some((check) => check.bucket === "cancel") ? ["cancelled_checks"] : []),
     ...(checks.some(
@@ -397,7 +399,6 @@ const countFeedbackOrigins = (items: ReadonlyArray<{ feedbackOrigin: string }>) 
 
 export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   prNumber: number | null,
-  format: "toon" | "json" = "toon",
 ) {
   const { info, value } = yield* withStableHead(
     prNumber,
@@ -405,16 +406,17 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
       Effect.all([
         fetchThreads(number, false, false, headSha),
         fetchDiscussionSummary(number),
-        fetchChecks(number, false, false, 0, format === "json"),
+        fetchCheckReport(number),
         fetchReviews(number, null, null, null, headSha),
         fetchComments(number, null, headSha),
       ]),
     { operation: "review triage", command: "gh-tool pr review-triage" },
   );
-  const [allThreads, summary, checks, reviews, inlineComments] = value;
+  const [allThreads, summary, checkReport, reviews, inlineComments] = value;
+  const checks = checkReport.checks ?? [];
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);
   const visibleOpenThreads = allThreads.filter((thread) => thread.isVisibleOpen);
-  const classification = classifyReviewTriage(summary, checks);
+  const classification = classifyReviewTriage(summary, checks, checkReport.checksStatus);
 
   // Single merge-readiness verdict so agents stop re-stitching mergeable + checks + threads +
   // review state across separate calls (F2). `blocking` names exactly what's left to do.
@@ -423,6 +425,7 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   if (checks.some((check) => check.bucket === "fail")) blocking.push("failing_checks");
   if (checks.some((check) => check.bucket === "pending")) blocking.push("pending_checks");
   if (checks.some((check) => check.bucket === "cancel")) blocking.push("cancelled_checks");
+  if (checkReport.checksStatus === "none_reported") blocking.push("checks_not_reported");
   if (
     checks.some(
       (check) => !["pass", "fail", "pending", "skipping", "cancel"].includes(check.bucket),
@@ -466,6 +469,8 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
     visibleOpenThreads,
     summary,
     checks,
+    checksStatus: checkReport.checksStatus,
+    ...(checkReport.checksStatus === "none_reported" ? { checksReason: checkReport.reason } : {}),
     reviews,
     inlineComments,
     feedbackOriginCounts: {
@@ -1609,7 +1614,7 @@ export const prReviewTriageCommand = Command.make(
       repo,
       Effect.gen(function* () {
         const prNumber = Option.getOrNull(pr);
-        const result = yield* fetchReviewTriage(prNumber, format);
+        const result = yield* fetchReviewTriage(prNumber);
         yield* logFormatted(
           omitTriageSections(result, Option.getOrNull(omit)?.split(",") ?? []),
           format,
@@ -1654,7 +1659,7 @@ export const prReviewTriageBatchCommand = Command.make(
       Effect.gen(function* () {
         const numbers = yield* parsePrNumbers(prs);
         const results = yield* Effect.all(
-          numbers.map((prNumber) => fetchReviewTriage(prNumber, format)),
+          numbers.map((prNumber) => fetchReviewTriage(prNumber)),
           { concurrency: "unbounded" },
         );
         yield* logFormatted(results, format);

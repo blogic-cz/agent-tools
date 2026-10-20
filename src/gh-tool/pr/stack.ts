@@ -10,7 +10,7 @@ import { GitHubMergeError } from "#gh/errors";
 
 import type { MergeStrategy, StackMember, StackMergeBlocker, StackMergeResult } from "#gh/types";
 
-import { fetchCheckResults, fetchPRView } from "./core";
+import { fetchCheckReport, fetchPRView } from "./core";
 import { readStack } from "./stack-read";
 
 export { readStack };
@@ -62,7 +62,17 @@ const collectBlockers = Effect.fn("pr.collectStackBlockers")(function* (members:
       continue;
     }
 
-    const checks = yield* fetchCheckResults(member.number);
+    const report = yield* fetchCheckReport(member.number);
+    if (report.checksStatus === "none_reported") {
+      blockers.push({
+        number: member.number,
+        reason: "checks_none_reported",
+        detail: `checks: none_reported. ${report.reason}`,
+      });
+      continue;
+    }
+
+    const checks = report.checks;
     const failing = checks.filter((check) => check.bucket === "fail");
     if (failing.length > 0) {
       blockers.push({
