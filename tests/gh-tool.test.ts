@@ -34,6 +34,7 @@ import {
   type GitHubTimeoutError,
 } from "#gh/errors";
 import { GitHubService } from "#gh/read/transport";
+import { issueList, ISSUE_LIST_FIELDS } from "#gh/read/issues";
 import { githubApi } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
 import { withReadCache, ReadCache } from "#gh/read/cache";
@@ -49,6 +50,7 @@ import {
   fetchIssueComments as fetchIssueDiscussionComments,
   reopenIssue,
 } from "#gh/issue/core";
+import { formatAny } from "#shared/format";
 import {
   collectLinkedPullRequestNumbers,
   fetchIssueTriage,
@@ -10668,6 +10670,52 @@ it.effect("shares the issue view with triage and invalidates it after an edit", 
       expect(fetches).toBe(2);
     }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
   }).pipe(Effect.scoped),
+);
+
+it.effect("lists issue assignees in toon and json output", () =>
+  Effect.gen(function* () {
+    const args: string[][] = [];
+    const issues = [
+      {
+        number: 7,
+        title: "Assigned",
+        state: "OPEN",
+        url: "issue-url",
+        labels: [],
+        assignees: [{ login: "reviewer" }],
+        createdAt: "2026-10-01T00:00:00Z",
+      },
+      {
+        number: 8,
+        title: "Unassigned",
+        state: "OPEN",
+        url: "issue-url",
+        labels: [],
+        assignees: [],
+        createdAt: "2026-10-01T00:00:00Z",
+      },
+    ];
+    const result = yield* issueList(
+      { owner: "test-owner", name: "test-repo" },
+      { state: "all", labels: null, limit: 30 },
+    ).pipe(
+      Effect.provide(
+        createMockGhLayer({
+          runGhJson: (callArgs) => {
+            args.push(callArgs);
+            return Effect.succeed(issues);
+          },
+        }),
+      ),
+    );
+
+    expect(args[0]).toContain(ISSUE_LIST_FIELDS);
+    expect(result[0]?.assignees).toEqual([{ login: "reviewer" }]);
+    expect(result[1]?.assignees).toEqual([]);
+    expect(formatAny(result, "json")).toContain('"login": "reviewer"');
+    expect(formatAny(result, "toon")).toContain("assignees");
+    expect(formatAny(result, "toon")).toContain("reviewer");
+  }),
 );
 
 it.effect("gates shared pending checks and separates heads", () =>
