@@ -1,3 +1,4 @@
+import { ghSubprocessEvent, recordRequest } from "./telemetry";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Stream } from "effect";
 
@@ -182,13 +183,17 @@ export class GitHubService extends Context.Service<
 
               const proc = yield* executor.spawn(command);
 
-              const stdoutChunk = yield* proc.stdout.pipe(Stream.decodeText(), Stream.runCollect);
+              const [stdoutChunk, stderrChunk] = yield* Effect.all(
+                [
+                  proc.stdout.pipe(Stream.decodeText(), Stream.runCollect),
+                  proc.stderr.pipe(Stream.decodeText(), Stream.runCollect),
+                ],
+                { concurrency: "unbounded" },
+              );
               const stdout = stdoutChunk.join("");
-
-              const stderrChunk = yield* proc.stderr.pipe(Stream.decodeText(), Stream.runCollect);
               const stderr = stderrChunk.join("");
-
               const exitCode = yield* proc.exitCode;
+              yield* recordRequest(ghSubprocessEvent(args, Number(exitCode)));
 
               return {
                 stdout,

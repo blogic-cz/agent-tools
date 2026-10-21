@@ -4,7 +4,8 @@ import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 
 import { makeSchemaCommand, renderCauseToStderr, VERSION } from "#shared";
-import { AuditServiceLayer, withAudit } from "#shared/audit";
+import { AuditService, AuditServiceLayer, withAudit } from "#shared/audit";
+import { openRequestTelemetry } from "#gh/read/telemetry-store";
 import { withRedactedOutput } from "#shared/output-boundary";
 import { ConfigServiceLayer } from "#config";
 import {
@@ -80,6 +81,8 @@ import {
 import { labelCreateCommand } from "./label";
 import { GitHubService } from "./read/transport";
 import { withReadCache } from "./read";
+import { Telemetry } from "./read/telemetry";
+import { telemetryCommand } from "./read/telemetry-command";
 import { cacheCommand, rateLimitCommand } from "./read/commands";
 import {
   workflowAnnotationsCommand,
@@ -252,6 +255,7 @@ WORKFLOW FOR AI AGENTS:
   ),
   Command.withSubcommands([
     rateLimitCommand,
+    telemetryCommand,
     prCommand,
     issueCommand,
     repoCommand,
@@ -276,10 +280,28 @@ const MainLayer = GitHubService.layer.pipe(
   Layer.provideMerge(ConfigServiceLayer),
 );
 
-const program = withReadCache(withRedactedOutput(withAudit("gh", cli))).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapCause(renderCauseToStderr),
-);
+const observed = Effect.gen(function* () {
+  const audit = yield* AuditService;
+  let store = null;
+  try {
+    store = openRequestTelemetry(audit.dbPath);
+  } catch {
+    /* Telemetry is optional. */
+  }
+  return yield* withReadCache(withRedactedOutput(withAudit("gh", cli))).pipe(
+    Effect.provideService(Telemetry, store),
+    Effect.ensuring(
+      Effect.sync(() => {
+        try {
+          store?.close();
+        } catch {
+          /* Best effort. */
+        }
+      }),
+    ),
+  );
+});
+const program = observed.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
 BunRuntime.runMain(program, {
   disableErrorReporting: true,
