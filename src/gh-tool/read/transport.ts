@@ -246,7 +246,7 @@ export class GitHubService extends Context.Service<
               const quotaFilter =
                 resource === undefined
                   ? '.resources | to_entries[] | "\\(.key): reset time: \\(.value.reset | todateiso8601); remaining quota: \\(.value.remaining)"'
-                  : `.resources.${resource} | "reset time: \\(.reset | todateiso8601); remaining quota: \\(.remaining)"`;
+                  : `.resources.${resource} | "resource: ${resource}; reset time: \\(.reset | todateiso8601); remaining quota: \\(.remaining)"`;
               const quota = yield* executeGh(["api", "rate_limit", "--jq", quotaFilter]).pipe(
                 Effect.orElseSucceed(() => null),
               );

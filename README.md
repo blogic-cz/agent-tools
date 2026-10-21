@@ -230,6 +230,8 @@ bun run agent-tools/example-tool/index.ts ping
 3. Run tools:
 
 ```bash
+bun gh-tool rate-limit                         # Inspect all GitHub API rate-limit resources
+bun gh-tool rate-limit --resource core         # Inspect one resource
 bun gh-tool pr status
 bun observability-tool trace get 0b7bdf0dde1c55458364ba5588a8075e --env local
 bun observability-tool trace search '{ status = error }' --env local --start now-6h

@@ -6,7 +6,7 @@ import type { GitHubRepoConfig } from "#config/types";
 import { GitHubService } from "#gh/read/transport";
 import type { GhError, GhResult } from "#gh/read/transport";
 import { GitHubCommandError } from "#gh/errors";
-import { githubApi } from "#gh/read/api";
+import { githubApi, parseRateLimitHeaders } from "#gh/read/api";
 import { mergeStack, unstackStack } from "#gh/pr/stack";
 import { fetchChecks, mergePR } from "#gh/pr/core";
 import { readStack } from "#gh/pr/stack-read";
@@ -258,6 +258,22 @@ describe("GitHub API rate-limit retry", () => {
   );
 });
 
+describe("rate-limit headers", () => {
+  it("parses the GitHub rate-limit response headers", () => {
+    expect(
+      parseRateLimitHeaders(
+        new Headers({
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-used": "120",
+          "x-ratelimit-remaining": "4880",
+          "x-ratelimit-reset": "1800000000",
+        }),
+      ),
+    ).toEqual({ resource: "core", limit: 5000, used: 120, remaining: 4880, reset: 1800000000 });
+  });
+});
+
 describe("rate-limit error details", () => {
   it.effect("includes reset time and remaining quota from HTTP headers", () =>
     Effect.gen(function* () {
@@ -267,7 +283,11 @@ describe("rate-limit error details", () => {
         respond: () => ({
           status: 403,
           body: { message: "API rate limit exceeded" },
-          headers: { "x-ratelimit-reset": "1800000000", "x-ratelimit-remaining": "0" },
+          headers: {
+            "x-ratelimit-reset": "1800000000",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-resource": "core",
+          },
         }),
       });
       const error = yield* githubApi({
@@ -276,9 +296,10 @@ describe("rate-limit error details", () => {
       }).pipe(Effect.flip);
       expect(error.message).toContain("reset time: 2027-01-15T08:00:00.000Z");
       expect(error.message).toContain("remaining quota: 0");
+      expect(error.message).toContain("resource: core");
       expect(error).toMatchObject({
         hint: expect.stringContaining("Wait for the reset"),
-        nextCommand: "gh api rate_limit",
+        nextCommand: "gh-tool rate-limit",
       });
       expect(fetchCalls).toHaveLength(1);
     }),

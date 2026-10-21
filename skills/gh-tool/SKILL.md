@@ -78,6 +78,16 @@ bun gh-tool pr submit-review --pr 123 --event request-changes --confirm # Same v
 
 Zero threads can mean the reviewer is still drafting. A pending review is invisible to the API until submit, and its comments keep their draft time in `createdAt`. `reviewId` says which comments arrived together; join it to `reviews[].submittedAt` from `pr feedback` for the exact time that batch became visible, or read `updatedAt` as a proxy that also moves on edits. Never conclude from `createdAt` that an earlier scan missed something.
 
+## Rate-limit command
+
+```bash
+bun gh-tool rate-limit                         # Show all resources and reset times
+bun gh-tool rate-limit --resource core         # Show one resource
+bun gh-tool rate-limit --resource graphql --format json
+```
+
+The lookup uses GitHub's `/rate_limit` endpoint and does not consume quota. Each resource includes its limit, usage, remaining quota, reset time, and seconds until reset. `pr status` also includes the rate-limit summary.
+
 ## Gist commands
 
 ```bash
