@@ -1,3 +1,5 @@
+import { CacheRequest, recordRequest } from "./telemetry";
+
 import { Clock, Context, Effect } from "effect";
 
 import { registerResolvedSecret } from "#shared/content-security";
@@ -136,6 +138,8 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
   const token = yield* resolveGitHubToken();
   const url = `${GITHUB_API_ROOT}/${opts.path.replace(/^\//, "")}`;
 
+  const cached = yield* CacheRequest;
+  const started = new Date().toISOString();
   const response = yield* Effect.tryPromise({
     try: () =>
       fetch(url, {
@@ -158,8 +162,41 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
         retryable: true,
         hint: "Check network connectivity and VPN state, then retry.",
       }),
-  });
+  }).pipe(
+    Effect.tapError(() =>
+      recordRequest({
+        ts: started,
+        method,
+        endpoint: opts.path,
+        status: null,
+        outcome: "error",
+        resource: null,
+        used: null,
+        remaining: null,
+        reset: null,
+      }),
+    ),
+  );
 
+  const quota = parseRateLimitHeaders(response.headers);
+  yield* recordRequest({
+    ts: started,
+    method,
+    endpoint: opts.path,
+    status: response.status,
+    outcome:
+      response.status === 304
+        ? "304"
+        : response.status >= 400
+          ? "error"
+          : cached
+            ? "200"
+            : "bypass",
+    resource: quota.resource ?? null,
+    used: quota.used ?? null,
+    remaining: quota.remaining ?? null,
+    reset: quota.reset ?? null,
+  });
   const text = yield* Effect.tryPromise({
     try: () => response.text(),
     catch: (cause) =>

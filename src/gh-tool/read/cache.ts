@@ -1,3 +1,4 @@
+import { CacheRequest, cacheEvent, recordRequest } from "./telemetry";
 import { Console, Context, Effect } from "effect";
 import { resolveGitHubToken, SessionCredential } from "#gh/read/api";
 import { GitHubCommandError } from "#gh/errors";
@@ -86,16 +87,23 @@ export const cachedRead = <A, E, R>(opts: {
       ),
     );
     if (prepared === null) return yield* direct();
-    if (prepared.kind === "hit") return prepared.value;
+    if (prepared.kind === "hit") {
+      yield* recordRequest(cacheEvent(opts.key.op));
+      return prepared.value;
+    }
     return yield* Effect.gen(function* () {
       yield* safe(session, () => store.record(opts.key.op, "fetch"));
       const previousValid =
         prepared.previous === null
           ? false
           : yield* safe(session, () => store.canServeStale(prepared));
-      const fetched = yield* opts.fetch(
-        prepared.previous === null ? null : { ...prepared.previous, valid: previousValid === true },
-      );
+      const fetched = yield* opts
+        .fetch(
+          prepared.previous === null
+            ? null
+            : { ...prepared.previous, valid: previousValid === true },
+        )
+        .pipe(Effect.provideService(CacheRequest, true));
       if (fetched.kind === "unchanged") {
         if (prepared.previous === null)
           return yield* Effect.die(new Error("304 without a cached value"));
@@ -131,6 +139,7 @@ export const cachedRead = <A, E, R>(opts: {
             session.staleWarned = true;
             yield* Console.error(`gh-tool: served cached ${opts.key.op} (rate limited)`);
           }
+          yield* recordRequest(cacheEvent(opts.key.op));
           yield* safe(session, () => store.record(opts.key.op, "stale"));
           return prepared.previous.value;
         }),
