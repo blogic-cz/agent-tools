@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Result, Schema } from "effect";
 import { GitHubService } from "#gh/read/transport";
 import { GitHubCommandError } from "#gh/errors";
 import type { CheckRunAnnotation } from "#gh/types";
@@ -20,6 +20,87 @@ import {
 } from "./porcelain";
 
 export type JobRef = { readonly id: number; readonly status: string };
+
+const RateLimitResponse = Schema.Struct({
+  resources: Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      limit: Schema.Int,
+      used: Schema.Int,
+      remaining: Schema.Int,
+      reset: Schema.Int,
+    }),
+  ),
+});
+
+export type RateLimitResource = {
+  readonly limit: number;
+  readonly used: number;
+  readonly remaining: number;
+  readonly reset: string;
+  readonly secondsUntilReset: number;
+};
+
+export type RateLimitSummary = Readonly<Record<string, RateLimitResource>>;
+export type PRStatusRateLimit =
+  | Readonly<{ core: RateLimitResource; graphql: RateLimitResource }>
+  | Readonly<{ error: string }>;
+
+export const getRateLimit = Effect.fn("reads.getRateLimit")(function* (resource?: string) {
+  const gh = yield* GitHubService;
+  const response = yield* gh.runGhJson<unknown>(["api", "rate_limit"]);
+  const parsed = yield* Effect.try({
+    try: () => parsePreserving(RateLimitResponse)(response),
+    catch: (cause) =>
+      new GitHubCommandError({
+        message: `GitHub rate-limit response was invalid: ${String(cause)}`,
+        command: "gh-tool rate-limit",
+        exitCode: 1,
+        stderr: String(cause),
+      }),
+  });
+  const names = Object.keys(parsed.resources).toSorted();
+  const now = (yield* Clock.currentTimeMillis) / 1000;
+  const selected = resource === undefined ? names : [resource];
+  const entries: Array<[string, RateLimitResource]> = [];
+  for (const name of selected) {
+    const bucket = parsed.resources[name];
+    if (bucket === undefined) {
+      return yield* new GitHubCommandError({
+        message: `Unknown rate-limit resource '${name}'. Available resources: ${names.join(", ")}`,
+        command: "gh-tool rate-limit",
+        exitCode: 1,
+        stderr: "",
+        hint: "Select a resource returned by GitHub, or omit --resource to show all resources.",
+      });
+    }
+    entries.push([
+      name,
+      {
+        limit: bucket.limit,
+        used: bucket.used,
+        remaining: bucket.remaining,
+        reset: new Date(bucket.reset * 1000).toISOString(),
+        secondsUntilReset: Math.max(0, Math.ceil(bucket.reset - now)),
+      },
+    ]);
+  }
+  return Object.fromEntries(entries) satisfies RateLimitSummary;
+});
+
+export const getPRStatusRateLimit = Effect.fn("reads.getPRStatusRateLimit")(function* () {
+  const result = yield* getRateLimit().pipe(Effect.result);
+  if (Result.isFailure(result))
+    return { error: result.failure.message } satisfies PRStatusRateLimit;
+
+  const { core, graphql } = result.success;
+  if (core === undefined || graphql === undefined) {
+    return {
+      error: "GitHub rate-limit response omitted the core or graphql resource.",
+    } satisfies PRStatusRateLimit;
+  }
+  return { core, graphql } satisfies PRStatusRateLimit;
+});
 
 const completedAttemptJobs = Effect.fn("reads.completedAttemptJobs")(function* (
   repo: RepoRef,
@@ -282,6 +363,8 @@ const jobIdentity = Effect.fn("reads.jobIdentity")(function* (repo: RepoRef, job
 });
 
 export const reads = {
+  getRateLimit,
+  getPRStatusRateLimit,
   completedAttemptJobs,
   jobIdentity,
   reviewGuards,

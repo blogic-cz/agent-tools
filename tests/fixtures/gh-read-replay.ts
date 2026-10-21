@@ -191,6 +191,10 @@ else if (args[0] === "api" && args[1].includes("/comments?")) print([args[1].inc
 else if (args[0] === "api" && args[1].includes("/reviews?")) print([review]);
 else if (args[0] === "api" && args[1].startsWith("gists?")) print([gist]);
 else if (args[0] === "api" && args[1].startsWith("gists/")) print(gist);
+else if (args[0] === "api" && args[1] === "rate_limit") print({ resources: {
+  core: { limit: 5000, used: 120, remaining: 4880, reset: 1 },
+  graphql: { limit: 5000, used: 80, remaining: 4920, reset: 1 },
+} });
 else if (args[0] === "api" && args[1].startsWith("/search/code?")) print({ items: [{ repository: { full_name: "owner/repo" }, path: "file.ts", html_url: "https://github.com/owner/repo/blob/main/file.ts" }] });
 else if (args[0] === "api" && args[1].endsWith("/annotations")) print([]);
 else if (args[0] === "api" && args[1].endsWith("/logs")) console.log("2026-10-01T08:00:00Z example output");

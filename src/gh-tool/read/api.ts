@@ -24,6 +24,36 @@ export type GitHubApiResponse<T> = {
   rateLimitUsed?: string;
 };
 
+export type GitHubRateLimitHeaders = {
+  readonly resource?: string;
+  readonly limit?: number;
+  readonly used?: number;
+  readonly remaining?: number;
+  readonly reset?: number;
+};
+
+const headerInteger = (headers: Headers, name: string) => {
+  const value = headers.get(name);
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+export const parseRateLimitHeaders = (headers: Headers): GitHubRateLimitHeaders => {
+  const resource = headers.get("x-ratelimit-resource");
+  const limit = headerInteger(headers, "x-ratelimit-limit");
+  const used = headerInteger(headers, "x-ratelimit-used");
+  const remaining = headerInteger(headers, "x-ratelimit-remaining");
+  const reset = headerInteger(headers, "x-ratelimit-reset");
+  return {
+    ...(resource === null ? {} : { resource }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(used === undefined ? {} : { used }),
+    ...(remaining === undefined ? {} : { remaining }),
+    ...(reset === undefined ? {} : { reset }),
+  };
+};
+
 const authFailure = (message: string) =>
   new GitHubAuthError({
     message,
@@ -176,7 +206,8 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
   }
 
   const now = yield* Clock.currentTimeMillis;
-  const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
+  const rateLimitHeaders = parseRateLimitHeaders(response.headers);
+  const resetSeconds = rateLimitHeaders.reset ?? Number.NaN;
   const resetDelay =
     Number.isFinite(resetSeconds) && resetSeconds > 0
       ? Math.max(0, resetSeconds * 1000 - now + 1000)
@@ -200,18 +231,17 @@ const githubApiAttempt = Effect.fn("gh.githubApiAttempt")(function* <T>(
         /rate limit|secondary rate limit|abuse detection/i.test(
           apiErrorMessage(parsed, response.status),
         )));
-
   const error = new GitHubCommandError({
     message: rateLimit
-      ? `${apiErrorMessage(parsed, response.status)}; reset time: ${resetDelay === undefined ? "unavailable" : new Date(resetSeconds * 1000).toISOString()}; remaining quota: ${response.headers.get("x-ratelimit-remaining") ?? "unavailable"}`
+      ? `${apiErrorMessage(parsed, response.status)}; resource: ${rateLimitHeaders.resource ?? "unavailable"}; reset time: ${rateLimitHeaders.reset === undefined ? "unavailable" : new Date(resetSeconds * 1000).toISOString()}; remaining quota: ${rateLimitHeaders.remaining ?? "unavailable"}`
       : apiErrorMessage(parsed, response.status),
     command: `${method} ${opts.path}`,
     exitCode: response.status,
     stderr: text,
     ...(rateLimit
       ? {
-          hint: "Wait for the reset before retrying. Check the remaining quota once with the shown command; it does not consume the quota.",
-          nextCommand: "gh api rate_limit",
+          hint: "Wait for the reset before retrying. Check the named resource with the shown command; the lookup does not consume quota.",
+          nextCommand: "gh-tool rate-limit",
         }
       : {}),
     ...(response.status >= 500 || (rateLimit && canWait) ? { retryable: true } : {}),

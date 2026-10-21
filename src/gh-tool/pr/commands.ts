@@ -524,8 +524,15 @@ export const prStatusCommand = Command.make(
     withRepo(
       repo,
       Effect.gen(function* () {
-        const result: PRStatusResult = yield* detectPRStatus();
-        yield* logFormatted(result, format);
+        const [result, rateLimit] = yield* Effect.all([
+          detectPRStatus(),
+          reads.getPRStatusRateLimit(),
+        ]);
+        const status: PRStatusResult & { readonly rateLimit: typeof rateLimit } = {
+          ...result,
+          rateLimit,
+        };
+        yield* logFormatted(status, format);
       }),
     ),
 ).pipe(

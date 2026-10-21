@@ -2,7 +2,23 @@ import { Effect, Option } from "effect";
 import { Command, Flag } from "effect/cli";
 import { formatOption, logFormatted } from "#shared";
 import { cacheStats, clearCache } from "./cache";
-import { resolveRepo } from "./reads";
+import { getRateLimit, resolveRepo } from "./reads";
+
+export const rateLimitCommand = Command.make(
+  "rate-limit",
+  {
+    resource: Flag.String("resource").pipe(
+      Flag.withDescription("Show one GitHub rate-limit resource"),
+      Flag.optional,
+    ),
+    format: formatOption,
+  },
+  ({ resource, format }) =>
+    Effect.gen(function* () {
+      const summary = yield* getRateLimit(Option.getOrUndefined(resource));
+      yield* logFormatted(summary, format);
+    }),
+).pipe(Command.withDescription("Show GitHub API rate-limit resources and reset times"));
 
 const stats = Command.make("stats", { format: formatOption }, ({ format }) =>
   Effect.gen(function* () {

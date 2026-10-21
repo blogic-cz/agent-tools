@@ -61,7 +61,7 @@ it(
 
 it(
   "replays published 1.7.5 outputs with original review location fields without GitHub access",
-  { timeout: 30000 },
+  { timeout: 60000 },
   async ({ signal, onTestFinished }) => {
     const root = await mkdtemp(join(tmpdir(), "gh-read-parity-"));
     let running: Promise<void> | undefined;

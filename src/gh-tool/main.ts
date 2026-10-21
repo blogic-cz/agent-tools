@@ -80,7 +80,7 @@ import {
 import { labelCreateCommand } from "./label";
 import { GitHubService } from "./read/transport";
 import { withReadCache } from "./read";
-import { cacheCommand } from "./read/commands";
+import { cacheCommand, rateLimitCommand } from "./read/commands";
 import {
   workflowAnnotationsCommand,
   workflowCancelCommand,
@@ -221,6 +221,7 @@ const mainCommand = Command.make("gh-tool", {}).pipe(
 
 Wraps the GitHub CLI (gh) with structured output for AI agents.
 Supports PR management, issue management, reviews, CI checks, and repo info.
+Use 'rate-limit' to inspect GitHub API quota without consuming it.
 
 WORKFLOW FOR AI AGENTS:
   1. Use 'pr view' to inspect current PR
@@ -250,6 +251,7 @@ WORKFLOW FOR AI AGENTS:
   24. Use 'gist list/view' to read gists and 'gist create --files a.ts --desc "..."' to share snippets`,
   ),
   Command.withSubcommands([
+    rateLimitCommand,
     prCommand,
     issueCommand,
     repoCommand,
