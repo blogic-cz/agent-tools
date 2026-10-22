@@ -1,8 +1,9 @@
 import { Effect } from "effect";
+import { GitHubCommandError } from "#gh/errors";
 import { GitHubService } from "#gh/read/transport";
 import { invalidate } from "./cache";
 import type { Tag } from "./keys";
-import type { GhError } from "#gh/read/transport";
+import type { GhError, PRCheckboxWrite } from "#gh/read/transport";
 import type { GitHubApiRequest } from "#gh/read/api";
 
 const mutate = <A, R>(effect: Effect.Effect<A, GhError, R>, touched: readonly Tag[]) =>
@@ -14,6 +15,22 @@ const mutate = <A, R>(effect: Effect.Effect<A, GhError, R>, touched: readonly Ta
 const run = Effect.fn("writes.run")(function* (argv: string[], touched: readonly Tag[]) {
   const gh = yield* GitHubService;
   return yield* mutate(gh.runGh(argv), touched);
+});
+const prCheckbox = Effect.fn("writes.prCheckbox")(function* (
+  opts: PRCheckboxWrite,
+  touched: readonly Tag[],
+) {
+  const gh = yield* GitHubService;
+  if (gh.writePRCheckbox === undefined) {
+    return yield* new GitHubCommandError({
+      command: "gh-tool pr checkbox",
+      exitCode: 1,
+      stderr: "PR checkbox writes are unavailable",
+      message:
+        "Refusing to update the PR checkbox because the GitHub service cannot verify the body",
+    });
+  }
+  return yield* mutate(gh.writePRCheckbox(opts), touched);
 });
 const json = <A>(argv: string[], touched: readonly Tag[]) =>
   Effect.gen(function* () {
@@ -34,4 +51,4 @@ const api = <A>(request: GitHubApiRequest, touched: readonly Tag[]) =>
     const gh = yield* GitHubService;
     return yield* mutate(gh.apiRequest<A>(request), touched);
   });
-export const writes = { run, json, graphql, api };
+export const writes = { run, prCheckbox, json, graphql, api };

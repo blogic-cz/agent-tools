@@ -20,6 +20,7 @@ import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -35,7 +36,7 @@ import {
 } from "#gh/errors";
 import { GitHubService } from "#gh/read/transport";
 import { issueList, ISSUE_LIST_FIELDS } from "#gh/read/issues";
-import { githubApi } from "#gh/read/api";
+import { githubApi, SessionCredential } from "#gh/read/api";
 import { ghEnvironment } from "#gh/environment";
 import { withReadCache, ReadCache } from "#gh/read/cache";
 import { FileStore } from "#gh/read/store";
@@ -73,6 +74,8 @@ import {
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
+import { togglePRCheckbox as togglePRCheckboxWithParser } from "#gh/pr/checkbox";
+import { findCheckboxLines, scanCheckboxOutline } from "#gh/pr/checkbox-markdown";
 import {
   createReview,
   fetchComments,
@@ -115,6 +118,7 @@ import { ConfigService } from "#config";
 import {
   prCreateCommand,
   prEditCommand,
+  prCheckboxCommand,
   prMergeCommand,
   prWatchCommand,
   classifyReviewTriage,
@@ -130,6 +134,9 @@ import {
   requestReview,
   trimNoisyBody,
 } from "#gh/pr/commands";
+
+const togglePRCheckbox = (opts: Parameters<typeof togglePRCheckboxWithParser>[0]) =>
+  togglePRCheckboxWithParser(opts, scanCheckboxOutline);
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -326,6 +333,14 @@ type MockGhOverrides = Partial<{
     variables: Record<string, string | number | null>,
   ) => Effect.Effect<unknown, GhError>;
   apiRequest: (opts: { path: string }) => Effect.Effect<{ status: number; body: unknown }, GhError>;
+  writePRCheckbox: (opts: {
+    repo: { owner: string; name: string };
+    pr: number;
+    expectedBody: string;
+    boxOffset: number;
+    replacement: " " | "x";
+    selectionText: readonly string[];
+  }) => Effect.Effect<{ stdout: string; stderr: string; exitCode: number }, GhError>;
   getRepoConfig: () => Effect.Effect<GitHubRepoConfig | undefined, never>;
   getRepoInfo: () => Effect.Effect<typeof mockRepoInfo, GhError>;
   withRepoTarget: <A, E, R>(
@@ -335,30 +350,66 @@ type MockGhOverrides = Partial<{
 }>;
 
 function createMockGhLayer(overrides: MockGhOverrides = {}) {
+  const apiRequest =
+    overrides.apiRequest ??
+    ((opts: { path: string }) =>
+      Effect.fail(
+        new GitHubNotFoundError({
+          message: `no stub for ${opts.path}`,
+          identifier: opts.path,
+          resource: "github-api",
+        }),
+      ));
+  const runGh =
+    overrides.runGh ??
+    (() =>
+      Effect.succeed({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }));
   return Layer.succeed(
     GitHubService,
     GitHubService.of({
-      runGh:
-        overrides.runGh ??
-        (() =>
-          Effect.succeed({
-            stdout: "",
-            stderr: "",
-            exitCode: 0,
+      runGh,
+      writePRCheckbox:
+        overrides.writePRCheckbox ??
+        ((opts) =>
+          Effect.gen(function* () {
+            const path = `repos/${opts.repo.owner}/${opts.repo.name}/pulls/${opts.pr}`;
+            const response = yield* apiRequest({ path });
+            if (typeof response.body !== "object" || response.body === null) {
+              return yield* Effect.fail(
+                new GitHubCommandError({
+                  command: "test",
+                  exitCode: 1,
+                  message: "Invalid PR body fixture",
+                  stderr: "Invalid PR body fixture",
+                }),
+              );
+            }
+            const body = (response.body as { body?: unknown }).body;
+            if (typeof body !== "string" || body !== opts.expectedBody) {
+              return yield* Effect.fail(
+                new GitHubCommandError({
+                  command: "test",
+                  exitCode: 1,
+                  message: "PR body changed before checkbox update",
+                  stderr: "PR body changed before checkbox update",
+                }),
+              );
+            }
+            const updatedBody =
+              body.slice(0, opts.boxOffset) + opts.replacement + body.slice(opts.boxOffset + 1);
+            return yield* runGh(["api", "--method", "PATCH", path, "-f", `body=${updatedBody}`]);
           })),
       runGhJson: (overrides.runGhJson ?? (() => Effect.succeed({}))) as <T>(
         args: string[],
       ) => Effect.Effect<T, GhError>,
       runGraphQL: overrides.runGraphQL ?? (() => Effect.succeed({})),
-      apiRequest: (overrides.apiRequest ??
-        ((opts: { path: string }) =>
-          Effect.fail(
-            new GitHubNotFoundError({
-              message: `no stub for ${opts.path}`,
-              identifier: opts.path,
-              resource: "github-api",
-            }),
-          ))) as <T>(opts: { path: string }) => Effect.Effect<{ status: number; body: T }, GhError>,
+      apiRequest: apiRequest as <T>(opts: {
+        path: string;
+      }) => Effect.Effect<{ status: number; body: T }, GhError>,
       getRepoConfig: overrides.getRepoConfig ?? (() => Effect.succeed(undefined)),
       getRepoInfo: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
       getRepoRef: overrides.getRepoInfo ?? (() => Effect.succeed(mockRepoInfo)),
@@ -1615,6 +1666,87 @@ describe("GitHubService.runGh() error mapping", () => {
       Effect.provide(Layer.succeed(ConfigService, {})),
     );
   });
+  it.effect("rejects a caller-made PR body with a credential pattern", () => {
+    const observedGhCommands: ObservedGhCommand[] = [];
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+      const body = `ghp_${"x".repeat(36)}`;
+      const legacyCall = Reflect.apply(service.runGh, undefined, [
+        ["api", "--method", "PATCH", "repos/test-owner/test-repo/pulls/123", "-f", `body=${body}`],
+        { body, selectionText: [] },
+      ]) as ReturnType<typeof service.runGh>;
+      const result = yield* legacyCall.pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(observedGhCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+    );
+  });
+  for (const prefix of ["- ", "> - ", "> > - ", "  - ", "1. ", "- > - "]) {
+    it.effect(`writes a verified GitHub checkbox with prefix ${prefix}`, () => {
+      const originalFetch = globalThis.fetch;
+      const observedGhCommands: ObservedGhCommand[] = [];
+      const secret = `ghp_${"x".repeat(36)}`;
+      const body = `${prefix}[ ] publish ${secret}\n`;
+      vi.stubGlobal("Bun", {
+        spawn: () => ({
+          stdout: new Response("synthetic-session-token").body,
+          exited: Promise.resolve(0),
+        }),
+        markdown: {
+          render: (
+            markdownBody: string,
+            callbacks: {
+              listItem: (children: string, meta: { checked: boolean }) => string;
+            },
+          ) =>
+            scanCheckboxOutline(markdownBody)
+              .filter((entry) => entry.type === "task")
+              .map((entry) => callbacks.listItem(entry.text, { checked: entry.checked }))
+              .join(""),
+        },
+      });
+      vi.stubGlobal("fetch", async () => Response.json({ body }));
+      return Effect.gen(function* () {
+        const service = yield* GitHubService;
+        if (service.writePRCheckbox === undefined)
+          throw new Error("PR checkbox writer unavailable");
+        yield* service.writePRCheckbox({
+          repo: { owner: "test-owner", name: "test-repo" },
+          pr: 123,
+          expectedBody: body,
+          boxOffset: body.indexOf("[") + 1,
+          replacement: "x",
+          selectionText: ["publish"],
+        });
+        expect(observedGhCommands).toMatchObject([
+          {
+            args: [
+              "api",
+              "--method",
+              "PATCH",
+              "repos/test-owner/test-repo/pulls/123",
+              "-f",
+              `body=${prefix}[x] publish ${secret}\n`,
+            ],
+          },
+        ]);
+      }).pipe(
+        Effect.provide(GitHubService.layer),
+        Effect.provide(createMockGhSpawnerLayer(observedGhCommands)),
+        Effect.provide(Layer.succeed(ConfigService, {})),
+        Effect.provideService(SessionCredential, "synthetic-session-token"),
+        Effect.ensuring(
+          Effect.sync(() => {
+            globalThis.fetch = originalFetch;
+            vi.unstubAllGlobals();
+          }),
+        ),
+      );
+    });
+  }
   it.effect("uses the configured default repository for plain gh calls", () => {
     const observedGhCommands: ObservedGhCommand[] = [];
 
@@ -2921,6 +3053,687 @@ describe("PR edit", () => {
       ]);
       expect(result.body).toBe(body);
     }),
+  );
+});
+
+describe("PR checkbox", () => {
+  const options = {
+    pr: 123,
+    match: "write release notes",
+    section: null,
+    state: "checked" as const,
+  };
+
+  it("accepts an injected matching outline and refuses disagreement or a missing parser", () => {
+    const body = "## Release\n- [ ] write release notes\n";
+    const outline = [
+      { type: "heading" as const, level: 2, text: "Release" },
+      { type: "task" as const, checked: false, text: "write release notes" },
+    ];
+    expect(findCheckboxLines(body, options.match, "Release", () => outline)).toHaveLength(1);
+    expect(() =>
+      findCheckboxLines(body, options.match, "Release", () => [
+        { type: "task", checked: false, text: "different item" },
+      ]),
+    ).toThrow("PR body structure is ambiguous; tick this item in the GitHub UI");
+    expect(() => findCheckboxLines(body, options.match, "Release", () => null)).toThrow(
+      "PR body structure is ambiguous; tick this item in the GitHub UI",
+    );
+  });
+
+  it.effect("refuses scanner offsets that do not identify Bun's rendered task", () =>
+    Effect.gen(function* () {
+      const bodies = [
+        "[ ] release notes\n\n- parent\n    - [ ] release notes\n",
+        "<div>\n- [ ] release notes\n</div>\n\n- parent\n    - [ ] release notes\n",
+      ];
+      const renderedTask = [{ type: "task" as const, checked: false, text: "release notes" }];
+      const outline = () => renderedTask;
+
+      for (const body of bodies) {
+        const writes: string[][] = [];
+        const result = yield* togglePRCheckboxWithParser(
+          { ...options, match: "release notes" },
+          outline,
+        ).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        expect(writes).toEqual([]);
+      }
+    }),
+  );
+
+  it.effect("the service refuses a checkbox offset that does not flip Bun's selected task", () => {
+    const body = "[ ] release notes\n\n- parent\n    - [ ] release notes\n";
+    const originalFetch = globalThis.fetch;
+    const calls: ObservedGhCommand[] = [];
+    vi.stubGlobal("fetch", async () => Response.json({ body }));
+    vi.stubGlobal("Bun", {
+      spawn: () => ({
+        stdout: new Response("synthetic-session-token").body,
+        exited: Promise.resolve(0),
+      }),
+      markdown: {
+        render: (
+          editedBody: string,
+          callbacks: {
+            listItem: (children: string, meta: { checked: boolean }) => string;
+          },
+        ) => callbacks.listItem("release notes", { checked: !editedBody.includes("[ ]") }),
+      },
+    });
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+      if (service.writePRCheckbox === undefined) throw new Error("PR checkbox writer unavailable");
+      const result = yield* service
+        .writePRCheckbox({
+          repo: { owner: "test-owner", name: "test-repo" },
+          pr: 123,
+          expectedBody: body,
+          boxOffset: body.indexOf("[") + 1,
+          replacement: "x",
+          selectionText: ["release notes"],
+        })
+        .pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toEqual([]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(calls)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+      Effect.provideService(SessionCredential, "synthetic-session-token"),
+      Effect.ensuring(
+        Effect.sync(() => {
+          globalThis.fetch = originalFetch;
+          vi.unstubAllGlobals();
+        }),
+      ),
+    );
+  });
+
+  it("cross-checks checkbox decisions with the real Bun Markdown parser", () => {
+    const moduleUrl = new URL("../src/gh-tool/pr/checkbox-markdown.ts", import.meta.url).href;
+    const cases = [
+      {
+        name: "list-contained fenced task",
+        body: "- ```markdown\n  - [ ] write release notes\n  ```\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "heading in list-contained fence",
+        body: "## Release\n- ```markdown\n  ## Example\n  ```\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: "Release",
+        expected: "## Release\n- ```markdown\n  ## Example\n  ```\n- [x] write release notes\n",
+      },
+      {
+        name: "unclosed list-contained fence",
+        body: "- intro\n  ```markdown\n  code\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "- intro\n  ```markdown\n  code\n- [x] write release notes\n",
+      },
+      {
+        name: "top-level fenced task",
+        body: "```markdown\n- [ ] example release notes\n```\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "```markdown\n- [ ] example release notes\n```\n- [x] write release notes\n",
+      },
+      {
+        name: "literal C# heading",
+        body: "## C#\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: "C#",
+        expected: "## C#\n- [x] write release notes\n",
+      },
+      {
+        name: "closing heading hashes",
+        body: "## Title ##\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: "Title",
+        expected: "## Title ##\n- [x] write release notes\n",
+      },
+      {
+        name: "block quote task",
+        body: "> - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "> - [x] write release notes\n",
+      },
+      {
+        name: "nested task order",
+        body: "- [ ] parent task\n  - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "- [ ] parent task\n  - [x] write release notes\n",
+      },
+      {
+        name: "bare task text before a nested task",
+        body: "[ ] write release notes\n\n- parent\n    - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "task-like HTML text before a nested task",
+        body: "<div>\n- [ ] write release notes\n</div>\n\n- parent\n    - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "same text on two real tasks",
+        body: "- [ ] write release notes\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "CRLF task",
+        body: "## Release\r\n- [ ] write release notes\r\n",
+        match: "write release notes",
+        section: "Release",
+        expected: "## Release\r\n- [x] write release notes\r\n",
+      },
+    ];
+    const script = `
+      import assert from "node:assert/strict";
+      const { findCheckboxLines, validateCheckboxEdit } = await import(${JSON.stringify(moduleUrl)});
+      const cases = ${JSON.stringify(cases)};
+      for (const test of cases) {
+        let updated = null;
+        try {
+          const matches = findCheckboxLines(test.body, test.match, test.section);
+          if (matches.length === 1) {
+            const selected = matches[0];
+            validateCheckboxEdit(test.body, selected.offset, "x");
+            updated = test.body.slice(0, selected.offset) + "x" + test.body.slice(selected.offset + 1);
+          }
+        } catch {}
+        assert.equal(updated, test.expected, test.name);
+        if (updated !== null) {
+          let changes = 0;
+          for (let i = 0; i < test.body.length; i++) if (test.body[i] !== updated[i]) changes++;
+          assert.equal(changes, 1, test.name + " changed bytes outside the selected box");
+        }
+      }
+    `;
+    const result = spawnSync("bun", ["--eval", script], { encoding: "utf8" });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+  });
+
+  for (const [name, body, expected] of [
+    [
+      "LF",
+      "## Tasks\n- [ ] write release notes\n- [x] keep this line\n",
+      "## Tasks\n- [x] write release notes\n- [x] keep this line\n",
+    ],
+    [
+      "CRLF",
+      "## Tasks\r\n- [ ] write release notes\r\n- [x] keep this line\r\n",
+      "## Tasks\r\n- [x] write release notes\r\n- [x] keep this line\r\n",
+    ],
+  ] as const) {
+    it.effect(`changes only the selected box and preserves ${name} bytes`, () =>
+      Effect.gen(function* () {
+        const calls: string[][] = [];
+        const result = yield* togglePRCheckbox(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        );
+
+        expect(calls).toEqual([
+          [
+            "api",
+            "--method",
+            "PATCH",
+            "repos/test-owner/test-repo/pulls/123",
+            "-f",
+            `body=${expected}`,
+          ],
+        ]);
+        expect(result).toEqual({
+          pr: 123,
+          state: "updated",
+          before: "- [ ] write release notes",
+          after: "- [x] write release notes",
+        });
+      }),
+    );
+  }
+
+  for (const [body, count] of [
+    ["- [ ] other item\n", 0],
+    ["- [ ] write release notes\n* [ ] write release notes\n", 2],
+  ] as const) {
+    it.effect(`refuses ${count} matching task items without a write`, () =>
+      Effect.gen(function* () {
+        const writes: string[][] = [];
+        const result = yield* togglePRCheckbox(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(writes).toEqual([]);
+      }),
+    );
+  }
+
+  it.effect("limits candidates to the requested heading section", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox({ ...options, section: "Release" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () =>
+              Effect.succeed({
+                status: 200,
+                body: {
+                  body: "## Build\n- [ ] write release notes\n### Release\n+ [ ] write release notes\n## Deploy\n- [ ] write release notes\n",
+                },
+              }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(writes[0]?.at(-1)).toBe(
+        "body=## Build\n- [ ] write release notes\n### Release\n+ [x] write release notes\n## Deploy\n- [ ] write release notes\n",
+      );
+      expect(result.state).toBe("updated");
+    }),
+  );
+
+  for (const [name, body, section, expected] of [
+    [
+      "excludes fenced tasks inside a list item",
+      "- ```markdown\n  - [ ] write release notes\n  ```\n",
+      null,
+      null,
+    ],
+    [
+      "ignores fenced headings inside a list item",
+      "## Release\n- ```markdown\n  ## Example\n  ```\n- [ ] write release notes\n",
+      "Release",
+      "## Release\n- ```markdown\n  ## Example\n  ```\n- [x] write release notes\n",
+    ],
+    [
+      "ends an unclosed fence with its containing list item",
+      "- intro\n  ```markdown\n  code\n- [ ] write release notes\n",
+      null,
+      "- intro\n  ```markdown\n  code\n- [x] write release notes\n",
+    ],
+    [
+      "matches tasks inside block quotes",
+      "> - [ ] write release notes 🌍\r\n",
+      null,
+      "> - [x] write release notes 🌍\r\n",
+    ],
+    [
+      "matches a nested task by its own line",
+      "- [ ] parent task\n  - [ ] write release notes\n",
+      null,
+      "- [ ] parent task\n  - [x] write release notes\n",
+    ],
+    [
+      "does not match a parent task by a child's line",
+      "- [ ] parent task\n  - write release notes\n",
+      null,
+      null,
+    ],
+    [
+      "uses concatenated heading text in a quote",
+      "> ## **Release** &amp; *notes*\n> - [ ] write release notes\n",
+      "Release & notes",
+      "> ## **Release** &amp; *notes*\n> - [x] write release notes\n",
+    ],
+    [
+      "ends a section at a rendered heading inside a list",
+      "## Release\n- ## Example\n- [ ] write release notes\n",
+      "Release",
+      null,
+    ],
+  ] as const) {
+    it.effect(name, () =>
+      Effect.gen(function* () {
+        const writes: string[][] = [];
+        const result = yield* togglePRCheckbox({ ...options, section }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isSuccess(result)).toBe(expected !== null);
+        expect(writes.map((args) => args.at(-1))).toEqual(
+          expected === null ? [] : [`body=${expected}`],
+        );
+      }),
+    );
+  }
+
+  it.effect("does not match task items inside fenced code", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () =>
+              Effect.succeed({
+                status: 200,
+                body: { body: "```markdown\n- [ ] write release notes\n```\n" },
+              }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(writes).toEqual([]);
+    }),
+  );
+
+  it.effect("does not let a heading inside fenced code end the requested section", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const body = "## Release\n~~~markdown\n## Example\n~~~\n- [ ] write release notes\n";
+      const result = yield* togglePRCheckbox({ ...options, section: "Release" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(writes[0]?.at(-1)).toBe(`body=${body.replace("[ ]", "[x]")}`);
+      expect(result.state).toBe("updated");
+    }),
+  );
+
+  for (const [heading, section] of [
+    ["## C#", "C#"],
+    ["## Title ##", "Title"],
+  ] as const) {
+    it.effect(`matches section text for ${heading}`, () =>
+      Effect.gen(function* () {
+        const writes: string[][] = [];
+        const body = `${heading}\n- [ ] write release notes\n`;
+        const result = yield* togglePRCheckbox({ ...options, section }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        );
+
+        expect(writes[0]?.at(-1)).toBe(`body=${body.replace("[ ]", "[x]")}`);
+        expect(result.state).toBe("updated");
+      }),
+    );
+  }
+
+  it.effect("does not write when the task is already checked", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => {
+              reads += 1;
+              return Effect.succeed({ status: 200, body: { body: "- [X] write release notes\n" } });
+            },
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(reads).toBe(1);
+      expect(writes).toEqual([]);
+      expect(result).toEqual({
+        pr: 123,
+        state: "unchanged",
+        before: "- [X] write release notes",
+        after: "- [X] write release notes",
+      });
+    }),
+  );
+
+  it.effect("unchecks a task item", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox({ ...options, state: "unchecked" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () =>
+              Effect.succeed({ status: 200, body: { body: "- [x] write release notes\n" } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(writes[0]?.at(-1)).toBe("body=- [ ] write release notes\n");
+      expect(result.after).toBe("- [ ] write release notes");
+    }),
+  );
+
+  it.effect("refuses when the PR body changes between reads", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => {
+              reads += 1;
+              const body = reads === 1 ? "- [ ] write release notes\n" : "- [ ] changed remotely\n";
+              return Effect.succeed({ status: 200, body: { body } });
+            },
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(reads).toBe(2);
+      expect(writes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses an unparseable PR body without writing", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body: 42 } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(writes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses a credential pattern in --match before reading", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const result = yield* togglePRCheckbox({
+        ...options,
+        match: `ghp_${"x".repeat(36)}`,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => {
+              reads += 1;
+              return Effect.succeed({ status: 200, body: { body: "- [ ] item\n" } });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(reads).toBe(0);
+    }),
+  );
+
+  it.effect("updates a body containing a value that output redaction hides", () =>
+    Effect.gen(function* () {
+      const secret = `ghp_${"x".repeat(36)}`;
+      const body = `- [ ] publish ${secret}\n`;
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox({ ...options, match: "publish" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(result.state).toBe("updated");
+      expect(writes[0]?.at(-1)).toBe(`body=- [x] publish ${secret}\n`);
+    }),
+  );
+
+  it.effect("accepts the public command flags", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      vi.stubGlobal("Bun", {
+        markdown: {
+          render: (
+            body: string,
+            callbacks: {
+              listItem?: (
+                children: string,
+                meta: { index: number; depth: number; ordered: boolean; checked: boolean },
+              ) => string | null | undefined;
+            },
+          ) =>
+            callbacks.listItem?.("write release notes", {
+              index: 0,
+              depth: 0,
+              ordered: false,
+              checked: !body.includes("[ ]"),
+            }) ?? "",
+        },
+      });
+      const cliLayer = Layer.mergeAll(
+        FileSystem.layerNoop({}),
+        Path.layer,
+        Stdio.layerTest({}),
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("checkbox CLI must not spawn a local process")),
+        ),
+        Layer.succeed(
+          Terminal.Terminal,
+          Terminal.make({
+            columns: Effect.succeed(80),
+            rows: Effect.succeed(24),
+            readInput: Effect.die("unused"),
+            readLine: Effect.die("unused"),
+            display: () => Effect.void,
+          }),
+        ),
+      );
+      const result = yield* Command.runWith(prCheckboxCommand, { version: "test" })([
+        "--pr",
+        "123",
+        "--match",
+        "write release notes",
+        "--check",
+      ]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              apiRequest: () =>
+                Effect.succeed({ status: 200, body: { body: "- [ ] write release notes\n" } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isSuccess(result)).toBe(true);
+      expect(writes).toHaveLength(1);
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
   );
 });
 describe("PR ready", () => {

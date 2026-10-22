@@ -385,6 +385,7 @@ bun gh-tool pr rerun-checks --pr 123 --failed-only --watch --timeout 600
 bun gh-tool pr trigger-checks --pr 123 --workflow dotnet-pull-request.yml # only when zero checks reported
 bun gh-tool pr watch --prs 123,124 --format jsonl --timeout 600
 bun gh-tool pr edit-comment --comment-id 456 --body-file correction.md # Edit your own review comment
+bun gh-tool pr checkbox --pr 123 --match "Add regression coverage" --check # Toggle one PR task item
 bun gh-tool pr edit-comment --comment-id 789 --kind issue --pr 123 --body "Corrected detail"
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # infers PR and thread
 bun gh-tool pr request-review --repo be --pr 123 --reviewers alice,bob
