@@ -6,7 +6,11 @@ import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
 import type { RepoRef } from "./keys";
 
-import { findCheckboxLines, scanCheckboxOutline } from "#gh/pr/checkbox-markdown";
+import {
+  bunMarkdownOutline,
+  findCheckboxLines,
+  validateCheckboxEdit,
+} from "#gh/pr/checkbox-markdown";
 import { GH_BINARY } from "#gh/config";
 import { ghEnvironment } from "#gh/environment";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
@@ -368,7 +372,7 @@ export class GitHubService extends Context.Service<
             body,
             opts.selectionText[0] ?? "",
             null,
-            scanCheckboxOutline,
+            bunMarkdownOutline,
           );
           if (
             !checkboxes.some((checkbox) => checkbox.offset === opts.boxOffset) ||
@@ -381,6 +385,18 @@ export class GitHubService extends Context.Service<
               message: "Refusing to update a character that is not a task checkbox",
             });
           }
+
+          yield* Effect.try({
+            try: () => validateCheckboxEdit(body, opts.boxOffset, opts.replacement),
+            catch: () =>
+              new GitHubCommandError({
+                command: "gh-tool pr checkbox",
+                exitCode: 1,
+                stderr: "PR body structure is ambiguous; tick this item in the GitHub UI",
+                message: "Refusing to update the PR checkbox because its source is ambiguous",
+                hint: "PR body structure is ambiguous; tick this item in the GitHub UI.",
+              }),
+          });
 
           const updatedBody =
             body.slice(0, opts.boxOffset) + opts.replacement + body.slice(opts.boxOffset + 1);

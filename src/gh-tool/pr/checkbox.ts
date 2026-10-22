@@ -4,6 +4,7 @@ import { GitHubCommandError } from "#gh/errors";
 import {
   bunMarkdownOutline,
   findCheckboxLines,
+  validateCheckboxEdit,
   type CheckboxOutlineParser,
 } from "#gh/pr/checkbox-markdown";
 import { repoSlug } from "#gh/read/keys";
@@ -79,6 +80,17 @@ export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (
   }
 
   const box = opts.state === "checked" ? "x" : " ";
+  yield* Effect.try({
+    try: () => validateCheckboxEdit(first.body, selected.offset, box, parseOutline),
+    catch: (cause) =>
+      new GitHubCommandError({
+        command: "gh-tool pr checkbox",
+        exitCode: 1,
+        stderr: String(cause),
+        message: "Cannot locate PR checkbox safely",
+        hint: "PR body structure is ambiguous; tick this item in the GitHub UI.",
+      }),
+  });
   const after = `${selected.before.slice(0, selected.boxIndex)}${box}${selected.before.slice(selected.boxIndex + 1)}`;
   yield* writes.prCheckbox(
     {

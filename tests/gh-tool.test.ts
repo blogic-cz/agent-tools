@@ -1690,6 +1690,24 @@ describe("GitHubService.runGh() error mapping", () => {
       const observedGhCommands: ObservedGhCommand[] = [];
       const secret = `ghp_${"x".repeat(36)}`;
       const body = `${prefix}[ ] publish ${secret}\n`;
+      vi.stubGlobal("Bun", {
+        spawn: () => ({
+          stdout: new Response("synthetic-session-token").body,
+          exited: Promise.resolve(0),
+        }),
+        markdown: {
+          render: (
+            markdownBody: string,
+            callbacks: {
+              listItem: (children: string, meta: { checked: boolean }) => string;
+            },
+          ) =>
+            scanCheckboxOutline(markdownBody)
+              .filter((entry) => entry.type === "task")
+              .map((entry) => callbacks.listItem(entry.text, { checked: entry.checked }))
+              .join(""),
+        },
+      });
       vi.stubGlobal("fetch", async () => Response.json({ body }));
       return Effect.gen(function* () {
         const service = yield* GitHubService;
@@ -3063,6 +3081,86 @@ describe("PR checkbox", () => {
     );
   });
 
+  it.effect("refuses scanner offsets that do not identify Bun's rendered task", () =>
+    Effect.gen(function* () {
+      const bodies = [
+        "[ ] release notes\n\n- parent\n    - [ ] release notes\n",
+        "<div>\n- [ ] release notes\n</div>\n\n- parent\n    - [ ] release notes\n",
+      ];
+      const renderedTask = [{ type: "task" as const, checked: false, text: "release notes" }];
+      const outline = () => renderedTask;
+
+      for (const body of bodies) {
+        const writes: string[][] = [];
+        const result = yield* togglePRCheckboxWithParser(
+          { ...options, match: "release notes" },
+          outline,
+        ).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        expect(writes).toEqual([]);
+      }
+    }),
+  );
+
+  it.effect("the service refuses a checkbox offset that does not flip Bun's selected task", () => {
+    const body = "[ ] release notes\n\n- parent\n    - [ ] release notes\n";
+    const originalFetch = globalThis.fetch;
+    const calls: ObservedGhCommand[] = [];
+    vi.stubGlobal("fetch", async () => Response.json({ body }));
+    vi.stubGlobal("Bun", {
+      spawn: () => ({
+        stdout: new Response("synthetic-session-token").body,
+        exited: Promise.resolve(0),
+      }),
+      markdown: {
+        render: (
+          editedBody: string,
+          callbacks: {
+            listItem: (children: string, meta: { checked: boolean }) => string;
+          },
+        ) => callbacks.listItem("release notes", { checked: !editedBody.includes("[ ]") }),
+      },
+    });
+    return Effect.gen(function* () {
+      const service = yield* GitHubService;
+      if (service.writePRCheckbox === undefined) throw new Error("PR checkbox writer unavailable");
+      const result = yield* service
+        .writePRCheckbox({
+          repo: { owner: "test-owner", name: "test-repo" },
+          pr: 123,
+          expectedBody: body,
+          boxOffset: body.indexOf("[") + 1,
+          replacement: "x",
+          selectionText: ["release notes"],
+        })
+        .pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls).toEqual([]);
+    }).pipe(
+      Effect.provide(GitHubService.layer),
+      Effect.provide(createMockGhSpawnerLayer(calls)),
+      Effect.provide(Layer.succeed(ConfigService, {})),
+      Effect.provideService(SessionCredential, "synthetic-session-token"),
+      Effect.ensuring(
+        Effect.sync(() => {
+          globalThis.fetch = originalFetch;
+          vi.unstubAllGlobals();
+        }),
+      ),
+    );
+  });
+
   it("cross-checks checkbox decisions with the real Bun Markdown parser", () => {
     const moduleUrl = new URL("../src/gh-tool/pr/checkbox-markdown.ts", import.meta.url).href;
     const cases = [
@@ -3123,6 +3221,27 @@ describe("PR checkbox", () => {
         expected: "- [ ] parent task\n  - [x] write release notes\n",
       },
       {
+        name: "bare task text before a nested task",
+        body: "[ ] write release notes\n\n- parent\n    - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "task-like HTML text before a nested task",
+        body: "<div>\n- [ ] write release notes\n</div>\n\n- parent\n    - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "same text on two real tasks",
+        body: "- [ ] write release notes\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
         name: "CRLF task",
         body: "## Release\r\n- [ ] write release notes\r\n",
         match: "write release notes",
@@ -3132,7 +3251,7 @@ describe("PR checkbox", () => {
     ];
     const script = `
       import assert from "node:assert/strict";
-      const { findCheckboxLines } = await import(${JSON.stringify(moduleUrl)});
+      const { findCheckboxLines, validateCheckboxEdit } = await import(${JSON.stringify(moduleUrl)});
       const cases = ${JSON.stringify(cases)};
       for (const test of cases) {
         let updated = null;
@@ -3140,6 +3259,7 @@ describe("PR checkbox", () => {
           const matches = findCheckboxLines(test.body, test.match, test.section);
           if (matches.length === 1) {
             const selected = matches[0];
+            validateCheckboxEdit(test.body, selected.offset, "x");
             updated = test.body.slice(0, selected.offset) + "x" + test.body.slice(selected.offset + 1);
           }
         } catch {}
@@ -3553,7 +3673,7 @@ describe("PR checkbox", () => {
       vi.stubGlobal("Bun", {
         markdown: {
           render: (
-            _body: string,
+            body: string,
             callbacks: {
               listItem?: (
                 children: string,
@@ -3565,7 +3685,7 @@ describe("PR checkbox", () => {
               index: 0,
               depth: 0,
               ordered: false,
-              checked: false,
+              checked: !body.includes("[ ]"),
             }) ?? "",
         },
       });

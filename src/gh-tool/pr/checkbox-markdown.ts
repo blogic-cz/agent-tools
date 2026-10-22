@@ -219,6 +219,55 @@ const sameOutline = (scanned: readonly ScannedEntry[], parsed: readonly Checkbox
   );
 };
 
+const sameEntry = (left: CheckboxOutlineEntry, right: CheckboxOutlineEntry) =>
+  left.type === right.type &&
+  left.text === right.text &&
+  (left.type !== "heading" || (right.type === "heading" && left.level === right.level)) &&
+  (left.type !== "task" || (right.type === "task" && left.checked === right.checked));
+
+export const validateCheckboxEdit = (
+  body: string,
+  offset: number,
+  replacement: " " | "x",
+  parseOutline: CheckboxOutlineParser = bunMarkdownOutline,
+) => {
+  const scanned = scanOutline(body);
+  const original = parseOutline(body);
+  const selectedIndex = scanned.findIndex(
+    (entry) => entry.type === "task" && entry.offset === offset,
+  );
+  if (
+    original === null ||
+    !sameOutline(scanned, original) ||
+    selectedIndex < 0 ||
+    original[selectedIndex]?.type !== "task" ||
+    body[offset] === undefined ||
+    (replacement !== " " && replacement !== "x")
+  ) {
+    throw new Error("PR body structure is ambiguous; tick this item in the GitHub UI");
+  }
+
+  const editedBody = `${body.slice(0, offset)}${replacement}${body.slice(offset + 1)}`;
+  const edited = parseOutline(editedBody);
+  if (edited === null || edited.length !== original.length) {
+    throw new Error("PR body structure is ambiguous; tick this item in the GitHub UI");
+  }
+
+  const expected = [...original];
+  const selected = expected[selectedIndex];
+  if (selected?.type === "task") {
+    expected[selectedIndex] = { ...selected, checked: replacement !== " " };
+  }
+  if (
+    !edited.every((entry, index) => {
+      const expectedEntry = expected[index];
+      return expectedEntry !== undefined && sameEntry(expectedEntry, entry);
+    })
+  ) {
+    throw new Error("PR body structure is ambiguous; tick this item in the GitHub UI");
+  }
+};
+
 export const findCheckboxLines = (
   body: string,
   match: string,
