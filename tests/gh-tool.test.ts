@@ -1679,13 +1679,12 @@ describe("GitHubService.runGh() error mapping", () => {
       Effect.provide(Layer.succeed(ConfigService, {})),
     );
   });
-  it.effect(
-    "writes a checkbox from the verified GitHub body without validating the body as input",
-    () => {
+  for (const prefix of ["- ", "> - ", "> > - ", "  - ", "1. ", "- > - "]) {
+    it.effect(`writes a verified GitHub checkbox with prefix ${prefix}`, () => {
       const originalFetch = globalThis.fetch;
       const observedGhCommands: ObservedGhCommand[] = [];
       const secret = `ghp_${"x".repeat(36)}`;
-      const body = `- [ ] publish ${secret}\n`;
+      const body = `${prefix}[ ] publish ${secret}\n`;
       vi.stubGlobal("fetch", async () => Response.json({ body }));
       return Effect.gen(function* () {
         const service = yield* GitHubService;
@@ -1707,7 +1706,7 @@ describe("GitHubService.runGh() error mapping", () => {
               "PATCH",
               "repos/test-owner/test-repo/pulls/123",
               "-f",
-              `body=- [x] publish ${secret}\n`,
+              `body=${prefix}[x] publish ${secret}\n`,
             ],
           },
         ]);
@@ -1723,8 +1722,8 @@ describe("GitHubService.runGh() error mapping", () => {
           }),
         ),
       );
-    },
-  );
+    });
+  }
   it.effect("uses the configured default repository for plain gh calls", () => {
     const observedGhCommands: ObservedGhCommand[] = [];
 
@@ -3142,6 +3141,79 @@ describe("PR checkbox", () => {
       expect(result.state).toBe("updated");
     }),
   );
+
+  for (const [name, body, section, expected] of [
+    [
+      "excludes fenced tasks inside a list item",
+      "- ```markdown\n  - [ ] write release notes\n  ```\n",
+      null,
+      null,
+    ],
+    [
+      "ignores fenced headings inside a list item",
+      "## Release\n- ```markdown\n  ## Example\n  ```\n- [ ] write release notes\n",
+      "Release",
+      "## Release\n- ```markdown\n  ## Example\n  ```\n- [x] write release notes\n",
+    ],
+    [
+      "ends an unclosed fence with its containing list item",
+      "- intro\n  ```markdown\n  code\n- [ ] write release notes\n",
+      null,
+      "- intro\n  ```markdown\n  code\n- [x] write release notes\n",
+    ],
+    [
+      "matches tasks inside block quotes",
+      "> - [ ] write release notes 🌍\r\n",
+      null,
+      "> - [x] write release notes 🌍\r\n",
+    ],
+    [
+      "matches a nested task by its own line",
+      "- [ ] parent task\n  - [ ] write release notes\n",
+      null,
+      "- [ ] parent task\n  - [x] write release notes\n",
+    ],
+    [
+      "does not match a parent task by a child's line",
+      "- [ ] parent task\n  - write release notes\n",
+      null,
+      null,
+    ],
+    [
+      "uses concatenated heading text in a quote",
+      "> ## **Release** &amp; *notes*\n> - [ ] write release notes\n",
+      "Release & notes",
+      "> ## **Release** &amp; *notes*\n> - [x] write release notes\n",
+    ],
+    [
+      "ends a section at a rendered heading inside a list",
+      "## Release\n- ## Example\n- [ ] write release notes\n",
+      "Release",
+      null,
+    ],
+  ] as const) {
+    it.effect(name, () =>
+      Effect.gen(function* () {
+        const writes: string[][] = [];
+        const result = yield* togglePRCheckbox({ ...options, section }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+        expect(Result.isSuccess(result)).toBe(expected !== null);
+        expect(writes.map((args) => args.at(-1))).toEqual(
+          expected === null ? [] : [`body=${expected}`],
+        );
+      }),
+    );
+  }
 
   it.effect("does not match task items inside fenced code", () =>
     Effect.gen(function* () {
