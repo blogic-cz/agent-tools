@@ -80,11 +80,18 @@ export type GhResult = {
 };
 
 export type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
+export type TrustedPRBodyWrite = {
+  readonly body: string;
+  readonly selectionText: readonly string[];
+};
 
 export class GitHubService extends Context.Service<
   GitHubService,
   {
-    readonly runGh: (args: string[]) => Effect.Effect<GhResult, GhError>;
+    readonly runGh: (
+      args: string[],
+      trustedPRBodyWrite?: TrustedPRBodyWrite,
+    ) => Effect.Effect<GhResult, GhError>;
     readonly runGhJson: <T>(args: string[]) => Effect.Effect<T, GhError>;
     readonly runGraphQL: (
       query: string,
@@ -312,10 +319,35 @@ export class GitHubService extends Context.Service<
         });
 
         // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
-        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
+        const runGh = (
+          args: string[],
+          trustedPRBodyWrite?: TrustedPRBodyWrite,
+        ): Effect.Effect<GhResult, GhError> => {
           const canRetry = isSafeRetryRead(args);
           return Effect.gen(function* () {
-            yield* validateOutboundText(args.join("\n"), "gh-tool");
+            const outboundText = [...args];
+            if (trustedPRBodyWrite !== undefined) {
+              const expectedBodyArg = `body=${trustedPRBodyWrite.body}`;
+              const validPRPatch =
+                args.length === 6 &&
+                args[0] === "api" &&
+                args[1] === "--method" &&
+                args[2] === "PATCH" &&
+                /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(args[3] ?? "") &&
+                args[4] === "-f" &&
+                args[5] === expectedBodyArg;
+              if (!validPRPatch) {
+                return yield* new GitHubCommandError({
+                  command: "gh-tool",
+                  exitCode: 1,
+                  stderr: "Refusing a trusted PR body write with an unexpected command",
+                  message: "Refusing a trusted PR body write with an unexpected command",
+                });
+              }
+              outboundText[5] = "body=[GitHub PR body]";
+              outboundText.push(...trustedPRBodyWrite.selectionText);
+            }
+            yield* validateOutboundText(outboundText.join("\n"), "gh-tool");
             return yield* retryTransient({
               attempt: () => runGhAttempt(args),
               isTransient: (err) =>

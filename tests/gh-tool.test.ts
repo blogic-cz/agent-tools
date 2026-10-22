@@ -73,6 +73,7 @@ import {
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
+import { togglePRCheckbox } from "#gh/pr/checkbox";
 import {
   createReview,
   fetchComments,
@@ -115,6 +116,7 @@ import { ConfigService } from "#config";
 import {
   prCreateCommand,
   prEditCommand,
+  prCheckboxCommand,
   prMergeCommand,
   prWatchCommand,
   classifyReviewTriage,
@@ -2920,6 +2922,310 @@ describe("PR edit", () => {
         ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
       expect(result.body).toBe(body);
+    }),
+  );
+});
+
+describe("PR checkbox", () => {
+  const options = {
+    pr: 123,
+    match: "write release notes",
+    section: null,
+    state: "checked" as const,
+  };
+
+  for (const [name, body, expected] of [
+    [
+      "LF",
+      "## Tasks\n- [ ] write release notes\n- [x] keep this line\n",
+      "## Tasks\n- [x] write release notes\n- [x] keep this line\n",
+    ],
+    [
+      "CRLF",
+      "## Tasks\r\n- [ ] write release notes\r\n- [x] keep this line\r\n",
+      "## Tasks\r\n- [x] write release notes\r\n- [x] keep this line\r\n",
+    ],
+  ] as const) {
+    it.effect(`changes only the selected box and preserves ${name} bytes`, () =>
+      Effect.gen(function* () {
+        const calls: string[][] = [];
+        const result = yield* togglePRCheckbox(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+        );
+
+        expect(calls).toEqual([
+          [
+            "api",
+            "--method",
+            "PATCH",
+            "repos/test-owner/test-repo/pulls/123",
+            "-f",
+            `body=${expected}`,
+          ],
+        ]);
+        expect(result).toEqual({
+          pr: 123,
+          state: "updated",
+          before: "- [ ] write release notes",
+          after: "- [x] write release notes",
+        });
+      }),
+    );
+  }
+
+  for (const [body, count] of [
+    ["- [ ] other item\n", 0],
+    ["- [ ] write release notes\n* [ ] write release notes\n", 2],
+  ] as const) {
+    it.effect(`refuses ${count} matching task items without a write`, () =>
+      Effect.gen(function* () {
+        const writes: string[][] = [];
+        const result = yield* togglePRCheckbox(options).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+          ),
+          Effect.result,
+        );
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(writes).toEqual([]);
+      }),
+    );
+  }
+
+  it.effect("limits candidates to the requested heading section", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox({ ...options, section: "Release" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () =>
+              Effect.succeed({
+                status: 200,
+                body: {
+                  body: "## Build\n- [ ] write release notes\n### Release\n+ [ ] write release notes\n## Deploy\n- [ ] write release notes\n",
+                },
+              }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(writes[0]?.at(-1)).toBe(
+        "body=## Build\n- [ ] write release notes\n### Release\n+ [x] write release notes\n## Deploy\n- [ ] write release notes\n",
+      );
+      expect(result.state).toBe("updated");
+    }),
+  );
+
+  it.effect("does not write when the task is already checked", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => {
+              reads += 1;
+              return Effect.succeed({ status: 200, body: { body: "- [X] write release notes\n" } });
+            },
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(reads).toBe(1);
+      expect(writes).toEqual([]);
+      expect(result).toEqual({
+        pr: 123,
+        state: "unchanged",
+        before: "- [X] write release notes",
+        after: "- [X] write release notes",
+      });
+    }),
+  );
+
+  it.effect("unchecks a task item", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox({ ...options, state: "unchecked" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () =>
+              Effect.succeed({ status: 200, body: { body: "- [x] write release notes\n" } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(writes[0]?.at(-1)).toBe("body=- [ ] write release notes\n");
+      expect(result.after).toBe("- [ ] write release notes");
+    }),
+  );
+
+  it.effect("refuses when the PR body changes between reads", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => {
+              reads += 1;
+              const body = reads === 1 ? "- [ ] write release notes\n" : "- [ ] changed remotely\n";
+              return Effect.succeed({ status: 200, body: { body } });
+            },
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(reads).toBe(2);
+      expect(writes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses an unparseable PR body without writing", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox(options).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body: 42 } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(writes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses a credential pattern in --match before reading", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const result = yield* togglePRCheckbox({
+        ...options,
+        match: `ghp_${"x".repeat(36)}`,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => {
+              reads += 1;
+              return Effect.succeed({ status: 200, body: { body: "- [ ] item\n" } });
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(reads).toBe(0);
+    }),
+  );
+
+  it.effect("updates a body containing a value that output redaction hides", () =>
+    Effect.gen(function* () {
+      const secret = `ghp_${"x".repeat(36)}`;
+      const body = `- [ ] publish ${secret}\n`;
+      const writes: string[][] = [];
+      const result = yield* togglePRCheckbox({ ...options, match: "publish" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+
+      expect(result.state).toBe("updated");
+      expect(writes[0]?.at(-1)).toBe(`body=- [x] publish ${secret}\n`);
+    }),
+  );
+
+  it.effect("accepts the public command flags", () =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      const cliLayer = Layer.mergeAll(
+        FileSystem.layerNoop({}),
+        Path.layer,
+        Stdio.layerTest({}),
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("checkbox CLI must not spawn a local process")),
+        ),
+        Layer.succeed(
+          Terminal.Terminal,
+          Terminal.make({
+            columns: Effect.succeed(80),
+            rows: Effect.succeed(24),
+            readInput: Effect.die("unused"),
+            readLine: Effect.die("unused"),
+            display: () => Effect.void,
+          }),
+        ),
+      );
+      const result = yield* Command.runWith(prCheckboxCommand, { version: "test" })([
+        "--pr",
+        "123",
+        "--match",
+        "write release notes",
+        "--check",
+      ]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              apiRequest: () =>
+                Effect.succeed({ status: 200, body: { body: "- [ ] write release notes\n" } }),
+              runGh: (args) => {
+                writes.push(args);
+                return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isSuccess(result)).toBe(true);
+      expect(writes).toHaveLength(1);
     }),
   );
 });

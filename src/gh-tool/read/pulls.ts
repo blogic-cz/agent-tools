@@ -101,6 +101,25 @@ export const prHead = Effect.fn("reads.prHead")(function* (
   return { headSha: head.head.sha, baseSha: head.base.sha, signature: snapshotDigest(snapshot) };
 });
 
+const PRBody = Schema.Struct({ body: Schema.NullOr(Schema.String) });
+
+export const prBody = Effect.fn("reads.prBody")(function* (repo: RepoRef, pr: number) {
+  const gh = yield* GitHubService;
+  const path = `repos/${repoSlug(repo)}/pulls/${pr}`;
+  const response = yield* gh.apiRequest<unknown>({ path });
+  const parsed = yield* Effect.try({
+    try: () => Schema.decodeUnknownSync(PRBody)(response.body),
+    catch: (error) =>
+      new GitHubCommandError({
+        command: `GET ${path}`,
+        exitCode: 0,
+        message: `GitHub returned an invalid PR body: ${String(error)}`,
+        stderr: `GitHub returned an invalid PR body: ${String(error)}`,
+      }),
+  });
+  return parsed.body ?? "";
+});
+
 export const checkSignal = Effect.fn("reads.checkSignal")(function* (repo: RepoRef, sha: string) {
   const snapshot = yield* restSnapshot({ op: "checkSignal", repo, sha }, [
     {

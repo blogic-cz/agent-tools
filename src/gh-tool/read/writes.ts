@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { GitHubService } from "#gh/read/transport";
 import { invalidate } from "./cache";
 import type { Tag } from "./keys";
-import type { GhError } from "#gh/read/transport";
+import type { GhError, TrustedPRBodyWrite } from "#gh/read/transport";
 import type { GitHubApiRequest } from "#gh/read/api";
 
 const mutate = <A, R>(effect: Effect.Effect<A, GhError, R>, touched: readonly Tag[]) =>
@@ -11,9 +11,13 @@ const mutate = <A, R>(effect: Effect.Effect<A, GhError, R>, touched: readonly Ta
     Effect.tapError(() => invalidate(touched)),
   );
 
-const run = Effect.fn("writes.run")(function* (argv: string[], touched: readonly Tag[]) {
+const run = Effect.fn("writes.run")(function* (
+  argv: string[],
+  touched: readonly Tag[],
+  trustedPRBodyWrite?: TrustedPRBodyWrite,
+) {
   const gh = yield* GitHubService;
-  return yield* mutate(gh.runGh(argv), touched);
+  return yield* mutate(gh.runGh(argv, trustedPRBodyWrite), touched);
 });
 const json = <A>(argv: string[], touched: readonly Tag[]) =>
   Effect.gen(function* () {

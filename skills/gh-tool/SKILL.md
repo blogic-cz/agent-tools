@@ -62,6 +62,8 @@ bun gh-tool pr edit --repo be --pr 123 --body-stdin <<'EOF'
 
 - bun run check
 EOF
+bun gh-tool pr checkbox --pr 123 --match "Add regression coverage" --check
+bun gh-tool pr checkbox --pr 123 --match "Add regression coverage" --uncheck --section "Testing"
 bun gh-tool pr review-triage --pr 123  # Combined info+threads+checks; leads with a `ready` merge-readiness verdict
 bun gh-tool pr reply-and-resolve --comment-id 456 --body "Done" # Infer PR + thread
 bun gh-tool pr reply-and-resolve --pr 123 --comment-id 456 --thread-id 789 --body "Done" # Explicit IDs validated first
@@ -73,6 +75,8 @@ bun gh-tool pr review --pr 123 --event request-changes --body-stdin --confirm # 
 bun gh-tool pr review --pr 123 --event approve --confirm # Body optional
 bun gh-tool pr submit-review --pr 123 --event request-changes --confirm # Same verdict on an already-pending review
 ```
+
+`pr checkbox` changes one matching Markdown task item in the PR body. It refuses when zero or multiple task items match. Use `--section` to limit the search to a heading. The command reads the raw body inside `gh-tool`, checks that the body did not change before the write, and returns the changed line through normal output redaction.
 
 `--event approve` and `--event request-changes` require `--confirm`, the same gate as `pr merge`, because both change whether the PR can merge. `--event comment` needs no gate but does need a body. GitHub refuses a verdict on your own PR; use `--event comment` there.
 

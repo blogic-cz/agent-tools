@@ -33,6 +33,7 @@ import {
 } from "#gh/config";
 
 import { mergeStack, readStack, unstackStack } from "./stack";
+import { togglePRCheckbox } from "./checkbox";
 import {
   closePR,
   collectWithStableState,
@@ -720,6 +721,51 @@ export const prEditCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Edit an existing PR's title, body, or other metadata"));
+
+export const prCheckboxCommand = Command.make(
+  "checkbox",
+  {
+    check: Flag.Boolean("check").pipe(
+      Flag.withDescription("Mark the matching task item as checked"),
+      Flag.withDefault(false),
+    ),
+    format: formatOption,
+    match: Flag.String("match").pipe(
+      Flag.withDescription("Plain text that identifies one task item"),
+    ),
+    pr: Flag.Int("pr").pipe(Flag.withDescription("PR number to update")),
+    repo: repoOption,
+    section: Flag.String("section").pipe(
+      Flag.withDescription("Limit the search to a Markdown heading"),
+      Flag.optional,
+    ),
+    uncheck: Flag.Boolean("uncheck").pipe(
+      Flag.withDescription("Mark the matching task item as unchecked"),
+      Flag.withDefault(false),
+    ),
+  },
+  ({ check, format, match, pr, repo, section, uncheck }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        if (check === uncheck) {
+          return yield* new GitHubCommandError({
+            command: "gh-tool pr checkbox",
+            exitCode: 1,
+            stderr: "Provide exactly one of --check or --uncheck",
+            message: "Provide exactly one of --check or --uncheck",
+          });
+        }
+        const result = yield* togglePRCheckbox({
+          pr,
+          match,
+          section: Option.getOrNull(section),
+          state: check ? "checked" : "unchecked",
+        });
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(Command.withDescription("Check or uncheck one task item in a PR body"));
 
 export const prCloseCommand = Command.make(
   "close",
