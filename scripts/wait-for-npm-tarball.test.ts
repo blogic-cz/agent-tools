@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { waitForNpmTarball } from "./wait-for-npm-tarball";
 
-const tarballUrl = "https://registry.npmjs.org/@blogic-cz/agent-tools/-/agent-tools-1.8.0.tgz";
+const tarballUrl = "https://registry.npmjs.org/@example-org/agent-tools/-/agent-tools-1.8.0.tgz";
 
 const createClock = () => {
   let currentTime = 0;

@@ -133,13 +133,37 @@ async function test(): Promise<{
   success: boolean;
   output?: string;
 }> {
-  const result = await run(["bunx", "vitest", "run", "--reporter=dot", "--silent"]);
+  const hookTests = "tests/credential-guard-hook.test.ts";
+  const result = await run([
+    "bunx",
+    "vitest",
+    "run",
+    "--reporter=dot",
+    "--silent",
+    "--exclude",
+    hookTests,
+  ]);
+  if (result.exitCode === 0) {
+    const hookResult = await run([
+      "bunx",
+      "vitest",
+      "run",
+      hookTests,
+      "--reporter=dot",
+      "--silent",
+    ]);
+    if (hookResult.exitCode !== 0)
+      return { success: false, output: hookResult.stderr || hookResult.stdout };
+    result.stdout += "\n" + hookResult.stdout;
+  }
 
   if (result.exitCode === 0) {
-    const match = result.stdout.match(/Tests\s+(\d+\s+passed)/);
+    const counts = [...result.stdout.matchAll(/Tests\s+(\d+)\s+passed/g)];
     return {
       success: true,
-      output: match ? match[1] : undefined,
+      output: counts.length
+        ? `${counts.reduce((sum, match) => sum + Number(match[1]), 0)} passed`
+        : undefined,
     };
   }
 

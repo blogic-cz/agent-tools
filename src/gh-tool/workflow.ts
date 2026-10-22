@@ -298,7 +298,7 @@ const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts:
     const parts = opts.repo.split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
       return yield* new GitHubCommandError({
-        message: `Invalid --repo format: "${opts.repo}". Expected "owner/name" (e.g. "blogic-cz/agent-tools").`,
+        message: `Invalid --repo format: "${opts.repo}". Expected "owner/name" (e.g. "example-org/example-repo").`,
         command: "workflow annotations",
         exitCode: 1,
         stderr: "",
@@ -574,7 +574,7 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (
     const parts = opts.repo.split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
       return yield* new GitHubCommandError({
-        message: `Invalid --repo format: "${opts.repo}". Expected "owner/name" (e.g. "blogic-cz/agent-tools").`,
+        message: `Invalid --repo format: "${opts.repo}". Expected "owner/name" (e.g. "example-org/example-repo").`,
         command: "workflow job-logs",
         exitCode: 1,
         stderr: "",

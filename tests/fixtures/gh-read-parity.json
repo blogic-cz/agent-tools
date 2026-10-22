@@ -1,5 +1,5 @@
 {
-  "baseline": "@blogic-cz/agent-tools@1.7.5",
+  "baseline": "agent-tools@1.7.5",
   "cases": [
     {
       "argv": ["pr", "threads", "--pr", "42"],

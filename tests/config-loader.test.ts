@@ -218,31 +218,31 @@ describe("GitHub repo resolver", () => {
   it("prefers default when it exists", () => {
     const config: AgentToolsConfig = {
       github: {
-        be: { owner: "sabservis", repo: "nexus-be" },
-        default: { owner: "sabservis", repo: "nexus-fe" },
+        be: { owner: "example", repo: "example-be" },
+        default: { owner: "example", repo: "example-fe" },
       },
     };
 
-    expect(getGitHubConfig(config)).toEqual({ owner: "sabservis", repo: "nexus-fe" });
-    expect(getGitHubConfig(config, "be")).toEqual({ owner: "sabservis", repo: "nexus-be" });
-    expect(resolveGitHubRepoTarget(config)).toBe("sabservis/nexus-fe");
+    expect(getGitHubConfig(config)).toEqual({ owner: "example", repo: "example-fe" });
+    expect(getGitHubConfig(config, "be")).toEqual({ owner: "example", repo: "example-be" });
+    expect(resolveGitHubRepoTarget(config)).toBe("example/example-fe");
   });
 
   it("auto-selects a single non-default profile", () => {
     const config: AgentToolsConfig = {
       github: {
-        be: { owner: "sabservis", repo: "nexus-be" },
+        be: { owner: "example", repo: "example-be" },
       },
     };
 
-    expect(resolveGitHubRepoTarget(config)).toBe("sabservis/nexus-be");
+    expect(resolveGitHubRepoTarget(config)).toBe("example/example-be");
   });
 
   it("requires --repo when multiple non-default profiles exist", () => {
     const config: AgentToolsConfig = {
       github: {
-        be: { owner: "sabservis", repo: "nexus-be" },
-        fe: { owner: "sabservis", repo: "nexus-fe" },
+        be: { owner: "example", repo: "example-be" },
+        fe: { owner: "example", repo: "example-fe" },
       },
     };
 
@@ -254,19 +254,19 @@ describe("GitHub repo resolver", () => {
   it("resolves named profiles and preserves explicit owner/name targets", () => {
     const config: AgentToolsConfig = {
       github: {
-        be: { owner: "sabservis", repo: "nexus-be" },
+        be: { owner: "example", repo: "example-be" },
       },
     };
 
-    expect(resolveGitHubRepoTarget(config, "be")).toBe("sabservis/nexus-be");
-    expect(resolveGitHubRepoTarget(config, "sabservis/nexus-infra")).toBe("sabservis/nexus-infra");
+    expect(resolveGitHubRepoTarget(config, "be")).toBe("example/example-be");
+    expect(resolveGitHubRepoTarget(config, "example/example-infra")).toBe("example/example-infra");
   });
 
   it("lists available names for an unknown profile", () => {
     const config: AgentToolsConfig = {
       github: {
-        be: { owner: "sabservis", repo: "nexus-be" },
-        fe: { owner: "sabservis", repo: "nexus-fe" },
+        be: { owner: "example", repo: "example-be" },
+        fe: { owner: "example", repo: "example-fe" },
       },
     };
 
@@ -279,8 +279,8 @@ describe("GitHub repo resolver", () => {
     const config = decodeConfig({
       github: {
         be: {
-          owner: "sabservis",
-          repo: "nexus-be",
+          owner: "example",
+          repo: "example-be",
           prTitle: {
             pattern: "^fix: CORE-[0-9]+ - .+$",
             expected: "<type>: CORE-<number> - <description>",
@@ -468,10 +468,10 @@ describe("loadConfig", () => {
           default: {
             environments: {
               local: {
-                host: "nexus.sab.local",
+                host: "example.example.local",
                 port: 40543,
                 user: "postgres",
-                database: "nexus",
+                database: "example",
               },
             },
             allowedMutations: {
@@ -483,7 +483,7 @@ describe("loadConfig", () => {
           default: {
             environments: {
               local: {
-                url: "http://nexus.sab.local:40300",
+                url: "http://example.example.local:40300",
                 prometheusUid: "prometheus",
               },
             },
@@ -507,7 +507,7 @@ describe("loadConfig", () => {
           default: {
             environments: {
               local: {
-                url: "http://nexus.sab.local:41676",
+                url: "http://example.example.local:41676",
               },
             },
           },
@@ -521,14 +521,14 @@ describe("loadConfig", () => {
           const config = await loadConfig();
 
           expect(config?.database?.default?.environments.local).toEqual({
-            host: "nexus.sab.local",
+            host: "example.example.local",
             port: 41819,
             user: "postgres",
-            database: "nexus",
+            database: "example",
           });
           expect(config?.database?.default?.allowedMutations?.dev).toEqual(["insert", "update"]);
           expect(config?.observability?.default?.environments.local).toEqual({
-            url: "http://nexus.sab.local:41676",
+            url: "http://example.example.local:41676",
             prometheusUid: "prometheus",
           });
         } finally {
@@ -782,7 +782,7 @@ describe("VPN prerequisites config", () => {
   });
 
   it("accepts kubeconfig paths on kubernetes and database profiles", () => {
-    const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
+    const kubeconfigTemplate = ["$", "{EXAMPLE_KUBECONFIG}"].join("");
     const config = decodeConfig({
       kubernetes: {
         default: {

@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createReplayGh, replayCases, replayFlags } from "./gh-read-replay";
 
+const packageMetadata = JSON.parse(
+  await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+) as { name: string };
 const baseline = process.argv[2];
 if (baseline === undefined)
   throw new Error("Pass an installed published 1.7.5 src/gh-tool/index.ts path");
 const metadata = JSON.parse(
   await readFile(join(dirname(dirname(dirname(resolve(baseline)))), "package.json"), "utf8"),
 ) as { name: string; version: string };
-if (metadata.name !== "@blogic-cz/agent-tools" || metadata.version !== "1.7.5")
+if (metadata.name !== packageMetadata.name || metadata.version !== "1.7.5")
   throw new Error("Baseline must be published agent-tools 1.7.5");
 
 const root = await mkdtemp(join(tmpdir(), "gh-read-record-"));
@@ -38,7 +41,7 @@ try {
   });
   await writeFile(
     "tests/fixtures/gh-read-parity.json",
-    JSON.stringify({ baseline: "@blogic-cz/agent-tools@1.7.5", cases }, null, 2) + "\n",
+    JSON.stringify({ baseline: "agent-tools@1.7.5", cases }, null, 2) + "\n",
   );
   console.log(`Recorded ${cases.length} offline baseline outputs.`);
 } finally {

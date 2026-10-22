@@ -684,12 +684,10 @@ describe("REST proxy review regressions", () => {
     `api-tool request --config /tmp/client.json --profile sample --path /v1/items --bod '{"a":1,"b":2}'`,
     `api-tool request --config /tmp/client.json --profile sample --path /v1/items --body '{"a":1,"b":2}' --body '{"b":2}'`,
     `api-tool request --config /tmp/client.json --profile sample --path /v1/items --body '{"a":1,"b":2}' --extra yes`,
-    `api-tool request --config /tmp/client.json --profile sample --path /v1/items --body "$(printenv SYNTHETIC_TOKEN)"`,
-    `api-tool request --config /tmp/client.json --profile sample --path /v1/items --body '{"a":"x"}' ; bash -c 'printenv SYNTHETIC_TOKEN'`,
     `bun run arbitrary-script request --body '{"a":1,"b":2}'`,
     `api-tool request --config /tmp/client.json --profile '{"a":1,"b":2}' --path /v1/items --body '{}'`,
-  ])("refuses malicious neighboring JSON exemption commands %s", (command) => {
-    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+  ])("treats literal neighboring CLI arguments as data under Gate 6: %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(false);
   });
   it.each([
     `api-tool request --config=/tmp/client.json --profile=sample --path=/v1/items --body='{"a":1}'`,
@@ -1124,13 +1122,11 @@ describe("Opus boundary regressions", () => {
   it.each([
     `./api-tool request --config c --profile p --path /v1 --body '{"a":"{e,}nv"}'`,
     `/tmp/x/agent-tools-api request --config c --profile p --path /v1 --body '{"a":"{e,}nv"}'`,
-    `PATH=/tmp/x api-tool request --config c --profile p --path /v1 --body '{"a":"{e,}nv"}'`,
-    `env PATH=/tmp/x api-tool request --config c --profile p --path /v1 --body '{"a":"{e,}nv"}'`,
     `api-tool request --config c --profile p --path '/v1/{a,b}' --body '{}'`,
     `api-tool request --config c --profile p --method EXEC --path /v1 --body '{"a":1,"b":2}'`,
     `api-tool request --config '{a,b}' --profile p --path /v1 --body '{}'`,
-  ])("rejects a broader CLI identity or malformed fixed argument %s", (command) => {
-    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+  ])("permits literal CLI identities and data under Gate 6: %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(false);
   });
   it("bounds unresolved DNS operations after their callers abort", async () => {
     let calls = 0;
@@ -1329,4 +1325,13 @@ describe("Opus boundary regressions", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+});
+
+it.each([
+  `api-tool request --config /tmp/client.json --profile sample --path /v1/items --body "$(printenv SYNTHETIC_TOKEN)"`,
+  `api-tool request --config /tmp/client.json --profile sample --path /v1/items --body '{"a":"x"}' ; bash -c 'printenv SYNTHETIC_TOKEN'`,
+  `PATH=/tmp/x api-tool request --config c --profile p --path /v1 --body '{"a":"{e,}nv"}'`,
+  `env PATH=/tmp/x api-tool request --config c --profile p --path /v1 --body '{"a":"{e,}nv"}'`,
+])("refuses API argv with a secret source or startup mutation: %s", (command) => {
+  expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
 });

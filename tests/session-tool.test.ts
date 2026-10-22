@@ -30,15 +30,15 @@ import {
 
 describe("session-tool Claude Code helpers", () => {
   it("encodeProjectPath replaces slashes with dashes", () => {
-    expect(encodeProjectPath("/Users/foo/bar")).toBe("-Users-foo-bar");
+    expect(encodeProjectPath("/Users/dev/bar")).toBe("-Users-dev-bar");
   });
 
   it("encodeProjectPath replaces Windows separators and drive colon with dashes", () => {
-    expect(encodeProjectPath("C:\\Work\\SAB\\nexus")).toBe("C--Work-SAB-nexus");
+    expect(encodeProjectPath("C:\\Work\\EXAMPLE\\example")).toBe("C--Work-EXAMPLE-example");
   });
 
   it("encodeProjectPath handles mixed separators", () => {
-    expect(encodeProjectPath("C:/Work/SAB/nexus")).toBe("C--Work-SAB-nexus");
+    expect(encodeProjectPath("C:/Work/EXAMPLE/example")).toBe("C--Work-EXAMPLE-example");
   });
 
   it("parseJsonlLine parses user record", () => {
@@ -164,14 +164,14 @@ describe("session-tool pi helpers", () => {
       version: 3,
       id: "019f6625-1f54-7588-83dc-6eed11fc7ec0",
       timestamp: "2026-07-15T14:18:56.724Z",
-      cwd: "/Users/foo/project",
+      cwd: "/Users/dev/project",
     });
 
     expect(parsePiLine(line)).toEqual({
       type: "session",
       id: "019f6625-1f54-7588-83dc-6eed11fc7ec0",
       timestamp: "2026-07-15T14:18:56.724Z",
-      cwd: "/Users/foo/project",
+      cwd: "/Users/dev/project",
     });
   });
 

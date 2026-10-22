@@ -248,12 +248,12 @@ const fetchWorkflowRunFailureContext = Effect.fn("pr.fetchWorkflowRunFailureCont
 
 // `gh pr checks` exits 1 on an *empty* result ("no checks reported on the 'x' branch"). Zero checks
 // is an ordinary state, so it is not an error, but it is also not an empty list: a PR with green
-// checks (sabservis/nexus-be#1396) once came back empty.
+// checks (example/example-be#1396) once came back empty.
 export const NO_CHECKS_REPORTED_RE = /no checks reported/i;
 // `gh` reports "no checks reported" both for the seconds after a push, before its checks
 // register, and forever for a PR that has none — the message cannot tell them apart. So the
 // wait for registration gets its own short budget: long enough to cover the race (measured
-// at roughly 40s on blogic-cz/agent-tools#134), short enough that a check-less PR is not held
+// at roughly 40 seconds), short enough that a check-less PR is not held
 // for the caller's whole --timeout.
 const CHECK_REGISTRATION_POLL_SECONDS = 5;
 const CHECK_REGISTRATION_GRACE_SECONDS = 60;
