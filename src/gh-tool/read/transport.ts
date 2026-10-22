@@ -1,6 +1,6 @@
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { Context, Effect, Layer, Stream } from "effect";
+import { Context, Effect, Layer, Schema, Stream } from "effect";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
@@ -80,18 +80,20 @@ export type GhResult = {
 };
 
 export type GhError = GitHubCommandError | GitHubAuthError | GitHubNotFoundError;
-export type TrustedPRBodyWrite = {
-  readonly body: string;
+export type PRCheckboxWrite = {
+  readonly repo: RepoRef;
+  readonly pr: number;
+  readonly expectedBody: string;
+  readonly boxOffset: number;
+  readonly replacement: " " | "x";
   readonly selectionText: readonly string[];
 };
 
 export class GitHubService extends Context.Service<
   GitHubService,
   {
-    readonly runGh: (
-      args: string[],
-      trustedPRBodyWrite?: TrustedPRBodyWrite,
-    ) => Effect.Effect<GhResult, GhError>;
+    readonly runGh: (args: string[]) => Effect.Effect<GhResult, GhError>;
+    readonly writePRCheckbox?: (opts: PRCheckboxWrite) => Effect.Effect<GhResult, GhError>;
     readonly runGhJson: <T>(args: string[]) => Effect.Effect<T, GhError>;
     readonly runGraphQL: (
       query: string,
@@ -319,35 +321,10 @@ export class GitHubService extends Context.Service<
         });
 
         // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
-        const runGh = (
-          args: string[],
-          trustedPRBodyWrite?: TrustedPRBodyWrite,
-        ): Effect.Effect<GhResult, GhError> => {
+        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
           const canRetry = isSafeRetryRead(args);
           return Effect.gen(function* () {
-            const outboundText = [...args];
-            if (trustedPRBodyWrite !== undefined) {
-              const expectedBodyArg = `body=${trustedPRBodyWrite.body}`;
-              const validPRPatch =
-                args.length === 6 &&
-                args[0] === "api" &&
-                args[1] === "--method" &&
-                args[2] === "PATCH" &&
-                /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(args[3] ?? "") &&
-                args[4] === "-f" &&
-                args[5] === expectedBodyArg;
-              if (!validPRPatch) {
-                return yield* new GitHubCommandError({
-                  command: "gh-tool",
-                  exitCode: 1,
-                  stderr: "Refusing a trusted PR body write with an unexpected command",
-                  message: "Refusing a trusted PR body write with an unexpected command",
-                });
-              }
-              outboundText[5] = "body=[GitHub PR body]";
-              outboundText.push(...trustedPRBodyWrite.selectionText);
-            }
-            yield* validateOutboundText(outboundText.join("\n"), "gh-tool");
+            yield* validateOutboundText(args.join("\n"), "gh-tool");
             return yield* retryTransient({
               attempt: () => runGhAttempt(args),
               isTransient: (err) =>
@@ -356,6 +333,63 @@ export class GitHubService extends Context.Service<
             });
           });
         };
+
+        const writePRCheckbox = Effect.fn("GitHubService.writePRCheckbox")(function* (
+          opts: PRCheckboxWrite,
+        ) {
+          const path = `repos/${opts.repo.owner}/${opts.repo.name}/pulls/${opts.pr}`;
+          const response = yield* githubApi<unknown>({ path });
+          const parsed = yield* Effect.try({
+            try: () =>
+              Schema.decodeUnknownSync(Schema.Struct({ body: Schema.NullOr(Schema.String) }))(
+                response.body,
+              ),
+            catch: (error) =>
+              new GitHubCommandError({
+                command: `GET ${path}`,
+                exitCode: 0,
+                message: `GitHub returned an invalid PR body: ${String(error)}`,
+                stderr: `GitHub returned an invalid PR body: ${String(error)}`,
+              }),
+          });
+          const body = parsed.body ?? "";
+          if (body !== opts.expectedBody) {
+            return yield* new GitHubCommandError({
+              command: "gh-tool pr checkbox",
+              exitCode: 1,
+              stderr: `PR #${opts.pr} body changed before the checkbox update`,
+              message: `Refusing to update PR #${opts.pr}: its body changed after the first read`,
+              hint: "Re-read the pull request and retry with the current task text.",
+            });
+          }
+
+          const lineStart = body.lastIndexOf("\n", opts.boxOffset - 1) + 1;
+          const lineEnd = body.indexOf("\n", opts.boxOffset);
+          const line = body.slice(lineStart, lineEnd < 0 ? body.length : lineEnd);
+          const checkbox = /^([ \t]*[-*+][ \t]+\[)([ xX])\]/.exec(line);
+          const expectedOffset = lineStart + (checkbox?.[1]?.length ?? -1);
+          if (
+            checkbox === null ||
+            expectedOffset !== opts.boxOffset ||
+            checkbox[2] === opts.replacement
+          ) {
+            return yield* new GitHubCommandError({
+              command: "gh-tool pr checkbox",
+              exitCode: 1,
+              stderr: "Refusing an invalid PR checkbox position",
+              message: "Refusing to update a character that is not a task checkbox",
+            });
+          }
+
+          const updatedBody =
+            body.slice(0, opts.boxOffset) + opts.replacement + body.slice(opts.boxOffset + 1);
+          const args = ["api", "--method", "PATCH", path, "-f", `body=${updatedBody}`];
+          const outboundText = [...args];
+          outboundText[5] = "body=[GitHub PR body]";
+          outboundText.push(...opts.selectionText);
+          yield* validateOutboundText(outboundText.join("\n"), "gh-tool pr checkbox");
+          return yield* runGhAttempt(args);
+        });
 
         const runGhJson = <T>(args: string[]) =>
           Effect.gen(function* () {
@@ -447,6 +481,7 @@ export class GitHubService extends Context.Service<
 
         return {
           runGh,
+          writePRCheckbox,
           runGhJson,
           runGraphQL,
           apiRequest: githubApi,

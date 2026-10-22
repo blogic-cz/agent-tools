@@ -16,7 +16,33 @@ type CheckboxLine = {
 };
 
 const checkboxPattern = /^([ \t]*[-*+][ \t]+\[)([ xX])\][^\r\n]*\r?$/;
-const headingPattern = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*\r?$/;
+const headingPattern = /^ {0,3}(#{1,6})[ \t]+(.*?)\r?$/;
+
+type Fence = { readonly marker: "`" | "~"; readonly length: number };
+
+const openingFence = (text: string): Fence | null => {
+  const match = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?$/.exec(text);
+  if (match === null) return null;
+  const marker = match[1]?.[0];
+  const info = match[2] ?? "";
+  if ((marker !== "`" && marker !== "~") || (marker === "`" && info.includes("`"))) return null;
+  return { marker, length: match[1]?.length ?? 0 };
+};
+
+const closesFence = (text: string, fence: Fence) => {
+  const match = /^ {0,3}(`+|~+)[ \t]*\r?$/.exec(text);
+  const markers = match?.[1] ?? "";
+  return markers.length >= fence.length && markers[0] === fence.marker;
+};
+
+const headingText = (text: string) => {
+  const match = headingPattern.exec(text);
+  if (match === null) return null;
+  return {
+    level: match[1]?.length ?? 0,
+    text: (match[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim(),
+  };
+};
 
 const bodyLines = (body: string) => {
   const lines: Array<{ text: string; offset: number }> = [];
@@ -34,17 +60,28 @@ const findCheckboxLines = (body: string, match: string, section: string | null) 
   const matches: CheckboxLine[] = [];
   let sectionLevel: number | null = null;
   let inSection = section === null;
+  let fence: Fence | null = null;
 
   for (const { text, offset } of bodyLines(body)) {
-    const heading = headingPattern.exec(text);
+    if (fence !== null) {
+      if (closesFence(text, fence)) fence = null;
+      continue;
+    }
+
+    const opening = openingFence(text);
+    if (opening !== null) {
+      fence = opening;
+      continue;
+    }
+
+    const heading = headingText(text);
     if (heading !== null) {
-      const level = heading[1]?.length ?? 0;
-      const headingText = heading[2]?.trim() ?? "";
+      const { level } = heading;
       if (sectionLevel !== null && level <= sectionLevel) {
         inSection = false;
         sectionLevel = null;
       }
-      if (section !== null && headingText === section) {
+      if (section !== null && heading.text === section) {
         inSection = true;
         sectionLevel = level;
       }
@@ -118,34 +155,18 @@ export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (opts
     };
   }
 
-  const second = yield* readPRBody(opts.pr);
-  if (second.body !== first.body) {
-    return yield* new GitHubCommandError({
-      command: "gh-tool pr checkbox",
-      exitCode: 1,
-      stderr: `PR #${opts.pr} body changed before the checkbox update`,
-      message: `Refusing to update PR #${opts.pr}: its body changed after the first read`,
-      hint: "Re-read the pull request and retry with the current task text.",
-    });
-  }
-
   const box = opts.state === "checked" ? "x" : " ";
-  const updatedBody = `${first.body.slice(0, selected.offset)}${box}${first.body.slice(selected.offset + 1)}`;
   const after = `${selected.before.slice(0, selected.boxIndex)}${box}${selected.before.slice(selected.boxIndex + 1)}`;
-  yield* writes.run(
-    [
-      "api",
-      "--method",
-      "PATCH",
-      `repos/${first.repo.owner}/${first.repo.name}/pulls/${opts.pr}`,
-      "-f",
-      `body=${updatedBody}`,
-    ],
-    [`pr:${repoSlug(first.repo)}#${opts.pr}`, `pulls:${repoSlug(first.repo)}`],
+  yield* writes.prCheckbox(
     {
-      body: updatedBody,
+      repo: first.repo,
+      pr: opts.pr,
+      expectedBody: first.body,
+      boxOffset: selected.offset,
+      replacement: box,
       selectionText: [opts.match, ...(opts.section === null ? [] : [opts.section])],
     },
+    [`pr:${repoSlug(first.repo)}#${opts.pr}`, `pulls:${repoSlug(first.repo)}`],
   );
 
   return {
