@@ -23,6 +23,23 @@ and default value in a guard and ask what happens when the lookup _fails_ rather
 returns false. `?? 0`, `orElseSucceed(() => null)`, `catch → null`, and a readiness check
 ordered before the branch it protects are the four shapes this has taken here.
 
+For the credential guard, the guarded fact is that command text names no secret source
+and supplies no uninspectable code. Bash and PowerShell feed one shared policy. Parser
+errors, analysis limits, and unresolved executable, code, path, or environment-name
+operands refuse. Unknown executable names with literal nonsensitive operands may pass;
+this does not certify the executable, existing scripts, or trusted host startup files.
+The guard catches mistakes of a cooperative agent; it does not stop an agent that tries to
+bypass it, which is the job of an OS sandbox. An undeclared option of a registered command
+passes as data; declare the options that carry code, a program, a pager, or a path. Judge a
+guard change against the previous release: it must not pass a command that read a secret
+there, and it should refuse fewer innocent commands.
+Keep argument roles explicit. A pattern or prompt is data; a file reader operand is a
+path. Apply configured rules to nested shell bodies and resolved invocations as well as
+the original text. New command support belongs in the shared parser, policy, or registry,
+not a whole-command exception in the public hook. HOME, PWD, OLDPWD, and PATH are built-in
+non-secret names. Their approval removes ambient-expansion refusals only; path, code,
+and startup-mutation checks still apply.
+
 Distinguish "the API said no" from "I could not ask". For the stacks endpoint a 404 means
 the repository has no stacks surface and the merge proceeds; a 502 means membership is
 unknown and it refuses. One `pr merge` guard shipped all three of the shapes above before
@@ -53,7 +70,7 @@ and confirm that test, and only that test, fails.
 
 Bun async filesystem APIs are preferred throughout the project. Synchronous `node:fs` is permitted only for `src/shared/prerequisites/store.ts` package-local SQLite VPN coordination and for tests that isolate that runtime state. Keep this exception bounded to private runtime-directory setup, SQLite state validation, and deterministic cleanup.
 
-`lstatSync` and `realpathSync` are also permitted in the credential guard's cp-chain destination proof when `chainCopyDestinations` is non-empty. The guard API is synchronous. This proof refuses filesystem errors, symlinks, and paths outside the configured directories.
+`lstatSync` and `realpathSync` are also permitted in the credential guard's copy-destination proof in `src/credential-guard/index.ts` when `chainCopyDestinations` is non-empty. The guard API is synchronous. This proof refuses filesystem errors, symlinks, and paths outside the configured directories.
 
 Asynchronous `node:fs/promises` is additionally permitted in a module whose logic is covered by the vitest suite. Vitest runs under Node, so `Bun.file`, `Bun.Glob` and `import("bun")` are unavailable there and any code path a test reaches cannot use them. `src/session-tool/pi.ts` is the current case. `node:child_process` is permitted on the same grounds in `src/shared/secret-env.ts`, whose resolver needs an extra fd 3 pipe and process-group kill that the vitest suite exercises against real zsh. Prefer Bun APIs everywhere the tests do not reach, and revisit this if the suite ever runs under the Bun runtime.
 
@@ -80,3 +97,7 @@ version while `GET .../-/agent-tools-1.3.0.tgz` still returned 404 for several m
 publish job polls the tarball URL every five seconds for up to 15 minutes after publish and
 ends green only after it returns HTTP 200. The 15-minute bound allows for the several-minute
 delay seen in past releases and fails the run if the tarball does not appear.
+
+## Private guard corpus
+
+The committed guard corpus contains only generic synthetic cases. Set `AGENT_TOOLS_PRIVATE_GUARD_CORPUS` to a private history corpus and run `bun scripts/measure-guard-private-corpus.ts` to measure it locally against the pinned base. Generate the sibling `.base.json` with `bun scripts/build-guard-base-verdicts.ts <private-corpus.jsonl> <private-corpus.base.json>`; keep the reviewed `.exceptions.json` beside it. The measurement fails on new or stale exceptions. An unset variable skips this optional check. Never commit history commands or private baseline files.

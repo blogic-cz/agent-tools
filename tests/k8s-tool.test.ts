@@ -453,12 +453,12 @@ describe("K8sService", () => {
 
     it.effect("uses configured kubeconfig when resolving and executing kubectl", () => {
       const observedShellCommands: Array<string> = [];
-      const kubeconfigTemplate = ["$", "{NEXUS_KUBECONFIG}"].join("");
-      const contextQuery = `KUBECONFIG='/tmp/nexus-kubeconfig' kubectl config view -o json`;
+      const kubeconfigTemplate = ["$", "{EXAMPLE_KUBECONFIG}"].join("");
+      const contextQuery = `KUBECONFIG='/tmp/example-kubeconfig' kubectl config view -o json`;
 
       return Effect.gen(function* () {
-        const previousKubeconfig = process.env.NEXUS_KUBECONFIG;
-        process.env.NEXUS_KUBECONFIG = "/tmp/nexus-kubeconfig";
+        const previousKubeconfig = process.env.EXAMPLE_KUBECONFIG;
+        process.env.EXAMPLE_KUBECONFIG = "/tmp/example-kubeconfig";
         try {
           const service = yield* K8sService;
           const result = yield* service.runKubectl("get pods", false, "selected");
@@ -467,14 +467,14 @@ describe("K8sService", () => {
           expect(result.command).toBe("kubectl --context selected-context get pods");
           expect(observedShellCommands).toEqual([
             contextQuery,
-            "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms",
-            "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods",
+            "kubectl --kubeconfig /tmp/example-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms",
+            "KUBECONFIG='/tmp/example-kubeconfig' kubectl --context selected-context get pods",
           ]);
         } finally {
           if (previousKubeconfig === undefined) {
-            delete process.env.NEXUS_KUBECONFIG;
+            delete process.env.EXAMPLE_KUBECONFIG;
           } else {
-            process.env.NEXUS_KUBECONFIG = previousKubeconfig;
+            process.env.EXAMPLE_KUBECONFIG = previousKubeconfig;
           }
         }
       }).pipe(
@@ -483,13 +483,13 @@ describe("K8sService", () => {
           createMockChildProcessSpawnerLayer(
             {
               [contextQuery]: contextViewResult("selected-context", "selected-cluster"),
-              "kubectl --kubeconfig /tmp/nexus-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms":
+              "kubectl --kubeconfig /tmp/example-kubeconfig --context selected-context get --raw=/version --request-timeout=2000ms":
                 {
                   stdout: '{"major":"1"}',
                   stderr: "",
                   exitCode: 0,
                 },
-              "KUBECONFIG='/tmp/nexus-kubeconfig' kubectl --context selected-context get pods": {
+              "KUBECONFIG='/tmp/example-kubeconfig' kubectl --context selected-context get pods": {
                 stdout: "pod-a\n",
                 stderr: "",
                 exitCode: 0,
@@ -1999,8 +1999,8 @@ describe("kubectl command security", () => {
 
 describe("selectK8sProfile", () => {
   const kubernetesSection = {
-    default: { clusterId: "nexus-k8s-dev", namespaces: { management: "management" } },
-    prod: { clusterId: "nexus-k8s-prd", namespaces: { prod: "app" } },
+    default: { clusterId: "example-k8s-dev", namespaces: { management: "management" } },
+    prod: { clusterId: "example-k8s-prd", namespaces: { prod: "app" } },
   };
 
   it("--env prod with no --profile resolves to the named prod profile, not default", () => {
@@ -2030,6 +2030,6 @@ describe("hasKubernetesConfig", () => {
   });
 
   it("true when at least one kubernetes profile is configured", () => {
-    expect(hasKubernetesConfig({ default: { clusterId: "nexus-k8s-dev" } })).toBe(true);
+    expect(hasKubernetesConfig({ default: { clusterId: "example-k8s-dev" } })).toBe(true);
   });
 });

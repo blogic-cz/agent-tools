@@ -19,7 +19,6 @@ const SKIP_DIRS = new Set([
   ".turbo",
   ".agents",
   ".cache",
-  ".sisyphus",
   "coverage",
   "dist",
   "build",

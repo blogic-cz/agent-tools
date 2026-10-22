@@ -8,9 +8,4 @@ agent-tools.local.json5
 .DS_Store
 *.log
 .effect-cache/
-.opencode/plugin/session-map.json
-.sisyphus/
-.opencode/plugin/plugin-state.json
-.opencode/package-lock.json
-.omo/run-continuation
 *.bak.*

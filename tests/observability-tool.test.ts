@@ -143,7 +143,7 @@ describe("summarizeSearchHits", () => {
       traces: [
         {
           traceID: "aaa",
-          rootServiceName: "nexus-fe",
+          rootServiceName: "example-fe",
           rootTraceName: "POST",
           startTimeUnixNano: "1789024819658000000",
           durationMs: 24,
@@ -162,7 +162,7 @@ describe("summarizeSearchHits", () => {
     expect(rows[1]).toMatchObject({
       traceId: "aaa",
       startedAt: "2026-09-10T07:20:19.658Z",
-      rootServiceName: "nexus-fe",
+      rootServiceName: "example-fe",
       rootTraceName: "POST",
       durationMs: 24,
       matchedSpans: 2,

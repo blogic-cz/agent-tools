@@ -42,7 +42,22 @@
     "unicorn/consistent-function-scoping": "off",
     "unicorn/throw-new-error": "off",
     "unicorn/require-module-specifiers": "off",
-    "vitest/no-import-node-test": "error"
+    "vitest/no-import-node-test": "error",
+    "eslint/no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": [
+              "**/credential-guard/**",
+              "!**/credential-guard/index",
+              "!**/credential-guard/index.ts"
+            ],
+            "message": "Import the public credential-guard index. Private policy modules stay inside credential-guard."
+          }
+        ]
+      }
+    ]
   },
   "overrides": [
     {
@@ -56,6 +71,14 @@
                 "group": ["**/read/api", "#gh/read/api"],
                 "importNames": ["githubApi"],
                 "message": "Raw GitHub HTTP belongs inside gh-tool/read."
+              },
+              {
+                "group": [
+                  "**/credential-guard/**",
+                  "!**/credential-guard/index",
+                  "!**/credential-guard/index.ts"
+                ],
+                "message": "Import the public credential-guard index. Private policy modules stay inside credential-guard."
               }
             ]
           }
@@ -83,7 +106,24 @@
     },
     {
       "files": ["src/gh-tool/read/**/*.ts"],
-      "rules": { "eslint/no-restricted-properties": "off", "eslint/no-restricted-imports": "off" }
+      "rules": {
+        "eslint/no-restricted-properties": "off",
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "**/credential-guard/**",
+                  "!**/credential-guard/index",
+                  "!**/credential-guard/index.ts"
+                ],
+                "message": "Import the public credential-guard index. Private policy modules stay inside credential-guard."
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "files": ["**/*.test.ts", "**/*.test.tsx", "**/__tests__/**", "**/e2e/**"],
@@ -102,13 +142,20 @@
         "vitest/expect-expect": "off",
         "vitest/no-standalone-expect": "off",
         "vitest/require-to-throw-message": "off",
-        "unicorn/no-array-sort": "off"
+        "unicorn/no-array-sort": "off",
+        "import/no-relative-parent-imports": "off"
       }
     },
     {
       "files": ["apps/web-app/src/routes/**"],
       "rules": {
         "typescript/only-throw-error": "off"
+      }
+    },
+    {
+      "files": ["src/credential-guard/**/*.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": "off"
       }
     }
   ]

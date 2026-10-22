@@ -275,10 +275,8 @@ describe("GitHub child environment", () => {
 
 describe("GitHub outbound file failures", () => {
   it("matches complete credential path components with either separator", () => {
-    expect(isSensitivePath("C:\\Users\\synthetic\\.ssh\\id_rsa")).toBe(true);
-    expect(isSensitivePath("C:\\Users\\synthetic\\AppData\\Roaming\\GitHub CLI\\hosts.yml")).toBe(
-      true,
-    );
+    expect(isSensitivePath("C:\\Users\\dev\\.ssh\\id_rsa")).toBe(true);
+    expect(isSensitivePath("C:\\Users\\dev\\AppData\\Roaming\\GitHub CLI\\hosts.yml")).toBe(true);
     expect(isSensitivePath("/repo/my-secrets-notes/README.md")).toBe(false);
     expect(isSensitivePath("/repo/.docker/README.md")).toBe(false);
     expect(isSensitivePath("/repo/.config/gh/README.md")).toBe(false);

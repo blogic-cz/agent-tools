@@ -10,26 +10,26 @@
  *     "command": "bun node_modules/@blogic-cz/agent-tools/src/credential-guard/claude-hook.ts" }] }] } }
  */
 
-import { loadConfig } from "#config/loader";
+export {};
 
-import { createCredentialGuard } from "./index";
-import { redactSensitiveText } from "#shared/content-security";
-
-const stdin = await Bun.stdin.text();
-
+let sanitize: (text: string) => string = () => "Credential guard could not inspect this request.";
 try {
-  const data: {
-    tool_name: string;
-    tool_input?: Record<string, unknown>;
-  } = JSON.parse(stdin);
-
+  const { redactSensitiveText } = await import("#shared/content-security");
+  sanitize = redactSensitiveText;
+  const { loadConfig } = await import("#config/loader");
+  const { createCredentialGuard } = await import("./index");
+  const data: { tool_name: string; tool_input?: Record<string, unknown> } = JSON.parse(
+    await Bun.stdin.text(),
+  );
   const config = await loadConfig();
   createCredentialGuard(config?.credentialGuard).handleToolExecuteBefore(
     { tool: data.tool_name },
     { args: data.tool_input ?? {} },
   );
 } catch (error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(redactSensitiveText(message));
-  process.exit(2);
+  const message = sanitize(error instanceof Error ? error.message : String(error));
+  await new Promise<void>((resolve) => {
+    process.stderr.write(message.slice(0, 8000), () => resolve());
+  });
+  process.exitCode = 2;
 }

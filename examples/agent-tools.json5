@@ -44,7 +44,7 @@
   // Kubernetes cluster profiles
   kubernetes: {
     default: {
-      clusterId: "398bf1ad-788c-40f5-a7e0-88366648d9d9",
+      clusterId: "00000000-0000-0000-0000-000000000000",
       namespaces: {
         test: "my-app-test",
         prod: "my-app-prod",

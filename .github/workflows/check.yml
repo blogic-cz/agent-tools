@@ -14,3 +14,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: bun install
       - run: bun run check ci
+  guard-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bunx vitest run src/credential-guard tests/credential-guard

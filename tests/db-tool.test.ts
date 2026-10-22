@@ -453,9 +453,9 @@ describe("DbService", () => {
     });
 
     it("prepends --kubeconfig when a kubeconfig path is resolved", () => {
-      expect(buildApiProbeArgs("/home/u/kubeconfig", "admin@cluster", 1500)).toEqual([
+      expect(buildApiProbeArgs("/home/user/kubeconfig", "admin@cluster", 1500)).toEqual([
         "--kubeconfig",
-        "/home/u/kubeconfig",
+        "/home/user/kubeconfig",
         "--context",
         "admin@cluster",
         "get",
@@ -474,22 +474,22 @@ describe("DbService", () => {
     });
 
     it("prefers the variable value over the literal port", () => {
-      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", "40544")).toEqual({
+      expect(resolvePortOverride("local", 40543, "EXAMPLE_POSTGRES_PORT", "40544")).toEqual({
         ok: true,
         port: 40544,
       });
     });
 
     it("keeps the literal port when the variable is unset or blank", () => {
-      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", undefined)).toEqual({
+      expect(resolvePortOverride("local", 40543, "EXAMPLE_POSTGRES_PORT", undefined)).toEqual({
         ok: true,
         port: 40543,
       });
-      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", "")).toEqual({
+      expect(resolvePortOverride("local", 40543, "EXAMPLE_POSTGRES_PORT", "")).toEqual({
         ok: true,
         port: 40543,
       });
-      expect(resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", "   ")).toEqual({
+      expect(resolvePortOverride("local", 40543, "EXAMPLE_POSTGRES_PORT", "   ")).toEqual({
         ok: true,
         port: 40543,
       });
@@ -497,13 +497,13 @@ describe("DbService", () => {
 
     it("rejects a set variable that does not hold an integer port", () => {
       for (const value of ["not-a-port", "0", "70000", "-1", "5432.0", "0x10", "1e3"]) {
-        const outcome = resolvePortOverride("local", 40543, "NEXUS_POSTGRES_PORT", value);
+        const outcome = resolvePortOverride("local", 40543, "EXAMPLE_POSTGRES_PORT", value);
 
         expect(outcome.ok).toBe(false);
         if (outcome.ok) {
           expect.fail(`Expected ${value} to be rejected`);
         }
-        expect(outcome.message).toContain("NEXUS_POSTGRES_PORT");
+        expect(outcome.message).toContain("EXAMPLE_POSTGRES_PORT");
         expect(outcome.message).toContain(value);
         expect(outcome.message).toContain("local");
       }
@@ -516,15 +516,17 @@ describe("DbService", () => {
     });
 
     it("prefers the variable value over the literal host", () => {
-      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", "db.worktree")).toBe(
+      expect(resolveHostOverride("127.0.0.1", "EXAMPLE_POSTGRES_HOST", "db.worktree")).toBe(
         "db.worktree",
       );
     });
 
     it("keeps the literal host when the variable is unset or blank", () => {
-      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", undefined)).toBe("127.0.0.1");
-      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", "")).toBe("127.0.0.1");
-      expect(resolveHostOverride("127.0.0.1", "NEXUS_POSTGRES_HOST", "  ")).toBe("127.0.0.1");
+      expect(resolveHostOverride("127.0.0.1", "EXAMPLE_POSTGRES_HOST", undefined)).toBe(
+        "127.0.0.1",
+      );
+      expect(resolveHostOverride("127.0.0.1", "EXAMPLE_POSTGRES_HOST", "")).toBe("127.0.0.1");
+      expect(resolveHostOverride("127.0.0.1", "EXAMPLE_POSTGRES_HOST", "  ")).toBe("127.0.0.1");
     });
   });
 

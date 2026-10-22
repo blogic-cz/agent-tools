@@ -1331,7 +1331,7 @@ describe("workflow dispatch", () => {
       const result = yield* dispatchWorkflow({
         workflow: "propagate-environment-branch.yml",
         ref: "main",
-        repo: "sabservis/nexus-be",
+        repo: "example/example-be",
         fields: ["source_branch=staging", "target_branch=main"],
       });
 
@@ -1339,7 +1339,7 @@ describe("workflow dispatch", () => {
         dispatched: true,
         workflow: "propagate-environment-branch.yml",
         ref: "main",
-        repo: "sabservis/nexus-be",
+        repo: "example/example-be",
         fields: ["source_branch=staging", "target_branch=main"],
       });
       expect(calls).toEqual([
@@ -1350,7 +1350,7 @@ describe("workflow dispatch", () => {
           "--ref",
           "main",
           "--repo",
-          "sabservis/nexus-be",
+          "example/example-be",
           "-f",
           "source_branch=staging",
           "-f",
@@ -2341,7 +2341,7 @@ describe("Workflow log diagnosis", () => {
         jobId: 113815650059,
         failedStepsOnly: false,
         format: "json",
-        repo: "sabservis/nexus-be",
+        repo: "example/example-be",
       }).pipe(
         Effect.provide(
           createMockGhLayer({
@@ -2356,7 +2356,7 @@ describe("Workflow log diagnosis", () => {
       expect(calls).toEqual([
         [
           "api",
-          "repos/sabservis/nexus-be/actions/jobs/113815650059/logs",
+          "repos/example/example-be/actions/jobs/113815650059/logs",
           "--allow-escape-sequences",
         ],
       ]);
@@ -2375,7 +2375,7 @@ describe("Workflow log diagnosis", () => {
         jobId: 113815650059,
         failedStepsOnly: true,
         format: "json",
-        repo: "sabservis/nexus-be",
+        repo: "example/example-be",
       }).pipe(
         Effect.provide(
           createMockGhLayer({
@@ -2716,7 +2716,7 @@ describe("Workflow log diagnosis", () => {
         failedStepsOnly: true,
         failedStepNames: ["Run checks (build, format, test)"],
         format: "json",
-        repo: "sabservis/nexus-be",
+        repo: "example/example-be",
       }).pipe(
         Effect.provide(
           createMockGhLayer({
@@ -2794,7 +2794,7 @@ describe("PR edit", () => {
 
       const result = yield* editPR({
         pr: 123,
-        title: "fix(transmittals+sabfx): make import work",
+        title: "fix(example+example): make import work",
         body: null,
         base: null,
       }).pipe(
@@ -5872,12 +5872,12 @@ describe("PR last human reviewer", () => {
         repository: {
           pullRequest: {
             reviewRequests: {
-              nodes: [{ requestedReviewer: { __typename: "User", login: "Hookyns" } }],
+              nodes: [{ requestedReviewer: { __typename: "User", login: "example" } }],
             },
             reviews: {
               nodes: [
                 {
-                  author: { login: "MarekBlogic" },
+                  author: { login: "example-reviewer" },
                   state: "APPROVED",
                   submittedAt: "2026-07-30T10:00:00Z",
                 },
@@ -5887,11 +5887,11 @@ describe("PR last human reviewer", () => {
               nodes: [
                 {
                   __typename: "ReviewRequestedEvent",
-                  requestedReviewer: { __typename: "User", login: "MarekBlogic" },
+                  requestedReviewer: { __typename: "User", login: "example-reviewer" },
                 },
                 {
                   __typename: "ReviewRequestedEvent",
-                  requestedReviewer: { __typename: "User", login: "Hookyns" },
+                  requestedReviewer: { __typename: "User", login: "example" },
                 },
               ],
             },
@@ -5905,8 +5905,8 @@ describe("PR last human reviewer", () => {
 
       const result = yield* fetchLastHumanReviewer(490).pipe(Effect.provide(layer));
 
-      expect(result.currentRequestedReviewers).toEqual(["Hookyns"]);
-      expect(result.lastHumanReviewer).toBe("MarekBlogic");
+      expect(result.currentRequestedReviewers).toEqual(["example"]);
+      expect(result.lastHumanReviewer).toBe("example-reviewer");
     }).pipe(Effect.provide(createMockGhLayer())),
   );
 });
@@ -6082,7 +6082,7 @@ describe("Issue triage", () => {
     state: "OPEN",
     url: "https://github.com/test-owner/test-repo/issues/596",
     labels: [{ name: "workflow-failure" }, { name: "github-actions" }],
-    assignees: [{ login: "gabriel-ecegi" }],
+    assignees: [{ login: "example-user" }],
     author: { login: "app/example-agent" },
     body: triageIssueBody,
     createdAt: "2026-04-07T05:23:31Z",
@@ -6327,8 +6327,8 @@ describe("GitHubService.getRepoConfig()", () => {
       const service = yield* GitHubService;
       const config = yield* service.withRepoTarget("fe", service.getRepoConfig());
 
-      expect(config?.owner).toBe("sabservis");
-      expect(config?.repo).toBe("nexus-fe");
+      expect(config?.owner).toBe("example");
+      expect(config?.repo).toBe("example-fe");
       expect(config?.prTitle?.expected).toBe("<type>: CORE-<number> - <description>");
     }).pipe(
       Effect.provide(GitHubService.layer),
@@ -6336,10 +6336,10 @@ describe("GitHubService.getRepoConfig()", () => {
       Effect.provide(
         Layer.succeed(ConfigService, {
           github: {
-            default: { owner: "sabservis", repo: "nexus-be" },
+            default: { owner: "example", repo: "example-be" },
             fe: {
-              owner: "sabservis",
-              repo: "nexus-fe",
+              owner: "example",
+              repo: "example-fe",
               prTitle: mockPrTitlePolicy,
             },
           },
@@ -8984,7 +8984,7 @@ describe("PR composite commands", () => {
 
       const result = yield* createPR({
         base: "main",
-        title: "fix(transmittals+sabfx): make import work",
+        title: "fix(example+example): make import work",
         body: "## Summary\n...",
         draft: false,
         head: "fix/import",
@@ -9637,7 +9637,7 @@ describe("PR composite commands", () => {
       yield* createIssue({
         title: "Title",
         body: "Body",
-        assignee: "MarekBlogic",
+        assignee: "example-reviewer",
         labels: "bug",
       }).pipe(Effect.provide(layer));
 
@@ -9649,7 +9649,7 @@ describe("PR composite commands", () => {
         "--body",
         "Body",
         "--assignee",
-        "MarekBlogic",
+        "example-reviewer",
         "--label",
         "bug",
       ]);
@@ -9762,7 +9762,7 @@ describe("PR composite commands", () => {
   it.effect("request-review separates fresh requests from already-pending ones", () =>
     Effect.gen(function* () {
       let call = 0;
-      const result = yield* requestReview(490, "MarekBlogic,Hookyns").pipe(
+      const result = yield* requestReview(490, "example-reviewer,example").pipe(
         Effect.provide(
           createMockGhLayer({
             runGhJson: () => {
@@ -9770,16 +9770,16 @@ describe("PR composite commands", () => {
               return Effect.succeed({
                 requested_reviewers:
                   call === 1
-                    ? [{ login: "Hookyns" }]
-                    : [{ login: "Hookyns" }, { login: "MarekBlogic" }],
+                    ? [{ login: "example" }]
+                    : [{ login: "example" }, { login: "example-reviewer" }],
               });
             },
           }),
         ),
       );
 
-      expect(result.newlyRequested).toEqual(["marekblogic"]);
-      expect(result.alreadyPending).toEqual(["hookyns"]);
+      expect(result.newlyRequested).toEqual(["example-reviewer"]);
+      expect(result.alreadyPending).toEqual(["example"]);
     }),
   );
 
