@@ -20,6 +20,7 @@ import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -73,7 +74,8 @@ import {
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
-import { togglePRCheckbox } from "#gh/pr/checkbox";
+import { togglePRCheckbox as togglePRCheckboxWithParser } from "#gh/pr/checkbox";
+import { findCheckboxLines, scanCheckboxOutline } from "#gh/pr/checkbox-markdown";
 import {
   createReview,
   fetchComments,
@@ -132,6 +134,9 @@ import {
   requestReview,
   trimNoisyBody,
 } from "#gh/pr/commands";
+
+const togglePRCheckbox = (opts: Parameters<typeof togglePRCheckboxWithParser>[0]) =>
+  togglePRCheckboxWithParser(opts, scanCheckboxOutline);
 
 const mockRepoInfo = {
   owner: "test-owner",
@@ -3041,6 +3046,117 @@ describe("PR checkbox", () => {
     state: "checked" as const,
   };
 
+  it("accepts an injected matching outline and refuses disagreement or a missing parser", () => {
+    const body = "## Release\n- [ ] write release notes\n";
+    const outline = [
+      { type: "heading" as const, level: 2, text: "Release" },
+      { type: "task" as const, checked: false, text: "write release notes" },
+    ];
+    expect(findCheckboxLines(body, options.match, "Release", () => outline)).toHaveLength(1);
+    expect(() =>
+      findCheckboxLines(body, options.match, "Release", () => [
+        { type: "task", checked: false, text: "different item" },
+      ]),
+    ).toThrow("PR body structure is ambiguous; tick this item in the GitHub UI");
+    expect(() => findCheckboxLines(body, options.match, "Release", () => null)).toThrow(
+      "PR body structure is ambiguous; tick this item in the GitHub UI",
+    );
+  });
+
+  it("cross-checks checkbox decisions with the real Bun Markdown parser", () => {
+    const moduleUrl = new URL("../src/gh-tool/pr/checkbox-markdown.ts", import.meta.url).href;
+    const cases = [
+      {
+        name: "list-contained fenced task",
+        body: "- ```markdown\n  - [ ] write release notes\n  ```\n",
+        match: "write release notes",
+        section: null,
+        expected: null,
+      },
+      {
+        name: "heading in list-contained fence",
+        body: "## Release\n- ```markdown\n  ## Example\n  ```\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: "Release",
+        expected: "## Release\n- ```markdown\n  ## Example\n  ```\n- [x] write release notes\n",
+      },
+      {
+        name: "unclosed list-contained fence",
+        body: "- intro\n  ```markdown\n  code\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "- intro\n  ```markdown\n  code\n- [x] write release notes\n",
+      },
+      {
+        name: "top-level fenced task",
+        body: "```markdown\n- [ ] example release notes\n```\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "```markdown\n- [ ] example release notes\n```\n- [x] write release notes\n",
+      },
+      {
+        name: "literal C# heading",
+        body: "## C#\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: "C#",
+        expected: "## C#\n- [x] write release notes\n",
+      },
+      {
+        name: "closing heading hashes",
+        body: "## Title ##\n- [ ] write release notes\n",
+        match: "write release notes",
+        section: "Title",
+        expected: "## Title ##\n- [x] write release notes\n",
+      },
+      {
+        name: "block quote task",
+        body: "> - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "> - [x] write release notes\n",
+      },
+      {
+        name: "nested task order",
+        body: "- [ ] parent task\n  - [ ] write release notes\n",
+        match: "write release notes",
+        section: null,
+        expected: "- [ ] parent task\n  - [x] write release notes\n",
+      },
+      {
+        name: "CRLF task",
+        body: "## Release\r\n- [ ] write release notes\r\n",
+        match: "write release notes",
+        section: "Release",
+        expected: "## Release\r\n- [x] write release notes\r\n",
+      },
+    ];
+    const script = `
+      import assert from "node:assert/strict";
+      const { findCheckboxLines } = await import(${JSON.stringify(moduleUrl)});
+      const cases = ${JSON.stringify(cases)};
+      for (const test of cases) {
+        let updated = null;
+        try {
+          const matches = findCheckboxLines(test.body, test.match, test.section);
+          if (matches.length === 1) {
+            const selected = matches[0];
+            updated = test.body.slice(0, selected.offset) + "x" + test.body.slice(selected.offset + 1);
+          }
+        } catch {}
+        assert.equal(updated, test.expected, test.name);
+        if (updated !== null) {
+          let changes = 0;
+          for (let i = 0; i < test.body.length; i++) if (test.body[i] !== updated[i]) changes++;
+          assert.equal(changes, 1, test.name + " changed bytes outside the selected box");
+        }
+      }
+    `;
+    const result = spawnSync("bun", ["--eval", script], { encoding: "utf8" });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+  });
+
   for (const [name, body, expected] of [
     [
       "LF",
@@ -3434,6 +3550,25 @@ describe("PR checkbox", () => {
   it.effect("accepts the public command flags", () =>
     Effect.gen(function* () {
       const writes: string[][] = [];
+      vi.stubGlobal("Bun", {
+        markdown: {
+          render: (
+            _body: string,
+            callbacks: {
+              listItem?: (
+                children: string,
+                meta: { index: number; depth: number; ordered: boolean; checked: boolean },
+              ) => string | null | undefined;
+            },
+          ) =>
+            callbacks.listItem?.("write release notes", {
+              index: 0,
+              depth: 0,
+              ordered: false,
+              checked: false,
+            }) ?? "",
+        },
+      });
       const cliLayer = Layer.mergeAll(
         FileSystem.layerNoop({}),
         Path.layer,
@@ -3478,7 +3613,7 @@ describe("PR checkbox", () => {
 
       expect(Result.isSuccess(result)).toBe(true);
       expect(writes).toHaveLength(1);
-    }),
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
   );
 });
 describe("PR ready", () => {

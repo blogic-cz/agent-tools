@@ -165,10 +165,7 @@
   "dependencies": {
     "@effect/platform-bun": "4.0.5",
     "@effect/platform-node-shared": "4.0.5",
-    "@toon-format/toon": "4.4.0",
-    "mdast-util-from-markdown": "2.1.0",
-    "mdast-util-gfm-task-list-item": "2.0.0",
-    "micromark-extension-gfm-task-list-item": "2.1.0"
+    "@toon-format/toon": "4.4.0"
   },
   "devDependencies": {
     "@effect/tsgo": "0.51.1",

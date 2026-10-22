@@ -6,7 +6,7 @@ import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
 import type { RepoRef } from "./keys";
 
-import { findCheckboxLines } from "#gh/pr/checkbox-markdown";
+import { findCheckboxLines, scanCheckboxOutline } from "#gh/pr/checkbox-markdown";
 import { GH_BINARY } from "#gh/config";
 import { ghEnvironment } from "#gh/environment";
 import { GitHubAuthError, GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
@@ -364,16 +364,12 @@ export class GitHubService extends Context.Service<
             });
           }
 
-          const checkboxes = yield* Effect.try({
-            try: () => findCheckboxLines(body, opts.selectionText[0] ?? "", null),
-            catch: () =>
-              new GitHubCommandError({
-                command: "gh-tool pr checkbox",
-                exitCode: 1,
-                stderr: "Cannot locate task checkboxes in the GitHub body",
-                message: "Refusing an unverified PR checkbox position",
-              }),
-          });
+          const checkboxes = findCheckboxLines(
+            body,
+            opts.selectionText[0] ?? "",
+            null,
+            scanCheckboxOutline,
+          );
           if (
             !checkboxes.some((checkbox) => checkbox.offset === opts.boxOffset) ||
             body[opts.boxOffset] === opts.replacement

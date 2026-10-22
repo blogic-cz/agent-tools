@@ -1,7 +1,11 @@
 import { Effect } from "effect";
 
 import { GitHubCommandError } from "#gh/errors";
-import { findCheckboxLines } from "#gh/pr/checkbox-markdown";
+import {
+  bunMarkdownOutline,
+  findCheckboxLines,
+  type CheckboxOutlineParser,
+} from "#gh/pr/checkbox-markdown";
 import { repoSlug } from "#gh/read/keys";
 import { reads, resolveRepo } from "#gh/read/reads";
 import { writes } from "#gh/read/writes";
@@ -24,12 +28,15 @@ const checkboxMatchError = (pr: number, count: number) =>
     hint: "Use --section to narrow the search or pass a longer --match.",
   });
 
-export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (opts: {
-  pr: number;
-  match: string;
-  section: string | null;
-  state: CheckboxState;
-}) {
+export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (
+  opts: {
+    pr: number;
+    match: string;
+    section: string | null;
+    state: CheckboxState;
+  },
+  parseOutline: CheckboxOutlineParser = bunMarkdownOutline,
+) {
   yield* validateOutboundText(opts.match, "gh-tool pr checkbox");
   if (opts.section !== null) {
     yield* validateOutboundText(opts.section, "gh-tool pr checkbox");
@@ -46,13 +53,14 @@ export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (opts
 
   const first = yield* readPRBody(opts.pr);
   const matches = yield* Effect.try({
-    try: () => findCheckboxLines(first.body, opts.match, opts.section),
+    try: () => findCheckboxLines(first.body, opts.match, opts.section, parseOutline),
     catch: (cause) =>
       new GitHubCommandError({
         command: "gh-tool pr checkbox",
         exitCode: 1,
         stderr: String(cause),
         message: "Cannot locate PR checkbox safely",
+        hint: "PR body structure is ambiguous; tick this item in the GitHub UI.",
       }),
   });
   if (matches.length !== 1) return yield* checkboxMatchError(opts.pr, matches.length);
