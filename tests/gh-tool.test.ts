@@ -8436,6 +8436,163 @@ describe("PR checks", () => {
       }),
   );
 
+  it.effect(
+    "rerun-checks discovers a short-lived third attempt before earlier watches finish",
+    () =>
+      Effect.gen(function* () {
+        const runViews = new Map<string, number>();
+        const fiber = yield* Effect.forkChild(
+          rerunChecks(123, false, { watch: true, timeoutSeconds: 10 }).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  if (args[0] === "pr")
+                    return Effect.succeed(
+                      ["1", "2", "3"].map((runId) => ({
+                        name: `CI-${runId}`,
+                        state: "completed",
+                        bucket: "fail",
+                        link: `https://github.com/test-owner/test-repo/actions/runs/${runId}`,
+                      })),
+                    );
+                  const runId = String(args[2]);
+                  const call = (runViews.get(runId) ?? 0) + 1;
+                  runViews.set(runId, call);
+                  if (call === 1)
+                    return Effect.succeed({
+                      databaseId: Number(runId),
+                      attempt: 1,
+                      status: "completed",
+                      jobs: [{ databaseId: Number(runId) * 10, name: `CI-${runId}` }],
+                    });
+                  if (runId === "3")
+                    return Effect.gen(function* () {
+                      const replaced = Number(yield* Clock.currentTimeMillis) >= 2000;
+                      return {
+                        databaseId: 3,
+                        attempt: replaced ? 3 : 2,
+                        status: "completed",
+                        conclusion: "success",
+                        jobs: [
+                          {
+                            databaseId: replaced ? 31 : 21,
+                            name: "CI-3",
+                            status: "completed",
+                            conclusion: "success",
+                          },
+                        ],
+                      };
+                    });
+                  return Effect.succeed({
+                    databaseId: Number(runId),
+                    attempt: 2,
+                    status: "in_progress",
+                    conclusion: null,
+                    jobs: [
+                      {
+                        databaseId: Number(runId) * 10 + 1,
+                        name: `CI-${runId}`,
+                        status: "in_progress",
+                        conclusion: null,
+                      },
+                    ],
+                  });
+                },
+                runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+              }),
+            ),
+          ),
+        );
+        yield* TestClock.adjust("10 seconds");
+        const report = yield* Fiber.join(fiber);
+        expect(report.runs?.map((result) => result.status)).toEqual([
+          "watch_timeout",
+          "watch_timeout",
+          "completed",
+        ]);
+        expect(report.runs?.[2]).toMatchObject({
+          newAttempt: 2,
+          newJobIds: [21],
+          latestAttempt: { attempt: 2, conclusion: "success" },
+        });
+      }),
+  );
+
+  it.effect("rerun-checks bounds run-view reads while every run discovers before polling", () =>
+    Effect.gen(function* () {
+      const runViews = new Map<string, number>();
+      const discovered: Array<{ runId: string; at: number }> = [];
+      let activeReads = 0;
+      let maximumActiveReads = 0;
+      const fiber = yield* Effect.forkChild(
+        rerunChecks(123, false, { watch: true, timeoutSeconds: 10 }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr")
+                  return Effect.succeed(
+                    ["1", "2", "3"].map((runId) => ({
+                      name: `CI-${runId}`,
+                      state: "completed",
+                      bucket: "fail",
+                      link: `https://github.com/test-owner/test-repo/actions/runs/${runId}`,
+                    })),
+                  );
+                const runId = String(args[2]);
+                const call = (runViews.get(runId) ?? 0) + 1;
+                runViews.set(runId, call);
+                if (call === 1)
+                  return Effect.succeed({
+                    databaseId: Number(runId),
+                    attempt: 1,
+                    status: "completed",
+                    jobs: [{ databaseId: Number(runId) * 10, name: `CI-${runId}` }],
+                  });
+                return Effect.acquireUseRelease(
+                  Effect.sync(() => {
+                    activeReads += 1;
+                    maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+                  }),
+                  () =>
+                    Effect.sleep("10 millis").pipe(
+                      Effect.flatMap(() =>
+                        Effect.gen(function* () {
+                          const at = yield* Clock.currentTimeMillis;
+                          if (call === 2) discovered.push({ runId, at: Number(at) });
+                          return {
+                            databaseId: Number(runId),
+                            attempt: 2,
+                            status: "in_progress",
+                            conclusion: null,
+                            jobs: [
+                              {
+                                databaseId: Number(runId) * 10 + 1,
+                                name: `CI-${runId}`,
+                                status: "in_progress",
+                                conclusion: null,
+                              },
+                            ],
+                          };
+                        }),
+                      ),
+                    ),
+                  () => Effect.sync(() => (activeReads -= 1)),
+                );
+              },
+              runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("20 millis");
+      expect(maximumActiveReads).toBeLessThanOrEqual(2);
+      expect(discovered.map(({ runId }) => runId).toSorted()).toEqual(["1", "2", "3"]);
+      expect(discovered.every(({ at }) => at < 5000)).toBe(true);
+      yield* TestClock.adjust("10 seconds");
+      yield* Fiber.join(fiber);
+    }),
+  );
+
   it.effect("rerun-checks watches a discovered run while another discovery times out", () =>
     Effect.gen(function* () {
       const runViews = new Map<string, number>();
