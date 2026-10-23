@@ -8376,7 +8376,7 @@ describe("PR checks", () => {
         const fiber = yield* Effect.forkChild(
           rerunChecks(123, false, {
             watch: true,
-            timeoutSeconds: 0.01,
+            timeoutSeconds: 10,
           }).pipe(
             Effect.provide(
               createMockGhLayer({
@@ -8404,20 +8404,29 @@ describe("PR checks", () => {
                   }
                   order.push(`discover-${runId}`);
                   if (runId === "1") {
-                    return Effect.sleep("20 millis").pipe(
-                      Effect.as({
-                        databaseId: 1,
-                        attempt: 1,
-                        status: "completed",
-                        jobs: [{ databaseId: 10, name: "CI-1" }],
-                      }),
-                    );
+                    return Effect.succeed({
+                      databaseId: 1,
+                      attempt: 1,
+                      status: "completed",
+                      jobs: [{ databaseId: 10, name: "CI-1" }],
+                    });
                   }
-                  return Effect.succeed({
-                    databaseId: 2,
-                    attempt: 2,
-                    status: "completed",
-                    jobs: [{ databaseId: 21, name: "CI-2" }],
+                  return Effect.gen(function* () {
+                    const now = Number(yield* Clock.currentTimeMillis);
+                    return {
+                      databaseId: 2,
+                      attempt: 2,
+                      status: now >= 5000 ? "completed" : "in_progress",
+                      conclusion: now >= 5000 ? "success" : null,
+                      jobs: [
+                        {
+                          databaseId: 21,
+                          name: "CI-2",
+                          status: now >= 5000 ? "completed" : "in_progress",
+                          conclusion: now >= 5000 ? "success" : null,
+                        },
+                      ],
+                    };
                   });
                 },
                 runGh: (args) => {
@@ -8428,11 +8437,15 @@ describe("PR checks", () => {
             ),
           ),
         );
-        yield* TestClock.adjust("20 millis");
+        yield* TestClock.adjust("10 seconds");
         const result = yield* Fiber.join(fiber);
         expect(order.slice(0, 2)).toEqual(["mutate-1", "mutate-2"]);
         expect(result.runs?.map((run) => run.status)).toEqual(["discovery_timeout", "completed"]);
-        expect(result.runs?.[1]).toMatchObject({ newAttempt: 2, newJobIds: [21] });
+        expect(result.runs?.[1]).toMatchObject({
+          newAttempt: 2,
+          newJobIds: [21],
+          latestAttempt: { conclusion: "success" },
+        });
       }),
   );
 
@@ -12343,7 +12356,6 @@ describe("L706 workflow command fixtures", () => {
       yield* TestClock.adjust("599999 millis");
       expect(output).toEqual([]);
       yield* TestClock.adjust("1 millis");
-      // Poll without joining so a longer default cannot silently advance TestClock.
       expect(fiber.pollUnsafe()).toBeDefined();
       const result = yield* Fiber.join(fiber);
       expect(Result.isFailure(result)).toBe(true);
@@ -12672,6 +12684,40 @@ describe("L706 workflow command fixtures", () => {
       }),
     );
   }
+  it.effect("R8-18 does not certify a skipped first discovered attempt", () =>
+    Effect.gen(function* () {
+      let views = 0;
+      const fiber = yield* Effect.forkChild(
+        rerunChecks(123, false, { watch: true, timeoutSeconds: 11 }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr")
+                  return Effect.succeed([
+                    { name: "build", state: "FAILURE", bucket: "fail", link: run.url },
+                  ]);
+                return Effect.gen(function* () {
+                  views += 1;
+                  return {
+                    ...run,
+                    attempt: views === 1 ? 1 : 3,
+                    status: "completed",
+                    conclusion: views === 1 ? "failure" : "success",
+                    jobs: [{ databaseId: views === 1 ? 1000 : 1003, name: "build" }],
+                  };
+                });
+              },
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("11 seconds");
+      const report = yield* Fiber.join(fiber);
+      expect(report.runs?.[0]).toMatchObject({ status: "discovery_timeout", newAttempt: null });
+      expect(report.status).toBe("discovery_timeout");
+    }),
+  );
+
   it.effect("R8-18 refuses watched full rerun when baseline attempt is unknown", () =>
     Effect.gen(function* () {
       let views = 0;

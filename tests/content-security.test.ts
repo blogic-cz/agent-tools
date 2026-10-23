@@ -270,7 +270,7 @@ describe("L706 public identifier fixtures", () => {
     registerResolvedSecret("synthetic-public-name-secret");
     expect(
       redactSensitiveText("synthetic-public-name-secret", {
-        GH_AUTH_LOGIN: "synthetic-public-name-secret",
+        GITHUB_AUTH_USER: "synthetic-public-name-secret",
       }),
     ).toBe("[REDACTED]");
   });
