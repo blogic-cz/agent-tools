@@ -71,6 +71,7 @@ const run = {
   status: "completed",
   url: "https://github.com/owner/repo/actions/runs/100",
   workflowName: "CI",
+  workflowDatabaseId: 10,
 };
 export const replayCases = [
   ...[
@@ -165,10 +166,10 @@ else if (args[0] === "pr" && args[1] === "checks") {
   if (args[2] === "44") { console.error("no checks reported"); process.exitCode = 1; }
   else print([check(args[2] === "43" ? "fail" : "pending")]);
 }
-else if (args[0] === "issue" && args[1] === "view") print(project(process.env.GITHUB_AUTH_USER ? {...issue, assignees: [{login}]} : issue));
-else if (args[0] === "issue" && args[1] === "edit") {}
-else if (args[0] === "issue" && args[1] === "list") print([project(args.includes("--assignee") ? { ...issue, assignees: [{login}] } : issue)]);
-else if (args[0] === "api" && args[1].endsWith("/issues/42/comments") && args.includes("POST")) print({...comment, body: "Thanks @fixture-operator for reviewing.", user: {login}});
+else if (args[0] === "issue" && args[1] === "view") print(project(require("node:fs").existsSync(${JSON.stringify(join(root, "assigned"))}) ? {...issue, assignees: [{login}]} : issue));
+else if (args[0] === "issue" && args[1] === "edit") { require("node:fs").writeFileSync(${JSON.stringify(join(root, "assigned"))}, "yes"); }
+else if (args[0] === "issue" && args[1] === "list") print([project(issue)]);
+else if (args[0] === "api" && args.some((arg) => arg.endsWith("/issues/42/comments")) && args.includes("POST")) print({...comment, body: "Thanks @fixture-operator for reviewing.", user: {login}});
 else if (args[0] === "run" && args[1] === "list") print([project(run)]);
 else if (args[0] === "run" && args[1] === "watch") {}
 else if (args[0] === "run" && args[1] === "view") {

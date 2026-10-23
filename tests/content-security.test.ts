@@ -255,8 +255,16 @@ describe("L706 public identifier fixtures", () => {
       ).toEqual({ assignees: [{ login: "public-reviewer" }] });
     });
   }
+  it("redacts public identifiers when a sensitive variable also holds that value", () => {
+    const environment = {
+      GITHUB_AUTH_USER: "synthetic-duplicate-login",
+      API_TOKEN: "synthetic-duplicate-login",
+    };
+    expect(unsafeOutboundTextReason("synthetic-duplicate-login", environment)).not.toBeNull();
+    expect(redactSensitiveText("synthetic-duplicate-login", environment)).toBe("[REDACTED]");
+  });
   it("keeps token patterns and registered secrets above public names", () => {
-    const environment = { GH_AUTH_LOGIN: githubToken };
+    const environment = { GITHUB_AUTH_USER: githubToken };
     expect(unsafeOutboundTextReason(githubToken, environment)).toBe("a credential pattern");
     expect(redactSensitiveText(githubToken, environment)).toBe("[REDACTED]");
     registerResolvedSecret("synthetic-public-name-secret");

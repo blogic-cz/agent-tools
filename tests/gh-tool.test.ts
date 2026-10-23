@@ -123,6 +123,7 @@ import {
   prCheckboxCommand,
   prMergeCommand,
   prWatchCommand,
+  prRerunChecksCommand,
   classifyReviewTriage,
   fetchCurrentComments,
   fetchCurrentFeedback,
@@ -12324,7 +12325,6 @@ describe("L706 workflow command fixtures", () => {
         ),
         (spy) => Effect.sync(() => spy.mockRestore()),
       );
-      const console = yield* TestConsole.make;
       const fiber = yield* Effect.forkChild(
         Command.runWith(workflowWatchCommand, { version: "test", renderErrors: false })([
           "--run",
@@ -12335,14 +12335,7 @@ describe("L706 workflow command fixtures", () => {
           "json",
         ]).pipe(
           Effect.provide(
-            Layer.mergeAll(
-              cliLayer,
-              createMockGhLayer({ runGhJson: () => Effect.succeed(run) }),
-              Layer.succeed(Console.Console, {
-                ...console,
-                log: (...args: unknown[]) => output.push(args.join("")),
-              }),
-            ),
+            Layer.mergeAll(cliLayer, createMockGhLayer({ runGhJson: () => Effect.succeed(run) })),
           ),
           Effect.result,
         ),
@@ -12408,7 +12401,6 @@ describe("L706 workflow command fixtures", () => {
         ),
         (spy) => Effect.sync(() => spy.mockRestore()),
       );
-      const console = yield* TestConsole.make;
       const cancelled = { ...run, status: "completed", conclusion: "cancelled" };
       const newer = { ...run, databaseId: 101, createdAt: "2026-10-01T09:00:00Z" };
       const unrelated = { ...newer, databaseId: 102, workflowDatabaseId: 11 };
@@ -12422,10 +12414,6 @@ describe("L706 workflow command fixtures", () => {
           Layer.mergeAll(
             cliLayer,
             createMockGhLayer({ runGhJson: () => Effect.succeed([unrelated, newer, cancelled]) }),
-            Layer.succeed(Console.Console, {
-              ...console,
-              log: (...args: unknown[]) => output.push(args.join("")),
-            }),
           ),
         ),
       );
@@ -12456,7 +12444,6 @@ describe("L706 workflow command fixtures", () => {
           (spy) => Effect.sync(() => spy.mockRestore()),
         );
         const calls: string[][] = [];
-        const console = yield* TestConsole.make;
         const cancelled = { ...run, status: "completed", conclusion: "cancelled" };
         const otherBranch = {
           ...run,
@@ -12473,7 +12460,7 @@ describe("L706 workflow command fixtures", () => {
           "--status",
           "cancelled",
           "--limit",
-          "3",
+          "7",
           "--branch",
           "feat/test",
           "--workflow",
@@ -12485,12 +12472,16 @@ describe("L706 workflow command fixtures", () => {
               createMockGhLayer({
                 runGhJson: (args) => {
                   calls.push(args);
-                  return Effect.succeed([cancelled, otherBranch, sameName]);
+                  return Effect.succeed([
+                    cancelled,
+                    otherBranch,
+                    sameName,
+                    { ...otherBranch, headBranch: run.headBranch, event: "workflow_dispatch" },
+                    { ...otherBranch, headBranch: run.headBranch, createdAt: run.createdAt },
+                    { ...otherBranch, headBranch: run.headBranch, createdAt: "invalid" },
+                    { ...otherBranch, headBranch: run.headBranch, databaseId: run.databaseId },
+                  ]);
                 },
-              }),
-              Layer.succeed(Console.Console, {
-                ...console,
-                log: (...args: unknown[]) => output.push(args.join("")),
               }),
             ),
           ),
@@ -12504,7 +12495,7 @@ describe("L706 workflow command fixtures", () => {
             "--status",
             "cancelled",
             "--limit",
-            "3",
+            "7",
             "--branch",
             "feat/test",
             "--workflow",
@@ -12513,4 +12504,113 @@ describe("L706 workflow command fixtures", () => {
         );
       }).pipe(Effect.scoped),
   );
+  for (const shape of [
+    { workflowDatabaseId: undefined },
+    { workflowDatabaseId: null },
+    { workflowDatabaseId: 0 },
+    { headBranch: "" },
+    { createdAt: "invalid" },
+  ]) {
+    it.effect(`does not annotate unknown run identity ${JSON.stringify(shape)}`, () =>
+      Effect.gen(function* () {
+        const output: string[] = [];
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(process.stdout, "write").mockImplementation((chunk, ...args: unknown[]) => {
+              output.push(String(chunk));
+              const callback = args.find((arg) => typeof arg === "function");
+              if (typeof callback === "function") callback();
+              return true;
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        const cancelled = { ...run, ...shape, status: "completed", conclusion: "cancelled" };
+        yield* Command.runWith(workflowListCommand, { version: "test" })([
+          "--repo",
+          "test-owner/test-repo",
+          "--format",
+          "json",
+          "--limit",
+          "2",
+        ]).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: () =>
+                  Effect.succeed([
+                    cancelled,
+                    { ...run, ...shape, databaseId: 101, createdAt: "2026-10-01T09:00:00Z" },
+                  ]),
+              }),
+            ),
+          ),
+        );
+        const rows = JSON.parse(output.join(""));
+        expect(rows[0]).not.toHaveProperty("newerRun");
+        expect(rows[0].conclusion).toBe("cancelled");
+      }).pipe(Effect.scoped),
+    );
+  }
+  for (const conclusion of ["success", "failure", "cancelled"]) {
+    it.effect(`R8-18 waits for the rerun and exits by ${conclusion}`, () =>
+      Effect.gen(function* () {
+        let views = 0;
+        const fiber = yield* Effect.forkChild(
+          Command.runWith(prRerunChecksCommand, { version: "test", renderErrors: false })([
+            "--pr",
+            "123",
+            "--watch",
+            "--timeout",
+            "10",
+            "--format",
+            "json",
+          ]).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                cliLayer,
+                createMockGhLayer({
+                  runGhJson: (args) => {
+                    if (args[0] === "pr")
+                      return Effect.succeed([
+                        { name: "build", state: "completed", bucket: "fail", link: run.url },
+                      ]);
+                    if (args[0] === "api")
+                      return Effect.succeed({ jobs: [{ id: 1000, name: "build" }] });
+                    return Effect.gen(function* () {
+                      views += 1;
+                      const completed =
+                        views === 1 || Number(yield* Clock.currentTimeMillis) >= 5000;
+                      return {
+                        ...run,
+                        attempt: views === 1 ? 1 : 2,
+                        status: completed ? "completed" : "in_progress",
+                        conclusion: views === 1 ? "failure" : completed ? conclusion : null,
+                        jobs: [
+                          {
+                            databaseId: views === 1 ? 1000 : 1001,
+                            name: "build",
+                            status: completed ? "completed" : "in_progress",
+                            conclusion: views === 1 ? "failure" : completed ? conclusion : null,
+                          },
+                        ],
+                      };
+                    });
+                  },
+                  runGh: () => Effect.succeed({ stdout: "Tests failed", stderr: "", exitCode: 0 }),
+                }),
+              ),
+            ),
+            Effect.result,
+          ),
+        );
+        yield* TestClock.adjust("4999 millis");
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust("1 millis");
+        const result = yield* Fiber.join(fiber);
+        expect(Result.isFailure(result)).toBe(conclusion !== "success");
+      }),
+    );
+  }
 });

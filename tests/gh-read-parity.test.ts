@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 import { createReplayGh, replayCases, replayFlags } from "./fixtures/gh-read-replay";
 
+import { createRerunGh } from "./fixtures/gh-rerun-replay";
+
 import { runReplayCases } from "./fixtures/gh-read-process";
 
 it(
@@ -162,3 +164,60 @@ it(
     }
   },
 );
+
+for (const [outcome, status] of [
+  ["success", 0],
+  ["failure", 1],
+  ["pending", 124],
+] as const) {
+  it(`R8-18 CLI exits ${status} for watched ${outcome}`, { timeout: 15000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "gh-rerun-exit-"));
+    try {
+      const bun = spawnSync("bun", ["-e", "process.stdout.write(process.execPath)"], {
+        encoding: "utf8",
+      }).stdout;
+      const bin = await createRerunGh(root, bun, outcome);
+      const result = spawnSync(
+        bun,
+        [
+          "src/gh-tool/index.ts",
+          "pr",
+          "rerun-checks",
+          "--pr",
+          "42",
+          "--failed-only",
+          "false",
+          "--watch",
+          "--timeout",
+          "1",
+          "--format",
+          "json",
+        ],
+        {
+          cwd: resolve(import.meta.dirname, ".."),
+          encoding: "utf8",
+          timeout: 10000,
+          env: {
+            PATH: `${bin}:/usr/bin:/bin`,
+            HOME: root,
+            XDG_CONFIG_HOME: root,
+            XDG_CACHE_HOME: root,
+            GH_TOKEN: "offline-replay",
+            GH_TOOL_CACHE: "off",
+          },
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(status);
+      const report = JSON.parse(result.stdout);
+      expect(report.runs[0].latestAttempt).toMatchObject({
+        attempt: 2,
+        status: outcome === "pending" ? "in_progress" : "completed",
+        conclusion: outcome === "pending" ? null : outcome,
+      });
+      if (outcome === "pending") expect(result.stderr).toContain("timed out");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
