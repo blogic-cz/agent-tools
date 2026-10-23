@@ -29,6 +29,7 @@ export const WorkflowRun = Schema.Struct({
   event: Schema.String,
   url: Schema.String,
   workflowName: Schema.String,
+  workflowDatabaseId: Schema.optionalKey(Schema.NullOr(Schema.Number)),
 });
 export const WorkflowRunDetail = Schema.Struct({
   ...WorkflowRun.fields,
@@ -39,7 +40,7 @@ export type WorkflowJob = typeof WorkflowJob.Type;
 export type WorkflowRun = typeof WorkflowRun.Type;
 export type WorkflowRunDetail = typeof WorkflowRunDetail.Type;
 export const RUN_LIST_FIELDS =
-  "databaseId,displayTitle,status,conclusion,headBranch,headSha,createdAt,event,url,workflowName";
+  "databaseId,displayTitle,status,conclusion,headBranch,headSha,createdAt,event,url,workflowName,workflowDatabaseId";
 export const RUN_VIEW_FIELDS = `${RUN_LIST_FIELDS},jobs,attempt`;
 
 export const parsePreserving =

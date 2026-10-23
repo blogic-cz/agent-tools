@@ -6,6 +6,7 @@ const isSensitiveEnvironmentName = (name: string) =>
   name !== "PWD" &&
   name !== "OLDPWD" &&
   name !== "CODEX_SESSION_ID" &&
+  name !== "GITHUB_AUTH_USER" &&
   SENSITIVE_ENV_NAME.test(name);
 
 const MIN_SECRET_LENGTH = 8;

@@ -192,6 +192,7 @@ export type RerunCheckAttempt = {
   attempt?: number | null;
   jobs: readonly RerunCheckJob[];
   status?: string;
+  conclusion?: string | null;
 };
 
 export type RerunChecksRun = {
@@ -210,7 +211,14 @@ export type RerunChecksReport = {
   rerun: number;
   failed?: number;
   message: string;
-  status?: "evidence_unavailable" | "escalation_required" | "failed" | "rerun_started";
+  status?:
+    | "evidence_unavailable"
+    | "escalation_required"
+    | "failed"
+    | "rerun_started"
+    | "completed"
+    | "watch_timeout"
+    | "discovery_timeout";
   runs?: RerunChecksRun[];
 };
 

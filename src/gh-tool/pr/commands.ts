@@ -7,7 +7,7 @@ import type { CheckResult, PRStatusResult } from "#gh/types";
 
 import { formatOption, logFormatted, logText } from "#shared";
 import { GitHubService } from "#gh/read/transport";
-import { GitHubCommandError } from "#gh/errors";
+import { GitHubCommandError, GitHubTimeoutError } from "#gh/errors";
 
 const emptyBatchError = (batch: string) =>
   new GitHubCommandError({
@@ -1059,6 +1059,25 @@ export const prRerunChecksCommand = Command.make(
           timeoutSeconds: timeout,
         });
         yield* logFormatted(result, format);
+        if (watch && (result.status === "watch_timeout" || result.status === "discovery_timeout")) {
+          return yield* new GitHubTimeoutError({
+            message: result.message,
+            timeoutMs: timeout * 1000,
+          });
+        }
+        if (
+          watch &&
+          result.runs !== undefined &&
+          result.runs.length > 0 &&
+          result.status !== "completed"
+        ) {
+          return yield* new GitHubCommandError({
+            command: "pr rerun-checks --watch",
+            exitCode: 1,
+            stderr: "",
+            message: result.message,
+          });
+        }
       }),
     ),
 ).pipe(

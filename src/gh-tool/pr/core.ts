@@ -2027,7 +2027,7 @@ const readRerunState = (runId: string, withStatus: boolean) =>
   Effect.gen(function* () {
     const run = yield* reads.runView(yield* resolveRepo(null), Number(runId), "origin");
     const fields = withStatus
-      ? (["databaseId", "attempt", "status", "jobs"] as const)
+      ? (["databaseId", "attempt", "status", "conclusion", "jobs"] as const)
       : (["databaseId", "attempt", "jobs"] as const);
     return project(run, fields);
   });
@@ -2051,7 +2051,6 @@ const readJobDiagnosis = Effect.fn("pr.readJobDiagnosis")(function* (
 const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
   runId: string,
   currentAttempt: number | null,
-  currentJobIds: readonly number[],
   deadline: number,
 ) {
   const read = readRerunState(runId, true).pipe(
@@ -2061,8 +2060,11 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
     read,
     (latest) =>
       latest !== null &&
-      ((latest.attempt ?? 0) > (currentAttempt ?? 0) ||
-        latest.jobs.some((job) => !currentJobIds.includes(job.databaseId))),
+      currentAttempt !== null &&
+      currentAttempt > 0 &&
+      latest.attempt !== undefined &&
+      latest.attempt !== null &&
+      latest.attempt > currentAttempt,
     {
       intervalMs: 5000,
       timeoutMs: Math.max(0, deadline - Number(yield* Clock.currentTimeMillis)),
@@ -2107,12 +2109,19 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
       Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
     );
     let evidence: RerunRetryEvidence = { state: "eligible", diagnosis: diagnoseLogEntries([]) };
+    if (
+      options.watch === true &&
+      (run?.attempt === undefined || run.attempt === null || run.attempt <= 0)
+    ) {
+      evidence = { state: "unavailable", reason: "current attempt unavailable for watched rerun" };
+    }
     if (failedOnly) {
       const jobIds = run === null ? null : resolveJobIdsForFailedChecks(runChecks, run.jobs);
       if (
         run === null ||
         run.attempt === null ||
         run.attempt === undefined ||
+        run.attempt <= 0 ||
         jobIds === null ||
         jobIds.length === 0
       ) {
@@ -2206,12 +2215,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
       candidates,
       (candidate, index) =>
         results[index]?.success
-          ? discoverRerun(
-              candidate.runId,
-              candidate.run?.attempt ?? null,
-              candidate.run?.jobs?.map((job) => job.databaseId) ?? [],
-              deadline,
-            )
+          ? discoverRerun(candidate.runId, candidate.run?.attempt ?? null, deadline)
           : Effect.succeed(null),
       { concurrency: 2 },
     );
@@ -2234,6 +2238,15 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
             Effect.suspend(() =>
               readRerunState(candidate.runId, true).pipe(
                 Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)),
+                Effect.map((refreshed) =>
+                  refreshed.attempt !== undefined &&
+                  refreshed.attempt !== null &&
+                  next.attempt !== undefined &&
+                  next.attempt !== null &&
+                  refreshed.attempt < next.attempt
+                    ? latest
+                    : refreshed,
+                ),
                 Effect.tap((refreshed) =>
                   Effect.sync(() => {
                     latest = refreshed;
@@ -2241,7 +2254,11 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
                 ),
               ),
             ),
-            (value) => value.status === "completed",
+            (value) =>
+              next.attempt !== undefined &&
+              next.attempt !== null &&
+              value.attempt === next.attempt &&
+              value.status === "completed",
             {
               initial: { value: latest },
               intervalMs: 5000,
@@ -2250,17 +2267,34 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
           );
           latest = outcome.kind === "done" ? outcome.value : outcome.last;
           result.latestAttempt = latest;
-          result.status = latest.status === "completed" ? "completed" : "watch_timeout";
+          result.status = outcome.kind === "done" ? "completed" : "watch_timeout";
         }),
       { concurrency: 2 },
     );
   }
+  const status = results.some((result) => !result.success)
+    ? "failed"
+    : !watch
+      ? "rerun_started"
+      : results.some((result) => result.status === "discovery_timeout")
+        ? "discovery_timeout"
+        : results.some((result) => result.status === "watch_timeout")
+          ? "watch_timeout"
+          : results.every((result) => result.latestAttempt?.conclusion === "success")
+            ? "completed"
+            : "failed";
   const report: RerunChecksReport = {
-    status: results.some((result) => !result.success) ? "failed" : "rerun_started",
+    status,
     rerun: results.filter((result) => result.success).length,
     failed: results.filter((result) => !result.success).length,
     runs: results,
-    message: `Rerun ${results.filter((result) => result.success).length}/${results.length} GitHub Actions runs`,
+    message: watch
+      ? status === "watch_timeout" || status === "discovery_timeout"
+        ? "Rerun watch timed out; this is not a CI verdict"
+        : status === "completed"
+          ? "Watched reruns completed successfully"
+          : "Watched reruns did not complete successfully"
+      : `Rerun ${results.filter((result) => result.success).length}/${results.length} GitHub Actions runs`,
   };
   return report;
 });
