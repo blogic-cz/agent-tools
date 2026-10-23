@@ -12672,4 +12672,45 @@ describe("L706 workflow command fixtures", () => {
       }),
     );
   }
+  it.effect("R8-18 refuses watched full rerun when baseline attempt is unknown", () =>
+    Effect.gen(function* () {
+      let views = 0;
+      let writes = 0;
+      const report = yield* rerunChecks(123, false, { watch: true, timeoutSeconds: 1 }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr")
+                return Effect.succeed([
+                  { name: "build", state: "FAILURE", bucket: "fail", link: run.url },
+                ]);
+              views += 1;
+              return views === 1
+                ? Effect.fail(
+                    new GitHubCommandError({
+                      command: "fixture",
+                      exitCode: 1,
+                      stderr: "unavailable",
+                      message: "unavailable",
+                    }),
+                  )
+                : Effect.succeed({
+                    ...run,
+                    attempt: 1,
+                    status: "completed",
+                    conclusion: "success",
+                    jobs: [],
+                  });
+            },
+            runGh: () => {
+              writes += 1;
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(report.status).toBe("evidence_unavailable");
+      expect(writes).toBe(0);
+    }),
+  );
 });
