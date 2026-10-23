@@ -2064,7 +2064,7 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
       currentAttempt > 0 &&
       latest.attempt !== undefined &&
       latest.attempt !== null &&
-      latest.attempt > currentAttempt,
+      latest.attempt === currentAttempt + 1,
     {
       intervalMs: 5000,
       timeoutMs: Math.max(0, deadline - Number(yield* Clock.currentTimeMillis)),
@@ -2211,21 +2211,17 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
   }
 
   if (watch) {
-    const discoveries = yield* Effect.forEach(
-      candidates,
-      (candidate, index) =>
-        results[index]?.success
-          ? discoverRerun(candidate.runId, candidate.run?.attempt ?? null, deadline)
-          : Effect.succeed(null),
-      { concurrency: 2 },
-    );
     yield* Effect.forEach(
       candidates,
       (candidate, index) =>
         Effect.gen(function* () {
           const result = results[index];
           if (result === undefined || !result.success) return;
-          const next = discoveries[index] ?? null;
+          const next = yield* discoverRerun(
+            candidate.runId,
+            candidate.run?.attempt ?? null,
+            deadline,
+          );
           result.newAttempt = next?.attempt ?? null;
           result.newJobIds = next?.jobs.map((job) => job.databaseId) ?? null;
           if (next === null) {

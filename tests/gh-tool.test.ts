@@ -8376,7 +8376,7 @@ describe("PR checks", () => {
         const fiber = yield* Effect.forkChild(
           rerunChecks(123, false, {
             watch: true,
-            timeoutSeconds: 10,
+            timeoutSeconds: 0.01,
           }).pipe(
             Effect.provide(
               createMockGhLayer({
@@ -8404,29 +8404,20 @@ describe("PR checks", () => {
                   }
                   order.push(`discover-${runId}`);
                   if (runId === "1") {
-                    return Effect.succeed({
-                      databaseId: 1,
-                      attempt: 1,
-                      status: "completed",
-                      jobs: [{ databaseId: 10, name: "CI-1" }],
-                    });
+                    return Effect.sleep("20 millis").pipe(
+                      Effect.as({
+                        databaseId: 1,
+                        attempt: 1,
+                        status: "completed",
+                        jobs: [{ databaseId: 10, name: "CI-1" }],
+                      }),
+                    );
                   }
-                  return Effect.gen(function* () {
-                    const now = Number(yield* Clock.currentTimeMillis);
-                    return {
-                      databaseId: 2,
-                      attempt: 2,
-                      status: now >= 5000 ? "completed" : "in_progress",
-                      conclusion: now >= 5000 ? "success" : null,
-                      jobs: [
-                        {
-                          databaseId: 21,
-                          name: "CI-2",
-                          status: now >= 5000 ? "completed" : "in_progress",
-                          conclusion: now >= 5000 ? "success" : null,
-                        },
-                      ],
-                    };
+                  return Effect.succeed({
+                    databaseId: 2,
+                    attempt: 2,
+                    status: "completed",
+                    jobs: [{ databaseId: 21, name: "CI-2" }],
                   });
                 },
                 runGh: (args) => {
@@ -8437,16 +8428,84 @@ describe("PR checks", () => {
             ),
           ),
         );
-        yield* TestClock.adjust("10 seconds");
+        yield* TestClock.adjust("20 millis");
         const result = yield* Fiber.join(fiber);
         expect(order.slice(0, 2)).toEqual(["mutate-1", "mutate-2"]);
         expect(result.runs?.map((run) => run.status)).toEqual(["discovery_timeout", "completed"]);
-        expect(result.runs?.[1]).toMatchObject({
-          newAttempt: 2,
-          newJobIds: [21],
-          latestAttempt: { conclusion: "success" },
-        });
+        expect(result.runs?.[1]).toMatchObject({ newAttempt: 2, newJobIds: [21] });
       }),
+  );
+
+  it.effect("rerun-checks watches a discovered run while another discovery times out", () =>
+    Effect.gen(function* () {
+      const runViews = new Map<string, number>();
+      const fiber = yield* Effect.forkChild(
+        rerunChecks(123, false, { watch: true, timeoutSeconds: 10 }).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr")
+                  return Effect.succeed(
+                    ["1", "2"].map((runId) => ({
+                      name: `CI-${runId}`,
+                      state: "completed",
+                      bucket: "fail",
+                      link: `https://github.com/test-owner/test-repo/actions/runs/${runId}`,
+                    })),
+                  );
+                const runId = String(args[2]);
+                const call = (runViews.get(runId) ?? 0) + 1;
+                runViews.set(runId, call);
+                if (call === 1)
+                  return Effect.succeed({
+                    databaseId: Number(runId),
+                    attempt: 1,
+                    status: "completed",
+                    jobs: [{ databaseId: Number(runId) * 10, name: `CI-${runId}` }],
+                  });
+                if (runId === "1")
+                  return Effect.succeed({
+                    databaseId: 1,
+                    attempt: 1,
+                    status: "completed",
+                    jobs: [{ databaseId: 10, name: "CI-1" }],
+                  });
+                return Effect.gen(function* () {
+                  const completed = Number(yield* Clock.currentTimeMillis) >= 5000;
+                  return {
+                    databaseId: 2,
+                    attempt: 2,
+                    status: completed ? "completed" : "in_progress",
+                    conclusion: completed ? "success" : null,
+                    jobs: [
+                      {
+                        databaseId: 21,
+                        name: "CI-2",
+                        status: completed ? "completed" : "in_progress",
+                        conclusion: completed ? "success" : null,
+                      },
+                    ],
+                  };
+                });
+              },
+              runGh: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("10 seconds");
+      const report = yield* Fiber.join(fiber);
+      expect(report.runs?.map((result) => result.status)).toEqual([
+        "discovery_timeout",
+        "completed",
+      ]);
+      expect(report.runs?.[1]).toMatchObject({
+        newAttempt: 2,
+        newJobIds: [21],
+        latestAttempt: { conclusion: "success" },
+      });
+      expect(report.status).toBe("discovery_timeout");
+    }),
   );
 
   it.effect("rerun-checks discovers and watches the exact new attempt", () =>
@@ -12696,7 +12755,7 @@ describe("L706 workflow command fixtures", () => {
                   return Effect.succeed([
                     { name: "build", state: "FAILURE", bucket: "fail", link: run.url },
                   ]);
-                return Effect.gen(function* () {
+                return Effect.sync(() => {
                   views += 1;
                   return {
                     ...run,
