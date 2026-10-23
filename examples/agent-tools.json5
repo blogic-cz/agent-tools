@@ -38,6 +38,12 @@
       // Requires --profile prod to be passed explicitly. Implied by the "prod"
       // key; set production: false to opt out.
       production: true,
+      // Optional. Allows read-only Entra ID (az ad) commands, which are
+      // tenant-wide and ignore the subscription and resource group scope.
+      allowEntra: true,
+      // Optional. Allows reads above the subscription: tenant, management
+      // groups, billing, and reservations.
+      allowTenantScope: true,
     },
   },
 

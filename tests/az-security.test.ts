@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { BLOCKED_VERBS, READ_ONLY_VERBS } from "#az/config";
+import { APP_FLAG, BLOCKED_VERBS, READ_ONLY_VERBS, RESOURCE_GROUP_FLAG } from "#az/config";
 import {
   extractResourceGroups,
+  flagValues,
   isAzCommandAllowed,
   isReadOnlyVerb,
   parseAzCommand,
@@ -201,7 +202,7 @@ describe("az-tool security", () => {
   });
 
   describe("ARM resource ID addressing", () => {
-    const options = { allowedResourceGroups: ["rg-a"] };
+    const options = { allowedResourceGroups: ["rg-a"], subscription: "s" };
     const evilId =
       "/subscriptions/other-sub/resourceGroups/rg-evil/providers/Microsoft.Compute/virtualMachines/vm1";
 
@@ -239,8 +240,9 @@ describe("az-tool security", () => {
 
     it("leaves IDs alone when no allowlist is configured", () => {
       expect(
-        isAzCommandAllowed("role assignment list --scope /subscriptions/s/resourceGroups/rg-evil")
-          .allowed,
+        isAzCommandAllowed("role assignment list --scope /subscriptions/s/resourceGroups/rg-evil", {
+          subscription: "s",
+        }).allowed,
       ).toBe(true);
     });
   });
@@ -272,6 +274,322 @@ describe("az-tool security", () => {
       expect(isReadOnlyVerb("list")).toBe(true);
       expect(isReadOnlyVerb("list-skus")).toBe(true);
       expect(isReadOnlyVerb("delete")).toBe(false);
+    });
+  });
+
+  describe("abbreviated and glued flags", () => {
+    const options = { allowedResourceGroups: ["rg-a"], subscription: "s" };
+
+    it("reads every form argparse accepts for a flag", () => {
+      expect(flagValues(["--resource-gr", "x"], RESOURCE_GROUP_FLAG)).toEqual(["x"]);
+      expect(flagValues(["--resource-g=x"], RESOURCE_GROUP_FLAG)).toEqual(["x"]);
+      expect(flagValues(["-gx"], RESOURCE_GROUP_FLAG)).toEqual(["x"]);
+      expect(flagValues(["-g=x"], RESOURCE_GROUP_FLAG)).toEqual(["x"]);
+      expect(flagValues(["-g", "x", "--resource-group="], RESOURCE_GROUP_FLAG)).toEqual(["x", ""]);
+      expect(flagValues(["--apps", "a", "b", "--offset", "1h"], APP_FLAG, { list: true })).toEqual([
+        "a",
+        "b",
+      ]);
+    });
+
+    it("applies the resource group allowlist to abbreviations and glued values", () => {
+      expect(isAzCommandAllowed("webapp show --resource-gr rg-evil -n app", options).allowed).toBe(
+        false,
+      );
+      expect(isAzCommandAllowed("webapp show -grg-evil -n app", options).allowed).toBe(false);
+      expect(isAzCommandAllowed("webapp show --resource rg-evil -n app", options).allowed).toBe(
+        false,
+      );
+      expect(isAzCommandAllowed("webapp show -grg-a -n app", options).allowed).toBe(true);
+    });
+
+    it("judges --resource by the group inside its resource ID", () => {
+      const allowedId = "/subscriptions/s/resourceGroups/rg-a/providers/Microsoft.Web/sites/app";
+      expect(
+        isAzCommandAllowed(`monitor metrics list --resource ${allowedId}`, options).allowed,
+      ).toBe(true);
+    });
+
+    it("rejects abbreviations of --subscription and --ids", () => {
+      expect(isAzCommandAllowed("vm list --subscr other").allowed).toBe(false);
+      const id = isAzCommandAllowed("vm show --id /subscriptions/s/resourceGroups/rg/x");
+      expect(id.allowed).toBe(false);
+      expect(id.reason).toContain("--id");
+    });
+  });
+
+  describe("Entra ID", () => {
+    it("is refused unless the profile opts in", () => {
+      const result = isAzCommandAllowed("ad user list");
+      expect(result.allowed).toBe(false);
+      expect(result.hint).toContain("allowEntra");
+      expect(isAzCommandAllowed("ad user list", { allowEntra: false }).allowed).toBe(false);
+    });
+
+    it("allows read-only directory commands once enabled, as tenant-bound", () => {
+      const options = { allowEntra: true };
+      const result = isAzCommandAllowed("ad group member list --group devs", options);
+      expect(result.allowed).toBe(true);
+      expect(result.omitsSubscription).toBe(true);
+      expect(result.usesDefaultLoginTenant).toBe(true);
+      expect(isAzCommandAllowed("ad user show --id 0000-1111", options).allowed).toBe(true);
+      expect(isAzCommandAllowed("ad signed-in-user show", options).allowed).toBe(true);
+    });
+
+    it("still blocks mutations and credential reads", () => {
+      const options = { allowEntra: true };
+      expect(isAzCommandAllowed("ad user create --display-name x", options).allowed).toBe(false);
+      expect(isAzCommandAllowed("ad app credential list --id x", options).allowed).toBe(false);
+      expect(isAzCommandAllowed("ad sp credential list --id x", options).allowed).toBe(false);
+    });
+  });
+
+  describe("KQL queries", () => {
+    const appQuery = (extra: string) =>
+      `monitor app-insights query -g rg --apps web --analytics-query ${extra}`;
+
+    it("allows query only in the App Insights and Log Analytics groups", () => {
+      expect(isAzCommandAllowed(appQuery('"requests | take 5"')).allowed).toBe(true);
+      expect(
+        isAzCommandAllowed('monitor log-analytics query -w ws --analytics-query "Heartbeat"')
+          .allowed,
+      ).toBe(true);
+      expect(isAzCommandAllowed("storage entity query --table-name t").allowed).toBe(false);
+      expect(isAzCommandAllowed('graph query -q "Resources"').allowed).toBe(false);
+    });
+
+    it("refuses cross-resource functions and externaldata", () => {
+      for (const kql of [
+        "\"workspace('other').Heartbeat\"",
+        "\"app ('other').requests\"",
+        "\"union resource('x').requests\"",
+        "\"cluster('c').database('d').T\"",
+        "\"externaldata (x:string) [h@'https://e.example']\"",
+      ]) {
+        expect(isAzCommandAllowed(appQuery(kql)).allowed).toBe(false);
+      }
+    });
+
+    it("refuses extra and missing Log Analytics workspaces", () => {
+      expect(
+        isAzCommandAllowed("monitor log-analytics query -w a --workspaces b --analytics-query T")
+          .allowed,
+      ).toBe(false);
+      expect(isAzCommandAllowed("monitor log-analytics query --analytics-query T").allowed).toBe(
+        false,
+      );
+    });
+
+    it("collects every workspace for verification", () => {
+      const result = isAzCommandAllowed(
+        "monitor log-analytics query -wone --workspace=two --analytics-query T",
+      );
+      expect(result.allowed).toBe(true);
+      expect(result.workspaces).toEqual(["one", "two"]);
+      expect(result.usesDefaultLoginTenant).toBeUndefined();
+    });
+  });
+
+  describe("App Insights data commands", () => {
+    it("are tenant-bound and need the app named with -g", () => {
+      const result = isAzCommandAllowed(
+        "monitor app-insights events show --app web -g rg --type requests",
+      );
+      expect(result.allowed).toBe(true);
+      expect(result.usesDefaultLoginTenant).toBe(true);
+      expect(
+        isAzCommandAllowed("monitor app-insights metrics show --app 1234 --metric requests/count")
+          .allowed,
+      ).toBe(false);
+    });
+
+    it("refuse a resource ID passed as the app", () => {
+      const id = "/subscriptions/other/resourceGroups/rg/providers/microsoft.insights/components/x";
+      expect(
+        isAzCommandAllowed(`monitor app-insights query -g rg -a ${id} --analytics-query T`).allowed,
+      ).toBe(false);
+      expect(
+        isAzCommandAllowed(`monitor app-insights query -g rg --app web ${id} --analytics-query T`)
+          .allowed,
+      ).toBe(false);
+    });
+
+    it("leave the management plane alone", () => {
+      const result = isAzCommandAllowed("monitor app-insights component show --app web -g rg");
+      expect(result.allowed).toBe(true);
+      expect(result.usesDefaultLoginTenant).toBeUndefined();
+    });
+  });
+
+  describe("review round 1 bypasses", () => {
+    it("refuses arguments az would read from a file", () => {
+      for (const cmd of [
+        "monitor log-analytics query -w ws --analytics-query @q.kql",
+        "monitor app-insights query -g rg --apps web --analytics-query=@q.kql",
+        "webapp show -g=@rg.txt -n app",
+        "vm list --query @jmes.txt",
+        "monitor log-analytics query -w ws --analytics-query 'let x=@q.kql'",
+      ]) {
+        expect(isAzCommandAllowed(cmd).allowed).toBe(false);
+      }
+      expect(
+        isAzCommandAllowed("ad user show --id jane@example.com", { allowEntra: true }).allowed,
+      ).toBe(true);
+    });
+
+    it("refuses scopes above the pinned subscription, and every ID without one", () => {
+      const options = { subscription: "pinned" };
+      for (const scope of [
+        "/",
+        "/providers/Microsoft.Management/managementGroups/mg",
+        "/subscriptions//x",
+        "providers/Microsoft.Management/managementGroups/mg",
+        "subscriptions/other",
+        "' /providers/Microsoft.Management/managementGroups/mg'",
+        "/subscriptions/pinned/../../providers/Microsoft.Management/managementGroups/mg",
+        "./providers/Microsoft.Management/managementGroups/mg",
+        "x/../providers/Microsoft.Management/managementGroups/mg",
+        "/subscriptions/pinned/%2e%2e/%2E%2E/providers/Microsoft.Management/managementGroups/mg",
+        "/subscriptions/pinned%2F..%2Fother",
+        "'.\\\\providers/Microsoft.Management/managementGroups/mg'",
+        "/subscriptions/pinned/x%5C..%5C..%5Cproviders/mg",
+      ]) {
+        expect(isAzCommandAllowed(`role assignment list --scope ${scope}`, options).allowed).toBe(
+          false,
+        );
+      }
+      expect(isAzCommandAllowed("role assignment list --scope=/", options).allowed).toBe(false);
+      expect(isAzCommandAllowed("role assignment list -s/providers/x", options).allowed).toBe(
+        false,
+      );
+      expect(
+        isAzCommandAllowed("role assignment list --scope /subscriptions/pinned", options).allowed,
+      ).toBe(true);
+      expect(
+        isAzCommandAllowed(
+          "role assignment list --scope subscriptions/pinned/resourceGroups/rg",
+          options,
+        ).allowed,
+      ).toBe(true);
+      expect(isAzCommandAllowed("role assignment list --scope /subscriptions/pinned").allowed).toBe(
+        false,
+      );
+    });
+
+    it("refuses resource IDs naming another subscription", () => {
+      const options = { subscription: "PINNED" };
+      const id = (subscription: string) =>
+        `monitor metrics list --resource /subscriptions/${subscription}/resourceGroups/rg/providers/p/t/n`;
+      expect(isAzCommandAllowed(id("pinned"), options).allowed).toBe(true);
+      const foreign = isAzCommandAllowed(id("other"), options);
+      expect(foreign.allowed).toBe(false);
+      expect(foreign.reason).toContain("other");
+      expect(
+        isAzCommandAllowed("role assignment list --scope /subscriptions/other", options).allowed,
+      ).toBe(false);
+    });
+
+    it("refuses an empty -g that leaves --app used as a raw GUID", () => {
+      expect(
+        isAzCommandAllowed(
+          "monitor app-insights query --apps 1234 -g rg --resource-group= --analytics-query T",
+        ).allowed,
+      ).toBe(false);
+      expect(
+        isAzCommandAllowed("monitor app-insights query --apps 1234 -g rg -g= --analytics-query T")
+          .allowed,
+      ).toBe(false);
+    });
+
+    it("refuses arg() and bracket-quoted cross-resource functions", () => {
+      expect(
+        isAzCommandAllowed(
+          "monitor log-analytics query -w ws --analytics-query 'arg(\"\").Resources'",
+        ).allowed,
+      ).toBe(false);
+      expect(
+        isAzCommandAllowed(
+          "monitor log-analytics query -w ws --analytics-query \"['workspace']('x').T\"",
+        ).allowed,
+      ).toBe(false);
+      expect(
+        isAzCommandAllowed(
+          "monitor log-analytics query -w ws --analytics-query 'T | summarize arg_max(TimeGenerated, *)'",
+        ).allowed,
+      ).toBe(true);
+    });
+
+    it("keeps --ids refused for Entra, allowing only --id", () => {
+      expect(isAzCommandAllowed("ad user show --ids x", { allowEntra: true }).allowed).toBe(false);
+    });
+
+    it("names the abbreviation in the allowlist hint only when one was used", () => {
+      const options = { allowedResourceGroups: ["rg-a"] };
+      expect(isAzCommandAllowed("vm list -g rg-evil", options).hint).not.toContain("counts as");
+      expect(
+        isAzCommandAllowed("monitor metrics list --resource vm1 --resource-type t", options).hint,
+      ).toContain("'--resource' counts as --resource-group");
+    });
+  });
+
+  describe("reads above the subscription", () => {
+    const tenantWide = [
+      "account list",
+      "account tenant list",
+      "account management-group list",
+      "deployment tenant list",
+      "deployment mg list --management-group-id mg",
+      "stack mg list --management-group-id mg",
+      "billing account list",
+      "reservations reservation-order list",
+      "consumption reservation summary list --grain daily",
+      "policy definition list --management-group mg",
+      "policy set-definition list --management-g mg",
+      "policy state list -m mg",
+      "policy state list -mmg",
+      "deployment operation tenant list -n dep",
+      "deployment operation mg list -m mg -n dep",
+      "stack-whatif mg list -m mg",
+      "private-link association list -mmg",
+    ];
+
+    it("are refused unless the profile opts in", () => {
+      for (const cmd of tenantWide) {
+        const result = isAzCommandAllowed(cmd);
+        expect(result.allowed).toBe(false);
+        expect(result.hint).toContain("allowTenantScope");
+      }
+    });
+
+    it("are allowed once the profile opts in", () => {
+      for (const cmd of tenantWide) {
+        expect(isAzCommandAllowed(cmd, { allowTenantScope: true }).allowed).toBe(true);
+      }
+    });
+
+    it("leave subscription-scoped neighbours alone", () => {
+      expect(isAzCommandAllowed("account show").allowed).toBe(true);
+      expect(isAzCommandAllowed("policy definition list").allowed).toBe(true);
+      expect(isAzCommandAllowed("deployment group list -g rg").allowed).toBe(true);
+      expect(isAzCommandAllowed("consumption usage list").allowed).toBe(true);
+      expect(isAzCommandAllowed("consumption usage list -m").allowed).toBe(true);
+      expect(isAzCommandAllowed("deployment operation group list -g rg -n dep").allowed).toBe(true);
+      expect(isAzCommandAllowed("stack sub list").allowed).toBe(true);
+    });
+
+    it("drop --subscription where az rejects it, and check the tenant for management groups", () => {
+      const options = { allowTenantScope: true };
+      const groups = isAzCommandAllowed("account management-group show -n mg", options);
+      expect(groups.omitsSubscription).toBe(true);
+      expect(groups.usesDefaultLoginTenant).toBe(true);
+
+      const accounts = isAzCommandAllowed("account list", options);
+      expect(accounts.omitsSubscription).toBe(true);
+      expect(accounts.usesDefaultLoginTenant).toBeUndefined();
+
+      const billing = isAzCommandAllowed("billing account list", options);
+      expect(billing.omitsSubscription).toBeUndefined();
+      expect(billing.usesDefaultLoginTenant).toBeUndefined();
     });
   });
 });

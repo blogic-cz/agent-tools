@@ -1,5 +1,5 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { Context, Effect, Layer, Option, Stream } from "effect";
+import { Context, Effect, Layer, Option, Schema, Stream } from "effect";
 
 import type { AzurePlatformConfig } from "#config/types";
 
@@ -7,13 +7,33 @@ import type { AzParseError } from "./errors";
 
 import { AzCommandError, AzProfileError, AzSecurityError, AzTimeoutError } from "./errors";
 import { isProductionProfile, selectAzProfileName } from "./profile";
-import { isAzCommandAllowed } from "./security";
+import { equalsIgnoreCase, isAzCommandAllowed } from "./security";
 import { ConfigService, getToolConfig } from "#config";
 import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { renderCommandLine } from "#shared/exec";
 import { unsafeOutboundTextReason } from "#shared/content-security";
 
 const DEFAULT_TIMEOUT_MS = 60000;
+
+const AccountsSchema = Schema.Array(
+  Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    tenantId: Schema.String,
+    isDefault: Schema.Boolean,
+  }),
+);
+
+const WorkspacesSchema = Schema.Array(
+  Schema.Struct({ customerId: Schema.String, resourceGroup: Schema.String }),
+);
+
+/** The command a run-time guard protects, with the profile it runs under. */
+type GuardedCommand = {
+  readonly command: string;
+  readonly azConfig: AzurePlatformConfig;
+  readonly timeoutMs: number;
+};
 
 const hasOutputFlag = (argv: readonly string[]): boolean =>
   argv.some((arg) => arg === "-o" || arg === "--output" || arg.startsWith("--output="));
@@ -84,6 +104,9 @@ export class AzService extends Context.Service<
           const azConfig = yield* resolveConfig(profile);
           const securityCheck = isAzCommandAllowed(cmd, {
             allowedResourceGroups: azConfig.allowedResourceGroups,
+            allowEntra: azConfig.allowEntra,
+            allowTenantScope: azConfig.allowTenantScope,
+            subscription: azConfig.subscription,
           });
 
           if (!securityCheck.allowed || !securityCheck.argv) {
@@ -110,9 +133,11 @@ export class AzService extends Context.Service<
             argv.push("--output", "json");
           }
 
-          argv.push("--subscription", azConfig.subscription);
+          if (!securityCheck.omitsSubscription) {
+            argv.push("--subscription", azConfig.subscription);
+          }
 
-          return { argv, azConfig };
+          return { argv, azConfig, securityCheck };
         });
 
       const spawnAz = (argv: readonly string[], timeoutMs: number, renderedCommand: string) =>
@@ -146,6 +171,122 @@ export class AzService extends Context.Service<
           }),
         );
 
+      /** A read a guard depends on. Any failure refuses: the guarded fact stays unknown. */
+      const guardLookup = <T>(
+        argv: readonly string[],
+        decode: (json: unknown) => T,
+        guarded: GuardedCommand,
+        refusal: string,
+      ) =>
+        Effect.gen(function* () {
+          const lookupArgv = [...argv, "--only-show-errors", "--output", "json"];
+          const lookupCommand = renderCommandLine(["az", ...lookupArgv]);
+          const refuse = new AzSecurityError({
+            message: refusal,
+            command: guarded.command,
+            hint: `The check '${lookupCommand}' could not run, so the command is refused. Check the az login and retry.`,
+            retryable: true,
+          });
+
+          const result = yield* spawnAz(lookupArgv, guarded.timeoutMs, lookupCommand).pipe(
+            Effect.mapError(() => refuse),
+          );
+          if (Option.isNone(result) || result.value.exitCode !== 0) return yield* refuse;
+
+          const stdout = result.value.stdout;
+          return yield* Effect.try({
+            try: () => decode(JSON.parse(stdout)),
+            catch: () => refuse,
+          });
+        });
+
+      /**
+       * Entra and App Insights data commands authenticate against the default
+       * az login, whatever --subscription says, so they would silently read
+       * another tenant's directory or fail with InvalidTokenError.
+       */
+      const ensureDefaultTenant = (guarded: GuardedCommand) =>
+        Effect.gen(function* () {
+          const { azConfig } = guarded;
+          const accounts = yield* guardLookup(
+            [
+              "account",
+              "list",
+              "--query",
+              "[].{id:id,name:name,tenantId:tenantId,isDefault:isDefault}",
+            ],
+            Schema.decodeUnknownSync(AccountsSchema),
+            guarded,
+            "Could not confirm that the default az login is in the tenant of the pinned subscription.",
+          );
+          // A name may match subscriptions in several tenants, so only a unique match counts.
+          const matches = accounts.filter(
+            (account) =>
+              equalsIgnoreCase(account.id, azConfig.subscription) ||
+              equalsIgnoreCase(account.name, azConfig.subscription),
+          );
+          if (matches.length > 1) {
+            return yield* new AzSecurityError({
+              message: `Subscription name '${azConfig.subscription}' matches ${matches.length} subscriptions, so its tenant is ambiguous.`,
+              command: guarded.command,
+              hint: "Pin the profile by subscription ID instead of name.",
+            });
+          }
+          const [pinned] = matches;
+          const current = accounts.find((account) => account.isDefault);
+
+          if (!pinned || !current || !equalsIgnoreCase(pinned.tenantId, current.tenantId)) {
+            return yield* new AzSecurityError({
+              message: `This command reads the tenant of the default az login (${current?.tenantId ?? "unknown"}), not the tenant of subscription ${azConfig.subscription} (${pinned?.tenantId ?? "unknown"}).`,
+              command: guarded.command,
+              hint: `Ask the user to run 'az account set --subscription ${azConfig.subscription}', or use a profile whose subscription is in the default tenant.`,
+            });
+          }
+        });
+
+      /** A workspace GUID is not scoped by --subscription, so it must belong to the pinned subscription. */
+      const ensureWorkspacesInScope = (workspaces: readonly string[], guarded: GuardedCommand) =>
+        Effect.gen(function* () {
+          const { azConfig } = guarded;
+          const known = yield* guardLookup(
+            [
+              "monitor",
+              "log-analytics",
+              "workspace",
+              "list",
+              "--subscription",
+              azConfig.subscription,
+              "--query",
+              "[].{customerId:customerId,resourceGroup:resourceGroup}",
+            ],
+            Schema.decodeUnknownSync(WorkspacesSchema),
+            guarded,
+            "Could not list the Log Analytics workspaces of the pinned subscription.",
+          );
+          const allowedGroups = azConfig.allowedResourceGroups ?? [];
+
+          for (const workspace of workspaces) {
+            const match = known.find((entry) => equalsIgnoreCase(entry.customerId, workspace));
+            if (!match) {
+              return yield* new AzSecurityError({
+                message: `Workspace '${workspace}' is not a Log Analytics workspace in subscription ${azConfig.subscription}.`,
+                command: guarded.command,
+                hint: 'Pass the workspace customer ID from: monitor log-analytics workspace list --query "[].{name:name,id:customerId}"',
+              });
+            }
+            if (
+              allowedGroups.length > 0 &&
+              !allowedGroups.some((group) => equalsIgnoreCase(group, match.resourceGroup))
+            ) {
+              return yield* new AzSecurityError({
+                message: `Workspace '${workspace}' is in resource group '${match.resourceGroup}', which this profile does not allow.`,
+                command: guarded.command,
+                hint: `Allowed resource groups: ${allowedGroups.join(", ")}.`,
+              });
+            }
+          }
+        });
+
       const renderCommand = Effect.fn("AzService.renderCommand")(function* (
         cmd: string,
         profile?: string,
@@ -158,9 +299,17 @@ export class AzService extends Context.Service<
         cmd: string,
         profile?: string,
       ) {
-        const { argv, azConfig } = yield* buildArgv(cmd, profile);
+        const { argv, azConfig, securityCheck } = yield* buildArgv(cmd, profile);
         const timeoutMs = azConfig.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const fullCommand = renderCommandLine(["az", ...argv]);
+
+        const guarded: GuardedCommand = { command: fullCommand, azConfig, timeoutMs };
+        if (securityCheck.usesDefaultLoginTenant) {
+          yield* ensureDefaultTenant(guarded);
+        }
+        if (securityCheck.workspaces) {
+          yield* ensureWorkspacesInScope(securityCheck.workspaces, guarded);
+        }
 
         const resultOption = yield* spawnAz(argv, timeoutMs, fullCommand);
 

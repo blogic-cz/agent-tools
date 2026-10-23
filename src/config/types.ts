@@ -21,6 +21,17 @@ export type AzurePlatformConfig = {
    * resource group in the subscription is allowed.
    */
   allowedResourceGroups?: string[];
+  /**
+   * Allow Entra ID (`az ad`) reads. They are tenant-wide and bypass the
+   * subscription pin and resource group allowlist, so they are opt-in.
+   */
+  allowEntra?: boolean;
+  /**
+   * Allow reads above the subscription: tenant, management groups, billing,
+   * and reservations. Like Entra they ignore the subscription pin, so they
+   * are opt-in.
+   */
+  allowTenantScope?: boolean;
 };
 
 export type CleanupPolicy = "leave-running" | "stop-if-started";

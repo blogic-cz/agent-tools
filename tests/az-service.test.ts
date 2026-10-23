@@ -32,14 +32,18 @@ function createMockProcess(result: SpawnResult) {
   });
 }
 
+type SpawnResponder = SpawnResult | ((args: readonly string[]) => SpawnResult);
+
 /** Records every argv the service actually spawns, so scoping can be asserted. */
-function createSpawnerLayer(observed: string[][], result: SpawnResult = OK) {
+function createSpawnerLayer(observed: string[][], result: SpawnResponder = OK) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       const spawned = command as { command: string; args: readonly string[] };
       observed.push([spawned.command, ...spawned.args]);
-      return Effect.succeed(createMockProcess(result));
+      return Effect.succeed(
+        createMockProcess(typeof result === "function" ? result(spawned.args) : result),
+      );
     }),
   );
 }
@@ -48,7 +52,7 @@ function createSpawnerLayer(observed: string[][], result: SpawnResult = OK) {
 function createServiceLayer(
   config: AgentToolsConfig | undefined,
   observed: string[][],
-  result: SpawnResult = OK,
+  result: SpawnResponder = OK,
 ) {
   return AzService.layer.pipe(
     Layer.provide(createSpawnerLayer(observed, result)),
@@ -266,6 +270,29 @@ describe("AzService", () => {
     );
   });
 
+  describe("resource IDs", () => {
+    it.effect("refuses an ID naming a subscription other than the pinned one", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({ default: { subscription: SUBSCRIPTION } }),
+          observed,
+        );
+
+        const result = yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand(
+            "monitor metrics list --resource /subscriptions/other/resourceGroups/rg/providers/p/t/n",
+          );
+        }).pipe(Effect.result, Effect.provide(layer));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure._tag).toBe("AzSecurityError");
+        expect(observed).toHaveLength(0);
+      }),
+    );
+  });
+
   describe("resource group allowlist", () => {
     it.effect("threads allowedResourceGroups from config into the security gate", () =>
       Effect.gen(function* () {
@@ -316,6 +343,261 @@ describe("AzService", () => {
           expect(result.failure._tag).toBe("AzCommandError");
           expect(result.failure.message).toContain("subscription not found");
         }
+      }),
+    );
+  });
+
+  describe("tenant-bound commands", () => {
+    const OTHER_SUBSCRIPTION = "99999999-2222-3333-4444-555555555555";
+
+    const accounts = (defaultTenant: string) =>
+      JSON.stringify([
+        { id: SUBSCRIPTION, name: "pinned", tenantId: "tenant-a", isDefault: false },
+        { id: OTHER_SUBSCRIPTION, name: "other", tenantId: defaultTenant, isDefault: true },
+      ]);
+
+    const respondWith =
+      (accountList: SpawnResult) =>
+      (args: readonly string[]): SpawnResult =>
+        args[0] === "account" && args[1] === "list" ? accountList : OK;
+
+    const entraConfig = configWith({ default: { subscription: SUBSCRIPTION, allowEntra: true } });
+
+    it.effect("runs Entra commands without --subscription once the tenants match", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          entraConfig,
+          observed,
+          respondWith({ stdout: accounts("tenant-a"), stderr: "", exitCode: 0 }),
+        );
+
+        yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand("ad user list");
+        }).pipe(Effect.provide(layer));
+
+        expect(observed).toHaveLength(2);
+        expect(observed[0]?.slice(1, 3)).toEqual(["account", "list"]);
+        expect(observed[1]?.slice(1, 4)).toEqual(["ad", "user", "list"]);
+        expect(observed[1]).not.toContain("--subscription");
+      }),
+    );
+
+    it.effect("runs management group reads without --subscription after the tenant check", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({ default: { subscription: SUBSCRIPTION, allowTenantScope: true } }),
+          observed,
+          respondWith({ stdout: accounts("tenant-a"), stderr: "", exitCode: 0 }),
+        );
+
+        yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand("account management-group list");
+        }).pipe(Effect.provide(layer));
+
+        expect(observed).toHaveLength(2);
+        expect(observed[0]?.slice(1, 3)).toEqual(["account", "list"]);
+        expect(observed[1]?.slice(1, 4)).toEqual(["account", "management-group", "list"]);
+        expect(observed[1]).not.toContain("--subscription");
+      }),
+    );
+
+    it.effect("refuses when the default login is in another tenant", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          entraConfig,
+          observed,
+          respondWith({ stdout: accounts("tenant-b"), stderr: "", exitCode: 0 }),
+        );
+
+        const result = yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand("ad user list");
+        }).pipe(Effect.result, Effect.provide(layer));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe("AzSecurityError");
+          expect(result.failure.message).toContain("tenant-b");
+        }
+        expect(observed).toHaveLength(1);
+      }),
+    );
+
+    it.effect("refuses a profile pinned by a subscription name that is not unique", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({ default: { subscription: "shared-name", allowEntra: true } }),
+          observed,
+          respondWith({
+            stdout: JSON.stringify([
+              { id: SUBSCRIPTION, name: "shared-name", tenantId: "tenant-a", isDefault: true },
+              {
+                id: OTHER_SUBSCRIPTION,
+                name: "shared-name",
+                tenantId: "tenant-b",
+                isDefault: false,
+              },
+            ]),
+            stderr: "",
+            exitCode: 0,
+          }),
+        );
+
+        const result = yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand("ad user list");
+        }).pipe(Effect.result, Effect.provide(layer));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure.message).toContain("ambiguous");
+        expect(observed).toHaveLength(1);
+      }),
+    );
+
+    it.effect("refuses when the tenant lookup fails or returns something unexpected", () =>
+      Effect.gen(function* () {
+        for (const accountList of [
+          { stdout: "", stderr: "ERROR: not logged in", exitCode: 1 },
+          { stdout: "not json", stderr: "", exitCode: 0 },
+          { stdout: '[{"id":1}]', stderr: "", exitCode: 0 },
+        ]) {
+          const observed: string[][] = [];
+          const layer = createServiceLayer(
+            configWith({ default: { subscription: SUBSCRIPTION } }),
+            observed,
+            respondWith(accountList),
+          );
+
+          const result = yield* Effect.gen(function* () {
+            const az = yield* AzService;
+            return yield* az.runCommand(
+              "monitor app-insights events show --app web -g rg --type requests",
+            );
+          }).pipe(Effect.result, Effect.provide(layer));
+
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) expect(result.failure._tag).toBe("AzSecurityError");
+          expect(observed).toHaveLength(1);
+        }
+      }),
+    );
+
+    it.effect("leaves subscription-scoped commands without a tenant lookup", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(entraConfig, observed);
+
+        yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand(
+            `monitor metrics list-definitions --resource /subscriptions/${SUBSCRIPTION}/resourceGroups/rg/providers/p/t/n`,
+          );
+        }).pipe(Effect.provide(layer));
+
+        expect(observed).toHaveLength(1);
+      }),
+    );
+  });
+
+  describe("Log Analytics workspace scope", () => {
+    const WORKSPACE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const workspaceList: SpawnResult = {
+      stdout: JSON.stringify([{ customerId: WORKSPACE, resourceGroup: "rg-logs" }]),
+      stderr: "",
+      exitCode: 0,
+    };
+    const respond = (args: readonly string[]): SpawnResult =>
+      args.slice(0, 4).join(" ") === "monitor log-analytics workspace list" ? workspaceList : OK;
+
+    const query = (workspace: string) =>
+      `monitor log-analytics query -w ${workspace} --analytics-query "Heartbeat | take 1"`;
+
+    it.effect("runs a query against a workspace of the pinned subscription", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({ default: { subscription: SUBSCRIPTION } }),
+          observed,
+          respond,
+        );
+
+        yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand(query(WORKSPACE.toUpperCase()));
+        }).pipe(Effect.provide(layer));
+
+        expect(observed).toHaveLength(2);
+        const lookup = observed[0] ?? [];
+        expect(lookup[lookup.indexOf("--subscription") + 1]).toBe(SUBSCRIPTION);
+        expect(observed[1]).toContain("Heartbeat | take 1");
+      }),
+    );
+
+    it.effect("refuses a workspace the pinned subscription does not hold", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({ default: { subscription: SUBSCRIPTION } }),
+          observed,
+          respond,
+        );
+
+        const result = yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand(query("11111111-0000-0000-0000-000000000000"));
+        }).pipe(Effect.result, Effect.provide(layer));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure._tag).toBe("AzSecurityError");
+        expect(observed).toHaveLength(1);
+      }),
+    );
+
+    it.effect("refuses a workspace in a resource group outside the allowlist", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({
+            default: { subscription: SUBSCRIPTION, allowedResourceGroups: ["rg-web"] },
+          }),
+          observed,
+          respond,
+        );
+
+        const result = yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand(query(WORKSPACE));
+        }).pipe(Effect.result, Effect.provide(layer));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure.message).toContain("rg-logs");
+        expect(observed).toHaveLength(1);
+      }),
+    );
+
+    it.effect("refuses when the workspace listing fails", () =>
+      Effect.gen(function* () {
+        const observed: string[][] = [];
+        const layer = createServiceLayer(
+          configWith({ default: { subscription: SUBSCRIPTION } }),
+          observed,
+          { stdout: "", stderr: "ERROR: boom", exitCode: 1 },
+        );
+
+        const result = yield* Effect.gen(function* () {
+          const az = yield* AzService;
+          return yield* az.runCommand(query(WORKSPACE));
+        }).pipe(Effect.result, Effect.provide(layer));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure._tag).toBe("AzSecurityError");
+        expect(observed).toHaveLength(1);
       }),
     );
   });

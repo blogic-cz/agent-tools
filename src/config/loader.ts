@@ -95,6 +95,8 @@ const AzurePlatformConfigSchema = Schema.Struct({
   timeoutMs: Schema.optionalKey(Schema.Number),
   production: Schema.optionalKey(Schema.Boolean),
   allowedResourceGroups: Schema.optionalKey(Schema.Array(Schema.String)),
+  allowEntra: Schema.optionalKey(Schema.Boolean),
+  allowTenantScope: Schema.optionalKey(Schema.Boolean),
 });
 
 const K8sConfigSchema = Schema.Struct({
