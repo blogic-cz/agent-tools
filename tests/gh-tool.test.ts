@@ -12350,6 +12350,9 @@ describe("L706 workflow command fixtures", () => {
       if (Result.isFailure(result)) {
         expect(result.failure).toMatchObject({ _tag: "GitHubTimeoutError", timeoutMs: 600000 });
         expect(String(result.failure)).toContain("timed out");
+        expect(result.failure).toMatchObject({
+          nextCommand: "agent-tools-gh workflow watch --run 100 --repo test-owner/test-repo",
+        });
       }
       const snapshot = JSON.parse(output.flat().join(""));
       expect(snapshot).toMatchObject({
@@ -12610,6 +12613,62 @@ describe("L706 workflow command fixtures", () => {
         yield* TestClock.adjust("1 millis");
         const result = yield* Fiber.join(fiber);
         expect(Result.isFailure(result)).toBe(conclusion !== "success");
+      }),
+    );
+  }
+  for (const scenario of ["same-attempt-jobs", "older-snapshot", "unexpected-newer"]) {
+    it.effect(`R8-18 does not certify ${scenario} as the rerun completion`, () =>
+      Effect.gen(function* () {
+        let views = 0;
+        const fiber = yield* Effect.forkChild(
+          rerunChecks(123, false, { watch: true, timeoutSeconds: 11 }).pipe(
+            Effect.provide(
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  if (args[0] === "pr")
+                    return Effect.succeed([
+                      { name: "build", state: "FAILURE", bucket: "fail", link: run.url },
+                    ]);
+                  return Effect.gen(function* () {
+                    views += 1;
+                    const now = Number(yield* Clock.currentTimeMillis);
+                    const initial = views === 1;
+                    const staleDiscovery = scenario === "same-attempt-jobs" && views === 2;
+                    const staleWatch = scenario === "older-snapshot" && now === 5000;
+                    const newer = scenario === "unexpected-newer" && now >= 5000;
+                    const attempt = initial || staleDiscovery || staleWatch ? 1 : newer ? 3 : 2;
+                    const status =
+                      initial || staleDiscovery || staleWatch || newer || now >= 10000
+                        ? "completed"
+                        : "in_progress";
+                    return {
+                      ...run,
+                      attempt,
+                      status,
+                      conclusion: status === "completed" ? "success" : null,
+                      jobs: [
+                        {
+                          databaseId: initial ? 1000 : 1001,
+                          name: "build",
+                          status,
+                          conclusion: status === "completed" ? "success" : null,
+                        },
+                      ],
+                    };
+                  });
+                },
+              }),
+            ),
+          ),
+        );
+        yield* TestClock.adjust("5000 millis");
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust("6000 millis");
+        const report = yield* Fiber.join(fiber);
+        expect(report.runs?.[0]?.status).toBe(
+          scenario === "unexpected-newer" ? "watch_timeout" : "completed",
+        );
+        expect(report.runs?.[0]?.newAttempt).toBe(2);
       }),
     );
   }
