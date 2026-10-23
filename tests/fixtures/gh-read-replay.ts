@@ -153,6 +153,7 @@ ${tracePath === undefined ? "" : `require("node:fs").appendFileSync(${JSON.strin
 const fields = args[args.indexOf("--json") + 1];
 const project = (value) => Object.fromEntries(Object.keys(value).sort().filter((key) => fields.split(",").includes(key)).map((key) => [key, value[key]]));
 const print = (value) => console.log(JSON.stringify(value));
+const login = "fixture-operator";
 const check = (bucket) => ({ name: "Build", state: bucket === "pending" ? "IN_PROGRESS" : "FAILURE", bucket, link: "external" });
 if (args[0] === "repo" && args[1] === "view") print({ owner: { login: "owner" }, name: "repo", defaultBranchRef: { name: "main" }, url: "https://github.com/owner/repo" });
 else if (args[0] === "repo" && args[1] === "list") print([{ name: "repo", description: "Example", visibility: "PUBLIC", updatedAt: "2026-10-01T08:00:00Z", url: "https://github.com/owner/repo", isArchived: false }]);
@@ -164,8 +165,10 @@ else if (args[0] === "pr" && args[1] === "checks") {
   if (args[2] === "44") { console.error("no checks reported"); process.exitCode = 1; }
   else print([check(args[2] === "43" ? "fail" : "pending")]);
 }
-else if (args[0] === "issue" && args[1] === "view") print(project(issue));
-else if (args[0] === "issue" && args[1] === "list") print([project(issue)]);
+else if (args[0] === "issue" && args[1] === "view") print(project(process.env.GITHUB_AUTH_USER ? {...issue, assignees: [{login}]} : issue));
+else if (args[0] === "issue" && args[1] === "edit") {}
+else if (args[0] === "issue" && args[1] === "list") print([project(args.includes("--assignee") ? { ...issue, assignees: [{login}] } : issue)]);
+else if (args[0] === "api" && args[1].endsWith("/issues/42/comments") && args.includes("POST")) print({...comment, body: "Thanks @fixture-operator for reviewing.", user: {login}});
 else if (args[0] === "run" && args[1] === "list") print([project(run)]);
 else if (args[0] === "run" && args[1] === "watch") {}
 else if (args[0] === "run" && args[1] === "view") {

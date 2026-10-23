@@ -100,6 +100,8 @@ import {
 } from "#gh/gist";
 import { createRelease, editRelease, resolveCreateNotes } from "#gh/release";
 import {
+  workflowWatchCommand,
+  workflowListCommand,
   buildWatchResult,
   diagnoseLogEntries,
   discoverDispatchedRun,
@@ -12271,3 +12273,244 @@ it.effect("refreshes checks for a commit status change and a write with unchange
     }).pipe(Effect.provide(layer), Effect.provideService(ReadCache, { store, warned: false }));
   }).pipe(Effect.scoped),
 );
+
+describe("L706 workflow command fixtures", () => {
+  const run = {
+    databaseId: 100,
+    displayTitle: "Synthetic CI",
+    status: "in_progress",
+    conclusion: null,
+    headBranch: "feat/test",
+    headSha: "a".repeat(40),
+    createdAt: "2026-10-01T08:00:00Z",
+    event: "pull_request",
+    url: "https://github.com/test-owner/test-repo/actions/runs/100",
+    workflowName: "CI",
+    workflowDatabaseId: 10,
+    attempt: 1,
+    jobs: [{ name: "build", status: "in_progress", conclusion: null }],
+  };
+  const cliLayer = Layer.mergeAll(
+    FileSystem.layerNoop({}),
+    Path.layer,
+    Stdio.layerTest({}),
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() => Effect.die("fixture must not spawn")),
+    ),
+    Layer.succeed(
+      Terminal.Terminal,
+      Terminal.make({
+        columns: Effect.succeed(80),
+        rows: Effect.succeed(24),
+        readInput: Effect.die("unused"),
+        readLine: Effect.die("unused"),
+        display: () => Effect.void,
+      }),
+    ),
+  );
+
+  it.effect("fails at the default 600 second bound and preserves the non-final snapshot", () =>
+    Effect.gen(function* () {
+      const output: string[] = [];
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(process.stdout, "write").mockImplementation((chunk, ...args: unknown[]) => {
+            output.push(String(chunk));
+            const callback = args.find((arg) => typeof arg === "function");
+            if (typeof callback === "function") callback();
+            return true;
+          }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const console = yield* TestConsole.make;
+      const fiber = yield* Effect.forkChild(
+        Command.runWith(workflowWatchCommand, { version: "test", renderErrors: false })([
+          "--run",
+          "100",
+          "--repo",
+          "test-owner/test-repo",
+          "--format",
+          "json",
+        ]).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              cliLayer,
+              createMockGhLayer({ runGhJson: () => Effect.succeed(run) }),
+              Layer.succeed(Console.Console, {
+                ...console,
+                log: (...args: unknown[]) => output.push(args.join("")),
+              }),
+            ),
+          ),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("599999 millis");
+      expect(output).toEqual([]);
+      yield* TestClock.adjust("1 millis");
+      // Poll without joining so a longer default cannot silently advance TestClock.
+      expect(fiber.pollUnsafe()).toBeDefined();
+      const result = yield* Fiber.join(fiber);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({ _tag: "GitHubTimeoutError", timeoutMs: 600000 });
+        expect(String(result.failure)).toContain("timed out");
+      }
+      const snapshot = JSON.parse(output.flat().join(""));
+      expect(snapshot).toMatchObject({
+        runId: 100,
+        status: "in_progress",
+        conclusion: null,
+        jobs: run.jobs,
+      });
+      expect(snapshot.watchOutput).toContain("timed out after 600s");
+    }).pipe(Effect.scoped),
+  );
+
+  for (const conclusion of ["success", "failure", "cancelled"]) {
+    it.effect(`preserves completed ${conclusion} behavior`, () =>
+      Effect.gen(function* () {
+        yield* Command.runWith(workflowWatchCommand, { version: "test" })([
+          "--run",
+          "100",
+          "--repo",
+          "test-owner/test-repo",
+          "--format",
+          "json",
+        ]).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: () => Effect.succeed({ ...run, status: "completed", conclusion }),
+              }),
+            ),
+          ),
+        );
+        expect(Number(yield* Clock.currentTimeMillis)).toBe(0);
+      }).pipe(Effect.scoped),
+    );
+  }
+
+  it.effect("adds observed newer-run context without changing cancellation conclusions", () =>
+    Effect.gen(function* () {
+      const output: string[] = [];
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(process.stdout, "write").mockImplementation((chunk, ...args: unknown[]) => {
+            output.push(String(chunk));
+            const callback = args.find((arg) => typeof arg === "function");
+            if (typeof callback === "function") callback();
+            return true;
+          }),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const console = yield* TestConsole.make;
+      const cancelled = { ...run, status: "completed", conclusion: "cancelled" };
+      const newer = { ...run, databaseId: 101, createdAt: "2026-10-01T09:00:00Z" };
+      const unrelated = { ...newer, databaseId: 102, workflowDatabaseId: 11 };
+      yield* Command.runWith(workflowListCommand, { version: "test" })([
+        "--repo",
+        "test-owner/test-repo",
+        "--format",
+        "json",
+      ]).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            cliLayer,
+            createMockGhLayer({ runGhJson: () => Effect.succeed([unrelated, newer, cancelled]) }),
+            Layer.succeed(Console.Console, {
+              ...console,
+              log: (...args: unknown[]) => output.push(args.join("")),
+            }),
+          ),
+        ),
+      );
+      const rows = JSON.parse(output.flat().join(""));
+      expect(rows[2]).toMatchObject({
+        conclusion: "cancelled",
+        newerRun: { databaseId: 101, status: "in_progress" },
+      });
+      expect(rows[2].cancellationReason).toBe("unknown");
+      expect(rows[0]).not.toHaveProperty("newerRun");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "does not infer a replacement outside filters, limits, workflow identity or branch",
+    () =>
+      Effect.gen(function* () {
+        const output: string[] = [];
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(process.stdout, "write").mockImplementation((chunk, ...args: unknown[]) => {
+              output.push(String(chunk));
+              const callback = args.find((arg) => typeof arg === "function");
+              if (typeof callback === "function") callback();
+              return true;
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        const calls: string[][] = [];
+        const console = yield* TestConsole.make;
+        const cancelled = { ...run, status: "completed", conclusion: "cancelled" };
+        const otherBranch = {
+          ...run,
+          databaseId: 101,
+          createdAt: "2026-10-01T09:00:00Z",
+          headBranch: "other",
+        };
+        const sameName = { ...otherBranch, headBranch: run.headBranch, workflowDatabaseId: 11 };
+        yield* Command.runWith(workflowListCommand, { version: "test" })([
+          "--repo",
+          "test-owner/test-repo",
+          "--format",
+          "json",
+          "--status",
+          "cancelled",
+          "--limit",
+          "3",
+          "--branch",
+          "feat/test",
+          "--workflow",
+          "ci.yml",
+        ]).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              cliLayer,
+              createMockGhLayer({
+                runGhJson: (args) => {
+                  calls.push(args);
+                  return Effect.succeed([cancelled, otherBranch, sameName]);
+                },
+              }),
+              Layer.succeed(Console.Console, {
+                ...console,
+                log: (...args: unknown[]) => output.push(args.join("")),
+              }),
+            ),
+          ),
+        );
+        const rows = JSON.parse(output.flat().join(""));
+        expect(rows[0].conclusion).toBe("cancelled");
+        expect(rows[0]).not.toHaveProperty("newerRun");
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toEqual(
+          expect.arrayContaining([
+            "--status",
+            "cancelled",
+            "--limit",
+            "3",
+            "--branch",
+            "feat/test",
+            "--workflow",
+            "ci.yml",
+          ]),
+        );
+      }).pipe(Effect.scoped),
+  );
+});

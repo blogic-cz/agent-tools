@@ -116,3 +116,49 @@ it(
     await running;
   },
 );
+
+it(
+  "L706 preserves public GitHub login through CLI assignee and comment paths",
+  { timeout: 30000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "gh-public-login-"));
+    try {
+      const bun = spawnSync("bun", ["-e", "process.stdout.write(process.execPath)"], {
+        encoding: "utf8",
+      }).stdout;
+      const { bin, preload } = await createReplayGh(root, bun);
+      for (const argv of [
+        ["issue", "edit", "--issue", "7", "--add-assignee", "fixture-operator"],
+        ["pr", "comment", "--pr", "42", "--body", "Thanks @fixture-operator for reviewing."],
+      ]) {
+        const result = spawnSync(
+          bun,
+          ["--preload", preload, "src/gh-tool/index.ts", ...replayFlags(argv)],
+          {
+            cwd: resolve(import.meta.dirname, ".."),
+            encoding: "utf8",
+            timeout: 15000,
+            env: {
+              PATH: `${bin}:/usr/bin:/bin`,
+              HOME: root,
+              XDG_CONFIG_HOME: root,
+              XDG_CACHE_HOME: root,
+              GH_TOKEN: "offline-replay",
+              GH_TOOL_CACHE: "off",
+              GITHUB_AUTH_USER: "fixture-operator",
+            },
+          },
+        );
+        expect({ status: result.status, stderr: result.stderr, error: result.error }).toEqual({
+          status: 0,
+          stderr: "",
+          error: undefined,
+        });
+        expect(result.stdout).toContain("fixture-operator");
+        expect(result.stdout).not.toContain("[REDACTED]");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

@@ -238,3 +238,42 @@ describe("shared content security", () => {
     }
   });
 });
+
+describe("L706 public identifier fixtures", () => {
+  for (const name of ["GITHUB_AUTH_USER"]) {
+    it(`preserves public GitHub login from ${name} in assignee and comment text`, () => {
+      const environment = { [name]: "public-reviewer" };
+      for (const text of [
+        "--assignee public-reviewer",
+        "Thanks @public-reviewer for the review.",
+      ]) {
+        expect(unsafeOutboundTextReason(text, environment)).toBeNull();
+        expect(redactSensitiveText(text, environment)).toBe(text);
+      }
+      expect(
+        redactSensitiveValue({ assignees: [{ login: "public-reviewer" }] }, environment),
+      ).toEqual({ assignees: [{ login: "public-reviewer" }] });
+    });
+  }
+  it("keeps token patterns and registered secrets above public names", () => {
+    const environment = { GH_AUTH_LOGIN: githubToken };
+    expect(unsafeOutboundTextReason(githubToken, environment)).toBe("a credential pattern");
+    expect(redactSensitiveText(githubToken, environment)).toBe("[REDACTED]");
+    registerResolvedSecret("synthetic-public-name-secret");
+    expect(
+      redactSensitiveText("synthetic-public-name-secret", {
+        GH_AUTH_LOGIN: "synthetic-public-name-secret",
+      }),
+    ).toBe("[REDACTED]");
+  });
+  for (const name of ["GH_TOKEN", "AUTH_KEY", "SESSION_TOKEN", "MY_AUTH_LOGIN_TOKEN"]) {
+    it(`still treats login-shaped ${name} values as secrets`, () => {
+      expect(
+        unsafeOutboundTextReason("public-reviewer", { [name]: "public-reviewer" }),
+      ).not.toBeNull();
+      expect(redactSensitiveText("public-reviewer", { [name]: "public-reviewer" })).toBe(
+        "[REDACTED]",
+      );
+    });
+  }
+});
