@@ -1,4 +1,4 @@
-import { Clock, Console, Effect, Option, Result } from "effect";
+import { Clock, Console, Effect, Option, Result, Semaphore } from "effect";
 
 import type {
   BranchPRDetail,
@@ -2052,10 +2052,11 @@ const discoverRerun = Effect.fn("pr.discoverRerun")(function* (
   runId: string,
   currentAttempt: number | null,
   deadline: number,
+  runViewReads: Semaphore.Semaphore,
 ) {
-  const read = readRerunState(runId, true).pipe(
-    Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)),
-  );
+  const read = runViewReads
+    .withPermit(readRerunState(runId, true))
+    .pipe(Effect.catchTag("GitHubCommandError", () => Effect.succeed(null)));
   const outcome = yield* waits.until(
     read,
     (latest) =>
@@ -2211,6 +2212,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
   }
 
   if (watch) {
+    const runViewReads = yield* Semaphore.make(2);
     yield* Effect.forEach(
       candidates,
       (candidate, index) =>
@@ -2221,6 +2223,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
             candidate.runId,
             candidate.run?.attempt ?? null,
             deadline,
+            runViewReads,
           );
           result.newAttempt = next?.attempt ?? null;
           result.newJobIds = next?.jobs.map((job) => job.databaseId) ?? null;
@@ -2232,7 +2235,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
           let latest = next;
           const outcome = yield* waits.until(
             Effect.suspend(() =>
-              readRerunState(candidate.runId, true).pipe(
+              runViewReads.withPermit(readRerunState(candidate.runId, true)).pipe(
                 Effect.catchTag("GitHubCommandError", () => Effect.succeed(latest)),
                 Effect.map((refreshed) =>
                   refreshed.attempt !== undefined &&
@@ -2265,7 +2268,7 @@ export const rerunChecks = Effect.fn("pr.rerunChecks")(function* (
           result.latestAttempt = latest;
           result.status = outcome.kind === "done" ? "completed" : "watch_timeout";
         }),
-      { concurrency: 2 },
+      { concurrency: "unbounded" },
     );
   }
   const status = results.some((result) => !result.success)

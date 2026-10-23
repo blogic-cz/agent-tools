@@ -8522,8 +8522,10 @@ describe("PR checks", () => {
     Effect.gen(function* () {
       const runViews = new Map<string, number>();
       const discovered: Array<{ runId: string; at: number }> = [];
+      const watchReads: string[] = [];
       let activeReads = 0;
       let maximumActiveReads = 0;
+      let failedWatchRead = false;
       const fiber = yield* Effect.forkChild(
         rerunChecks(123, false, { watch: true, timeoutSeconds: 10 }).pipe(
           Effect.provide(
@@ -8557,8 +8559,20 @@ describe("PR checks", () => {
                     Effect.sleep("10 millis").pipe(
                       Effect.flatMap(() =>
                         Effect.gen(function* () {
+                          if (runId === "1" && call === 3) {
+                            failedWatchRead = true;
+                            return yield* Effect.fail(
+                              new GitHubCommandError({
+                                command: "gh run view",
+                                exitCode: 1,
+                                stderr: "synthetic read failure",
+                                message: "synthetic read failure",
+                              }),
+                            );
+                          }
                           const at = yield* Clock.currentTimeMillis;
                           if (call === 2) discovered.push({ runId, at: Number(at) });
+                          if (call >= 3) watchReads.push(runId);
                           return {
                             databaseId: Number(runId),
                             attempt: 2,
@@ -8588,6 +8602,11 @@ describe("PR checks", () => {
       expect(maximumActiveReads).toBeLessThanOrEqual(2);
       expect(discovered.map(({ runId }) => runId).toSorted()).toEqual(["1", "2", "3"]);
       expect(discovered.every(({ at }) => at < 5000)).toBe(true);
+      yield* TestClock.adjust("5 seconds");
+      yield* TestClock.adjust("20 millis");
+      expect(failedWatchRead).toBe(true);
+      expect(watchReads).toContain("3");
+      expect(maximumActiveReads).toBeLessThanOrEqual(2);
       yield* TestClock.adjust("10 seconds");
       yield* Fiber.join(fiber);
     }),
