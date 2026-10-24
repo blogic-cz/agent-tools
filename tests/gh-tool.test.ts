@@ -71,6 +71,7 @@ import {
   rerunChecks,
   triggerChecks,
   waitForMergeable,
+  waitForPRState,
   viewPR,
   watchPRs,
 } from "#gh/pr/core";
@@ -108,6 +109,7 @@ import {
   dispatchWorkflow,
   fetchJobLogs,
   parseRawJobLogs,
+  prioritizeFailureEntries,
 } from "#gh/workflow";
 import {
   resolveDefaultTextInput,
@@ -7105,7 +7107,12 @@ describe("watch timeout failures", () => {
               runGh: () => Effect.never,
               runGhJson: () =>
                 Effect.succeed([
-                  { name: "CI", state: "IN_PROGRESS", bucket: "pending", link: "external" },
+                  {
+                    name: "Build and Test",
+                    state: "IN_PROGRESS",
+                    bucket: "pending",
+                    link: "external",
+                  },
                 ]),
             }),
           ),
@@ -7118,6 +7125,8 @@ describe("watch timeout failures", () => {
       if (Result.isFailure(result)) {
         expect(result.failure._tag).toBe("GitHubTimeoutError");
         expect(result.failure.message).toContain("timed out, 1 pending");
+        expect(result.failure.message).toContain("Build and Test");
+        expect(result.failure.message).toContain("--timeout");
       }
     }),
   );
@@ -7443,6 +7452,9 @@ describe("PR checks", () => {
       const result = yield* fetchFailedChecks(123, true).pipe(Effect.provide(layer));
 
       expect(result.failedChecks).toHaveLength(1);
+      expect(result.failedChecks[0]?.failedStepLogs?.split("\n")[1]).toBe(
+        `Error: 0 ${"x".repeat(500)}`,
+      );
       expect(result.failedChecks[0]?.failedStepLogs).toContain("Run lint");
       expect(result.failedChecks[0]?.failedStepLogs).toContain("AssertionError: lint failed hard");
       expect(result.failedChecks[0]?.failedStepLogs).not.toContain("setup output 29");
@@ -12994,4 +13006,151 @@ describe("L706 workflow command fixtures", () => {
       expect(writes).toBe(0);
     }),
   );
+});
+
+describe("bounded PR state wait", () => {
+  it.effect("polls fresh state and returns one merged result", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const fiber = yield* Effect.forkChild(
+        waitForPRState(123, "merged", 12000).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.sync(() => {
+                  calls += 1;
+                  return { ...mockPRInfo, state: calls < 2 ? "OPEN" : "MERGED" };
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* TestClock.adjust("5 seconds");
+      expect((yield* Fiber.join(fiber)).state).toBe("MERGED");
+      expect(calls).toBe(2);
+    }),
+  );
+  it.effect("bounds pending reads at the requested millisecond deadline", () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        waitForPRState(123, "closed", 1234).pipe(
+          Effect.provide(createMockGhLayer({ runGhJson: () => Effect.never })),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("1234 millis");
+      const result = yield* Fiber.join(fiber);
+      expect(Result.isFailure(result) && result.failure._tag).toBe("GitHubTimeoutError");
+    }),
+  );
+  it.effect("returns a closed PR immediately", () =>
+    Effect.gen(function* () {
+      const result = yield* waitForPRState(123, "closed", 1000).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () => Effect.succeed({ ...mockPRInfo, state: "CLOSED" }),
+          }),
+        ),
+      );
+      expect(result).toEqual({ number: 123, state: "CLOSED", url: mockPRInfo.url });
+    }),
+  );
+  it.effect("propagates a failed state lookup", () =>
+    Effect.gen(function* () {
+      const error = new GitHubAuthError({ message: "authentication failed" });
+      const result = yield* waitForPRState(123, "merged", 1000).pipe(
+        Effect.provide(createMockGhLayer({ runGhJson: () => Effect.fail(error) })),
+        Effect.result,
+      );
+      expect(Result.isFailure(result) && result.failure).toBe(error);
+    }),
+  );
+  it.effect("does not treat a closed unmerged PR as merged", () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(
+        waitForPRState(123, "merged", 1000).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () => Effect.succeed({ ...mockPRInfo, state: "CLOSED" }),
+            }),
+          ),
+          Effect.result,
+        ),
+      );
+      yield* TestClock.adjust("1 second");
+      expect(Result.isFailure(yield* Fiber.join(fiber))).toBe(true);
+    }),
+  );
+});
+
+describe("failure line priority", () => {
+  it.effect("puts the last CHECK FAIL ahead of error and exit boilerplate", () =>
+    Effect.gen(function* () {
+      let jobReads = 0;
+      const result = yield* fetchJobLogs({
+        runId: 1,
+        job: "Build",
+        failedStepsOnly: true,
+        format: "json",
+        repo: "example/repo",
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: () => {
+              jobReads += 1;
+              return Effect.succeed({
+                jobs: [
+                  {
+                    databaseId: 2,
+                    name: "Build",
+                    status: "completed",
+                    conclusion: "failure",
+                    steps: [
+                      {
+                        name: "Check",
+                        conclusion: "failure",
+                        number: 1,
+                        status: "completed",
+                        startedAt: "2026-10-24T00:00:00Z",
+                        completedAt: "2026-10-24T00:01:00Z",
+                      },
+                    ],
+                  },
+                ],
+              });
+            },
+            runGh: () =>
+              Effect.succeed({
+                stdout: [
+                  "error: initial problem",
+                  "CHECK FAIL old",
+                  "CHECK FAIL lint",
+                  "Process completed with exit code 1",
+                ]
+                  .map((line) => `2026-10-24T00:00:01Z ${line}`)
+                  .join("\n"),
+                stderr: "",
+                exitCode: 0,
+              }),
+          }),
+        ),
+      );
+      expect(jobReads).toBe(1);
+      expect("entries" in result && result.entries?.[0]?.message).toBe("CHECK FAIL lint");
+    }),
+  );
+});
+
+it("uses the first concrete error or failing test and preserves remaining lines", () => {
+  for (const message of ["error: broken build", "(fail) should save", "fatal: missing file"]) {
+    const entries = ["setup", message, "Process completed with exit code 1"].map((message) => ({
+      step: "test",
+      message,
+    }));
+    expect(prioritizeFailureEntries(entries).map((entry) => entry.message)).toEqual([
+      message,
+      "setup",
+      "Process completed with exit code 1",
+    ]);
+  }
 });

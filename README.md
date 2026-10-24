@@ -407,6 +407,19 @@ Reruns preflight every target before mutation and fail closed with `evidence_una
 
 Zero reported checks is a state, not an error. `gh pr checks` exits nonzero on an empty result. `stack merge`, `review-triage`, and `checks-failed` preserve `none_reported` so they do not report a green or ready PR. `pr checks` batch output includes `checksStatus: "none_reported"` and a reason. `fetchCheckResults` still maps this state to `[]` for rerun, trigger, and watch flows that handle empty results. `pr trigger-checks` covers the case where GitHub dropped the `pull_request` event and no run exists at all. It dispatches the named `workflow_dispatch` workflow **on the PR head branch**, then compares the created run's `headSha` back to the PR head and reports `matchesPrHead`. A run dispatched on the wrong ref goes green for another branch and must never be read as PR evidence, so `workflow run` also returns the discovered `runId`/`headSha` instead of a bare `dispatched: true`.
 
+`pr checks --watch` waits up to 600 seconds by default. On timeout, the error names the pending checks and the `--timeout <seconds>` option.
+
+Use `pr wait` when a PR must reach a specific state before the next action:
+
+```bash
+bun gh-tool pr wait --pr 123 --state merged --timeout 600000
+bun gh-tool pr wait --pr 123 --state closed --timeout 600000
+```
+
+The timeout is in milliseconds and includes API reads. The command reads fresh state every five seconds and returns one result. A timeout exits with code 124. `closed` means closed without a merge. `merged` requires a merge.
+
+`workflow job-logs --failed-steps-only` puts the last `CHECK FAIL` line first. If there is no such line, it puts the first error or failure line first. Other lines follow. `pr checks-failed --with-logs` keeps that line first in its bounded summary. Job logs come from the job endpoint. The tool reuses the metadata read that resolved the job name.
+
 `pr checks-failed` returns `status: "none_reported"`, the reason, and a hint when GitHub reports no checks for the stable PR head. It does not return `no_failures` for that state.
 
 `pr feedback` returns the whole inventory by default. Narrow it with `--only visible-open|needs-human-reply|current-head` (narrowed filters drop issue comments), drop bots with `--exclude-authors github-actions,dependabot`, and read `omitted` for what each filter removed. Base64 report payloads in bodies are replaced with `[base64 payload omitted]`; pass `--raw-bodies` to keep them. `review-triage --omit reviews,inlineComments` trims a repeated snapshot to the verdict and check state, and lists what it left out in `omittedSections`.
