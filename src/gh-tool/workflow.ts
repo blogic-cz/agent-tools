@@ -3,7 +3,7 @@ import { Effect, Option } from "effect";
 
 import { formatOption, logFormatted, logText } from "#shared";
 import { CI_CHECK_WATCH_TIMEOUT_MS } from "#gh/config";
-import { GitHubCommandError, GitHubNotFoundError } from "./errors";
+import { GitHubCommandError, GitHubNotFoundError, GitHubTimeoutError } from "./errors";
 import { GitHubService } from "./read/transport";
 import { reads, resolveRepo, waits, writes } from "./read";
 import { rawJobLog } from "./read/reads";
@@ -57,13 +57,54 @@ const listRuns = Effect.fn("workflow.listRuns")(function* (opts: {
     event: null,
     limit: opts.limit,
   });
-  return runs.map(({ headSha: _headSha, ...run }) => run);
+  return runs.map(({ headSha: _headSha, workflowDatabaseId, ...run }) => {
+    if (run.conclusion !== "cancelled") return run;
+    const newer = runs
+      .filter(
+        (candidate) =>
+          workflowDatabaseId !== undefined &&
+          workflowDatabaseId !== null &&
+          workflowDatabaseId > 0 &&
+          candidate.workflowDatabaseId === workflowDatabaseId &&
+          run.headBranch.length > 0 &&
+          candidate.headBranch === run.headBranch &&
+          candidate.event === run.event &&
+          candidate.databaseId !== run.databaseId &&
+          Date.parse(candidate.createdAt) > Date.parse(run.createdAt),
+      )
+      .toSorted(
+        (left, right) =>
+          Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+          right.databaseId - left.databaseId,
+      )[0];
+    return Object.assign(
+      run,
+      { cancellationReason: "unknown" },
+      newer === undefined
+        ? {}
+        : {
+            newerRun: {
+              databaseId: newer.databaseId,
+              status: newer.status,
+              conclusion: newer.conclusion,
+              url: newer.url,
+              context:
+                "Newer run in this list with the same workflow, branch and event. The cancellation reason is unknown.",
+            },
+          },
+    );
+  });
 });
 
 const viewRun = Effect.fn("workflow.viewRun")(function* (runId: number, repo: string | null) {
   const target = yield* resolveRepo(repo);
   const detail = yield* reads.runView(target, runId);
-  const { attempt: _attempt, headSha: _headSha, ...snapshot } = detail;
+  const {
+    attempt: _attempt,
+    headSha: _headSha,
+    workflowDatabaseId: _workflowDatabaseId,
+    ...snapshot
+  } = detail;
   return snapshot;
 });
 
@@ -276,13 +317,16 @@ const watchRun = Effect.fn("workflow.watchRun")(function* (
   );
   const finalState = outcome.kind === "done" ? outcome.value : outcome.last;
 
-  return buildWatchResult(
-    runId,
-    finalState,
-    outcome.kind === "timedOut" ? null : progress.join("\n"),
-    frames,
-    timeoutSeconds,
-  );
+  return {
+    kind: outcome.kind,
+    result: buildWatchResult(
+      runId,
+      finalState,
+      outcome.kind === "timedOut" ? null : progress.join("\n"),
+      frames,
+      timeoutSeconds,
+    ),
+  };
 });
 
 const fetchAnnotations = Effect.fn("workflow.fetchAnnotations")(function* (opts: {
@@ -864,8 +908,16 @@ export const workflowWatchCommand = Command.make(
   ({ format, frames, repo, run, timeout }) =>
     Effect.gen(function* () {
       const resolvedRepo = yield* resolveRepoArg(repo);
-      const result = yield* watchRun(run, resolvedRepo, timeout, frames);
+      const { kind, result } = yield* watchRun(run, resolvedRepo, timeout, frames);
       yield* logFormatted(result, format);
+      if (kind === "timedOut") {
+        return yield* new GitHubTimeoutError({
+          message: `Workflow run ${run} timed out after ${timeout}s with status ${result.status}`,
+          timeoutMs: timeout * 1000,
+          hint: "The snapshot shows an unfinished run. Run workflow watch again to keep watching.",
+          nextCommand: `agent-tools-gh workflow watch --run ${run}${resolvedRepo === null ? "" : ` --repo ${resolvedRepo}`}`,
+        });
+      }
     }),
 ).pipe(Command.withDescription("Watch a workflow run until it completes, then show final status"));
 

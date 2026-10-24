@@ -238,3 +238,50 @@ describe("shared content security", () => {
     }
   });
 });
+
+describe("L706 public identifier fixtures", () => {
+  for (const name of ["GITHUB_AUTH_USER"]) {
+    it(`preserves public GitHub login from ${name} in assignee and comment text`, () => {
+      const environment = { [name]: "public-reviewer" };
+      for (const text of [
+        "--assignee public-reviewer",
+        "Thanks @public-reviewer for the review.",
+      ]) {
+        expect(unsafeOutboundTextReason(text, environment)).toBeNull();
+        expect(redactSensitiveText(text, environment)).toBe(text);
+      }
+      expect(
+        redactSensitiveValue({ assignees: [{ login: "public-reviewer" }] }, environment),
+      ).toEqual({ assignees: [{ login: "public-reviewer" }] });
+    });
+  }
+  it("redacts public identifiers when a sensitive variable also holds that value", () => {
+    const environment = {
+      GITHUB_AUTH_USER: "synthetic-duplicate-login",
+      API_TOKEN: "synthetic-duplicate-login",
+    };
+    expect(unsafeOutboundTextReason("synthetic-duplicate-login", environment)).not.toBeNull();
+    expect(redactSensitiveText("synthetic-duplicate-login", environment)).toBe("[REDACTED]");
+  });
+  it("keeps token patterns and registered secrets above public names", () => {
+    const environment = { GITHUB_AUTH_USER: githubToken };
+    expect(unsafeOutboundTextReason(githubToken, environment)).toBe("a credential pattern");
+    expect(redactSensitiveText(githubToken, environment)).toBe("[REDACTED]");
+    registerResolvedSecret("synthetic-public-name-secret");
+    expect(
+      redactSensitiveText("synthetic-public-name-secret", {
+        GITHUB_AUTH_USER: "synthetic-public-name-secret",
+      }),
+    ).toBe("[REDACTED]");
+  });
+  for (const name of ["GH_TOKEN", "AUTH_KEY", "SESSION_TOKEN", "MY_AUTH_LOGIN_TOKEN"]) {
+    it(`still treats login-shaped ${name} values as secrets`, () => {
+      expect(
+        unsafeOutboundTextReason("public-reviewer", { [name]: "public-reviewer" }),
+      ).not.toBeNull();
+      expect(redactSensitiveText("public-reviewer", { [name]: "public-reviewer" })).toBe(
+        "[REDACTED]",
+      );
+    });
+  }
+});
