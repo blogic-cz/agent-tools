@@ -30,6 +30,7 @@ export {
   prThreadsCommand,
   prTriggerChecksCommand,
   prWaitMergeableCommand,
+  prWaitCommand,
   prReviewTriageCommand,
   prReviewTriageBatchCommand,
   prViewCommand,

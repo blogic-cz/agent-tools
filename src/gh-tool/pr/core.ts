@@ -267,7 +267,9 @@ export type CheckReport =
   | { checksStatus: "none_reported"; reason: string; checks: null };
 
 const summarizeFailedStepEntries = (entries: Array<{ step: string; message: string }>) => {
+  const first = entries[0];
   const selected = entries
+    .slice(1)
     .map((entry, index) => ({
       entry,
       index,
@@ -278,13 +280,15 @@ const summarizeFailedStepEntries = (entries: Array<{ step: string; message: stri
         : 1,
     }))
     .toSorted((a, b) => a.rank - b.rank || b.index - a.index)
-    .slice(0, 20)
+    .slice(0, 19)
     .toSorted((a, b) => a.index - b.index);
   const kept: Array<{ step: string; message: string }> = [];
   for (const { entry } of selected.toReversed()) {
     const clipped = { step: entry.step.slice(0, 80), message: entry.message.slice(0, 150) };
-    if (formatLogEntries([clipped, ...kept]).length <= 3_900) kept.unshift(clipped);
+    if (formatLogEntries([clipped, ...kept]).length <= 2_800) kept.unshift(clipped);
   }
+  if (first !== undefined)
+    kept.unshift({ step: first.step.slice(0, 80), message: first.message.slice(0, 1000) });
   let output = formatLogEntries(kept);
   if (kept.length < entries.length)
     output += `\n… ${entries.length - kept.length} log lines omitted`;
@@ -739,6 +743,26 @@ export const waitForMergeable = Effect.fn("pr.waitForMergeable")(function* (
     },
   );
   return outcome.kind === "done" ? outcome.value : outcome.last;
+});
+
+export const waitForPRState = Effect.fn("pr.waitForPRState")(function* (
+  pr: number,
+  state: "merged" | "closed",
+  timeoutMs: number,
+) {
+  const timeout = () =>
+    new GitHubTimeoutError({
+      message: `PR #${pr} did not reach ${state} within ${timeoutMs}ms. Increase --timeout to wait longer.`,
+      timeoutMs,
+    });
+  const outcome = yield* waits
+    .until(fetchPRView(pr, "origin"), (info) => info.state === state.toUpperCase(), {
+      intervalMs: 5000,
+      timeoutMs,
+    })
+    .pipe(Effect.timeoutOrElse({ duration: timeoutMs, orElse: () => Effect.fail(timeout()) }));
+  if (outcome.kind === "timedOut") return yield* timeout();
+  return { number: outcome.value.number, state: outcome.value.state, url: outcome.value.url };
 });
 
 export const createPR = Effect.fn("pr.createPR")(function* (opts: {
@@ -1541,10 +1565,11 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
       (watchOutcome === null || watchOutcome.kind === "timedOut") &&
       results.some((check) => check.bucket === "pending")
     ) {
-      const pending = results.filter((check) => check.bucket === "pending").length;
+      const pendingChecks = results.filter((check) => check.bucket === "pending");
+      const pending = pendingChecks.length;
       yield* logFormatted(results, quiet ? "json" : "toon");
       return yield* new GitHubTimeoutError({
-        message: `Watch timed out, ${pending} pending after ${timeoutSeconds}s. This is not a CI verdict.`,
+        message: `Watch timed out, ${pending} pending after ${timeoutSeconds}s: ${pendingChecks.map((check) => check.name).join(", ")}. Increase --timeout <seconds> to wait longer. This is not a CI verdict.`,
         timeoutMs: timeoutSeconds * 1000,
       });
     }

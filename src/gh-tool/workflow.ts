@@ -506,6 +506,20 @@ const normalizeFingerprint = (message: string) =>
     .trim()
     .slice(0, 240);
 
+export function prioritizeFailureEntries(entries: LogEntry[]): LogEntry[] {
+  const checkFail = entries.findLastIndex(({ message }) => /\bCHECK FAIL\b/.test(message));
+  const index =
+    checkFail >= 0
+      ? checkFail
+      : entries.findIndex(
+          ({ message }) =>
+            /\berror\b|\(fail\)|\bfatal\b|\bexception\b|\bfailed\b|\bfailure\b/i.test(message) &&
+            !/Process completed with exit code/i.test(message),
+        );
+  if (index <= 0) return entries;
+  return [entries[index], ...entries.slice(0, index), ...entries.slice(index + 1)];
+}
+
 export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis => {
   const fetchProgress =
     /^(?:\s*(?:\*\s+\[new branch\]|\[new branch\]|From\s+\S+|\*\s+\[new tag\]|\s*->\s+origin\/)|\s*\+?git fetch\b|.*refs\/(?:heads|remotes)\/)/i;
@@ -658,7 +672,9 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (
   const steps = !opts.failedStepsOnly
     ? []
     : (opts.steps ??
-      (yield* listJobs(opts.runId, opts.repo)).find((j) => j.databaseId === jobId)?.steps ??
+      (job === null ? yield* listJobs(opts.runId, opts.repo) : [job]).find(
+        (j) => j.databaseId === jobId,
+      )?.steps ??
       []);
   const attributed = parseAttributedJobLogs(raw, steps);
   let entries: LogEntry[] = attributed.map(({ step, message }) => ({ step, message }));
@@ -675,6 +691,8 @@ export const fetchJobLogs = Effect.fn("workflow.fetchJobLogs")(function* (
       entries = kept.map(({ step, message }) => ({ step, message }));
     }
   }
+
+  if (opts.failedStepsOnly) entries = prioritizeFailureEntries(entries);
 
   if (opts.diagnose) {
     return { runId: opts.runId, job: opts.job, jobId, diagnosis: diagnoseLogEntries(entries) };
