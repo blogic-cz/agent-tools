@@ -54,6 +54,7 @@ import {
   watchPRs,
   viewPR,
   waitForMergeable,
+  waitForPRState,
 } from "./core";
 import {
   createReview,
@@ -582,6 +583,41 @@ export const prListCommand = Command.make(
 ).pipe(
   Command.withDescription(
     "List PRs (default: open; filter with --state/--author/--base/--head/--search)",
+  ),
+);
+
+export const prWaitCommand = Command.make(
+  "wait",
+  {
+    pr: Flag.Int("pr").pipe(
+      Flag.filter(
+        (n) => n > 0,
+        () => "--pr must be positive",
+      ),
+    ),
+    state: Flag.Literals("state", ["merged", "closed"]),
+    timeout: Flag.Int("timeout").pipe(
+      Flag.withDescription("Maximum wait in milliseconds, including API reads (default: 600000)"),
+      Flag.withDefault(600000),
+      Flag.filter(
+        (n) => n > 0,
+        () => "--timeout must be positive milliseconds",
+      ),
+    ),
+    format: formatOption,
+    repo: repoOption,
+  },
+  ({ pr, state, timeout, format, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* waitForPRState(pr, state, timeout);
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Wait for a PR to be merged or closed without merging; --timeout is in milliseconds",
   ),
 );
 
