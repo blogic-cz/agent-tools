@@ -18,6 +18,7 @@ export type OperandRole =
   | "member"
   | "rg-type"
   | "write"
+  | "write-name"
   | { readonly code: Language };
 export type Issue = {
   readonly kind: "violation" | "missing-knowledge";
@@ -40,6 +41,7 @@ export type Option = {
 };
 export type ExecutableEntry = {
   readonly name: string;
+  readonly rejectsAbbreviations?: boolean;
   readonly readsContent?: boolean;
   readonly readsStdinCode?: boolean;
   readonly builtinOnly?: boolean;
@@ -1431,6 +1433,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "jq",
+    rejectsAbbreviations: true,
     readsContent: true,
     startupFiles: [/(?:^|\/)\.jq$/],
     operands: [code("jq"), path],
@@ -1957,8 +1960,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
           name,
           {
             operands: [path],
-            effect:
-              name === "restore" ? unknown("unmodeled Time Machine restore operation") : "none",
+            effect: "none",
           } satisfies Omit<ExecutableEntry, "name">,
         ]),
       ),
@@ -3091,6 +3093,137 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       ),
     },
   },
+  {
+    name: "rsync",
+    operands: [path],
+    options: {
+      ...flags("-a", "-r", "-v", "-z", "--archive", "--recursive", "--delete"),
+      "-e": arg(code("bash")),
+      "--rsh": arg(code("bash")),
+    },
+  },
+  { name: "ditto", operands: [path], options: flags("-V", "-v", "--rsrc", "--norsrc") },
+  {
+    name: "tar",
+    operands: [path],
+    options: {
+      ...flags(
+        "-x",
+        "--extract",
+        "-c",
+        "--create",
+        "-r",
+        "--append",
+        "-u",
+        "--update",
+        "-A",
+        "--catenate",
+        "--concatenate",
+        "-t",
+        "--list",
+        "-v",
+        "-z",
+        "-j",
+        "-J",
+        "-p",
+        "-a",
+        "-h",
+        "-P",
+        "-O",
+        "--to-stdout",
+        "-k",
+        "-m",
+        "-U",
+        "-W",
+        "-n",
+        "-l",
+      ),
+      "-f": arg(path),
+      "--file": arg(path),
+      "-T": arg(path),
+      "--files-from": arg(path),
+      "-X": arg(path),
+      "--exclude-from": arg(path),
+      "--exclude": arg(data),
+      "-b": arg(data),
+      "-L": arg(data),
+      "-I": arg(data),
+      "-s": arg(data),
+      "-C": arg("write"),
+      "--directory": arg("write"),
+    },
+  },
+  {
+    name: "unzip",
+    operands: [path],
+    options: { ...flags("-q", "-o", "-n", "-l", "-t", "-v"), "-d": arg("write") },
+  },
+  {
+    name: "patch",
+    operands: ["write", path],
+    options: {
+      "-i": arg(path),
+      "--input": arg(path),
+      "-o": arg("write"),
+      "--output": arg("write"),
+      "-d": arg("write"),
+      "--directory": arg("write"),
+      "-p": arg(data),
+      ...flags("-s", "-f", "-R", "--dry-run"),
+    },
+  },
+  {
+    name: "truncate",
+    operands: ["write"],
+    options: {
+      "-s": arg(data),
+      "--size": arg(data),
+      "-r": arg(path),
+      "--reference": arg(path),
+      ...flags("-c", "--no-create"),
+    },
+  },
+  {
+    name: "touch",
+    operands: ["write-name"],
+    options: {
+      "-t": arg(data),
+      "-d": arg(data),
+      "-r": arg(path),
+      ...flags("-a", "-m", "-c", "-h", "--no-create"),
+    },
+  },
+  {
+    name: "wget",
+    operands: [data],
+    options: {
+      "-O": arg("write"),
+      "--output-document": arg("write"),
+      "-o": arg("write"),
+      "--output-file": arg("write"),
+      "-a": arg("write"),
+      "--append-output": arg("write"),
+      "-P": arg("write"),
+      "--directory-prefix": arg("write"),
+      "-t": arg(data),
+      "--tries": arg(data),
+      "-T": arg(data),
+      "--timeout": arg(data),
+      "-U": arg(data),
+      "--user-agent": arg(data),
+      "--header": arg(data),
+      "--limit-rate": arg(data),
+      "-l": arg(data),
+      "--level": arg(data),
+      "-i": arg(path),
+      "--input-file": arg(path),
+      "-e": { roles: [data], issue: unknown("wget output configuration") },
+      "--execute": { roles: [data], issue: unknown("wget output configuration") },
+      "--config": { roles: [path], issue: unknown("wget output configuration") },
+      "--input-metalink": { roles: [path], issue: unknown("wget output configuration") },
+      ...flags("-q", "-c", "-nv", "-N", "-r", "-np", "-nd", "-nc"),
+    },
+  },
   { name: "seq", operands: [data], semantics: "seq" },
   { name: "tr", operands: [data], stdout: "opaque", options: flags("-c", "-C", "-d", "-s", "-t") },
   {
@@ -3116,7 +3249,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "rm",
-    aliases: ["touch", "du", "stat", "chown", "df"],
+    aliases: ["du", "stat", "chown", "df"],
     options: {
       ...flags("-f", "-r", "-R", "-v", "-n", "-i", "-p", "-a", "-m", "-c", "-h", "-s"),
       "-t": arg(data),
@@ -3521,6 +3654,9 @@ function classifyInvocation(
   let codePositionals: number[] = [];
   const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
   const writerCandidates: { index: number; literal: string }[] = [];
+  let wgetOutputDocument = false;
+  let wgetInputFile = false;
+  let wgetDirectoryPrefix: string | undefined = ".";
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
   let maxArgs: number | null = null;
@@ -4065,6 +4201,31 @@ function classifyInvocation(
     }
     return result();
   }
+  const writesArchive =
+    entry.name === "tar" &&
+    argv.slice(1).some((word, index) => {
+      if (word === undefined) return false;
+      const longOption =
+        word === "-W"
+          ? argv[index + 2]?.split("=", 1)[0]
+          : word.startsWith("-W")
+            ? word.slice(2).split("=", 1)[0]
+            : undefined;
+      if (
+        longOption &&
+        ["create", "append", "update", "catenate", "concatenate"].some((option) =>
+          option.startsWith(longOption),
+        )
+      )
+        return true;
+      if (word.startsWith("--"))
+        return ["--create", "--append", "--update", "--catenate", "--concatenate"].some(
+          (option) => word.length > 2 && option.startsWith(word.split("=")[0] ?? word),
+        );
+      const cluster =
+        /^-([A-Za-z]+)/.exec(word)?.[1] ?? (index === 0 && /^[A-Za-z]+$/.test(word) ? word : "");
+      return /[cruA]/.test(cluster);
+    });
   while (position < argv.length) {
     if (skippedValues.has(position)) {
       position++;
@@ -4147,6 +4308,25 @@ function classifyInvocation(
             ...mode.options,
           }
         : { ...entry.options, ...mode.options };
+    if (
+      entry.name === "tar" &&
+      position === 1 &&
+      !endOptions &&
+      /^[A-Za-z]+$/.test(a) &&
+      [...a].some((letter) => "cxtru".includes(letter))
+    ) {
+      for (const letter of a) {
+        if (!options[`-${letter}`] && writesArchive && a.includes("f"))
+          issues.push(unknown(`unclassified tar option -${letter}`));
+        for (const role of options[`-${letter}`]?.roles ?? []) {
+          const index = ++position;
+          if (index >= argv.length) issues.push(unknown(`missing -${letter} argument`));
+          optionRoles.push({ index, role });
+        }
+      }
+      position++;
+      continue;
+    }
     if (entry.semantics === "sed" && !endOptions && /^-[^-]/.test(a)) {
       const inPlaceIndex = a.indexOf("i", 1);
       if (
@@ -4180,7 +4360,9 @@ function classifyInvocation(
     if (!endOptions && !(optionName in options) && /^-[^-].+/.test(a)) {
       let offset = 1;
       const directoryWriter =
-        entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name);
+        entry.semantics === "copy" ||
+        ["mv", "install", "ln"].includes(entry.name) ||
+        (entry.name === "tar" && writesArchive && a.includes("f"));
       while (offset < a.length) {
         const option = options[`-${a[offset]}`];
         if (
@@ -4232,7 +4414,7 @@ function classifyInvocation(
       : [];
     const option =
       options[optionName] ??
-      (longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
+      (!entry.rejectsAbbreviations && longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
       longOptions.find(
         ([, candidate]) =>
           candidate.issue || candidate.roles.some((role) => typeof role !== "string"),
@@ -4242,6 +4424,8 @@ function classifyInvocation(
             ([key]) => key.toLowerCase() === optionName.toLowerCase(),
           )?.[1]
         : undefined);
+    if (option && !entry.rejectsAbbreviations && longOptions.length === 1 && !options[optionName])
+      optionName = longOptions[0]?.[0] ?? optionName;
     if (
       !endOptions &&
       optionName.startsWith("--") &&
@@ -4265,6 +4449,10 @@ function classifyInvocation(
         issues.push(unknown("git config override"));
     }
     if (!endOptions && option && a.startsWith("-")) {
+      if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
+        wgetOutputDocument = true;
+      if (entry.name === "wget" && ["-i", "--input-file"].includes(optionName))
+        wgetInputFile = true;
       if (
         entry.name === "bun" &&
         ["--filter", "--cwd"].includes(optionName) &&
@@ -4287,6 +4475,8 @@ function classifyInvocation(
       for (let i = 0; i < option.roles.length; i++) {
         const role = option.roles[i] ?? data;
         const index = i === 0 && attached !== undefined ? position : ++position;
+        if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName))
+          wgetDirectoryPrefix = attached ?? argv[index];
         if (
           index >= argv.length &&
           !(
@@ -4310,7 +4500,13 @@ function classifyInvocation(
         optionRoles.push({
           index,
           role,
-          ...(i === 0 && attached !== undefined ? { literal: attached } : {}),
+          ...(entry.name === "rsync" &&
+          typeof role !== "string" &&
+          (attached ?? argv[index]) !== undefined
+            ? { literal: `${attached ?? argv[index]} guard.invalid` }
+            : i === 0 && attached !== undefined
+              ? { literal: attached }
+              : {}),
         });
         if (entry.semantics === "python" && optionName === "-m") {
           pythonModule = { index, name: attached ?? argv[index] };
@@ -4614,7 +4810,7 @@ function classifyInvocation(
   }
   if (inPlaceBackupSuffix !== null) {
     for (const operand of roles) if (operand.role === "path") operand.role = "write";
-    if (sedEmptySuffix && !filterOption && positional[0] !== undefined)
+    if ((sedEmptySuffix || positional.length === 1) && !filterOption && positional[0] !== undefined)
       roles.push({ index: positional[0], role: "write" });
   }
   if (entry.name === "install") {
@@ -4630,7 +4826,74 @@ function classifyInvocation(
       if (operand.role === "write")
         directoryWrites.push({ index: operand.index, sources: candidates, directory: true });
   }
-  if (entry.semantics === "copy" || ["mv", "ln"].includes(entry.name)) {
+  if (entry.name === "git" && mode === entry.subcommands?.checkout) {
+    const separator = argv.indexOf("--");
+    for (const operand of roles)
+      if (separator >= 0 ? operand.index > separator : positional.slice(1).includes(operand.index))
+        operand.role = "write";
+  }
+  if (entry.name === "tar") {
+    const candidates = optionRoles.map(({ index, literal }) => ({ index, literal }));
+    for (let index = 1; index < argv.length; index++) {
+      const word = argv[index];
+      if (word === undefined || !/^--?[A-Za-z0-9-]+$/.test(word)) {
+        candidates.push({ index, literal: word });
+        if (word?.startsWith("-") && !word.startsWith("--")) {
+          for (
+            let offset = 2;
+            offset < word.length && /[A-Za-z]/.test(word[offset - 1] ?? "");
+            offset++
+          )
+            candidates.push({ index, literal: word.slice(offset) });
+          candidates.push({ index, literal: word.slice(1) });
+        }
+      }
+    }
+    for (const candidate of candidates) {
+      roles.push({ ...candidate, role: path });
+      if (writesArchive) roles.push({ ...candidate, role: "write" });
+      const word = candidate.literal ?? argv[candidate.index];
+      if (word !== undefined) {
+        for (let equal = word.indexOf("="); equal >= 0; equal = word.indexOf("=", equal + 1)) {
+          const value = { index: candidate.index, literal: word.slice(equal + 1) };
+          roles.push({ ...value, role: path });
+          if (writesArchive) roles.push({ ...value, role: "write" });
+        }
+      }
+    }
+  }
+  if (entry.name === "wget" && !wgetOutputDocument) {
+    if (
+      wgetInputFile &&
+      (wgetDirectoryPrefix === undefined ||
+        !/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(wgetDirectoryPrefix) ||
+        wgetDirectoryPrefix.split("/").includes(".."))
+    )
+      issues.push(unknown("wget input file output names are not known"));
+    for (const index of positional) {
+      const url = argv[index];
+      if (url === undefined || wgetDirectoryPrefix === undefined)
+        issues.push(unknown("wget output name is not known"));
+      else {
+        try {
+          const basename = new URL(url).pathname.split("/").at(-1);
+          if (basename)
+            roles.push({
+              index,
+              role: "write",
+              literal: `${wgetDirectoryPrefix}/${decodeURIComponent(basename)}`,
+            });
+        } catch {
+          issues.push(unknown("wget output name is not known"));
+        }
+      }
+    }
+  }
+  if (
+    entry.semantics === "copy" ||
+    ["mv", "ln", "rsync", "ditto"].includes(entry.name) ||
+    (entry.name === "tmutil" && mode === entry.subcommands?.restore)
+  ) {
     const targetDirectory = optionRoles.find((operand) => operand.role === "write");
     const destination = targetDirectory?.index ?? positional.at(-1);
     if (destination !== undefined) {
