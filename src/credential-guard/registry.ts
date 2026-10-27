@@ -4205,6 +4205,19 @@ function classifyInvocation(
     entry.name === "tar" &&
     argv.slice(1).some((word, index) => {
       if (word === undefined) return false;
+      const longOption =
+        word === "-W"
+          ? argv[index + 2]?.split("=", 1)[0]
+          : word.startsWith("-W")
+            ? word.slice(2).split("=", 1)[0]
+            : undefined;
+      if (
+        longOption &&
+        ["create", "append", "update", "catenate", "concatenate"].some((option) =>
+          option.startsWith(longOption),
+        )
+      )
+        return true;
       if (word.startsWith("--"))
         return ["--create", "--append", "--update", "--catenate", "--concatenate"].some(
           (option) => word.length > 2 && option.startsWith(word.split("=")[0] ?? word),

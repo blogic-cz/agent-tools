@@ -46,9 +46,24 @@ it.each([
   "tar Af AGENTS.md src",
   "tar --catenate -f AGENTS.md src",
   "tar --concatenate --file=AGENTS.md src",
+  "tar -W create -f AGENTS.md src",
+  "tar -W append -f AGENTS.md src",
+  "tar -W create -W file=AGENTS.md src",
+  "tar -f AGENTS.md -W create src",
+  "tar -W create -f ~/.codex/config.toml src",
+  "tar -W catenate -f AGENTS.md x.tar",
+  "tar -W concatenate -f AGENTS.md x.tar",
+  "tar -W update -f AGENTS.md src",
+  "tar -Wcreate -f AGENTS.md src",
 ])("checks every tar value in whole-command write mode: %s", (command) => {
   expect(bash(command)).toMatchObject({
     findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
+  });
+});
+
+it("checks BSD tar -W write mode against startup files", () => {
+  expect(bash("tar -W create -f ~/.zshrc src")).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "startup-mutation" })]),
   });
 });
 
@@ -63,7 +78,7 @@ it.each([
   });
 });
 
-it.each(["tar -xf x.tar", "tar -tvf x.tar", "tar -Af /tmp/x.tar src"])(
+it.each(["tar -xf x.tar", "tar -tvf x.tar", "tar -Af /tmp/x.tar src", "tar -W verbose -xf x.tar"])(
   "accepts ordinary tar modes: %s",
   (command) => expect(bash(command)).toEqual({ kind: "pass" }),
 );
