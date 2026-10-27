@@ -1392,8 +1392,8 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "-t": arg("write"),
       "--target-directory": arg("write"),
       ...flags("-T", "--no-target-directory"),
-      ...flags("-d", "-v", "-C", "-p", "-s", "-c", "-D", "-b"),
-      "-S": arg(data),
+      ...flags("-d", "-v", "-C", "-p", "-s", "-c", "-D", "-b", "-U"),
+      "-S": { roles: [], attachedValue: /^.+$/ },
     },
   },
   {
@@ -3071,6 +3071,19 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "-r",
         "-R",
         "-a",
+        "-b",
+        "-c",
+        "-d",
+        "-H",
+        "-i",
+        "-l",
+        "-L",
+        "-P",
+        "-s",
+        "-T",
+        "-u",
+        "-x",
+        "-X",
         "--recursive",
         "--archive",
         "--no-clobber",
@@ -3117,7 +3130,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     options: {
       "-t": arg("write"),
       "--target-directory": arg("write"),
-      ...flags("-T", "--no-target-directory", "-f", "-i", "-n", "-v"),
+      ...flags("-T", "--no-target-directory", "-f", "-i", "-n", "-v", "-u", "-b", "-h"),
     },
   },
   {
@@ -3128,6 +3141,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "--target-directory": arg("write"),
       ...flags(
         "-s",
+        "-F",
         "-f",
         "-n",
         "-v",
@@ -4168,13 +4182,27 @@ function classifyInvocation(
         entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name);
       while (offset < a.length) {
         const option = options[`-${a[offset]}`];
-        if (option?.roles.length || (!option && !directoryWriter)) break;
+        if (
+          option?.roles.length ||
+          (option?.attachedValue?.test(a.slice(offset + 1)) &&
+            !a
+              .slice(offset + 1)
+              .split("")
+              .every((letter) => `-${letter}` in options)) ||
+          (!option && !directoryWriter)
+        )
+          break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
       }
-      if (offset > 1 && offset < a.length && options[`-${a[offset]}`]?.roles.length) {
+      if (
+        offset > 1 &&
+        offset < a.length &&
+        (options[`-${a[offset]}`]?.roles.length ||
+          options[`-${a[offset]}`]?.attachedValue?.test(a.slice(offset + 1)))
+      ) {
         optionName = `-${a[offset]}`;
         attached = offset + 1 < a.length ? a.slice(offset + 1) : undefined;
       }
