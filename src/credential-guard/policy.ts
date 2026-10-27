@@ -985,6 +985,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                 }
           if (
             (plan.copyDestination ||
+              executableName(first.texts[0] ?? "") === "wget" ||
               (executableName(first.texts[0] ?? "") === "tmutil" && argv[1] === "restore")) &&
             targets.some((target) =>
               /(?:^|\/)(?:\.?(?:bashrc|bash_profile|profile|zshrc|zshenv|zprofile)|config\.fish)$/.test(

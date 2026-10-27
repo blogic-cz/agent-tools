@@ -62,6 +62,16 @@ it.each([
   "tar --app -f AGENTS.md src",
   "tar --update -f AGENTS.md src",
   "tar cfz AGENTS.md src",
+  "tar cpf ~/.claude/settings.json src",
+  "tar cpzf AGENTS.md src",
+  "tar caf AGENTS.md src",
+  "tar chf AGENTS.md src",
+  "tar cPf AGENTS.md src",
+  "tar -cpf AGENTS.md src",
+  "tar -caf AGENTS.md src",
+  "tar -cvpf AGENTS.md src",
+  "tar -cpzf ~/.codex/config.toml src",
+  "wget -P ~/.codex -i urls.txt",
   "tar vczf AGENTS.md src",
   "tar rf AGENTS.md src",
   "tar uf AGENTS.md src",
@@ -104,6 +114,14 @@ it.each([
   "wget -a log.txt https://example.com/x",
   "wget --directory-prefix downloads --timeout 10 --user-agent agent --header 'Accept: text/plain' -l 2 -q -c -N -r -np -nd -nc https://example.com/x",
   "tar czf /tmp/out.tar src",
+  "tar -czf /tmp/x.tgz src",
+  "tar -cpf /tmp/x.tar src",
+  "wget -i urls.txt -O /tmp/out",
+  "wget --input-file=urls.txt --output-document=/tmp/out",
+  "wget -P /tmp -i urls.txt",
+  "wget --directory-prefix=/private/tmp --input-file=urls.txt",
+  "wget -P /var/folders/job -i urls.txt",
+  'TMPDIR=/private/tmp/job; wget -P "$TMPDIR" -i urls.txt',
   "tar cfz /tmp/out.tar src",
   "tar -rf /tmp/out.tar src",
   "tar -uf /tmp/out.tar src",
@@ -139,6 +157,42 @@ it.each(["jq --rawf /tmp/x.txt file.txt", "jq --slurpf=/tmp/x.txt file.txt"])(
 it("keeps restore startup writes blocked", () => {
   expect(bash("tmutil restore /Volumes/Backup/x ~/.zshrc")).toMatchObject({
     findings: expect.arrayContaining([expect.objectContaining({ rule: "startup-mutation" })]),
+  });
+});
+
+it.each([
+  "wget -i urls.txt",
+  "wget --input-file urls.txt",
+  "wget --input-file=urls.txt",
+  "wget -i -",
+  "wget -B https://example.com/ -i urls.txt",
+  "wget -P /tmp/../repo -i urls.txt",
+  "tar -cqf AGENTS.md src",
+  "tar cqf AGENTS.md src",
+])("refuses unknown output paths: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+  });
+});
+
+it.each([
+  "wget -P ~ https://example.com/.zshrc",
+  "wget -P ~ https://example.com/.profile",
+  "wget -P ~ https://example.com/.bashrc",
+  "wget -O ~/.zshrc https://example.com/x",
+])("refuses wget startup writes: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "startup-mutation" })]),
+  });
+});
+
+it.each([
+  "wget -P ~ https://example.com/.npmrc",
+  "wget -P ~/.ssh https://example.com/config",
+  "wget -P ~ https://example.com/.envrc",
+])("refuses wget sensitive destinations: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "sensitive-path" })]),
   });
 });
 

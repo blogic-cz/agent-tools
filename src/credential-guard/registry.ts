@@ -3122,6 +3122,10 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "-z",
         "-j",
         "-J",
+        "-p",
+        "-a",
+        "-h",
+        "-P",
       ),
       "-f": arg(path),
       "--file": arg(path),
@@ -3629,6 +3633,7 @@ function classifyInvocation(
   const archiveFiles: number[] = [];
   let writesArchive = false;
   let wgetOutputDocument = false;
+  let wgetInputFile = false;
   let wgetDirectoryPrefix: string | undefined = ".";
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
@@ -4260,10 +4265,11 @@ function classifyInvocation(
       entry.name === "tar" &&
       position === 1 &&
       !endOptions &&
-      [...a].some((letter) => "cxtru".includes(letter)) &&
-      [...a].every((letter) => `-${letter}` in options)
+      /^[A-Za-z]+$/.test(a) &&
+      [...a].some((letter) => "cxtru".includes(letter))
     ) {
       for (const letter of a) {
+        if (!options[`-${letter}`]) issues.push(unknown(`unclassified tar option -${letter}`));
         if ("cru".includes(letter)) writesArchive = true;
         for (const role of options[`-${letter}`]?.roles ?? []) {
           const index = ++position;
@@ -4308,7 +4314,7 @@ function classifyInvocation(
     if (!endOptions && !(optionName in options) && /^-[^-].+/.test(a)) {
       let offset = 1;
       const directoryWriter =
-        entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name);
+        entry.semantics === "copy" || ["mv", "install", "ln", "tar"].includes(entry.name);
       while (offset < a.length) {
         const option = options[`-${a[offset]}`];
         if (
@@ -4404,6 +4410,8 @@ function classifyInvocation(
         writesArchive = true;
       if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
         wgetOutputDocument = true;
+      if (entry.name === "wget" && ["-i", "--input-file"].includes(optionName))
+        wgetInputFile = true;
       if (
         entry.name === "bun" &&
         ["--filter", "--cwd"].includes(optionName) &&
@@ -4496,6 +4504,8 @@ function classifyInvocation(
       continue;
     }
     if (!endOptions && a.startsWith("-") && a !== "-") {
+      if (entry.name === "tar" && /^-[^-]$/.test(a))
+        issues.push(unknown(`unclassified tar option ${a}`));
       optionRoles.push({
         index: position,
         role: path,
@@ -4789,6 +4799,13 @@ function classifyInvocation(
       if (archiveFiles.includes(operand.index)) operand.role = "write";
   }
   if (entry.name === "wget" && !wgetOutputDocument) {
+    if (
+      wgetInputFile &&
+      (wgetDirectoryPrefix === undefined ||
+        !/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(wgetDirectoryPrefix) ||
+        wgetDirectoryPrefix.split("/").includes(".."))
+    )
+      issues.push(unknown("wget input file output names are not known"));
     for (const index of positional) {
       const url = argv[index];
       if (url === undefined || wgetDirectoryPrefix === undefined)
