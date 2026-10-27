@@ -730,6 +730,33 @@ Literal heredoc bodies can be written as data. Unquoted heredoc expansion is ana
 
 Copy operations in a Herdr chain require `credentialGuard.chainCopyDestinations`. Copies also receive this destination proof whenever the configured list is nonempty. The synchronous filesystem check refuses errors, symlinks, missing parent directories, and destinations outside the configured directories. Ordinary copies without a Herdr invocation or configured destinations still receive normal source and destination checks.
 
+#### Agent instruction and configuration writes
+
+The Bash `agent-config-write` rule refuses writes to these paths:
+
+- Any file named `AGENTS.md`, `CLAUDE.md`, or `.mcp.json`, with case normalized.
+- Project `.codex/` trees, `.claude/settings*.json`, and `.claude/commands/`, `.claude/agents/`, and `.claude/skills/` trees.
+- Home `.codex/config.toml` and `.codex/prompts/`.
+- Home `.claude.json`, `.claude/settings*.json`, and `.claude/commands/`, `.claude/agents/`, `.claude/skills/`, and `.claude/hooks/` trees.
+- Home `.agents/skills/` and replacement of the home `.agents` directory itself.
+- Replacement of a `.claude` directory itself.
+
+The rule checks redirects, `tee`, in-place `sed`, copy and link destinations, and supported writer operands. These include `rsync`, `ditto`, archive destinations, `git checkout --` paths, `patch`, `truncate`, `touch`, and `wget` output paths. A glob that can match a protected name refuses. A bracket expression that the matcher cannot translate also refuses. A configured copy grant remains subject to the filesystem proof above.
+
+Work data such as `~/.agents/jobs/`, `~/.claude/plans/`, and `~/.claude/projects/` remains writable. Ordinary document paths such as `README.md` remain writable. Reading an instruction file or copying it to `/tmp/x.md` can pass.
+
+The guard treats an extensionless destination outside temporary roots as a possible directory and also checks that destination plus the source basename. The added candidate does not apply under `/tmp`, `/private/tmp`, `/var/folders`, or `/private/var/folders`. A literal local `TMPDIR` binding resolves through the same path checks. An unknown ambient `TMPDIR` still requires environment approval and a resolvable path. Explicit directory syntax retains its existing checks.
+
+The check is static. It cannot establish whether a dotted destination is an existing directory. It does not inspect archive members, patch contents, remote transfers, source directory contents, or filesystem aliases. Those contents can contain protected names that the command text does not name. General path checks do not resolve symlinks. The copy proof above is the bounded exception. PowerShell does not receive the Bash agent-configuration write rule.
+
+#### Herdr launches
+
+The `agent-launch-override` rule checks native arguments after `herdr agent start ... --`. It also checks modeled `tab create` and `pane split` forms that directly launch Codex or Claude. Global Herdr options do not skip the check. Prompt text stays data.
+
+Codex accepts `-m` or `--model`, `--add-dir`, `--cd` or `-C`, and `--sandbox` or `-s` with `workspace-write` or `read-only`. Supported `-c` settings are `model_reasoning_effort`, `sandbox_workspace_write.network_access`, and the literal `shell_environment_policy.set.HERDR_*` values used by the supported launch form. Claude accepts `--model` and `--add-dir`. Both accept `--prompt` and one trailing prompt. Other native arguments refuse, including permission bypasses, arbitrary config overrides, and config profiles.
+
+`herdr pane run`, `send-keys`, and `send-text` refuse with `no-analyzer` because the terminal state is unknown. The guard does not certify a running agent or an existing terminal.
+
 Sensitive paths include credential files and configured blocked paths. Known template paths and explicit allowed paths can provide exceptions. Process-environment files cannot be allowed by a path exception. Slash direction and Windows path case are normalized independently of the host OS. General path checks do not resolve filesystem symlinks or confine commands to the repository; the copy-destination check above is the bounded filesystem exception. Custom command patterns apply to the original text, nested shell text, and resolved invocations.
 
 The kubeconfig pattern protects path segments containing `kubeconfig`. A final ordinary Markdown basename such as `check-kubeconfig-topology.md` has a documentation exception; `kubeconfig.md` and kubeconfig-containing parent directories remain protected. Explicit allowed paths take precedence over ordinary blocked patterns. This filename convention does not attest file contents.
