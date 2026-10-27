@@ -101,6 +101,7 @@ describe("agent configuration boundaries", () => {
   it.each([
     "cat ~/.codex/AGENTS.md",
     "rg -n x AGENTS.md",
+    "sed -n '1,9p' example/AGENTS.md",
     `herdr agent start n --kind codex --pane w1:p2 -- -c 'shell_environment_policy.set.HERDR_ENV="1"' -c 'shell_environment_policy.set.HERDR_WORKSPACE_ID="w1"' -c 'shell_environment_policy.set.HERDR_TAB_ID="w1:t1"' -c 'shell_environment_policy.set.HERDR_PANE_ID="w1:p2"' -c sandbox_workspace_write.network_access=true --sandbox workspace-write --add-dir /repo -m example -c model_reasoning_effort=high`,
   ])("allows %s", (command) => {
     expect(bash(command).kind).toBe("pass");

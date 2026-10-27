@@ -4191,7 +4191,7 @@ function classifyInvocation(
         });
       }
       if (entry.name === "node" && optionName === "--test") testRunner = true;
-      if (entry.semantics === "sed" && option === options["--in-place"])
+      if (entry.semantics === "sed" && optionName === "--in-place")
         inPlaceBackupSuffix = attached ?? "";
       if (option.issue) issues.push(option.issue);
       if (["-e", "--expression", "--regexp", "-f", "--file"].includes(optionName))
