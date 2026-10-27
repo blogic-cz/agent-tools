@@ -232,6 +232,62 @@ describe("agent configuration boundaries", () => {
     });
   });
   it.each([
+    ...["cp", "mv", "ln", "install"].flatMap((writer) =>
+      ["--target-dir", "--target-d", "--t"].flatMap((option) => [
+        `${writer} ${option}=~/.codex /tmp/config.toml`,
+        `${writer} ${option} ~/.codex /tmp/config.toml`,
+        `${writer} ${option}=~/.claude/commands /tmp/run.md`,
+      ]),
+    ),
+    "install -m 644 /tmp/evil/AGENT?.md ./",
+    "install /tmp/evil/AGENT[S].md ./",
+    "cp /tmp/evil/AGENT?.md ./",
+    "cp /tmp/evil/AGENT?.md /repo/",
+    ...["cp", "mv", "ln", "install"].flatMap((writer) => [
+      `${writer} /tmp/evil/AGENT?.md ./`,
+      `${writer} /tmp/evil/AGENT[S].md ./`,
+      `${writer} /tmp/evil/AGENTS* ./`,
+      `${writer} /tmp/evil/.claude.jso? ~`,
+      `${writer} /tmp/evil/config.tom? ~/.codex/`,
+      `${writer} /tmp/evil.txt /repo/AGENT?.md`,
+    ]),
+  ])("refuses protected writer abbreviations and globs %s", (command) => {
+    expect(bash(command)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
+    });
+  });
+  it.each(["cp", "mv", "ln", "install"])(
+    "checks unknown and ambiguous %s option values",
+    (writer) => {
+      for (const option of ["--bogus", "--s"]) {
+        expect(bash(`${writer} ${option}=public.txt`).kind).toBe("pass");
+        for (const target of ["~/.codex", "AGENTS.md", "~/.claude/commands"])
+          expect(bash(`${writer} ${option}=${target} /tmp/config.toml`)).toMatchObject({
+            findings: expect.arrayContaining([
+              expect.objectContaining({ rule: "agent-config-write" }),
+            ]),
+          });
+      }
+    },
+  );
+  it.each([
+    "cp -a src/ /tmp/dst/",
+    "mv --verbose a /tmp/b",
+    "install --mode=644 a.txt /tmp/x",
+    "ln --symbolic a /tmp/b",
+  ])("allows ordinary writer options and globs %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+  it.each([
+    ["cp *.txt /tmp/dir/", "opaque-path"],
+    ["cp --target-directory=/tmp/dir a b", "no-analyzer"],
+  ])("preserves the base refusal for %s", (command, rule) => {
+    expect(bash(command)).toMatchObject({
+      kind: "missing-knowledge",
+      findings: expect.arrayContaining([expect.objectContaining({ rule })]),
+    });
+  });
+  it.each([
     "install -S /tmp/evil/AGENTS.md ./",
     "install -S /tmp/evil/AGENTS.md /repo/",
     "install -Sv /tmp/evil/AGENTS.md ./",

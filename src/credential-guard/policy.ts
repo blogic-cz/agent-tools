@@ -837,6 +837,49 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
         role === "script" ||
         role === "test-filter"
       ) {
+        if (
+          scope.dialect === "bash" &&
+          (role === "write" ||
+            plan.directoryWrites.some((write) => write.sources.includes(operand.index))) &&
+          mentions(value).some((text) =>
+            text
+              .replace(/\\/g, "/")
+              .split("/")
+              .some((part) => {
+                if (!/[*?[]/.test(part)) return false;
+                const pattern = new RegExp(
+                  `^${part
+                    .replace(/[.+^${}()|\\]/g, "\\$&")
+                    .replace(/\[[^\]]*\]|\[/g, ".")
+                    .replace(/\*/g, ".*")
+                    .replace(/\?/g, ".")}$`,
+                  "i",
+                );
+                return [
+                  "AGENTS.md",
+                  "CLAUDE.md",
+                  ".mcp.json",
+                  ".claude",
+                  ".claude.json",
+                  ".codex",
+                  ".agents",
+                  "config.toml",
+                  "settings.json",
+                  "settings.local.json",
+                  "commands",
+                  "agents",
+                  "skills",
+                  "hooks",
+                ].some((name) => pattern.test(name));
+              }),
+          )
+        )
+          emit(
+            "agent-config-write",
+            "glob may write agent instructions or configuration",
+            span,
+            true,
+          );
         const testGlob =
           role === "test-filter" && value.kind === "opaque" && value.globPatterns !== undefined;
         if (
@@ -889,12 +932,13 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           const agentTargets = [...paths];
           if (
             scope.dialect === "bash" &&
-            executableName(first.texts[0] ?? "") === "install" &&
+            (executableName(first.texts[0] ?? "") === "install" ||
+              destination?.sources.includes(operand.index)) &&
             paths.some((path) => agentConfigPath(`${home}/${path.split("/").at(-1) ?? ""}`))
           )
             emit(
               "agent-config-write",
-              "install source has an agent configuration basename",
+              "writer candidate has an agent configuration basename",
               span,
               true,
             );

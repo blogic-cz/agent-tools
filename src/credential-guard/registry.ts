@@ -3520,6 +3520,7 @@ function classifyInvocation(
   let delta: InvocationPlan["delta"] = "none";
   let codePositionals: number[] = [];
   const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
+  const writerCandidates: { index: number; literal: string }[] = [];
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
   let maxArgs: number | null = null;
@@ -4226,20 +4227,25 @@ function classifyInvocation(
         continue;
       }
     }
+    const longOptions = optionName.startsWith("--")
+      ? Object.entries(options).filter(([key]) => key.startsWith(optionName))
+      : [];
     const option =
       options[optionName] ??
-      (optionName.startsWith("--")
-        ? Object.entries(options).find(
-            ([key, value]) =>
-              key.startsWith(optionName) &&
-              (value.issue || value.roles.some((role) => typeof role !== "string")),
-          )?.[1]
-        : undefined) ??
+      (longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
       (dialect === "powershell"
         ? Object.entries(options).find(
             ([key]) => key.toLowerCase() === optionName.toLowerCase(),
           )?.[1]
         : undefined);
+    if (
+      !endOptions &&
+      optionName.startsWith("--") &&
+      !option &&
+      attached !== undefined &&
+      (entry.semantics === "copy" || ["mv", "ln", "install"].includes(entry.name))
+    )
+      writerCandidates.push({ index: position, literal: attached });
     if (entry.semantics === "git" && mode === entry && !endOptions && optionName === "-c") {
       const setting = attached ?? argv[position + 1];
       const settingEqual = setting?.indexOf("=") ?? -1;
@@ -4634,6 +4640,14 @@ function classifyInvocation(
           directory: targetDirectory !== undefined || positional.length > 2,
         });
     }
+  }
+  for (const candidate of writerCandidates) {
+    roles.push({ ...candidate, role: path }, { ...candidate, role: "write" });
+    directoryWrites.push({
+      index: candidate.index,
+      sources: [candidate.index, ...positional],
+      directory: true,
+    });
   }
   stdout = mode.stdout ?? entry.stdout ?? "opaque";
   if (stdout === "stdin" && (entry.name !== "cat" || argv.length !== 1)) stdout = "opaque";
