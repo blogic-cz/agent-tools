@@ -5,6 +5,55 @@ import { judge } from "./policy";
 const bash = (command: string) => judge(parseBash(command), { cwd: "/repo", home: "/users/test" });
 
 it.each([
+  "tar -cf out.tar -T files.txt",
+  "tar -cf out.tar --files-from files.txt",
+  "tar -cf out.tar -X excl.txt src",
+  "tar -cvf out.tar -I zstd src",
+  "tar -cf out.tar -b 20 src",
+  "tar -cf out.tar -L 100 src",
+  "tar -cf /tmp/o.tar -n src",
+  "tar -cf /tmp/o.tar -l src",
+  "tar -cvf /tmp/o.tar -s /a/b/ src",
+  "tar -xf x.tar -O",
+  "tar -xOf x.tar",
+  "tar xOf x.tar",
+  "tar -xf x.tar -k",
+  "tar -xkf x.tar",
+  "tar xkf x.tar",
+  "tar -xmf x.tar",
+  "tar xmf x.tar",
+  "tar -xf x.tar -U",
+  "tar -xvf x.tar -W",
+  "tar -xf x.tar -s /a/b/",
+  "tar -cf out.tar --exclude build src",
+  "tar -cf out.tar -q src",
+  "tar -xqf x.tar",
+  "tar xqf x.tar",
+])("accepts tar options outside ambiguous write keys: %s", (command) => {
+  expect(bash(command)).toEqual({ kind: "pass" });
+});
+
+it.each([
+  "wget --execute=output_document=AGENTS.md https://example.com/x",
+  "wget --execute=output_document=/Users/gabrielecegi/.zshrc https://example.com/x",
+  "wget --execute=dir_prefix=/Users/gabrielecegi/.codex https://example.com/config.toml",
+  "wget --execute=input=urls.txt https://example.com/x",
+  "wget --config=/tmp/evil.rc https://example.com/x",
+  "wget --input-metalink=x.meta4",
+  "wget -e input=urls.txt",
+  "wget -e dir_prefix=/tmp https://example.com/x",
+  "wget -e output_document=AGENTS.md https://example.com/x",
+  "wget --execute output_document=AGENTS.md https://example.com/x",
+  "wget --config /tmp/evil.rc https://example.com/x",
+  "wget --input-metalink x.meta4",
+  "wget -eoutput_document=AGENTS.md https://example.com/x",
+])("refuses indirect wget output configuration: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+  });
+});
+
+it.each([
   "printf x > ./AGENT?.md",
   "printf x > ./AGENT[]S].md",
   "printf x >> ./AGENT[]S].md",

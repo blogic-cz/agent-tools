@@ -3126,9 +3126,26 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "-a",
         "-h",
         "-P",
+        "-O",
+        "--to-stdout",
+        "-k",
+        "-m",
+        "-U",
+        "-W",
+        "-n",
+        "-l",
       ),
       "-f": arg(path),
       "--file": arg(path),
+      "-T": arg(path),
+      "--files-from": arg(path),
+      "-X": arg(path),
+      "--exclude-from": arg(path),
+      "--exclude": arg(data),
+      "-b": arg(data),
+      "-L": arg(data),
+      "-I": arg(data),
+      "-s": arg(data),
       "-C": arg("write"),
       "--directory": arg("write"),
     },
@@ -3197,6 +3214,10 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "--level": arg(data),
       "-i": arg(path),
       "--input-file": arg(path),
+      "-e": { roles: [data], issue: unknown("wget output configuration") },
+      "--execute": { roles: [data], issue: unknown("wget output configuration") },
+      "--config": { roles: [path], issue: unknown("wget output configuration") },
+      "--input-metalink": { roles: [path], issue: unknown("wget output configuration") },
       ...flags("-q", "-c", "-nv", "-N", "-r", "-np", "-nd", "-nc"),
     },
   },
@@ -4269,7 +4290,8 @@ function classifyInvocation(
       [...a].some((letter) => "cxtru".includes(letter))
     ) {
       for (const letter of a) {
-        if (!options[`-${letter}`]) issues.push(unknown(`unclassified tar option -${letter}`));
+        if (!options[`-${letter}`] && /[cru]/.test(a) && a.includes("f"))
+          issues.push(unknown(`unclassified tar option -${letter}`));
         if ("cru".includes(letter)) writesArchive = true;
         for (const role of options[`-${letter}`]?.roles ?? []) {
           const index = ++position;
@@ -4314,7 +4336,9 @@ function classifyInvocation(
     if (!endOptions && !(optionName in options) && /^-[^-].+/.test(a)) {
       let offset = 1;
       const directoryWriter =
-        entry.semantics === "copy" || ["mv", "install", "ln", "tar"].includes(entry.name);
+        entry.semantics === "copy" ||
+        ["mv", "install", "ln"].includes(entry.name) ||
+        (entry.name === "tar" && /[cru]/.test(a) && a.includes("f"));
       while (offset < a.length) {
         const option = options[`-${a[offset]}`];
         if (
@@ -4504,8 +4528,6 @@ function classifyInvocation(
       continue;
     }
     if (!endOptions && a.startsWith("-") && a !== "-") {
-      if (entry.name === "tar" && /^-[^-]$/.test(a))
-        issues.push(unknown(`unclassified tar option ${a}`));
       optionRoles.push({
         index: position,
         role: path,
