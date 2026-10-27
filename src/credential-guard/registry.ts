@@ -41,7 +41,7 @@ export type Option = {
 };
 export type ExecutableEntry = {
   readonly name: string;
-  readonly acceptsAbbreviations?: boolean;
+  readonly rejectsAbbreviations?: boolean;
   readonly readsContent?: boolean;
   readonly readsStdinCode?: boolean;
   readonly builtinOnly?: boolean;
@@ -275,7 +275,6 @@ const gitLogOptions = {
 export const EXECUTABLES: readonly ExecutableEntry[] = [
   {
     name: "git",
-    acceptsAbbreviations: true,
     informationFlags: ["--help", "--version"],
     startupFiles: [/(?:^|\/)\.git\/config$/],
     operands: [data],
@@ -1386,7 +1385,6 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "install",
-    acceptsAbbreviations: true,
     readsContent: true,
     operands: [path],
     options: {
@@ -1402,7 +1400,6 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "sed",
-    acceptsAbbreviations: true,
     readsContent: true,
     aliases: ["gsed"],
     operands: [code("sed"), path],
@@ -1436,6 +1433,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "jq",
+    rejectsAbbreviations: true,
     readsContent: true,
     startupFiles: [/(?:^|\/)\.jq$/],
     operands: [code("jq"), path],
@@ -3062,7 +3060,6 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "cp",
-    acceptsAbbreviations: true,
     operands: [path],
     semantics: "copy",
     options: {
@@ -3203,7 +3200,6 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "mv",
-    acceptsAbbreviations: true,
     operands: ["write"],
     options: {
       "-t": arg("write"),
@@ -3213,7 +3209,6 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "ln",
-    acceptsAbbreviations: true,
     operands: [path],
     options: {
       "-t": arg("write"),
@@ -3600,6 +3595,9 @@ function classifyInvocation(
   let codePositionals: number[] = [];
   const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
   const writerCandidates: { index: number; literal: string }[] = [];
+  const archiveFiles: number[] = [];
+  let createsArchive = false;
+  let wgetOutputDocument = false;
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
   let maxArgs: number | null = null;
@@ -4273,6 +4271,7 @@ function classifyInvocation(
         )
           break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
+        if (entry.name === "tar" && a[offset] === "c") createsArchive = true;
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
@@ -4299,6 +4298,7 @@ function classifyInvocation(
           .every((c) => options[`-${c}`]?.roles.length === 0)
       ) {
         for (const c of a.slice(1)) {
+          if (entry.name === "tar" && c === "c") createsArchive = true;
           const issue = options[`-${c}`]?.issue;
           if (issue) issues.push(issue);
         }
@@ -4311,7 +4311,7 @@ function classifyInvocation(
       : [];
     const option =
       options[optionName] ??
-      (entry.acceptsAbbreviations && longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
+      (!entry.rejectsAbbreviations && longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
       longOptions.find(
         ([, candidate]) =>
           candidate.issue || candidate.roles.some((role) => typeof role !== "string"),
@@ -4321,7 +4321,7 @@ function classifyInvocation(
             ([key]) => key.toLowerCase() === optionName.toLowerCase(),
           )?.[1]
         : undefined);
-    if (option && entry.acceptsAbbreviations && longOptions.length === 1 && !options[optionName])
+    if (option && !entry.rejectsAbbreviations && longOptions.length === 1 && !options[optionName])
       optionName = longOptions[0]?.[0] ?? optionName;
     if (
       !endOptions &&
@@ -4346,6 +4346,9 @@ function classifyInvocation(
         issues.push(unknown("git config override"));
     }
     if (!endOptions && option && a.startsWith("-")) {
+      if (entry.name === "tar" && ["-c", "--create"].includes(optionName)) createsArchive = true;
+      if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
+        wgetOutputDocument = true;
       if (
         entry.name === "bun" &&
         ["--filter", "--cwd"].includes(optionName) &&
@@ -4368,6 +4371,7 @@ function classifyInvocation(
       for (let i = 0; i < option.roles.length; i++) {
         const role = option.roles[i] ?? data;
         const index = i === 0 && attached !== undefined ? position : ++position;
+        if (entry.name === "tar" && ["-f", "--file"].includes(optionName)) archiveFiles.push(index);
         if (
           index >= argv.length &&
           !(
@@ -4391,7 +4395,13 @@ function classifyInvocation(
         optionRoles.push({
           index,
           role,
-          ...(i === 0 && attached !== undefined ? { literal: attached } : {}),
+          ...(entry.name === "rsync" &&
+          typeof role !== "string" &&
+          (attached ?? argv[index]) !== undefined
+            ? { literal: `${attached ?? argv[index]} guard.invalid` }
+            : i === 0 && attached !== undefined
+              ? { literal: attached }
+              : {}),
         });
         if (entry.semantics === "python" && optionName === "-m") {
           pythonModule = { index, name: attached ?? argv[index] };
@@ -4714,9 +4724,32 @@ function classifyInvocation(
   if (entry.name === "git" && mode === entry.subcommands?.checkout) {
     const separator = argv.indexOf("--");
     for (const operand of roles)
-      if (separator >= 0 && operand.index > separator) operand.role = "write";
+      if (separator >= 0 ? operand.index > separator : positional.slice(1).includes(operand.index))
+        operand.role = "write";
   }
-  if (entry.semantics === "copy" || ["mv", "ln", "rsync", "ditto"].includes(entry.name)) {
+  if (entry.name === "tar" && createsArchive) {
+    for (const operand of optionRoles)
+      if (archiveFiles.includes(operand.index)) operand.role = "write";
+  }
+  if (entry.name === "wget" && !wgetOutputDocument) {
+    for (const index of positional) {
+      const url = argv[index];
+      if (url === undefined) issues.push(unknown("wget output name is not known"));
+      else {
+        try {
+          const basename = new URL(url).pathname.split("/").at(-1);
+          if (basename) roles.push({ index, role: "write", literal: decodeURIComponent(basename) });
+        } catch {
+          issues.push(unknown("wget output name is not known"));
+        }
+      }
+    }
+  }
+  if (
+    entry.semantics === "copy" ||
+    ["mv", "ln", "rsync", "ditto"].includes(entry.name) ||
+    (entry.name === "tmutil" && mode === entry.subcommands?.restore)
+  ) {
     const targetDirectory = optionRoles.find((operand) => operand.role === "write");
     const destination = targetDirectory?.index ?? positional.at(-1);
     if (destination !== undefined) {

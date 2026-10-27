@@ -984,7 +984,8 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                   if (directory || plan.copyDestination) targets.push(target);
                 }
           if (
-            plan.copyDestination &&
+            (plan.copyDestination ||
+              (executableName(first.texts[0] ?? "") === "tmutil" && argv[1] === "restore")) &&
             targets.some((target) =>
               /(?:^|\/)(?:\.?(?:bashrc|bash_profile|profile|zshrc|zshenv|zprofile)|config\.fish)$/.test(
                 target,

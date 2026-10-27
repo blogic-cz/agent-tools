@@ -741,13 +741,13 @@ The Bash `agent-config-write` rule refuses writes to these paths:
 - Home `.agents/skills/` and replacement of the home `.agents` directory itself.
 - Replacement of a `.claude` directory itself.
 
-The rule checks redirects, `tee`, in-place `sed`, copy and link destinations, and supported writer operands. These include `rsync`, `ditto`, archive destinations, `git checkout --` paths, `patch`, `truncate`, `touch`, and `wget` output paths. A glob that can match a protected name refuses. A bracket expression that the matcher cannot translate also refuses. A configured copy grant remains subject to the filesystem proof above.
+The rule checks redirects, `tee`, in-place `sed`, copy and link destinations, and supported writer operands. These include `rsync`, `ditto`, `tmutil restore` destinations, archive output files and destinations, `git checkout` paths with or without `--`, `patch`, `truncate`, `touch`, and `wget` output paths. Without an output-document option, the `wget` URL basename supplies the output name. A glob that can match a protected name refuses. A bracket expression that the matcher cannot translate also refuses. A configured copy grant remains subject to the filesystem proof above.
 
 Work data such as `~/.agents/jobs/`, `~/.claude/plans/`, and `~/.claude/projects/` remains writable. Ordinary document paths such as `README.md` remain writable. Reading an instruction file or copying it to `/tmp/x.md` can pass.
 
 The guard treats an extensionless destination outside temporary roots as a possible directory and also checks that destination plus the source basename. The added candidate does not apply under `/tmp`, `/private/tmp`, `/var/folders`, or `/private/var/folders`. A literal local `TMPDIR` binding resolves through the same path checks. An unknown ambient `TMPDIR` still requires environment approval and a resolvable path. Explicit directory syntax retains its existing checks.
 
-The check is static. It cannot establish whether a dotted destination is an existing directory. It does not inspect archive members, patch contents, remote transfers, source directory contents, or filesystem aliases. Those contents can contain protected names that the command text does not name. General path checks do not resolve symlinks. The copy proof above is the bounded exception. PowerShell does not receive the Bash agent-configuration write rule.
+The check is static. It cannot establish whether a dotted destination is an existing directory. It does not inspect archive members, patch contents, remote transfers, source directory contents, or filesystem aliases. Named archive members such as `tar -xf x.tar AGENTS.md` also stay outside this check because the archive contents are unknown. Those contents can contain protected names that the command text does not name. General path checks do not resolve symlinks. The copy proof above is the bounded exception. PowerShell does not receive the Bash agent-configuration write rule.
 
 #### Herdr launches
 
