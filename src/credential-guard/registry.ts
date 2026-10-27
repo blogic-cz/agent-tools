@@ -4233,6 +4233,10 @@ function classifyInvocation(
     const option =
       options[optionName] ??
       (longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
+      longOptions.find(
+        ([, candidate]) =>
+          candidate.issue || candidate.roles.some((role) => typeof role !== "string"),
+      )?.[1] ??
       (dialect === "powershell"
         ? Object.entries(options).find(
             ([key]) => key.toLowerCase() === optionName.toLowerCase(),

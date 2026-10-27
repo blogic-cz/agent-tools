@@ -847,10 +847,11 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
               .split("/")
               .some((part) => {
                 if (!/[*?[]/.test(part)) return false;
+                if (part.replace(/\[[A-Za-z0-9._]\]/g, "").includes("[")) return true;
                 const pattern = new RegExp(
                   `^${part
                     .replace(/[.+^${}()|\\]/g, "\\$&")
-                    .replace(/\[[^\]]*\]|\[/g, ".")
+                    .replace(/\[([A-Za-z0-9_]|\\\.)\]/g, "$1")
                     .replace(/\*/g, ".*")
                     .replace(/\?/g, ".")}$`,
                   "i",
