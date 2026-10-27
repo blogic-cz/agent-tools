@@ -4693,13 +4693,16 @@ function classifyInvocation(
     const command = argv[commandIndex];
     const action = argv[commandIndex + 1];
     const checkAgentArguments = (kind: string | undefined, start: number): void => {
+      const launchOptions = new Map<string, (string | undefined)[]>();
       for (let index = start; index < argv.length; index++) {
         const argument = argv[index] ?? "";
         if (index === argv.length - 1 && argv[index] !== undefined && !argument.startsWith("-"))
-          return;
+          break;
         const attached = /^(--[^=]+)=(.*)$/.exec(argument) ?? /^(-[mcCs])=?(.+)$/.exec(argument);
         const option = attached?.[1] ?? argument;
         const value = attached ? attached[2] : argv[++index];
+        const key = option === "-s" ? "--sandbox" : option;
+        launchOptions.set(key, [...(launchOptions.get(key) ?? []), value]);
         const configuration =
           value !== undefined &&
           (/^model_reasoning_effort=(?:minimal|low|medium|high|xhigh|max)$/.test(value) ||
@@ -4715,6 +4718,7 @@ function classifyInvocation(
             ["codex", "claude"].includes(kind ?? "")) ||
             (kind === "codex" &&
               (["-m", "--cd", "-C"].includes(option) ||
+                (option === "--remote" && value === "unix://") ||
                 (["--sandbox", "-s"].includes(option) &&
                   ["workspace-write", "read-only"].includes(value)) ||
                 (option === "-c" && configuration))));
@@ -4727,6 +4731,18 @@ function classifyInvocation(
           return;
         }
       }
+      if (
+        launchOptions.has("--remote") &&
+        (launchOptions.get("--remote")?.length !== 1 ||
+          launchOptions.get("--sandbox")?.length !== 1 ||
+          launchOptions.get("--sandbox")?.[0] !== "read-only" ||
+          launchOptions.has("--add-dir"))
+      )
+        issues.push({
+          kind: "missing-knowledge",
+          rule: "agent-launch-override",
+          detail: "remote agents require one local endpoint and one read-only sandbox",
+        });
     };
     if (command === "agent" && action === "start" && separator >= 0) {
       let kind: string | undefined;
