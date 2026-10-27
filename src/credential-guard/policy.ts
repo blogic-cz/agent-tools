@@ -32,6 +32,8 @@ const ruleNames = [
   "unsupported-option",
   "analysis-limit",
   "copy-destination",
+  "agent-config-write",
+  "agent-launch-override",
 ] satisfies readonly string[];
 export type RuleId = string & { readonly __brand: "RuleId" };
 function isRuleId(value: string): value is RuleId {
@@ -236,6 +238,24 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
   };
   const copyProofs: Array<() => void> = [];
   const registry = context.registry ?? buildRegistry();
+  const home = normalizePath(context.home, context.home, context.cwd);
+  const agentConfigDirectory = (path: string): boolean =>
+    (/(?:^|\/)\.codex(?:\/|$)/.test(path) && !path.startsWith(`${home}/.codex/`)) ||
+    path === `${home}/.codex/` ||
+    path === `${home}/.codex/prompts` ||
+    path.startsWith(`${home}/.codex/prompts/`) ||
+    /(?:^|\/)\.claude\/(?:commands|agents|skills)(?:\/|$)/.test(path) ||
+    path === `${home}/.claude/hooks` ||
+    path.startsWith(`${home}/.claude/hooks/`) ||
+    path === `${home}/.agents/skills` ||
+    path.startsWith(`${home}/.agents/skills/`);
+  const agentConfigPath = (path: string): boolean =>
+    agentConfigDirectory(path) ||
+    /(?:^|\/)(?:agents\.md|claude\.md|\.mcp\.json|\.claude)$/.test(path) ||
+    /(?:^|\/)\.claude\/settings[^/]*\.json$/.test(path) ||
+    path === `${home}/.agents` ||
+    path === `${home}/.codex/config.toml` ||
+    path === `${home}/.claude.json`;
   const emit = (rule: string, detail: string, span: Span, uncertainty = false): void => {
     detected ||= !uncertainty;
     if (findings.length < 256) findings.push({ rule: ruleId(rule), detail, span });
@@ -507,6 +527,8 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
         stdin = target.kind === "stream" ? target.stdout : { ...opaque(...paths), supplied: true };
       }
       if (redirect.op !== "<") {
+        if (current.dialect === "bash" && paths.some(agentConfigPath))
+          emit("agent-config-write", "write to agent instructions or configuration", span, true);
         outputs.push(
           ...paths.map((path) => ({
             path,
@@ -815,6 +837,50 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
         role === "script" ||
         role === "test-filter"
       ) {
+        if (
+          scope.dialect === "bash" &&
+          (role === "write" ||
+            plan.directoryWrites.some((write) => write.sources.includes(operand.index))) &&
+          mentions(value).some((text) =>
+            text
+              .replace(/\\/g, "/")
+              .split("/")
+              .some((part) => {
+                if (!/[*?[]/.test(part)) return false;
+                if (part.replace(/\[[A-Za-z0-9._]\]/g, "").includes("[")) return true;
+                const pattern = new RegExp(
+                  `^${part
+                    .replace(/[.+^${}()|\\]/g, "\\$&")
+                    .replace(/\[([A-Za-z0-9_]|\\\.)\]/g, "$1")
+                    .replace(/\*/g, ".*")
+                    .replace(/\?/g, ".")}$`,
+                  "i",
+                );
+                return [
+                  "AGENTS.md",
+                  "CLAUDE.md",
+                  ".mcp.json",
+                  ".claude",
+                  ".claude.json",
+                  ".codex",
+                  ".agents",
+                  "config.toml",
+                  "settings.json",
+                  "settings.local.json",
+                  "commands",
+                  "agents",
+                  "skills",
+                  "hooks",
+                ].some((name) => pattern.test(name));
+              }),
+          )
+        )
+          emit(
+            "agent-config-write",
+            "glob may write agent instructions or configuration",
+            span,
+            true,
+          );
         const testGlob =
           role === "test-filter" && value.kind === "opaque" && value.globPatterns !== undefined;
         if (
@@ -863,17 +929,37 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
               )
                 emit("startup-mutation", "in-place write to startup configuration", span, true);
           }
-          if (plan.copyDestination)
-            for (const source of values.slice(1, -1))
-              for (const name of mentions(source))
-                for (const path of paths)
-                  targets.push(
-                    normalizePath(
-                      `${path}/${name.replace(/\\/g, "/").split("/").at(-1) ?? ""}`,
-                      context.home,
-                      context.cwd,
-                    ),
+          const destination = plan.directoryWrites.find((write) => write.index === operand.index);
+          const agentTargets = [...paths];
+          if (
+            scope.dialect === "bash" &&
+            (executableName(first.texts[0] ?? "") === "install" ||
+              destination?.sources.includes(operand.index)) &&
+            paths.some((path) => agentConfigPath(`${home}/${path.split("/").at(-1) ?? ""}`))
+          )
+            emit(
+              "agent-config-write",
+              "writer candidate has an agent configuration basename",
+              span,
+              true,
+            );
+          if (destination)
+            for (const sourceIndex of destination.sources)
+              for (const name of mentions(values[sourceIndex] ?? opaque()))
+                for (const path of paths) {
+                  const target = normalizePath(
+                    `${path}/${name.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? ""}`,
+                    context.home,
+                    context.cwd,
                   );
+                  const directory =
+                    destination.directory ||
+                    path === normalizePath(context.home, context.home, context.cwd) ||
+                    agentConfigDirectory(path) ||
+                    mentions(value).some((text) => /(?:\/|^\.\.?|\/\.\.?)$/.test(text));
+                  if (directory) agentTargets.push(target);
+                  if (directory || plan.copyDestination) targets.push(target);
+                }
           if (
             plan.copyDestination &&
             targets.some((target) =>
@@ -884,6 +970,31 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           )
             emit("startup-mutation", "copy to startup configuration", span, true);
           for (const path of targets) {
+            if (scope.dialect === "bash" && agentTargets.includes(path) && agentConfigPath(path)) {
+              if (plan.copyDestination) {
+                if (
+                  values.length !== 3 ||
+                  value.kind !== "literal" ||
+                  values[1]?.kind !== "literal" ||
+                  !context.chainCopyDestinations?.length ||
+                  !value.texts.every(
+                    (target) => context.proveCopyDestination?.(target, argv[1] ?? "") === true,
+                  )
+                )
+                  emit(
+                    "agent-config-write",
+                    "copy to agent instructions or configuration requires the existing filesystem proof",
+                    span,
+                    true,
+                  );
+              } else
+                emit(
+                  "agent-config-write",
+                  "write to agent instructions or configuration",
+                  span,
+                  true,
+                );
+            }
             written.set(path, opaque());
             observeWrite(path, opaque());
           }

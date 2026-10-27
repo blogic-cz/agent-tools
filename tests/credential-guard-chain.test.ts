@@ -47,6 +47,42 @@ function check(command: string, config?: CredentialGuardConfig): void {
 }
 
 describe("credential guard composition and copy permission", () => {
+  it.each([
+    "cp /tmp/evil.md ~/.claude/CLAUDE.md",
+    "cp /tmp/evil.md ~/.codex/AGENTS.md",
+    "cp /tmp/evil.md ~/.codex/AGENTS.md && cat /tmp/x.md",
+    "cp /tmp/evil.md ~/.codex/AGENTS.md && herdr agent start n --kind codex --pane w1:p2",
+  ])("names the agent write rule for %s", (command) => {
+    expect(() => check(command)).toThrow("agent-config-write");
+  });
+  it("names the native launch rule", () => {
+    expect(() =>
+      check(
+        "herdr agent start n --kind codex --pane w1:p2 -- -c shell_environment_policy.inherit=all",
+      ),
+    ).toThrow("agent-launch-override");
+  });
+  it.each([
+    ["herdr pane run w1:p2 printenv", "no-analyzer"],
+    ["herdr pane send-keys w1:p2 printenv", "no-analyzer"],
+    ["herdr agent start --kind codex n --command printenv", "secret-source"],
+  ])("keeps the refusal rule for %s", (command, rule) => {
+    expect(() => check(command)).toThrow(rule);
+  });
+  it("requires proof for standalone agent copies and refuses other writers despite a grant", () => {
+    const destination = join(root, ".codex", "AGENTS.md");
+    const config = { chainCopyDestinations: [join(root, ".codex")] };
+    expect(() => check(`cp /tmp/evil.md ${destination}`, config)).not.toThrow();
+    for (const command of [
+      `tee ${destination}`,
+      `mv /tmp/evil.md ${destination}`,
+      `install /tmp/evil.md ${destination}`,
+      `ln -s /tmp/evil.md ${destination}`,
+      `echo x > ${destination}`,
+      `sed -i 's/x/y/' ${destination}`,
+    ])
+      expect(() => check(command, config)).toThrow("agent-config-write");
+  });
   it.each([" && ", "; "])("accepts independently safe parts joined with %s", (separator) => {
     for (const parts of [launch.slice(1), steer]) {
       for (const part of parts) expect(() => check(part)).not.toThrow();

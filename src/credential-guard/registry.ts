@@ -29,6 +29,7 @@ export type Issue = {
     | "opaque-executable"
     | "opaque-env-name"
     | "startup-mutation"
+    | "agent-launch-override"
     | "unsupported-option";
   readonly detail: string;
 };
@@ -118,6 +119,11 @@ export type InvocationPlan = {
   readonly pipelinePaths: boolean;
   readonly startupFiles: readonly RegExp[];
   readonly copyDestination: boolean;
+  readonly directoryWrites: readonly {
+    readonly index: number;
+    readonly sources: readonly number[];
+    readonly directory: boolean;
+  }[];
   readonly inPlaceBackupSuffix: string | null;
   readonly scriptLanguage: Language;
   readonly codePositionals: readonly number[];
@@ -1159,6 +1165,11 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   {
     name: "herdr",
     options: {
+      "--session": arg(data),
+      "--machine": arg(data),
+      "--remote": arg(data),
+      "--remote-keybindings": arg(data),
+      ...flags("--handoff"),
       "--format": arg(data),
       "--env": arg(data),
       ...flags("--focus"),
@@ -1378,7 +1389,11 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "-m": arg(data),
       "-o": arg(data),
       "-g": arg(data),
-      ...flags("-d", "-v", "-C", "-p", "-s"),
+      "-t": arg("write"),
+      "--target-directory": arg("write"),
+      ...flags("-T", "--no-target-directory"),
+      ...flags("-d", "-v", "-C", "-p", "-s", "-c", "-D", "-b", "-U"),
+      "-S": { roles: [], attachedValue: /^.+$/ },
     },
   },
   {
@@ -3056,6 +3071,19 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "-r",
         "-R",
         "-a",
+        "-b",
+        "-c",
+        "-d",
+        "-H",
+        "-i",
+        "-l",
+        "-L",
+        "-P",
+        "-s",
+        "-T",
+        "-u",
+        "-x",
+        "-X",
         "--recursive",
         "--archive",
         "--no-clobber",
@@ -3096,7 +3124,38 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     },
     operands: ["names"],
   },
-  { name: "mv", operands: ["write"] },
+  {
+    name: "mv",
+    operands: ["write"],
+    options: {
+      "-t": arg("write"),
+      "--target-directory": arg("write"),
+      ...flags("-T", "--no-target-directory", "-f", "-i", "-n", "-v", "-u", "-b", "-h"),
+    },
+  },
+  {
+    name: "ln",
+    operands: [path],
+    options: {
+      "-t": arg("write"),
+      "--target-directory": arg("write"),
+      ...flags(
+        "-s",
+        "-F",
+        "-f",
+        "-n",
+        "-v",
+        "-h",
+        "-T",
+        "--no-target-directory",
+        "-L",
+        "-P",
+        "-r",
+        "-b",
+        "-i",
+      ),
+    },
+  },
   { name: "chmod", operands: [data, "names"], options: flags("-R", "-f", "-v", "-c") },
   {
     name: "break",
@@ -3460,6 +3519,8 @@ function classifyInvocation(
   let remote = false;
   let delta: InvocationPlan["delta"] = "none";
   let codePositionals: number[] = [];
+  const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
+  const writerCandidates: { index: number; literal: string }[] = [];
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
   let maxArgs: number | null = null;
@@ -3492,6 +3553,7 @@ function classifyInvocation(
     codePositionals,
     cwdOperands,
     inPlaceBackupSuffix,
+    directoryWrites,
     startupFiles: entry?.startupFiles ?? [],
     copyDestination: entry?.semantics === "copy",
     scriptLanguage: entry?.semantics === "shell" ? "bash" : "runtime",
@@ -4115,14 +4177,33 @@ function classifyInvocation(
       optionName = a.slice(0, equal);
       attached = a.slice(equal + 1);
     }
-    if (!(optionName in options) && /^-[^-].+/.test(a)) {
+    if (!endOptions && !(optionName in options) && /^-[^-].+/.test(a)) {
       let offset = 1;
-      while (offset < a.length && options[`-${a[offset]}`]?.roles.length === 0) {
-        const finding = options[`-${a[offset]}`]?.issue;
+      const directoryWriter =
+        entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name);
+      while (offset < a.length) {
+        const option = options[`-${a[offset]}`];
+        if (
+          option?.roles.length ||
+          (option?.attachedValue?.test(a.slice(offset + 1)) &&
+            !a
+              .slice(offset + 1)
+              .split("")
+              .every((letter) => `-${letter}` in options)) ||
+          (!option && !directoryWriter)
+        )
+          break;
+        if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
+        const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
       }
-      if (offset > 1 && offset < a.length && options[`-${a[offset]}`]?.roles.length) {
+      if (
+        offset > 1 &&
+        offset < a.length &&
+        (options[`-${a[offset]}`]?.roles.length ||
+          options[`-${a[offset]}`]?.attachedValue?.test(a.slice(offset + 1)))
+      ) {
         optionName = `-${a[offset]}`;
         attached = offset + 1 < a.length ? a.slice(offset + 1) : undefined;
       }
@@ -4146,20 +4227,29 @@ function classifyInvocation(
         continue;
       }
     }
+    const longOptions = optionName.startsWith("--")
+      ? Object.entries(options).filter(([key]) => key.startsWith(optionName))
+      : [];
     const option =
       options[optionName] ??
-      (optionName.startsWith("--")
-        ? Object.entries(options).find(
-            ([key, value]) =>
-              key.startsWith(optionName) &&
-              (value.issue || value.roles.some((role) => typeof role !== "string")),
-          )?.[1]
-        : undefined) ??
+      (longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
+      longOptions.find(
+        ([, candidate]) =>
+          candidate.issue || candidate.roles.some((role) => typeof role !== "string"),
+      )?.[1] ??
       (dialect === "powershell"
         ? Object.entries(options).find(
             ([key]) => key.toLowerCase() === optionName.toLowerCase(),
           )?.[1]
         : undefined);
+    if (
+      !endOptions &&
+      optionName.startsWith("--") &&
+      !option &&
+      attached !== undefined &&
+      (entry.semantics === "copy" || ["mv", "ln", "install"].includes(entry.name))
+    )
+      writerCandidates.push({ index: position, literal: attached });
     if (entry.semantics === "git" && mode === entry && !endOptions && optionName === "-c") {
       const setting = attached ?? argv[position + 1];
       const settingEqual = setting?.indexOf("=") ?? -1;
@@ -4189,7 +4279,7 @@ function classifyInvocation(
         });
       }
       if (entry.name === "node" && optionName === "--test") testRunner = true;
-      if (entry.semantics === "sed" && option === options["--in-place"])
+      if (entry.semantics === "sed" && optionName === "--in-place")
         inPlaceBackupSuffix = attached ?? "";
       if (option.issue) issues.push(option.issue);
       if (["-e", "--expression", "--regexp", "-f", "--file"].includes(optionName))
@@ -4527,13 +4617,41 @@ function classifyInvocation(
     if (sedEmptySuffix && !filterOption && positional[0] !== undefined)
       roles.push({ index: positional[0], role: "write" });
   }
-  if (entry.semantics === "copy" && positional.length) {
-    const destination = positional.at(-1);
+  if (entry.name === "install") {
+    const separator = argv.indexOf("--");
+    const candidates = argv.flatMap((word, index) =>
+      index > 0 && ((separator >= 0 && index > separator) || !word?.startsWith("-")) ? [index] : [],
+    );
+    for (const index of candidates) {
+      roles.push({ index, role: path }, { index, role: "write" });
+      directoryWrites.push({ index, sources: candidates, directory: true });
+    }
+    for (const operand of optionRoles)
+      if (operand.role === "write")
+        directoryWrites.push({ index: operand.index, sources: candidates, directory: true });
+  }
+  if (entry.semantics === "copy" || ["mv", "ln"].includes(entry.name)) {
+    const targetDirectory = optionRoles.find((operand) => operand.role === "write");
+    const destination = targetDirectory?.index ?? positional.at(-1);
     if (destination !== undefined) {
       const role = roles.find((item) => item.index === destination);
       if (role) roles.splice(roles.indexOf(role), 1);
-      roles.push({ index: destination, role: "write" });
+      roles.push(targetDirectory ?? { index: destination, role: "write" });
+      if (!argv.some((word) => word === "-T" || word === "--no-target-directory"))
+        directoryWrites.push({
+          index: destination,
+          sources: targetDirectory ? positional : positional.slice(0, -1),
+          directory: targetDirectory !== undefined || positional.length > 2,
+        });
     }
+  }
+  for (const candidate of writerCandidates) {
+    roles.push({ ...candidate, role: path }, { ...candidate, role: "write" });
+    directoryWrites.push({
+      index: candidate.index,
+      sources: [candidate.index, ...positional],
+      directory: true,
+    });
   }
   stdout = mode.stdout ?? entry.stdout ?? "opaque";
   if (stdout === "stdin" && (entry.name !== "cat" || argv.length !== 1)) stdout = "opaque";
@@ -4564,14 +4682,73 @@ function classifyInvocation(
       issues.push(source("PowerShell environment provider"));
   }
   if (entry.semantics === "herdr") {
-    if (["tab", "window"].includes(argv[1] ?? "") && ["create", "split"].includes(argv[2] ?? "")) {
-      const separator = argv.indexOf("--");
-      if (separator >= 0) child(separator + 1);
-      const commandIndex = argv.findIndex((value) => value === "--command");
-      if (commandIndex >= 0) roles.push({ index: commandIndex + 1, role: code("bash") });
+    const separator = argv.indexOf("--");
+    const commandIndex = argv.findIndex(
+      (word, index) =>
+        (separator < 0 || index < separator) &&
+        ((word === "agent" && argv[index + 1] === "start") ||
+          (["tab", "window", "pane"].includes(word ?? "") &&
+            ["create", "split", "run", "send-keys", "send-text"].includes(argv[index + 1] ?? ""))),
+    );
+    const command = argv[commandIndex];
+    const action = argv[commandIndex + 1];
+    const checkAgentArguments = (kind: string | undefined, start: number): void => {
+      for (let index = start; index < argv.length; index++) {
+        const argument = argv[index] ?? "";
+        if (index === argv.length - 1 && argv[index] !== undefined && !argument.startsWith("-"))
+          return;
+        const attached = /^(--[^=]+)=(.*)$/.exec(argument) ?? /^(-[mcCs])=?(.+)$/.exec(argument);
+        const option = attached?.[1] ?? argument;
+        const value = attached ? attached[2] : argv[++index];
+        const configuration =
+          value !== undefined &&
+          (/^model_reasoning_effort=(?:minimal|low|medium|high|xhigh|max)$/.test(value) ||
+            /^sandbox_workspace_write\.network_access=(?:true|false)$/.test(value) ||
+            /^shell_environment_policy\.set\.HERDR_ENV="1"$/.test(value) ||
+            /^shell_environment_policy\.set\.HERDR_(?:WORKSPACE_ID|TAB_ID|PANE_ID|SOCKET_PATH)="[^"\\\r\n]*"$/.test(
+              value,
+            ));
+        const supported =
+          value !== undefined &&
+          (option === "--prompt" || (value !== "" && !value.startsWith("-"))) &&
+          ((["--model", "--add-dir", "--prompt"].includes(option) &&
+            ["codex", "claude"].includes(kind ?? "")) ||
+            (kind === "codex" &&
+              (["-m", "--cd", "-C"].includes(option) ||
+                (["--sandbox", "-s"].includes(option) &&
+                  ["workspace-write", "read-only"].includes(value)) ||
+                (option === "-c" && configuration))));
+        if (!supported) {
+          issues.push({
+            kind: "missing-knowledge",
+            rule: "agent-launch-override",
+            detail: "native agent arguments must use the supported launch form",
+          });
+          return;
+        }
+      }
+    };
+    if (command === "agent" && action === "start" && separator >= 0) {
+      let kind: string | undefined;
+      for (let index = commandIndex + 2; index < separator; index++) {
+        if (argv[index] === "--kind") kind = argv[index + 1];
+        else if (argv[index]?.startsWith("--kind=")) kind = argv[index]?.slice(7);
+      }
+      checkAgentArguments(kind, separator + 1);
     }
-
-    if (argv[1] === "pane" && ["run", "send-keys", "send-text"].includes(argv[2] ?? ""))
+    if (
+      ["tab", "window", "pane"].includes(command ?? "") &&
+      ["create", "split"].includes(action ?? "")
+    ) {
+      if (separator >= 0) {
+        const kind = executableName(argv[separator + 1] ?? "");
+        if (["codex", "claude"].includes(kind)) checkAgentArguments(kind, separator + 2);
+        child(separator + 1);
+      }
+      const bodyIndex = argv.findIndex((value) => value === "--command");
+      if (bodyIndex >= 0) roles.push({ index: bodyIndex + 1, role: code("bash") });
+    }
+    if (command === "pane" && ["run", "send-keys", "send-text"].includes(action ?? ""))
       issues.push(unknown("Herdr execution in unknown terminal"));
   }
   if (entry.semantics === "python") {

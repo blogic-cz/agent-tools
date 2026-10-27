@@ -126,6 +126,9 @@ const recovery: Readonly<Record<string, string>> = {
   "analysis-limit": "Split the operation into smaller bounded commands.",
   "copy-destination":
     "Use a literal destination below a configured chainCopyDestinations directory, without symlinks.",
+  "agent-config-write":
+    "Use an explicitly granted copy destination with the existing filesystem proof.",
+  "agent-launch-override": "Keep the agent environment filters and sandbox settings.",
 };
 
 function proveCopyDestination(
