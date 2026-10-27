@@ -898,6 +898,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                   );
                   const directory =
                     destination.directory ||
+                    path === normalizePath(context.home, context.home, context.cwd) ||
                     agentConfigDirectory(path) ||
                     mentions(value).some((text) => /(?:\/|^\.\.?|\/\.\.?)$/.test(text));
                   if (directory) agentTargets.push(target);

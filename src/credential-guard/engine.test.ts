@@ -95,6 +95,44 @@ describe("agent configuration boundaries", () => {
       findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
     });
   });
+  it.each(["~", "$HOME", "~/", '"$HOME"'])("resolves home destination %s", (home) => {
+    for (const source of [
+      "mv /tmp/evil/.agents",
+      "cp -r /tmp/evil/.agents",
+      "cp -R /tmp/evil/.codex",
+      "cp -R /tmp/evil/.claude",
+      "ln -s /tmp/evil/.claude",
+      "ln -s /tmp/evil/.codex",
+      "cp /tmp/evil/.claude.json",
+      "install /tmp/evil/.claude.json",
+    ])
+      expect(bash(`${source} ${home}`)).toMatchObject({
+        findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
+      });
+  });
+  it.each([
+    "install -Dt ~/.codex /tmp/config.toml",
+    "install -Dt ~/.claude/commands /tmp/run.md",
+    "install -ct ~/.codex /tmp/config.toml",
+    "ln -Lt ~/.codex /tmp/config.toml",
+    "install -Dt~/.codex /tmp/config.toml",
+    "install -ct~/.codex /tmp/config.toml",
+    "ln -Lt~/.codex /tmp/config.toml",
+  ])("reads target directory in short-option cluster %s", (command) => {
+    expect(bash(command)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
+    });
+  });
+  it.each(["cp", "mv", "install", "ln"])("refuses unclassified %s clusters", (writer) => {
+    for (const args of [
+      "-Zt ~/.codex /tmp/config.toml",
+      "-Zt~/.codex /tmp/config.toml",
+      "-vZ /tmp/a /tmp/b",
+    ])
+      expect(bash(`${writer} ${args}`)).toMatchObject({
+        findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+      });
+  });
   it.each([
     "~/.claude/agents/helper.md",
     "~/.claude/skills/helper/SKILL.md",
@@ -208,6 +246,15 @@ describe("agent configuration boundaries", () => {
     "echo x > /repo/.agents/rules.md",
     "echo x > /repo/.claude/hooks/x.sh",
     "cp /tmp/x /tmp/out.md",
+    "cp -- /tmp/a -vZ",
+    "install -Dt /tmp/bin /tmp/tool",
+    "install -ct/tmp/bin /tmp/tool",
+    "ln -Lt /tmp/bin /tmp/tool",
+    "ln -Lrt/tmp/bin /tmp/tool",
+    "install -bS.bak -t /tmp/bin /tmp/tool",
+    "cp /tmp/public.txt ~",
+    'install /tmp/public.txt "$HOME"',
+    "ln -s /tmp/public.txt $HOME",
     "install -m 755 build/tool ~/bin/tool",
     "ln -s /tmp/public /tmp/link",
     "herdr agent prompt x 'shell_environment_policy.inherit=all'",

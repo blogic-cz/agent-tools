@@ -1392,7 +1392,8 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "-t": arg("write"),
       "--target-directory": arg("write"),
       ...flags("-T", "--no-target-directory"),
-      ...flags("-d", "-v", "-C", "-p", "-s"),
+      ...flags("-d", "-v", "-C", "-p", "-s", "-c", "-D", "-b"),
+      "-S": arg(data),
     },
   },
   {
@@ -3125,7 +3126,20 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     options: {
       "-t": arg("write"),
       "--target-directory": arg("write"),
-      ...flags("-s", "-f", "-n", "-v", "-h", "-T", "--no-target-directory"),
+      ...flags(
+        "-s",
+        "-f",
+        "-n",
+        "-v",
+        "-h",
+        "-T",
+        "--no-target-directory",
+        "-L",
+        "-P",
+        "-r",
+        "-b",
+        "-i",
+      ),
     },
   },
   { name: "chmod", operands: [data, "names"], options: flags("-R", "-f", "-v", "-c") },
@@ -4148,10 +4162,15 @@ function classifyInvocation(
       optionName = a.slice(0, equal);
       attached = a.slice(equal + 1);
     }
-    if (!(optionName in options) && /^-[^-].+/.test(a)) {
+    if (!endOptions && !(optionName in options) && /^-[^-].+/.test(a)) {
       let offset = 1;
-      while (offset < a.length && options[`-${a[offset]}`]?.roles.length === 0) {
-        const finding = options[`-${a[offset]}`]?.issue;
+      const directoryWriter =
+        entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name);
+      while (offset < a.length) {
+        const option = options[`-${a[offset]}`];
+        if (option?.roles.length || (!option && !directoryWriter)) break;
+        if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
+        const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
       }
