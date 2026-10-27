@@ -208,6 +208,86 @@ describe("agent configuration boundaries", () => {
         });
   });
   it.each([
+    "--remote unix:// --sandbox read-only",
+    "--sandbox read-only --remote unix://",
+    "--remote=unix:// --sandbox=read-only",
+    "--remote unix:// -s read-only",
+    "-sread-only --remote=unix://",
+    "-s=read-only --remote unix://",
+    "--remote unix:// -s read-only -m example -c model_reasoning_effort=low 'Read the brief'",
+  ])("allows local read-only remote launch %s", (args) => {
+    for (const prefix of ["", "rtk proxy "])
+      expect(
+        bash(`${prefix}herdr agent start worker --kind codex --pane w1:p2 -- ${args}`).kind,
+      ).toBe("pass");
+  });
+  it.each([
+    "--remote unix://",
+    "--remote",
+    "--remote unix:// --sandbox",
+    "--remote unix:// --sandbox workspace-write",
+    "--sandbox workspace-write --remote unix://",
+    "--remote unix:// -sworkspace-write",
+    "--remote unix:// --sandbox read-only -s read-only",
+    "--remote unix:// --sandbox read-only -s workspace-write",
+    "--remote unix:// --remote unix:// --sandbox read-only",
+    "--remote unix:// --remote=wss://example --sandbox read-only",
+    "--remote unix:// --sandbox read-only --add-dir /repo",
+    "--add-dir=/repo --sandbox read-only --remote unix://",
+    "--remote unix:// --sandbox read-only --yolo",
+    "--remote unix:// --sandbox read-only --dangerously-bypass-approvals-and-sandbox",
+    "--remote unix:// --sandbox read-only --dangerously-skip-permissions",
+    "--remote unix:// --sandbox read-only -c sandbox_mode=read-only",
+    "--remote unix:// --sandbox read-only -c approval_policy=never",
+    "--remote unix:// --sandbox read-only -c shell_environment_policy.inherit=all",
+    "--remote unix:// --sandbox read-only -c shell_environment_policy.exclude=[]",
+    "--remote unix:// --sandbox read-only --unknown-option value",
+  ])("refuses remote launch override %s even before a trailing prompt", (args) => {
+    for (const prompt of ["", " 'Read the brief'"])
+      expect(
+        bash(`rtk proxy herdr agent start worker --kind codex --pane w1:p2 -- ${args}${prompt}`),
+      ).toMatchObject({
+        findings: expect.arrayContaining([
+          expect.objectContaining({ rule: "agent-launch-override" }),
+        ]),
+      });
+  });
+  it.each([
+    "ws://localhost",
+    "wss://localhost",
+    "tcp://localhost:9000",
+    "/users/test/.codex/server.sock",
+    "unix:///users/test/.codex/server.sock",
+    "/users/test/.codex-other/server.sock",
+    "/users/test/.codex/../server.sock",
+    ".codex/server.sock",
+    "../.codex/server.sock",
+    "unix://relative.sock",
+    "unix:///tmp/server.sock",
+    "unix:///",
+  ])("refuses unproved remote endpoint %s", (endpoint) => {
+    expect(
+      bash(
+        `herdr agent start worker --kind codex --pane w1:p2 -- --sandbox read-only --remote ${endpoint}`,
+      ),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ rule: "agent-launch-override" }),
+      ]),
+    });
+  });
+  it("keeps remote launch support exclusive to Codex", () => {
+    expect(
+      bash(
+        "herdr agent start worker --kind claude --pane w1:p2 -- --remote unix:// --sandbox read-only",
+      ),
+    ).toMatchObject({
+      findings: expect.arrayContaining([
+        expect.objectContaining({ rule: "agent-launch-override" }),
+      ]),
+    });
+  });
+  it.each([
     "herdr tab create -- codex -c shell_environment_policy.inherit=all",
     "herdr pane split w1:p2 -- codex -c shell_environment_policy.inherit=all",
     "herdr --session s pane split --pane w1:p2 -- claude --settings /tmp/x.json",
