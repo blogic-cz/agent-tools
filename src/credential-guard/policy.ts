@@ -32,6 +32,8 @@ const ruleNames = [
   "unsupported-option",
   "analysis-limit",
   "copy-destination",
+  "agent-config-write",
+  "agent-launch-override",
 ] satisfies readonly string[];
 export type RuleId = string & { readonly __brand: "RuleId" };
 function isRuleId(value: string): value is RuleId {
@@ -236,6 +238,14 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
   };
   const copyProofs: Array<() => void> = [];
   const registry = context.registry ?? buildRegistry();
+  const agentConfigPath = (path: string): boolean =>
+    /(?:^|\/)(?:agents\.md|claude\.md)$/.test(path) ||
+    /(?:^|\/)\.codex(?:\/|$)/.test(path) ||
+    /(?:^|\/)\.claude\/(?:commands(?:\/|$)|settings[^/]*\.json$)/.test(path) ||
+    [".claude", ".agents"].some((directory) => {
+      const root = normalizePath(`${context.home}/${directory}`, context.home, context.cwd);
+      return path === root || path.startsWith(`${root}/`);
+    });
   const emit = (rule: string, detail: string, span: Span, uncertainty = false): void => {
     detected ||= !uncertainty;
     if (findings.length < 256) findings.push({ rule: ruleId(rule), detail, span });
@@ -507,6 +517,8 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
         stdin = target.kind === "stream" ? target.stdout : { ...opaque(...paths), supplied: true };
       }
       if (redirect.op !== "<") {
+        if (current.dialect === "bash" && paths.some(agentConfigPath))
+          emit("agent-config-write", "write to agent instructions or configuration", span, true);
         outputs.push(
           ...paths.map((path) => ({
             path,
@@ -884,6 +896,31 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           )
             emit("startup-mutation", "copy to startup configuration", span, true);
           for (const path of targets) {
+            if (scope.dialect === "bash" && agentConfigPath(path)) {
+              if (plan.copyDestination) {
+                if (
+                  values.length !== 3 ||
+                  value.kind !== "literal" ||
+                  values[1]?.kind !== "literal" ||
+                  !context.chainCopyDestinations?.length ||
+                  !value.texts.every(
+                    (target) => context.proveCopyDestination?.(target, argv[1] ?? "") === true,
+                  )
+                )
+                  emit(
+                    "agent-config-write",
+                    "copy to agent instructions or configuration requires the existing filesystem proof",
+                    span,
+                    true,
+                  );
+              } else
+                emit(
+                  "agent-config-write",
+                  "write to agent instructions or configuration",
+                  span,
+                  true,
+                );
+            }
             written.set(path, opaque());
             observeWrite(path, opaque());
           }

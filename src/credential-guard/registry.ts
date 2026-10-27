@@ -29,6 +29,7 @@ export type Issue = {
     | "opaque-executable"
     | "opaque-env-name"
     | "startup-mutation"
+    | "agent-launch-override"
     | "unsupported-option";
   readonly detail: string;
 };
@@ -3097,6 +3098,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     operands: ["names"],
   },
   { name: "mv", operands: ["write"] },
+  { name: "ln", operands: [path], options: flags("-s", "-f", "-n", "-v", "-h") },
   { name: "chmod", operands: [data, "names"], options: flags("-R", "-f", "-v", "-c") },
   {
     name: "break",
@@ -4527,7 +4529,10 @@ function classifyInvocation(
     if (sedEmptySuffix && !filterOption && positional[0] !== undefined)
       roles.push({ index: positional[0], role: "write" });
   }
-  if (entry.semantics === "copy" && positional.length) {
+  if (
+    (entry.semantics === "copy" || entry.name === "install" || entry.name === "ln") &&
+    positional.length
+  ) {
     const destination = positional.at(-1);
     if (destination !== undefined) {
       const role = roles.find((item) => item.index === destination);
@@ -4564,6 +4569,32 @@ function classifyInvocation(
       issues.push(source("PowerShell environment provider"));
   }
   if (entry.semantics === "herdr") {
+    if (argv[1] === "agent" && argv[2] === "start") {
+      const separator = argv.indexOf("--");
+      if (separator >= 0)
+        for (let i = separator + 1; i < argv.length; i++) {
+          const argument = argv[i];
+          if (
+            argument === undefined ||
+            /^--(?:dangerously-bypass-approvals-and-sandbox|dangerously-skip-permissions|settings|mcp-config|command)(?:=|$)/.test(
+              argument,
+            ) ||
+            (/^(?:--sandbox|-s)(?:=danger-full-access$|$)/.test(argument) &&
+              (argument.includes("=") ||
+                argv[i + 1] === "danger-full-access" ||
+                argv[i + 1] === undefined)) ||
+            /shell_environment_policy(?:\s*=|\.(?:inherit|ignore_default_excludes|exclude|include_only)(?:\s*=|$))/.test(
+              argument,
+            )
+          )
+            issues.push({
+              kind: "missing-knowledge",
+              rule: "agent-launch-override",
+              detail:
+                "native agent argument changes environment filters, sandbox, or startup configuration",
+            });
+        }
+    }
     if (["tab", "window"].includes(argv[1] ?? "") && ["create", "split"].includes(argv[2] ?? "")) {
       const separator = argv.indexOf("--");
       if (separator >= 0) child(separator + 1);

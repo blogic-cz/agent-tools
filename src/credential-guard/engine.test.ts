@@ -23,6 +23,90 @@ const context: PolicyContext = {
 const bash = (text: string, options: PolicyContext = context) => judge(parseBash(text), options);
 const ps = (text: string) => judge(parsePowerShell(text), context);
 
+describe("agent configuration boundaries", () => {
+  it.each([
+    "~/.claude/commands/run.md",
+    "~/.claude/settings.json",
+    "~/.codex/config.toml",
+    "~/.agents/rules.md",
+    "/repo/nested/AGENTS.md",
+    "/repo/nested/CLAUDE.md",
+    "/repo/.claude/commands/run.md",
+    "/repo/.claude/settings.local.json",
+    "/repo/.codex/config.toml",
+  ])("refuses writes across writer forms to %s", (target) => {
+    for (const command of [
+      `cp /tmp/evil.md ${target}`,
+      `mv /tmp/evil.md ${target}`,
+      `install /tmp/evil.md ${target}`,
+      `tee ${target}`,
+      `echo x > ${target}`,
+      `echo x >> ${target}`,
+      `sed -i 's/x/y/' ${target}`,
+      `ln -s /tmp/evil.md ${target}`,
+    ])
+      for (const suffix of ["", " && cat /tmp/x.md", "; cat /tmp/x.md"])
+        expect(bash(command + suffix).kind).not.toBe("pass");
+  });
+  it.each([
+    "cp /tmp/evil.md ~/.claude/CLAUDE.md",
+    "cp /tmp/evil.md ~/.codex/AGENTS.md",
+    "cp /tmp/evil.md ~/.codex/AGENTS.md && cat /tmp/x.md",
+    "cp /tmp/evil.md ~/.codex/AGENTS.md && herdr agent start n --kind codex --pane w1:p2",
+    "mv /tmp/evil.md ~/.agents/rules.md",
+    "install /tmp/evil.md /repo/AGENTS.md",
+    "tee /repo/.claude/settings.local.json",
+    "echo x > /repo/CLAUDE.md",
+    "echo x >> /repo/.codex/config.toml",
+    "sed -i 's/x/y/' /repo/.claude/commands/run.md",
+    "ln -s /tmp/evil.md ~/.claude/settings.json",
+    "bash -c 'echo x > AGENTS.md'",
+  ])("refuses %s", (command) => {
+    const decision = bash(command);
+    expect(decision.kind).not.toBe("pass");
+    if (decision.kind !== "pass")
+      expect(decision.findings.some((finding) => finding.rule === "agent-config-write")).toBe(true);
+  });
+  it.each([
+    "-c shell_environment_policy.inherit=all",
+    "-c shell_environment_policy.inherit=none",
+    "--config=shell_environment_policy.ignore_default_excludes=false",
+    "-c shell_environment_policy.exclude=[]",
+    "-c shell_environment_policy.include_only=[]",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--sandbox danger-full-access",
+    "--sandbox=danger-full-access",
+    "-s danger-full-access",
+    "-c 'shell_environment_policy={inherit=\"all\"}'",
+    "--dangerously-skip-permissions",
+    "--settings /tmp/settings.json",
+    "--mcp-config=/tmp/mcp.json",
+  ])("refuses native override %s", (args) => {
+    for (const kind of ["codex", "claude"]) {
+      const decision = bash(`herdr agent start n --kind ${kind} --pane w1:p2 -- ${args}`);
+      expect(decision.kind).not.toBe("pass");
+      if (decision.kind !== "pass")
+        expect(decision.findings.some((finding) => finding.rule === "agent-launch-override")).toBe(
+          true,
+        );
+    }
+  });
+  it.each([
+    "herdr pane run w1:p2 printenv",
+    "herdr pane send-keys w1:p2 printenv",
+    "herdr agent start --kind codex n --command printenv",
+  ])("keeps refusing %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "cat ~/.codex/AGENTS.md",
+    "rg -n x AGENTS.md",
+    `herdr agent start n --kind codex --pane w1:p2 -- -c 'shell_environment_policy.set.HERDR_ENV="1"' -c 'shell_environment_policy.set.HERDR_WORKSPACE_ID="w1"' -c 'shell_environment_policy.set.HERDR_TAB_ID="w1:t1"' -c 'shell_environment_policy.set.HERDR_PANE_ID="w1:p2"' -c sandbox_workspace_write.network_access=true --sandbox workspace-write --add-dir /repo -m example -c model_reasoning_effort=high`,
+  ])("allows %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+});
+
 export const bashPassProbes = [
   'export X="$(cat public.txt)"; echo "$X"',
   'export X=$(grep foo public.txt); echo "$X"',
