@@ -18,6 +18,7 @@ export type OperandRole =
   | "member"
   | "rg-type"
   | "write"
+  | "write-name"
   | { readonly code: Language };
 export type Issue = {
   readonly kind: "violation" | "missing-knowledge";
@@ -3148,7 +3149,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "touch",
-    operands: ["write"],
+    operands: ["write-name"],
     options: {
       "-t": arg(data),
       "-d": arg(data),

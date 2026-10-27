@@ -794,6 +794,24 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           ? literal(operand.literal)
           : (values[operand.index] ?? opaque());
       const role = operand.role;
+      if (role === "write-name") {
+        if (
+          (value.kind !== "literal" && !(value.kind === "opaque" && value.globPatterns)) ||
+          invocationScope.cwd.kind !== "literal"
+        )
+          emit("opaque-path", "write target is not a known name or glob", span, true);
+        if (
+          scope.dialect === "bash" &&
+          (agentConfigGlob(value) ||
+            mentions(value).some((text) =>
+              mentions(invocationScope.cwd).some((cwd) =>
+                agentConfigPath(normalizePath(text, context.home, cwd)),
+              ),
+            ))
+        )
+          emit("agent-config-write", "write to agent instructions or configuration", span, true);
+        continue;
+      }
       if (typeof role !== "string") {
         const analyzedOutput = analyze(
           role.code,
