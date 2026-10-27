@@ -119,6 +119,11 @@ export type InvocationPlan = {
   readonly pipelinePaths: boolean;
   readonly startupFiles: readonly RegExp[];
   readonly copyDestination: boolean;
+  readonly directoryWrites: readonly {
+    readonly index: number;
+    readonly sources: readonly number[];
+    readonly directory: boolean;
+  }[];
   readonly inPlaceBackupSuffix: string | null;
   readonly scriptLanguage: Language;
   readonly codePositionals: readonly number[];
@@ -1160,6 +1165,11 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   {
     name: "herdr",
     options: {
+      "--session": arg(data),
+      "--machine": arg(data),
+      "--remote": arg(data),
+      "--remote-keybindings": arg(data),
+      ...flags("--handoff"),
       "--format": arg(data),
       "--env": arg(data),
       ...flags("--focus"),
@@ -1379,6 +1389,9 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "-m": arg(data),
       "-o": arg(data),
       "-g": arg(data),
+      "-t": arg("write"),
+      "--target-directory": arg("write"),
+      ...flags("-T", "--no-target-directory"),
       ...flags("-d", "-v", "-C", "-p", "-s"),
     },
   },
@@ -3097,8 +3110,24 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     },
     operands: ["names"],
   },
-  { name: "mv", operands: ["write"] },
-  { name: "ln", operands: [path], options: flags("-s", "-f", "-n", "-v", "-h") },
+  {
+    name: "mv",
+    operands: ["write"],
+    options: {
+      "-t": arg("write"),
+      "--target-directory": arg("write"),
+      ...flags("-T", "--no-target-directory", "-f", "-i", "-n", "-v"),
+    },
+  },
+  {
+    name: "ln",
+    operands: [path],
+    options: {
+      "-t": arg("write"),
+      "--target-directory": arg("write"),
+      ...flags("-s", "-f", "-n", "-v", "-h", "-T", "--no-target-directory"),
+    },
+  },
   { name: "chmod", operands: [data, "names"], options: flags("-R", "-f", "-v", "-c") },
   {
     name: "break",
@@ -3462,6 +3491,7 @@ function classifyInvocation(
   let remote = false;
   let delta: InvocationPlan["delta"] = "none";
   let codePositionals: number[] = [];
+  const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
   let maxArgs: number | null = null;
@@ -3494,6 +3524,7 @@ function classifyInvocation(
     codePositionals,
     cwdOperands,
     inPlaceBackupSuffix,
+    directoryWrites,
     startupFiles: entry?.startupFiles ?? [],
     copyDestination: entry?.semantics === "copy",
     scriptLanguage: entry?.semantics === "shell" ? "bash" : "runtime",
@@ -4529,15 +4560,19 @@ function classifyInvocation(
     if (sedEmptySuffix && !filterOption && positional[0] !== undefined)
       roles.push({ index: positional[0], role: "write" });
   }
-  if (
-    (entry.semantics === "copy" || entry.name === "install" || entry.name === "ln") &&
-    positional.length
-  ) {
-    const destination = positional.at(-1);
+  if (entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name)) {
+    const targetDirectory = optionRoles.find((operand) => operand.role === "write");
+    const destination = targetDirectory?.index ?? positional.at(-1);
     if (destination !== undefined) {
       const role = roles.find((item) => item.index === destination);
       if (role) roles.splice(roles.indexOf(role), 1);
-      roles.push({ index: destination, role: "write" });
+      roles.push(targetDirectory ?? { index: destination, role: "write" });
+      if (!argv.some((word) => word === "-T" || word === "--no-target-directory"))
+        directoryWrites.push({
+          index: destination,
+          sources: targetDirectory ? positional : positional.slice(0, -1),
+          directory: targetDirectory !== undefined || positional.length > 2,
+        });
     }
   }
   stdout = mode.stdout ?? entry.stdout ?? "opaque";
@@ -4569,40 +4604,73 @@ function classifyInvocation(
       issues.push(source("PowerShell environment provider"));
   }
   if (entry.semantics === "herdr") {
-    if (argv[1] === "agent" && argv[2] === "start") {
-      const separator = argv.indexOf("--");
-      if (separator >= 0)
-        for (let i = separator + 1; i < argv.length; i++) {
-          const argument = argv[i];
-          if (
-            argument === undefined ||
-            /^--(?:dangerously-bypass-approvals-and-sandbox|dangerously-skip-permissions|settings|mcp-config|command)(?:=|$)/.test(
-              argument,
-            ) ||
-            (/^(?:--sandbox|-s)(?:=danger-full-access$|$)/.test(argument) &&
-              (argument.includes("=") ||
-                argv[i + 1] === "danger-full-access" ||
-                argv[i + 1] === undefined)) ||
-            /shell_environment_policy(?:\s*=|\.(?:inherit|ignore_default_excludes|exclude|include_only)(?:\s*=|$))/.test(
-              argument,
-            )
-          )
-            issues.push({
-              kind: "missing-knowledge",
-              rule: "agent-launch-override",
-              detail:
-                "native agent argument changes environment filters, sandbox, or startup configuration",
-            });
+    const separator = argv.indexOf("--");
+    const commandIndex = argv.findIndex(
+      (word, index) =>
+        (separator < 0 || index < separator) &&
+        ((word === "agent" && argv[index + 1] === "start") ||
+          (["tab", "window", "pane"].includes(word ?? "") &&
+            ["create", "split", "run", "send-keys", "send-text"].includes(argv[index + 1] ?? ""))),
+    );
+    const command = argv[commandIndex];
+    const action = argv[commandIndex + 1];
+    const checkAgentArguments = (kind: string | undefined, start: number): void => {
+      for (let index = start; index < argv.length; index++) {
+        const argument = argv[index] ?? "";
+        if (index === argv.length - 1 && argv[index] !== undefined && !argument.startsWith("-"))
+          return;
+        const attached = /^(--[^=]+)=(.*)$/.exec(argument) ?? /^(-[mcCs])=?(.+)$/.exec(argument);
+        const option = attached?.[1] ?? argument;
+        const value = attached ? attached[2] : argv[++index];
+        const configuration =
+          value !== undefined &&
+          (/^model_reasoning_effort=(?:minimal|low|medium|high|xhigh|max)$/.test(value) ||
+            /^sandbox_workspace_write\.network_access=(?:true|false)$/.test(value) ||
+            /^shell_environment_policy\.set\.HERDR_ENV="1"$/.test(value) ||
+            /^shell_environment_policy\.set\.HERDR_(?:WORKSPACE_ID|TAB_ID|PANE_ID|SOCKET_PATH)="[^"\\\r\n]*"$/.test(
+              value,
+            ));
+        const supported =
+          value !== undefined &&
+          (option === "--prompt" || (value !== "" && !value.startsWith("-"))) &&
+          ((["--model", "--add-dir", "--prompt"].includes(option) &&
+            ["codex", "claude"].includes(kind ?? "")) ||
+            (kind === "codex" &&
+              (["-m", "--cd", "-C"].includes(option) ||
+                (["--sandbox", "-s"].includes(option) &&
+                  ["workspace-write", "read-only"].includes(value)) ||
+                (option === "-c" && configuration))));
+        if (!supported) {
+          issues.push({
+            kind: "missing-knowledge",
+            rule: "agent-launch-override",
+            detail: "native agent arguments must use the supported launch form",
+          });
+          return;
         }
+      }
+    };
+    if (command === "agent" && action === "start" && separator >= 0) {
+      let kind: string | undefined;
+      for (let index = commandIndex + 2; index < separator; index++) {
+        if (argv[index] === "--kind") kind = argv[index + 1];
+        else if (argv[index]?.startsWith("--kind=")) kind = argv[index]?.slice(7);
+      }
+      checkAgentArguments(kind, separator + 1);
     }
-    if (["tab", "window"].includes(argv[1] ?? "") && ["create", "split"].includes(argv[2] ?? "")) {
-      const separator = argv.indexOf("--");
-      if (separator >= 0) child(separator + 1);
-      const commandIndex = argv.findIndex((value) => value === "--command");
-      if (commandIndex >= 0) roles.push({ index: commandIndex + 1, role: code("bash") });
+    if (
+      ["tab", "window", "pane"].includes(command ?? "") &&
+      ["create", "split"].includes(action ?? "")
+    ) {
+      if (separator >= 0) {
+        const kind = executableName(argv[separator + 1] ?? "");
+        if (["codex", "claude"].includes(kind)) checkAgentArguments(kind, separator + 2);
+        child(separator + 1);
+      }
+      const bodyIndex = argv.findIndex((value) => value === "--command");
+      if (bodyIndex >= 0) roles.push({ index: bodyIndex + 1, role: code("bash") });
     }
-
-    if (argv[1] === "pane" && ["run", "send-keys", "send-text"].includes(argv[2] ?? ""))
+    if (command === "pane" && ["run", "send-keys", "send-text"].includes(action ?? ""))
       issues.push(unknown("Herdr execution in unknown terminal"));
   }
   if (entry.semantics === "python") {

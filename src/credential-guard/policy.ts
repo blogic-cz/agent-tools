@@ -238,14 +238,24 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
   };
   const copyProofs: Array<() => void> = [];
   const registry = context.registry ?? buildRegistry();
+  const home = normalizePath(context.home, context.home, context.cwd);
+  const agentConfigDirectory = (path: string): boolean =>
+    (/(?:^|\/)\.codex(?:\/|$)/.test(path) && !path.startsWith(`${home}/.codex/`)) ||
+    path === `${home}/.codex/` ||
+    path === `${home}/.codex/prompts` ||
+    path.startsWith(`${home}/.codex/prompts/`) ||
+    /(?:^|\/)\.claude\/(?:commands|agents|skills)(?:\/|$)/.test(path) ||
+    path === `${home}/.claude/hooks` ||
+    path.startsWith(`${home}/.claude/hooks/`) ||
+    path === `${home}/.agents/skills` ||
+    path.startsWith(`${home}/.agents/skills/`);
   const agentConfigPath = (path: string): boolean =>
-    /(?:^|\/)(?:agents\.md|claude\.md)$/.test(path) ||
-    /(?:^|\/)\.codex(?:\/|$)/.test(path) ||
-    /(?:^|\/)\.claude\/(?:commands(?:\/|$)|settings[^/]*\.json$)/.test(path) ||
-    [".claude", ".agents"].some((directory) => {
-      const root = normalizePath(`${context.home}/${directory}`, context.home, context.cwd);
-      return path === root || path.startsWith(`${root}/`);
-    });
+    agentConfigDirectory(path) ||
+    /(?:^|\/)(?:agents\.md|claude\.md|\.mcp\.json|\.claude)$/.test(path) ||
+    /(?:^|\/)\.claude\/settings[^/]*\.json$/.test(path) ||
+    path === `${home}/.agents` ||
+    path === `${home}/.codex/config.toml` ||
+    path === `${home}/.claude.json`;
   const emit = (rule: string, detail: string, span: Span, uncertainty = false): void => {
     detected ||= !uncertainty;
     if (findings.length < 256) findings.push({ rule: ruleId(rule), detail, span });
@@ -875,17 +885,24 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
               )
                 emit("startup-mutation", "in-place write to startup configuration", span, true);
           }
-          if (plan.copyDestination)
-            for (const source of values.slice(1, -1))
-              for (const name of mentions(source))
-                for (const path of paths)
-                  targets.push(
-                    normalizePath(
-                      `${path}/${name.replace(/\\/g, "/").split("/").at(-1) ?? ""}`,
-                      context.home,
-                      context.cwd,
-                    ),
+          const destination = plan.directoryWrites.find((write) => write.index === operand.index);
+          const agentTargets = [...paths];
+          if (destination)
+            for (const sourceIndex of destination.sources)
+              for (const name of mentions(values[sourceIndex] ?? opaque()))
+                for (const path of paths) {
+                  const target = normalizePath(
+                    `${path}/${name.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? ""}`,
+                    context.home,
+                    context.cwd,
                   );
+                  const directory =
+                    destination.directory ||
+                    agentConfigDirectory(path) ||
+                    mentions(value).some((text) => /(?:\/|^\.\.?|\/\.\.?)$/.test(text));
+                  if (directory) agentTargets.push(target);
+                  if (directory || plan.copyDestination) targets.push(target);
+                }
           if (
             plan.copyDestination &&
             targets.some((target) =>
@@ -896,7 +913,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           )
             emit("startup-mutation", "copy to startup configuration", span, true);
           for (const path of targets) {
-            if (scope.dialect === "bash" && agentConfigPath(path)) {
+            if (scope.dialect === "bash" && agentTargets.includes(path) && agentConfigPath(path)) {
               if (plan.copyDestination) {
                 if (
                   values.length !== 3 ||
