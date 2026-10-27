@@ -40,6 +40,7 @@ export type Option = {
 };
 export type ExecutableEntry = {
   readonly name: string;
+  readonly acceptsAbbreviations?: boolean;
   readonly readsContent?: boolean;
   readonly readsStdinCode?: boolean;
   readonly builtinOnly?: boolean;
@@ -273,6 +274,7 @@ const gitLogOptions = {
 export const EXECUTABLES: readonly ExecutableEntry[] = [
   {
     name: "git",
+    acceptsAbbreviations: true,
     informationFlags: ["--help", "--version"],
     startupFiles: [/(?:^|\/)\.git\/config$/],
     operands: [data],
@@ -1383,6 +1385,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "install",
+    acceptsAbbreviations: true,
     readsContent: true,
     operands: [path],
     options: {
@@ -1398,6 +1401,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "sed",
+    acceptsAbbreviations: true,
     readsContent: true,
     aliases: ["gsed"],
     operands: [code("sed"), path],
@@ -1957,8 +1961,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
           name,
           {
             operands: [path],
-            effect:
-              name === "restore" ? unknown("unmodeled Time Machine restore operation") : "none",
+            effect: "none",
           } satisfies Omit<ExecutableEntry, "name">,
         ]),
       ),
@@ -3058,6 +3061,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "cp",
+    acceptsAbbreviations: true,
     operands: [path],
     semantics: "copy",
     options: {
@@ -3091,6 +3095,78 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       ),
     },
   },
+  {
+    name: "rsync",
+    operands: [path],
+    options: {
+      ...flags("-a", "-r", "-v", "-z", "--archive", "--recursive", "--delete"),
+      "-e": arg(code("bash")),
+      "--rsh": arg(code("bash")),
+    },
+  },
+  { name: "ditto", operands: [path], options: flags("-V", "-v", "--rsrc", "--norsrc") },
+  {
+    name: "tar",
+    operands: [path],
+    options: {
+      ...flags("-x", "--extract", "-c", "--create", "-t", "--list", "-v", "-z", "-j", "-J"),
+      "-f": arg(path),
+      "--file": arg(path),
+      "-C": arg("write"),
+      "--directory": arg("write"),
+    },
+  },
+  {
+    name: "unzip",
+    operands: [path],
+    options: { ...flags("-q", "-o", "-n", "-l", "-t", "-v"), "-d": arg("write") },
+  },
+  {
+    name: "patch",
+    operands: ["write", path],
+    options: {
+      "-i": arg(path),
+      "--input": arg(path),
+      "-o": arg("write"),
+      "--output": arg("write"),
+      "-d": arg("write"),
+      "--directory": arg("write"),
+      "-p": arg(data),
+      ...flags("-s", "-f", "-R", "--dry-run"),
+    },
+  },
+  {
+    name: "truncate",
+    operands: ["write"],
+    options: {
+      "-s": arg(data),
+      "--size": arg(data),
+      "-r": arg(path),
+      "--reference": arg(path),
+      ...flags("-c", "--no-create"),
+    },
+  },
+  {
+    name: "touch",
+    operands: ["write"],
+    options: {
+      "-t": arg(data),
+      "-d": arg(data),
+      "-r": arg(path),
+      ...flags("-a", "-m", "-c", "-h", "--no-create"),
+    },
+  },
+  {
+    name: "wget",
+    operands: [data],
+    options: {
+      "-O": arg("write"),
+      "--output-document": arg("write"),
+      "-o": arg("write"),
+      "--output-file": arg("write"),
+      ...flags("-q", "-c", "-nv"),
+    },
+  },
   { name: "seq", operands: [data], semantics: "seq" },
   { name: "tr", operands: [data], stdout: "opaque", options: flags("-c", "-C", "-d", "-s", "-t") },
   {
@@ -3116,7 +3192,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "rm",
-    aliases: ["touch", "du", "stat", "chown", "df"],
+    aliases: ["du", "stat", "chown", "df"],
     options: {
       ...flags("-f", "-r", "-R", "-v", "-n", "-i", "-p", "-a", "-m", "-c", "-h", "-s"),
       "-t": arg(data),
@@ -3126,6 +3202,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "mv",
+    acceptsAbbreviations: true,
     operands: ["write"],
     options: {
       "-t": arg("write"),
@@ -3135,6 +3212,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   },
   {
     name: "ln",
+    acceptsAbbreviations: true,
     operands: [path],
     options: {
       "-t": arg("write"),
@@ -4232,7 +4310,7 @@ function classifyInvocation(
       : [];
     const option =
       options[optionName] ??
-      (longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
+      (entry.acceptsAbbreviations && longOptions.length === 1 ? longOptions[0]?.[1] : undefined) ??
       longOptions.find(
         ([, candidate]) =>
           candidate.issue || candidate.roles.some((role) => typeof role !== "string"),
@@ -4242,6 +4320,8 @@ function classifyInvocation(
             ([key]) => key.toLowerCase() === optionName.toLowerCase(),
           )?.[1]
         : undefined);
+    if (option && entry.acceptsAbbreviations && longOptions.length === 1 && !options[optionName])
+      optionName = longOptions[0]?.[0] ?? optionName;
     if (
       !endOptions &&
       optionName.startsWith("--") &&
@@ -4614,7 +4694,7 @@ function classifyInvocation(
   }
   if (inPlaceBackupSuffix !== null) {
     for (const operand of roles) if (operand.role === "path") operand.role = "write";
-    if (sedEmptySuffix && !filterOption && positional[0] !== undefined)
+    if ((sedEmptySuffix || positional.length === 1) && !filterOption && positional[0] !== undefined)
       roles.push({ index: positional[0], role: "write" });
   }
   if (entry.name === "install") {
@@ -4630,7 +4710,12 @@ function classifyInvocation(
       if (operand.role === "write")
         directoryWrites.push({ index: operand.index, sources: candidates, directory: true });
   }
-  if (entry.semantics === "copy" || ["mv", "ln"].includes(entry.name)) {
+  if (entry.name === "git" && mode === entry.subcommands?.checkout) {
+    const separator = argv.indexOf("--");
+    for (const operand of roles)
+      if (separator >= 0 && operand.index > separator) operand.role = "write";
+  }
+  if (entry.semantics === "copy" || ["mv", "ln", "rsync", "ditto"].includes(entry.name)) {
     const targetDirectory = optionRoles.find((operand) => operand.role === "write");
     const destination = targetDirectory?.index ?? positional.at(-1);
     if (destination !== undefined) {

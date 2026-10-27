@@ -96,6 +96,41 @@ const glob = (text: string): Value => ({ ...opaque(text), globPatterns: [text] }
 function mentions(value: Value): readonly string[] {
   return value.kind === "literal" ? value.texts : value.kind === "opaque" ? value.mentions : [];
 }
+function agentConfigGlob(value: Value): boolean {
+  return mentions(value).some((text) =>
+    text
+      .replace(/\\/g, "/")
+      .split("/")
+      .some((part) => {
+        if (!/[*?[]/.test(part)) return false;
+        if (part.replace(/\[[A-Za-z0-9._]\]/g, "").includes("[")) return true;
+        const pattern = new RegExp(
+          `^${part
+            .replace(/[.+^${}()|\\]/g, "\\$&")
+            .replace(/\[([A-Za-z0-9_]|\\\.)\]/g, "$1")
+            .replace(/\*/g, ".*")
+            .replace(/\?/g, ".")}$`,
+          "i",
+        );
+        return [
+          "AGENTS.md",
+          "CLAUDE.md",
+          ".mcp.json",
+          ".claude",
+          ".claude.json",
+          ".codex",
+          ".agents",
+          "config.toml",
+          "settings.json",
+          "settings.local.json",
+          "commands",
+          "agents",
+          "skills",
+          "hooks",
+        ].some((name) => pattern.test(name));
+      }),
+  );
+}
 function join(a: Value, b: Value): Value {
   const texts = [...new Set([...mentions(a), ...mentions(b)])];
   return a.kind === "literal" && b.kind === "literal" && texts.length <= MAX_VALUE_ALTERNATIVES
@@ -251,7 +286,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
     path.startsWith(`${home}/.agents/skills/`);
   const agentConfigPath = (path: string): boolean =>
     agentConfigDirectory(path) ||
-    /(?:^|\/)(?:agents\.md|claude\.md|\.mcp\.json|\.claude)$/.test(path) ||
+    /(?:^|\/)(?:agents\.md|claude\.md|\.mcp\.json|\.claude)\/?$/.test(path) ||
     /(?:^|\/)\.claude\/settings[^/]*\.json$/.test(path) ||
     path === `${home}/.agents` ||
     path === `${home}/.codex/config.toml` ||
@@ -527,7 +562,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
         stdin = target.kind === "stream" ? target.stdout : { ...opaque(...paths), supplied: true };
       }
       if (redirect.op !== "<") {
-        if (current.dialect === "bash" && paths.some(agentConfigPath))
+        if (current.dialect === "bash" && (paths.some(agentConfigPath) || agentConfigGlob(target)))
           emit("agent-config-write", "write to agent instructions or configuration", span, true);
         outputs.push(
           ...paths.map((path) => ({
@@ -841,39 +876,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           scope.dialect === "bash" &&
           (role === "write" ||
             plan.directoryWrites.some((write) => write.sources.includes(operand.index))) &&
-          mentions(value).some((text) =>
-            text
-              .replace(/\\/g, "/")
-              .split("/")
-              .some((part) => {
-                if (!/[*?[]/.test(part)) return false;
-                if (part.replace(/\[[A-Za-z0-9._]\]/g, "").includes("[")) return true;
-                const pattern = new RegExp(
-                  `^${part
-                    .replace(/[.+^${}()|\\]/g, "\\$&")
-                    .replace(/\[([A-Za-z0-9_]|\\\.)\]/g, "$1")
-                    .replace(/\*/g, ".*")
-                    .replace(/\?/g, ".")}$`,
-                  "i",
-                );
-                return [
-                  "AGENTS.md",
-                  "CLAUDE.md",
-                  ".mcp.json",
-                  ".claude",
-                  ".claude.json",
-                  ".codex",
-                  ".agents",
-                  "config.toml",
-                  "settings.json",
-                  "settings.local.json",
-                  "commands",
-                  "agents",
-                  "skills",
-                  "hooks",
-                ].some((name) => pattern.test(name));
-              }),
-          )
+          agentConfigGlob(value)
         )
           emit(
             "agent-config-write",
@@ -954,6 +957,8 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                   );
                   const directory =
                     destination.directory ||
+                    (!/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(path) &&
+                      mentions(value).some((text) => !/\.[^./]+$/.test(text))) ||
                     path === normalizePath(context.home, context.home, context.cwd) ||
                     agentConfigDirectory(path) ||
                     mentions(value).some((text) => /(?:\/|^\.\.?|\/\.\.?)$/.test(text));
