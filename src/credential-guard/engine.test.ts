@@ -236,7 +236,18 @@ describe("agent configuration boundaries", () => {
     "install -S /tmp/evil/AGENTS.md /repo/",
     "install -Sv /tmp/evil/AGENTS.md ./",
     "install -S /tmp/evil/config.toml ~/.codex/",
-  ])("refuses install suffix ambiguity %s", (command) => {
+    "install -Sm /tmp/evil/AGENTS.md ./",
+    "install -Sm /tmp/evil/AGENTS.md /repo/",
+    "install -So /tmp/evil/AGENTS.md ./",
+    "install -Sg /tmp/evil/AGENTS.md ./",
+    "install -bSm /tmp/evil/AGENTS.md ./",
+    "install -Sm /tmp/evil/.claude.json ~",
+    "install -T tag /tmp/evil/AGENTS.md ./",
+    "install -T tag /tmp/evil/.claude.json ~",
+    "install -T AGENTS.md /tmp/tool /tmp/out",
+    "install -m AGENTS.md /tmp/tool /tmp/out",
+    "install -- /tmp/evil/AGENTS.md /tmp/out",
+  ])("refuses install operand ambiguity %s", (command) => {
     expect(bash(command)).toMatchObject({
       findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
     });
@@ -313,6 +324,10 @@ describe("agent configuration boundaries", () => {
     'install /tmp/public.txt "$HOME"',
     "ln -s /tmp/public.txt $HOME",
     "install -m 755 build/tool ~/bin/tool",
+    "install -m 644 a.txt /tmp/x",
+    "install -d /tmp/dir",
+    "install -Dm755 bin /tmp/bin/tool",
+    "install -t /tmp/dir a b",
     "ln -s /tmp/public /tmp/link",
     "herdr agent prompt x 'shell_environment_policy.inherit=all'",
     "herdr --session s agent prompt x 'shell_environment_policy.inherit=all'",

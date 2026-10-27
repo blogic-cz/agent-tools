@@ -887,6 +887,17 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           }
           const destination = plan.directoryWrites.find((write) => write.index === operand.index);
           const agentTargets = [...paths];
+          if (
+            scope.dialect === "bash" &&
+            executableName(first.texts[0] ?? "") === "install" &&
+            paths.some((path) => agentConfigPath(`${home}/${path.split("/").at(-1) ?? ""}`))
+          )
+            emit(
+              "agent-config-write",
+              "install source has an agent configuration basename",
+              span,
+              true,
+            );
           if (destination)
             for (const sourceIndex of destination.sources)
               for (const name of mentions(values[sourceIndex] ?? opaque()))

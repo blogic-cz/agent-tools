@@ -4607,7 +4607,20 @@ function classifyInvocation(
     if (sedEmptySuffix && !filterOption && positional[0] !== undefined)
       roles.push({ index: positional[0], role: "write" });
   }
-  if (entry.semantics === "copy" || ["mv", "install", "ln"].includes(entry.name)) {
+  if (entry.name === "install") {
+    const separator = argv.indexOf("--");
+    const candidates = argv.flatMap((word, index) =>
+      index > 0 && ((separator >= 0 && index > separator) || !word?.startsWith("-")) ? [index] : [],
+    );
+    for (const index of candidates) {
+      roles.push({ index, role: path }, { index, role: "write" });
+      directoryWrites.push({ index, sources: candidates, directory: true });
+    }
+    for (const operand of optionRoles)
+      if (operand.role === "write")
+        directoryWrites.push({ index: operand.index, sources: candidates, directory: true });
+  }
+  if (entry.semantics === "copy" || ["mv", "ln"].includes(entry.name)) {
     const targetDirectory = optionRoles.find((operand) => operand.role === "write");
     const destination = targetDirectory?.index ?? positional.at(-1);
     if (destination !== undefined) {
