@@ -3107,7 +3107,22 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     name: "tar",
     operands: [path],
     options: {
-      ...flags("-x", "--extract", "-c", "--create", "-t", "--list", "-v", "-z", "-j", "-J"),
+      ...flags(
+        "-x",
+        "--extract",
+        "-c",
+        "--create",
+        "-r",
+        "--append",
+        "-u",
+        "--update",
+        "-t",
+        "--list",
+        "-v",
+        "-z",
+        "-j",
+        "-J",
+      ),
       "-f": arg(path),
       "--file": arg(path),
       "-C": arg("write"),
@@ -3162,7 +3177,23 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "--output-document": arg("write"),
       "-o": arg("write"),
       "--output-file": arg("write"),
-      ...flags("-q", "-c", "-nv"),
+      "-a": arg("write"),
+      "--append-output": arg("write"),
+      "-P": arg("write"),
+      "--directory-prefix": arg("write"),
+      "-t": arg(data),
+      "--tries": arg(data),
+      "-T": arg(data),
+      "--timeout": arg(data),
+      "-U": arg(data),
+      "--user-agent": arg(data),
+      "--header": arg(data),
+      "--limit-rate": arg(data),
+      "-l": arg(data),
+      "--level": arg(data),
+      "-i": arg(path),
+      "--input-file": arg(path),
+      ...flags("-q", "-c", "-nv", "-N", "-r", "-np", "-nd", "-nc"),
     },
   },
   { name: "seq", operands: [data], semantics: "seq" },
@@ -3596,8 +3627,9 @@ function classifyInvocation(
   const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
   const writerCandidates: { index: number; literal: string }[] = [];
   const archiveFiles: number[] = [];
-  let createsArchive = false;
+  let writesArchive = false;
   let wgetOutputDocument = false;
+  let wgetDirectoryPrefix: string | undefined = ".";
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
   let maxArgs: number | null = null;
@@ -4224,6 +4256,25 @@ function classifyInvocation(
             ...mode.options,
           }
         : { ...entry.options, ...mode.options };
+    if (
+      entry.name === "tar" &&
+      position === 1 &&
+      !endOptions &&
+      [...a].some((letter) => "cxtru".includes(letter)) &&
+      [...a].every((letter) => `-${letter}` in options)
+    ) {
+      for (const letter of a) {
+        if ("cru".includes(letter)) writesArchive = true;
+        for (const role of options[`-${letter}`]?.roles ?? []) {
+          const index = ++position;
+          if (index >= argv.length) issues.push(unknown(`missing -${letter} argument`));
+          optionRoles.push({ index, role });
+          if (letter === "f") archiveFiles.push(index);
+        }
+      }
+      position++;
+      continue;
+    }
     if (entry.semantics === "sed" && !endOptions && /^-[^-]/.test(a)) {
       const inPlaceIndex = a.indexOf("i", 1);
       if (
@@ -4271,7 +4322,7 @@ function classifyInvocation(
         )
           break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
-        if (entry.name === "tar" && a[offset] === "c") createsArchive = true;
+        if (entry.name === "tar" && ["c", "r", "u"].includes(a[offset] ?? "")) writesArchive = true;
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
@@ -4298,7 +4349,7 @@ function classifyInvocation(
           .every((c) => options[`-${c}`]?.roles.length === 0)
       ) {
         for (const c of a.slice(1)) {
-          if (entry.name === "tar" && c === "c") createsArchive = true;
+          if (entry.name === "tar" && "cru".includes(c)) writesArchive = true;
           const issue = options[`-${c}`]?.issue;
           if (issue) issues.push(issue);
         }
@@ -4346,7 +4397,11 @@ function classifyInvocation(
         issues.push(unknown("git config override"));
     }
     if (!endOptions && option && a.startsWith("-")) {
-      if (entry.name === "tar" && ["-c", "--create"].includes(optionName)) createsArchive = true;
+      if (
+        entry.name === "tar" &&
+        ["-c", "--create", "-r", "--append", "-u", "--update"].includes(optionName)
+      )
+        writesArchive = true;
       if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
         wgetOutputDocument = true;
       if (
@@ -4371,6 +4426,8 @@ function classifyInvocation(
       for (let i = 0; i < option.roles.length; i++) {
         const role = option.roles[i] ?? data;
         const index = i === 0 && attached !== undefined ? position : ++position;
+        if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName))
+          wgetDirectoryPrefix = attached ?? argv[index];
         if (entry.name === "tar" && ["-f", "--file"].includes(optionName)) archiveFiles.push(index);
         if (
           index >= argv.length &&
@@ -4727,18 +4784,24 @@ function classifyInvocation(
       if (separator >= 0 ? operand.index > separator : positional.slice(1).includes(operand.index))
         operand.role = "write";
   }
-  if (entry.name === "tar" && createsArchive) {
+  if (entry.name === "tar" && writesArchive) {
     for (const operand of optionRoles)
       if (archiveFiles.includes(operand.index)) operand.role = "write";
   }
   if (entry.name === "wget" && !wgetOutputDocument) {
     for (const index of positional) {
       const url = argv[index];
-      if (url === undefined) issues.push(unknown("wget output name is not known"));
+      if (url === undefined || wgetDirectoryPrefix === undefined)
+        issues.push(unknown("wget output name is not known"));
       else {
         try {
           const basename = new URL(url).pathname.split("/").at(-1);
-          if (basename) roles.push({ index, role: "write", literal: decodeURIComponent(basename) });
+          if (basename)
+            roles.push({
+              index,
+              role: "write",
+              literal: `${wgetDirectoryPrefix}/${decodeURIComponent(basename)}`,
+            });
         } catch {
           issues.push(unknown("wget output name is not known"));
         }
