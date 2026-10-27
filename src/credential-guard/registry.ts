@@ -1909,7 +1909,6 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   {
     name: "tmutil",
     operands: [path],
-    effect: unknown("unmodeled Time Machine operation"),
     subcommands: {
       ...Object.fromEntries(
         [
@@ -1937,7 +1936,16 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
           "thinlocalsnapshots",
           "help",
           "version",
-        ].map((name) => [name, { operands: [path] } satisfies Omit<ExecutableEntry, "name">]),
+          "status",
+          "currentphase",
+        ].map((name) => [
+          name,
+          {
+            operands: [path],
+            effect:
+              name === "restore" ? unknown("unmodeled Time Machine restore operation") : "none",
+          } satisfies Omit<ExecutableEntry, "name">,
+        ]),
       ),
       isexcluded: { operands: [path], options: flags("-X"), effect: "none" },
       addexclusion: { operands: [path], options: flags("-p", "-v"), effect: "none" },
