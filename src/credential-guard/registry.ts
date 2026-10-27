@@ -3116,6 +3116,9 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "--append",
         "-u",
         "--update",
+        "-A",
+        "--catenate",
+        "--concatenate",
         "-t",
         "--list",
         "-v",
@@ -3651,8 +3654,6 @@ function classifyInvocation(
   let codePositionals: number[] = [];
   const directoryWrites: Array<InvocationPlan["directoryWrites"][number]> = [];
   const writerCandidates: { index: number; literal: string }[] = [];
-  const archiveFiles: number[] = [];
-  let writesArchive = false;
   let wgetOutputDocument = false;
   let wgetInputFile = false;
   let wgetDirectoryPrefix: string | undefined = ".";
@@ -4200,6 +4201,18 @@ function classifyInvocation(
     }
     return result();
   }
+  const writesArchive =
+    entry.name === "tar" &&
+    argv.slice(1).some((word, index) => {
+      if (word === undefined) return false;
+      if (word.startsWith("--"))
+        return ["--create", "--append", "--update", "--catenate", "--concatenate"].some(
+          (option) => word.length > 2 && option.startsWith(word.split("=")[0] ?? word),
+        );
+      const cluster =
+        /^-([A-Za-z]+)/.exec(word)?.[1] ?? (index === 0 && /^[A-Za-z]+$/.test(word) ? word : "");
+      return /[cruA]/.test(cluster);
+    });
   while (position < argv.length) {
     if (skippedValues.has(position)) {
       position++;
@@ -4290,14 +4303,12 @@ function classifyInvocation(
       [...a].some((letter) => "cxtru".includes(letter))
     ) {
       for (const letter of a) {
-        if (!options[`-${letter}`] && /[cru]/.test(a) && a.includes("f"))
+        if (!options[`-${letter}`] && writesArchive && a.includes("f"))
           issues.push(unknown(`unclassified tar option -${letter}`));
-        if ("cru".includes(letter)) writesArchive = true;
         for (const role of options[`-${letter}`]?.roles ?? []) {
           const index = ++position;
           if (index >= argv.length) issues.push(unknown(`missing -${letter} argument`));
           optionRoles.push({ index, role });
-          if (letter === "f") archiveFiles.push(index);
         }
       }
       position++;
@@ -4338,7 +4349,7 @@ function classifyInvocation(
       const directoryWriter =
         entry.semantics === "copy" ||
         ["mv", "install", "ln"].includes(entry.name) ||
-        (entry.name === "tar" && /[cru]/.test(a) && a.includes("f"));
+        (entry.name === "tar" && writesArchive && a.includes("f"));
       while (offset < a.length) {
         const option = options[`-${a[offset]}`];
         if (
@@ -4352,7 +4363,6 @@ function classifyInvocation(
         )
           break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
-        if (entry.name === "tar" && ["c", "r", "u"].includes(a[offset] ?? "")) writesArchive = true;
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
@@ -4379,7 +4389,6 @@ function classifyInvocation(
           .every((c) => options[`-${c}`]?.roles.length === 0)
       ) {
         for (const c of a.slice(1)) {
-          if (entry.name === "tar" && "cru".includes(c)) writesArchive = true;
           const issue = options[`-${c}`]?.issue;
           if (issue) issues.push(issue);
         }
@@ -4427,11 +4436,6 @@ function classifyInvocation(
         issues.push(unknown("git config override"));
     }
     if (!endOptions && option && a.startsWith("-")) {
-      if (
-        entry.name === "tar" &&
-        ["-c", "--create", "-r", "--append", "-u", "--update"].includes(optionName)
-      )
-        writesArchive = true;
       if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
         wgetOutputDocument = true;
       if (entry.name === "wget" && ["-i", "--input-file"].includes(optionName))
@@ -4460,7 +4464,6 @@ function classifyInvocation(
         const index = i === 0 && attached !== undefined ? position : ++position;
         if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName))
           wgetDirectoryPrefix = attached ?? argv[index];
-        if (entry.name === "tar" && ["-f", "--file"].includes(optionName)) archiveFiles.push(index);
         if (
           index >= argv.length &&
           !(
@@ -4816,9 +4819,35 @@ function classifyInvocation(
       if (separator >= 0 ? operand.index > separator : positional.slice(1).includes(operand.index))
         operand.role = "write";
   }
-  if (entry.name === "tar" && writesArchive) {
-    for (const operand of optionRoles)
-      if (archiveFiles.includes(operand.index)) operand.role = "write";
+  if (entry.name === "tar") {
+    const candidates = optionRoles.map(({ index, literal }) => ({ index, literal }));
+    for (let index = 1; index < argv.length; index++) {
+      const word = argv[index];
+      if (word === undefined || !/^--?[A-Za-z0-9-]+$/.test(word)) {
+        candidates.push({ index, literal: word });
+        if (word?.startsWith("-") && !word.startsWith("--")) {
+          for (
+            let offset = 2;
+            offset < word.length && /[A-Za-z]/.test(word[offset - 1] ?? "");
+            offset++
+          )
+            candidates.push({ index, literal: word.slice(offset) });
+          candidates.push({ index, literal: word.slice(1) });
+        }
+      }
+    }
+    for (const candidate of candidates) {
+      roles.push({ ...candidate, role: path });
+      if (writesArchive) roles.push({ ...candidate, role: "write" });
+      const word = candidate.literal ?? argv[candidate.index];
+      if (word !== undefined) {
+        for (let equal = word.indexOf("="); equal >= 0; equal = word.indexOf("=", equal + 1)) {
+          const value = { index: candidate.index, literal: word.slice(equal + 1) };
+          roles.push({ ...value, role: path });
+          if (writesArchive) roles.push({ ...value, role: "write" });
+        }
+      }
+    }
   }
   if (entry.name === "wget" && !wgetOutputDocument) {
     if (

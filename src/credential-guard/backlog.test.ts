@@ -5,6 +5,70 @@ import { judge } from "./policy";
 const bash = (command: string) => judge(parseBash(command), { cwd: "/repo", home: "/users/test" });
 
 it.each([
+  "tar -cf /tmp/o.tar -L ~/.ssh/id_rsa",
+  "tar -cf /tmp/o.tar -L ~/.ssh/id_rsa src",
+  "tar -cf /tmp/o.tar -I ~/.ssh/id_rsa",
+  "tar -cf /tmp/o.tar -I ~/.aws/credentials",
+  "tar -cf /tmp/o.tar -I ~/.ssh/id_rsa src",
+  "tar -cf /tmp/o.tar -b ~/.ssh/id_rsa",
+  "tar -cf /tmp/o.tar -s ~/.ssh/id_rsa",
+  "tar -cf /tmp/o.tar --exclude ~/.ssh/id_rsa src",
+  "tar -cf /tmp/o.tar --exclude=~/.ssh/id_rsa src",
+  "tar -cf/tmp/o.tar -I~/.ssh/id_rsa src",
+  "tar -cf /tmp/o.tar -W file=~/.ssh/id_rsa src",
+])("checks every tar value as a read: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "sensitive-path" })]),
+  });
+});
+
+it.each([
+  "tar -c -Bf AGENTS.md src",
+  "tar -c -Sf AGENTS.md src",
+  "tar -c -wf AGENTS.md src",
+  "tar -r -Bf AGENTS.md src",
+  "tar --create -Sf AGENTS.md src",
+  "tar -Bf AGENTS.md -c src",
+  "tar Bf AGENTS.md -c src",
+  "tar -cLf AGENTS.md src",
+  "tar -cvLf AGENTS.md src",
+  "tar cLf AGENTS.md src",
+  "tar -cLf ~/.codex/config.toml src",
+  "tar -c -L -f AGENTS.md src",
+  "tar -c -W file=AGENTS.md src",
+  "tar -cW file=AGENTS.md src",
+  "tar -c -Wfile=AGENTS.md src",
+  "tar -cf /tmp/o.tar -W file=AGENTS.md src",
+  "tar -cf /tmp/x.tar -T AGENTS.md",
+  "tar -c -BfAGENTS.md src",
+  "tar -cf /tmp/o.tar --unknown=file=AGENTS.md src",
+  "tar -Af AGENTS.md src",
+  "tar Af AGENTS.md src",
+  "tar --catenate -f AGENTS.md src",
+  "tar --concatenate --file=AGENTS.md src",
+])("checks every tar value in whole-command write mode: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "agent-config-write" })]),
+  });
+});
+
+it.each([
+  ["tar -c -W file=/users/test/.zshrc src", "startup-mutation"],
+  ["tar -c -W file=/users/test/.ssh/config src", "sensitive-path"],
+  ["tar -xf x.tar --directory=/users/test/.zshrc", "startup-mutation"],
+  ["tar -xf x.tar -C /users/test/.ssh/config", "sensitive-path"],
+])("applies every tar destination rule: %s", (command, rule) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule })]),
+  });
+});
+
+it.each(["tar -xf x.tar", "tar -tvf x.tar", "tar -Af /tmp/x.tar src"])(
+  "accepts ordinary tar modes: %s",
+  (command) => expect(bash(command)).toEqual({ kind: "pass" }),
+);
+
+it.each([
   "tar -cf out.tar -T files.txt",
   "tar -cf out.tar --files-from files.txt",
   "tar -cf out.tar -X excl.txt src",
