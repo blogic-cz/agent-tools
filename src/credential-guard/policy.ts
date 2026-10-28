@@ -1,4 +1,5 @@
 import { formatLiteralPrintf } from "./literal-output";
+import { posix } from "node:path";
 import { splitXargsInput } from "./xargs";
 import { parseBash } from "./bash";
 import { parsePowerShell } from "./powershell";
@@ -98,8 +99,8 @@ function mentions(value: Value): readonly string[] {
 }
 function agentConfigGlob(value: Value): boolean {
   return mentions(value).some((text) =>
-    text
-      .replace(/\\/g, "/")
+    posix
+      .normalize(text.replace(/\\/g, "/"))
       .split("/")
       .some((part, index, parts) => {
         if (!/[*?[]/.test(part)) return false;
