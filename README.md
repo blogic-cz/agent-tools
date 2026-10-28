@@ -361,16 +361,8 @@ Membership comes from GitHub's stacks API, never from chaining `baseRefName` to 
 That chain both over-reports (a promotion PR whose head is `main` adopts every ordinary PR as a
 child) and under-reports (a PR based on a stack member's branch need not be in the stack).
 
-A live end-to-end proof lives in `tests/e2e/stack-merge.e2e.ts`. It is excluded from
-`bun run check` because it creates and mutates a throwaway GitHub repository:
-
-```bash
-AGENT_TOOLS_E2E=1 bun tests/e2e/stack-merge.e2e.ts
-```
-
-It builds a real three-deep stack and asserts the thing no mock can prove — that each
-squash commit on the trunk adds only its own PR's changes, so a squashed parent is not
-replayed inside its child.
+Stack-merge tests run in-process with synthetic GitHub responses. They do not prove
+that GitHub squash commits exclude changes from an already squashed parent.
 
 ### gh-tool machine contracts
 

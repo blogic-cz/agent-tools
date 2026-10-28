@@ -2,12 +2,12 @@ import { Effect, Layer, Sink, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 
 type Result = { stdout: string; stderr: string; exitCode: number };
-export const processResultLayer = (run: (args: readonly string[]) => Result) =>
+export const processResultLayer = (run: (args: readonly string[], executable: string) => Result) =>
   Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       if (command._tag !== "StandardCommand") return Effect.die("Unexpected pipeline");
-      const result = run(command.args);
+      const result = run(command.args, command.command);
       const output = (text: string) => Stream.fromIterable([new TextEncoder().encode(text)]);
       return Effect.succeed(
         ChildProcessSpawner.makeHandle({

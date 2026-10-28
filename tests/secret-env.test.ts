@@ -201,6 +201,11 @@ describe("SecretEnvResolver", () => {
     shell.pipe.emit("data", frame(value).subarray(8));
     shell.child.emit("exit", 0);
     expect(await result).toEqual({ _tag: "found", value });
+    expect(shell.launch).toHaveBeenCalledWith(
+      "zsh",
+      ["-i", "-c", expect.any(String), "agent-tools-secret-env", "AGENT_TOOLS_SECRET_ENV_FRAME"],
+      expect.objectContaining({ detached: true, stdio: ["ignore", "ignore", "ignore", "pipe"] }),
+    );
     expect(shell.terminate).toHaveBeenCalledWith(-42);
   });
 

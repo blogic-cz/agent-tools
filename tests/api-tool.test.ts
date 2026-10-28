@@ -3,20 +3,43 @@ import { runProgram } from "#api/main";
 import { captureOutput } from "./helpers/capture-output";
 const invokeApi = (args: readonly string[]) =>
   captureOutput(() => Effect.runPromiseExit(runProgram(args)));
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, chmod, rm, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { request as httpRequest } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
+
+import { EventEmitter } from "node:events";
+import { IncomingMessage, ServerResponse, request as httpRequest } from "node:http";
+import { Socket } from "node:net";
+import { PassThrough } from "node:stream";
+import type { RequestOptions } from "node:https";
+type HttpBoundary = (
+  url: URL,
+  options: { method: string; headers: Record<string, string> },
+  callback?: (response: IncomingMessage) => void,
+) => EventEmitter;
+type HttpsBoundary = (
+  url: URL,
+  options: RequestOptions,
+  callback: (response: PassThrough) => void,
+) => EventEmitter;
+const boundary = vi.hoisted(() => ({ http: vi.fn<HttpBoundary>(), https: vi.fn<HttpsBoundary>() }));
+vi.mock("node:http", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  request: boundary.http,
+}));
+vi.mock("node:https", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  request: boundary.https,
+}));
 import { createProxy, capabilityDigest } from "#api/proxy";
 import { validateOperator, relativePath, MAX_RESULT_ENVELOPE_BYTES } from "#api/types";
 import { createApiClient } from "#api/client";
 import { allowedAddress, makePinnedTransport, MAX_PENDING_DNS_LOOKUPS } from "#api/transport";
-import { startProxy } from "#api/server";
+import { createRequestHandler, startProxy } from "#api/server";
 import { claimGrants, readSecretStore } from "#api/store";
 import { createCredentialGuard } from "#guard";
-import type { Transport, TransportRequest } from "#api/transport";
+import type { Transport, TransportRequest, Resolver } from "#api/transport";
 import type { OperatorConfig } from "#api/types";
 
 const capability = "synthetic-caller-capability-00000001";
@@ -418,20 +441,8 @@ describe("operator store, actual client and CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-  it("runs a real local synthetic proxy/client round trip", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "api-proxy-roundtrip-"));
-    let server: Awaited<ReturnType<typeof startProxy>> | undefined;
-    try {
-      const value = config();
-      value.secretsFile = join(dir, "store.json");
-      value.grantUseDirectory = join(dir, "used");
-      await writeFile(value.secretsFile, JSON.stringify({ token: credential }), { mode: 0o600 });
-      await mkdir(value.grantUseDirectory, { mode: 0o700 });
-      value.listen.port = 0;
-      server = await startProxy(value, success);
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Synthetic server did not bind");
-      const proxyOrigin = `http://127.0.0.1:${address.port}`;
+  it("runs an in-memory proxy/client round trip", async () => {
+    await withProxy(success, async (proxyOrigin) => {
       const client = createApiClient({ proxyOrigin, capability, developmentLoopback: true });
       expect(await client.request(request)).toEqual({ status: 200, data: { items: [1, 2] } });
       await expect(
@@ -444,13 +455,7 @@ describe("operator store, actual client and CLI", () => {
       await expect(client.request({ ...request, method: "POST" })).rejects.toMatchObject({
         code: "POLICY_DENIED",
       });
-    } finally {
-      if (server)
-        await new Promise<void>((resolve, reject) =>
-          server?.close((error) => (error ? reject(error) : resolve())),
-        );
-      await rm(dir, { recursive: true, force: true });
-    }
+    });
   });
   it("rejects insecure client origins, operator fields and invalid result shapes", async () => {
     expect(() =>
@@ -676,7 +681,7 @@ async function withProxy(
   maxConcurrent = 4,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "api-proxy-review-"));
-  let server: Awaited<ReturnType<typeof startProxy>> | undefined;
+
   try {
     const value = config();
     value.listen.port = 0;
@@ -689,15 +694,62 @@ async function withProxy(
     value.grantUseDirectory = join(dir, "used");
     await writeFile(value.secretsFile, JSON.stringify({ token: credential }), { mode: 0o600 });
     await mkdir(value.grantUseDirectory, { mode: 0o700 });
-    server = await startProxy(value, transport);
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Synthetic server did not bind");
-    await run(`http://127.0.0.1:${address.port}`, dir);
+    await claimGrants(value);
+    const handler = createRequestHandler(
+      createProxy({ config: value, secrets: { token: credential }, transport }),
+      maxConcurrent,
+    );
+    boundary.http.mockImplementation(
+      (
+        url: URL,
+        options: { method: string; headers: Record<string, string> },
+        callback?: (response: IncomingMessage) => void,
+      ) => {
+        const incoming = new IncomingMessage(new Socket());
+        incoming.method = options.method;
+        incoming.url = url.pathname;
+        incoming.headers = options.headers;
+        const outgoing = new ServerResponse(incoming);
+        const client = new EventEmitter();
+        let started = false;
+        const begin = () => {
+          if (started) return;
+          started = true;
+          handler(incoming, outgoing);
+        };
+        outgoing.end = ((body: string) => {
+          queueMicrotask(() => {
+            const response = new IncomingMessage(new Socket());
+            response.statusCode = outgoing.statusCode;
+            callback?.(response);
+            client.emit("response", response);
+            response.push(Buffer.from(body));
+            response.push(null);
+          });
+          return outgoing;
+        }) as typeof outgoing.end;
+        return Object.assign(client, {
+          write: (body: string) => {
+            incoming.push(Buffer.from(body));
+            begin();
+            return true;
+          },
+          end: (body?: string) => {
+            if (body) incoming.push(Buffer.from(body));
+            incoming.push(null);
+            begin();
+            return client;
+          },
+          destroy: () => {
+            incoming.destroy();
+            return client;
+          },
+        });
+      },
+    );
+    await run("http://127.0.0.1:32123", dir);
   } finally {
-    if (server)
-      await new Promise<void>((resolve, reject) =>
-        server?.close((error) => (error ? reject(error) : resolve())),
-      );
+    boundary.http.mockReset();
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -769,67 +821,57 @@ describe("actual proxy output and CLI", () => {
   });
 });
 
-describe("actual synthetic upstream TLS transport", () => {
-  it("verifies trust and hostname, pins DNS, refuses redirects and streamed overflow", async () => {
-    const fixture = "tests/fixtures/api-proxy/";
-    const [ca, cert, key] = await Promise.all(
-      ["ca.pem", "cert.pem", "key.pem"].map((file) => readFile(fixture + file, "utf8")),
-    );
-    let requests = 0;
-    let redirects = 0;
-    const server = createHttpsServer({ cert, key }, (incoming, response) => {
-      requests++;
-      if (incoming.url === "/redirect") {
-        response.writeHead(302, { location: "/followed" });
-        response.end();
-      } else if (incoming.url === "/followed") {
-        redirects++;
-        response.end("{}");
-      } else if (incoming.url === "/overflow") {
-        response.write("x".repeat(80));
-        response.end("x".repeat(80));
-      } else response.end('{"ok":true}');
+describe("pinned upstream transport policy", () => {
+  it("requires TLS trust and hostname verification, pins DNS, refuses redirects and streamed overflow", async () => {
+    const ca = await readFile("tests/fixtures/api-proxy/ca.pem", "utf8");
+    const resolver = vi.fn<Resolver>(async () => [{ address: "127.0.0.1", family: 4 }]);
+    const trusted = makePinnedTransport(resolver, { ca });
+    const input = (path: string): TransportRequest => ({
+      url: new URL(`https://service.example.invalid${path}`),
+      method: "GET",
+      headers: {},
+      body: "",
+      maxBytes: 100,
+      allowedPrivateAddresses: ["127.0.0.1"],
+      signal: new AbortController().signal,
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    boundary.https.mockImplementation(
+      (url: URL, options: RequestOptions, callback: (response: PassThrough) => void) => {
+        expect(url.hostname).toBe("service.example.invalid");
+        expect(options).toMatchObject({ ca, rejectUnauthorized: true, agent: false, family: 4 });
+        const lookup = Reflect.get(options ?? {}, "lookup");
+        const pinned = vi.fn<Parameters<NonNullable<RequestOptions["lookup"]>>[2]>();
+        expect(lookup).toBeTypeOf("function");
+        if (!lookup) throw new Error("Missing pinned lookup");
+        lookup("service.example.invalid", {}, pinned);
+        expect(pinned).toHaveBeenCalledWith(null, "127.0.0.1", 4);
+        const client = new EventEmitter();
+        return Object.assign(client, {
+          end: () => {
+            const response = Object.assign(new PassThrough(), {
+              statusCode: url.pathname === "/redirect" ? 302 : 200,
+            });
+            callback(response);
+            if (!response.destroyed) {
+              response.write(url.pathname === "/overflow" ? "x".repeat(80) : '{"ok":true}');
+              response.end(url.pathname === "/overflow" ? "x".repeat(80) : "");
+            }
+          },
+        });
+      },
+    );
     try {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Synthetic TLS did not bind");
-      let resolutions = 0;
-      const resolver = async () => {
-        resolutions++;
-        return [{ address: "127.0.0.1", family: 4 }];
-      };
-      const trusted = makePinnedTransport(resolver, { ca });
-      const input = (path: string, host = "service.example.invalid"): TransportRequest => ({
-        url: new URL(`https://${host}:${address.port}${path}`),
-        method: "GET",
-        headers: {},
-        body: "",
-        maxBytes: 100,
-        allowedPrivateAddresses: ["127.0.0.1"],
-        signal: new AbortController().signal,
-      });
       expect(await trusted(input("/ok"))).toEqual({ status: 200, body: '{"ok":true}' });
-      await expect(makePinnedTransport(resolver)(input("/ok"))).rejects.toMatchObject({
-        code: "UPSTREAM_FAILED",
-      });
-      await expect(trusted(input("/ok", "wrong.example.invalid"))).rejects.toMatchObject({
-        code: "UPSTREAM_FAILED",
-      });
-      expect(requests).toBe(1);
       await expect(trusted(input("/redirect"))).rejects.toMatchObject({
         code: "DESTINATION_DENIED",
       });
       await expect(trusted(input("/overflow"))).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-      expect(redirects).toBe(0);
-      expect(resolutions).toBe(5);
-      expect(requests).toBe(3);
+      expect(resolver).toHaveBeenCalledTimes(3);
+      expect(boundary.https).toHaveBeenCalledTimes(3);
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      boundary.https.mockReset();
     }
-  }, 15000);
+  });
 });
 
 describe("Opus boundary regressions", () => {

@@ -72,7 +72,10 @@ Bun async filesystem APIs are preferred throughout the project. Synchronous `nod
 
 `lstatSync` and `realpathSync` are also permitted in the credential guard's copy-destination proof in `src/credential-guard/index.ts` when `chainCopyDestinations` is non-empty. The guard API is synchronous. This proof refuses filesystem errors, symlinks, and paths outside the configured directories.
 
-Asynchronous `node:fs/promises` is additionally permitted in a module whose logic is covered by the vitest suite. Vitest runs under Node, so `Bun.file`, `Bun.Glob` and `import("bun")` are unavailable there and any code path a test reaches cannot use them. `src/session-tool/pi.ts` is the current case. `node:child_process` is permitted on the same grounds in `src/shared/secret-env.ts`, whose resolver needs an extra fd 3 pipe and process-group kill that the vitest suite exercises against real zsh. Prefer Bun APIs everywhere the tests do not reach, and revisit this if the suite ever runs under the Bun runtime.
+Asynchronous `node:fs/promises` is permitted in modules covered by the Vitest suite.
+Vitest runs under Bun. Tests inject process and IPC boundaries and never launch real zsh.
+`node:child_process` remains permitted in `src/shared/secret-env.ts` because its resolver
+needs an extra fd 3 pipe and process-group termination. Prefer Bun APIs elsewhere.
 
 ## Version control
 

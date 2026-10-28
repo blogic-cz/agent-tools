@@ -138,10 +138,11 @@ it("coalesces two store clients behind a single lease", async () => {
   const root = await directory();
   const first = await FileStore.open("fixture", root);
   const second = await FileStore.open("fixture", root);
-  const lease = await first.prepare(key, OPS.runView, decode);
+  const key: ReadKey = { op: "jobLog", repo: { owner: "owner", name: "repo" }, jobId: 456 };
+  const lease = await first.prepare(key, { kind: "immutable" }, decode);
   if (lease.kind !== "fetch") throw new Error("Expected cache miss");
-  const pending = second.prepare(key, OPS.runView, decode);
-  await first.put(lease, "same log", false);
+  const pending = second.prepare(key, { kind: "immutable" }, decode);
+  await first.put(lease, "same log", true);
   await first.release(lease.key, lease.owner);
   expect(await pending).toEqual({ kind: "hit", value: "same log" });
 });
@@ -152,6 +153,7 @@ it("keeps a live clock owner and recovers a dead owner's lock", async () => {
   const lock = join(store.directory, "clock.lock");
   await mkdir(lock, { mode: 0o700 });
   await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, owner: "owner" }));
+  await utimes(lock, new Date(0), new Date(0));
   const alive = vi.spyOn(process, "kill").mockImplementation(() => true);
   try {
     await expect(store.readClock()).rejects.toThrow("Cache coordination timed out");

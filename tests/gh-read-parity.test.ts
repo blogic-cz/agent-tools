@@ -66,6 +66,7 @@ it("uses one cold issue-list call and zero warm calls with an explicit repositor
       );
     });
   const cold = await run();
+  expect(cold.stderr).toBe("");
   expect(observed.map((args) => args.slice(0, 2))).toEqual([["issue", "list"]]);
   const warm = await run();
   expect(warm.stdout).toBe(cold.stdout);

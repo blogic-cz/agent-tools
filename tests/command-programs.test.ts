@@ -1,7 +1,3 @@
-import { SessionServiceLayer } from "#session/service";
-import { ResolvedPaths } from "#session/config";
-import { run as runSession } from "#session/main";
-import { makeAuditServiceLayer, withAudit } from "#shared/audit";
 import { ghCommand } from "./helpers/gh-command";
 import { renderCauseToStderr } from "#shared/error-renderer";
 import { BunServices } from "@effect/platform-bun";
@@ -26,6 +22,14 @@ import {
 import { captureOutput } from "./helpers/capture-output";
 import { observabilityResponses } from "./fixtures/observability-responses";
 
+const sessionHome = vi.hoisted(() => ({ path: "" }));
+vi.mock("node:os", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  homedir: () => {
+    if (!sessionHome.path) throw new Error("Missing private test HOME");
+    return sessionHome.path;
+  },
+}));
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -39,6 +43,7 @@ const runToolWithEnv = async (
 ) => {
   const result = await captureOutput(
     async () => {
+      sessionHome.path = cwd ?? process.cwd();
       process.argv = ["bun", toolPath, ...args];
       const module = await import(
         new URL("../" + toolPath.replace("index.ts", "main.ts"), import.meta.url).href
@@ -57,25 +62,6 @@ const runToolWithEnv = async (
           : join(cwd ?? process.cwd(), "audit.sqlite"),
       };
       await Bun.write(configPath, JSON.stringify(config));
-      if (toolPath.includes("/session-tool/")) {
-        const root = cwd ?? process.cwd();
-        const layer = SessionServiceLayer.pipe(
-          Layer.provideMerge(
-            Layer.succeed(ResolvedPaths, {
-              messagesPath: join(root, "message"),
-              sessionsPath: join(root, "session"),
-              claudeCodePath: null,
-              codexPath: null,
-              piPath: null,
-            }),
-          ),
-          Layer.provideMerge(BunServices.layer),
-          Layer.provideMerge(makeAuditServiceLayer({ dbPath: config.audit.dbPath })),
-        );
-        return Effect.runPromiseExit(
-          withAudit("session", runSession(args)).pipe(Effect.provide(layer)),
-        );
-      }
       return Effect.runPromiseExit(module.runProgram(args));
     },
     { cwd, env: { ...process.env, ...env } },
@@ -628,7 +614,9 @@ it("k8s structured pods uses namespace from env mapping when --namespace is omit
       ]).pipe(Effect.provide(layer)),
     );
   });
-  expect(result.stdout).toContain("mapped-test-ns");
+  const parsed = JSON.parse(result.stdout);
+  expect(parsed.command).toContain("get pods");
+  expect(parsed.command).toContain("-n mapped-test-ns");
   expect(result.stdout).not.toContain("mapped-prod-ns");
   expect(commands.every((args) => args.includes("config"))).toBe(true);
 });

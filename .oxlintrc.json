@@ -207,6 +207,12 @@
           }
         ]
       }
+    },
+    {
+      "files": ["tests/setup/no-network.ts", "tests/runtime-guard.test.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": "off"
+      }
     }
   ]
 }

@@ -327,11 +327,6 @@ export const mainCommand = Command.make("session-tool", {}).pipe(
   Command.withSubcommands([listCommand, readCommand, searchCommand, commandsCommand]),
 );
 
-const cli = Command.run(mainCommand, {
-  version: VERSION,
-  renderErrors: false,
-});
-
 const runWithErrorsDisabled = Command.runWith(mainCommand, {
   version: VERSION,
   renderErrors: false,
@@ -344,12 +339,13 @@ const MainLayer = AppLayer.pipe(
   Layer.provideMerge(AuditServiceLayer),
 );
 
-const program = withRedactedOutput(withAudit("session", cli)).pipe(
-  Effect.provide(MainLayer),
-  Effect.tapCause(renderCauseToStderr),
-);
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(withAudit("session", runWithErrorsDisabled(args))).pipe(
+    Effect.provide(MainLayer),
+    Effect.tapCause(renderCauseToStderr),
+  );
 
 export const runMain = () =>
-  BunRuntime.runMain(program, {
+  BunRuntime.runMain(runProgram(process.argv.slice(2)), {
     disableErrorReporting: true,
   });

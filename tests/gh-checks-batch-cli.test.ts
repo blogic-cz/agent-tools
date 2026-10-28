@@ -41,6 +41,7 @@ it("pr checks --prs marks a PR whose checks gh did not report instead of returni
       ),
     );
   });
+  expect(result.stderr).toBe("");
   expect(JSON.parse(result.stdout)).toEqual({
     count: 2,
     prs: [

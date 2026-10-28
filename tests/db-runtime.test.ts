@@ -100,7 +100,7 @@ for (const [name, settings] of [
   ["db-tool opens a tunnel to a configured service", { service: "database" }],
   [
     "db-tool passes configured kubeconfig to kubectl tunnel",
-    { service: "database", kubeconfig: "/tmp/unit-kubeconfig" },
+    { service: "database", kubeconfig: `\${UNIT_KUBECONFIG}` },
   ],
 ] as const) {
   it(`${name}`, async () => {
@@ -111,14 +111,17 @@ for (const [name, settings] of [
       }),
     );
     const commands: string[][] = [];
+    const executables: string[] = [];
+    const connections: DbConnection[] = [];
     const config: DatabaseConfig = {
       kubectl: { context: "test", namespace: "test-ns", ...settings },
       environments: { test: { host: "127.0.0.1", port: 15432, user: "test", database: "testdb" } },
     };
     const layer = DbService.layer.pipe(
       Layer.provide(
-        processResultLayer((args) => {
+        processResultLayer((args, executable) => {
           commands.push([...args]);
+          executables.push(executable);
           return { stdout: "ok", stderr: "", exitCode: 0 };
         }),
       ),
@@ -133,7 +136,10 @@ for (const [name, settings] of [
       ),
       Layer.provide(
         Layer.succeed(DbSqlClient, {
-          run: () => Effect.succeed({ rows: [{ value: 1 }], rowCount: 1, command: "SELECT" }),
+          run: (connection) => {
+            connections.push(connection);
+            return Effect.succeed({ rows: [{ value: 1 }], rowCount: 1, command: "SELECT" });
+          },
         }),
       ),
     );
@@ -145,9 +151,18 @@ for (const [name, settings] of [
     );
     expect(result).toMatchObject({ success: true, data: [{ value: 1 }] });
     const tunnel = commands.find((args) => args.includes("port-forward"));
-    expect(tunnel).toContain(`svc/${"service" in settings ? settings.service : "postgresql"}`);
-    if ("kubeconfig" in settings)
-      expect(tunnel?.slice(0, 2)).toEqual(["--kubeconfig", "/tmp/unit-kubeconfig"]);
+    expect(executables.every((executable) => executable === "kubectl")).toBe(true);
+    expect(tunnel).toEqual([
+      ...("kubeconfig" in settings ? ["--kubeconfig", "/tmp/unit-kubeconfig"] : []),
+      "port-forward",
+      "--context",
+      "test",
+      "--namespace",
+      "test-ns",
+      `svc/${"service" in settings ? settings.service : "postgresql"}`,
+      "15432:5432",
+    ]);
+    expect(connections).toEqual([connection]);
   });
 }
 it("db-tool starts VPN prerequisites when direct database access fails", async () => {

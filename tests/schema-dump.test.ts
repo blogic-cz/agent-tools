@@ -1,3 +1,7 @@
+import { withReadCache } from "#gh/read/cache";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, vi } from "vitest";
 import { captureOutput } from "./helpers/capture-output";
 import { ghCommand } from "./helpers/gh-command";
@@ -7,7 +11,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 import { describe, expect, it } from "@effect/vitest";
-import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
@@ -69,35 +72,58 @@ describe("dumpCommandSchema", () => {
     );
   });
 
-  it("keeps JSONL watcher output pure", async () => {
-    vi.stubEnv("GH_TOKEN", "offline-replay");
-    const fetch = vi.fn<() => Promise<Response>>(
-      async () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 }),
-    );
-    vi.stubGlobal("fetch", fetch);
-    const replay = createReplayGh();
-    const result = await captureOutput(async () => {
-      await Effect.runPromise(
-        ghCommand(
-          ["pr", "watch", "--prs", "42", "--interval", "1", "--timeout", "1", "--format", "jsonl"],
-          (args) => {
-            const reply = replay(args);
-            if (args[0] === "pr" && args[1] === "view")
-              return {
-                ...reply,
-                stdout: JSON.stringify({ ...JSON.parse(reply.stdout), state: "MERGED" }),
-              };
-            return reply;
-          },
-        ),
+  it("keeps cache-enabled JSONL watcher output pure", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "watcher-cache-"));
+    vi.stubEnv("GH_TOOL_CACHE_DIR", cache);
+    vi.stubEnv("GH_TOOL_CACHE", "on");
+    try {
+      vi.stubEnv("GH_TOKEN", "offline-replay");
+      const fetch = vi.fn<() => Promise<Response>>(
+        async () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 }),
       );
-    });
-    expect(result.stderr).toBe("");
-    const lines = result.stdout
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(lines.at(-1)).toMatchObject({ type: "watcher_terminal", status: "terminal" });
+      vi.stubGlobal("fetch", fetch);
+      const replay = createReplayGh();
+      const result = await captureOutput(async () => {
+        await Effect.runPromise(
+          withReadCache(
+            ghCommand(
+              [
+                "pr",
+                "watch",
+                "--prs",
+                "42",
+                "--interval",
+                "1",
+                "--timeout",
+                "1",
+                "--format",
+                "jsonl",
+              ],
+              (args) => {
+                const reply = replay(args);
+                if (args[0] === "pr" && args[1] === "checks")
+                  return {
+                    ...reply,
+                    stdout: JSON.stringify([
+                      { name: "CI", state: "completed", bucket: "pass", link: "external" },
+                    ]),
+                  };
+                return reply;
+              },
+            ),
+          ),
+        );
+      });
+      expect(fetch).toHaveBeenCalled();
+      expect(result.stderr).toBe("");
+      const lines = result.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(lines.at(-1)).toMatchObject({ type: "watcher_terminal", status: "terminal" });
+    } finally {
+      await rm(cache, { recursive: true, force: true });
+    }
   });
 
   it("walks the command tree and extracts flag name/type/choices/description", () => {
