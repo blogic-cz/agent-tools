@@ -1,4 +1,5 @@
 import { formatLiteralPrintf } from "./literal-output";
+import { posix } from "node:path";
 import { splitXargsInput } from "./xargs";
 import { parseBash } from "./bash";
 import { parsePowerShell } from "./powershell";
@@ -98,12 +99,12 @@ function mentions(value: Value): readonly string[] {
 }
 function agentConfigGlob(value: Value): boolean {
   return mentions(value).some((text) =>
-    text
-      .replace(/\\/g, "/")
+    posix
+      .normalize(text.replace(/\\/g, "/"))
       .split("/")
-      .some((part) => {
+      .some((part, index, parts) => {
         if (!/[*?[]/.test(part)) return false;
-        if (part.replace(/\[[A-Za-z0-9._]\]/g, "").includes("[")) return true;
+        if (part.replace(/\[(?:[A-Za-z0-9._]|0-9)\]/g, "").includes("[")) return true;
         const pattern = new RegExp(
           `^${part
             .replace(/[.+^${}()|\\]/g, "\\$&")
@@ -112,22 +113,24 @@ function agentConfigGlob(value: Value): boolean {
             .replace(/\?/g, ".")}$`,
           "i",
         );
-        return [
-          "AGENTS.md",
-          "CLAUDE.md",
-          ".mcp.json",
-          ".claude",
-          ".claude.json",
-          ".codex",
-          ".agents",
-          "config.toml",
-          "settings.json",
-          "settings.local.json",
-          "commands",
-          "agents",
-          "skills",
-          "hooks",
-        ].some((name) => pattern.test(name));
+        const names = [".claude", ".codex", ".agents"];
+        if (index === parts.length - 1 || (index === parts.length - 2 && parts.at(-1) === ""))
+          names.push(
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".mcp.json",
+            ".claude.json",
+            "config.toml",
+            "settings.json",
+            "settings.local.json",
+          );
+        if (
+          /^\.claude$/i.test(parts[index - 1] ?? "") ||
+          (!posix.isAbsolute(text) && (index === 0 || parts[index - 1] === ".."))
+        )
+          names.push("commands", "agents", "skills", "hooks");
+        if (/^\.agents$/i.test(parts[index - 1] ?? "")) names.push("skills");
+        return names.some((name) => pattern.test(name));
       }),
   );
 }
