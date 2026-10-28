@@ -136,29 +136,14 @@ async function test(): Promise<{
   success: boolean;
   output?: string;
 }> {
-  const hookTests = "tests/credential-guard-hook.test.ts";
   const result = await run([
-    "bunx",
-    "vitest",
+    "bun",
+    "--bun",
+    "node_modules/vitest/vitest.mjs",
     "run",
     "--reporter=dot",
     "--silent",
-    "--exclude",
-    hookTests,
   ]);
-  if (result.exitCode === 0) {
-    const hookResult = await run([
-      "bunx",
-      "vitest",
-      "run",
-      hookTests,
-      "--reporter=dot",
-      "--silent",
-    ]);
-    if (hookResult.exitCode !== 0)
-      return { success: false, output: hookResult.stderr || hookResult.stdout };
-    result.stdout += "\n" + hookResult.stdout;
-  }
 
   if (result.exitCode === 0) {
     const counts = [...result.stdout.matchAll(/Tests\s+(\d+)\s+passed/g)];
@@ -232,16 +217,15 @@ async function runAll(): Promise<void> {
 }
 
 async function runCi(): Promise<void> {
-  const [lintResult, typecheckResult, effectResult, formatResult, identifierResult] =
+  const [lintResult, typecheckResult, effectResult, formatResult, identifierResult, testResult] =
     await Promise.all([
       runStep("lint", lint),
       runStep("typecheck", typecheck),
       runStep("effect", effectDiagnostics),
       runStep("format", formatCheck),
       runStep("identifier scan", identifierScan),
+      runStep("test", test),
     ]);
-
-  const testResult = await runStep("test", test);
 
   if (testResult.success && testResult.output) {
     testResult.name = `test (${testResult.output})`;

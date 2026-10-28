@@ -91,7 +91,7 @@ const purgeCommand = Command.make(
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("audit-tool", {}).pipe(
+export const mainCommand = Command.make("audit-tool", {}).pipe(
   Command.withDescription("Audit log inspection and maintenance for agent-tools"),
   Command.withSubcommands([listCommand, purgeCommand, commandsCommand]),
 );
@@ -108,6 +108,15 @@ const program = withRedactedOutput(withAudit("audit", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });
+
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(
+    withAudit(
+      "audit",
+      Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args),
+    ),
+  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));

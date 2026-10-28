@@ -158,7 +158,7 @@
     "session-tool": "bun src/session-tool/index.ts",
     "update:packages": "bun update -i -r",
     "update:skills": "bun run .agents/skills/update-packages/references/skills-update-local.ts",
-    "test": "vitest run",
+    "test": "bun --bun node_modules/vitest/vitest.mjs run",
     "api-tool": "bun src/api-tool/index.ts",
     "api-proxy": "bun src/api-tool/proxy-entry.ts"
   },

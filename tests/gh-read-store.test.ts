@@ -1,8 +1,6 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Console, Effect, Schema } from "effect";
 import { TestConsole } from "effect/testing";
-import { execFile, spawn } from "node:child_process";
-import { once } from "node:events";
 import {
   chmod,
   mkdir,
@@ -15,8 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { join } from "node:path";
 
 import { FileStore } from "#gh/read/store";
 import { OPS } from "#gh/read/classes";
@@ -137,136 +134,68 @@ it("refuses symlinks and directories with permissive modes", async () => {
   await expect(FileStore.open("identity", link)).rejects.toThrow("real");
 });
 
-it("coalesces two real processes behind a single lease", async () => {
+it("coalesces two store clients behind a single lease", async () => {
   const root = await directory();
-  const script = join(root, "worker.ts");
-  const storePath = resolve("src/gh-tool/read/store.ts");
-  await writeFile(
-    script,
-    `
-import { FileStore } from ${JSON.stringify(storePath)};
-import { appendFile } from "node:fs/promises";
-const root = process.argv[2];
-const store = await FileStore.open("fixture", root);
-const key = { op: "jobLog", repo: { owner: "owner", name: "repo" }, jobId: 123 };
-const value = await store.prepare(key, { kind: "immutable" }, (value) => { if (typeof value !== "string") throw new Error("Invalid value"); return value; });
-if (value.kind === "fetch") {
-  await appendFile(root + "/fetches", "fetch\\n");
-  await new Promise((resolve) => { setTimeout(resolve, 200); });
-  await store.put(value, "same log", true);
-  await store.release(value.key, value.owner);
-  console.log("same log");
-} else console.log(value.value);
-`,
-  );
-  const exec = promisify(execFile);
-  const results = await Promise.all([exec("bun", [script, root]), exec("bun", [script, root])]);
-  expect(results.map((result) => result.stdout.trim())).toEqual(["same log", "same log"]);
-  expect(await readFile(join(root, "fetches"), "utf8")).toBe("fetch\n");
+  const first = await FileStore.open("fixture", root);
+  const second = await FileStore.open("fixture", root);
+  const key: ReadKey = { op: "jobLog", repo: { owner: "owner", name: "repo" }, jobId: 456 };
+  const lease = await first.prepare(key, { kind: "immutable" }, decode);
+  if (lease.kind !== "fetch") throw new Error("Expected cache miss");
+  const pending = second.prepare(key, { kind: "immutable" }, decode);
+  await first.put(lease, "same log", true);
+  await first.release(lease.key, lease.owner);
+  expect(await pending).toEqual({ kind: "hit", value: "same log" });
 });
 
-it(
-  "keeps a live clock owner and recovers its lock after it is killed",
-  { timeout: 10000 },
-  async () => {
-    const root = await directory();
-    const store = await FileStore.open("fixture", root);
-    const script = join(root, "lock-owner.ts");
-    await writeFile(
-      script,
-      `
-import { FileStore } from ${JSON.stringify(resolve("src/gh-tool/read/store.ts"))};
-const store = await FileStore.open("fixture", process.argv[2]);
-await store["locked"](async () => {
-  console.log("locked");
-  await new Promise((resolve) => setTimeout(resolve, 60000));
+it("keeps a live clock owner and recovers a dead owner's lock", async () => {
+  const root = await directory();
+  const store = await FileStore.open("fixture", root, { contentionTimeoutMs: 0 });
+  const lock = join(store.directory, "clock.lock");
+  await mkdir(lock, { mode: 0o700 });
+  await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, owner: "owner" }));
+  await utimes(lock, new Date(0), new Date(0));
+  const alive = vi.spyOn(process, "kill").mockImplementation(() => true);
+  try {
+    await expect(store.readClock()).rejects.toThrow("Cache coordination timed out");
+    expect(await readdir(lock)).toEqual(["owner.json"]);
+    alive.mockImplementation(() => {
+      throw Object.assign(new Error("dead"), { code: "ESRCH" });
+    });
+    const recovered = await FileStore.open("fixture", root);
+    await recovered.bump(tagsFor(key));
+    expect(await recovered.readClock()).toMatchObject({ generation: 1 });
+  } finally {
+    alive.mockRestore();
+  }
 });
-`,
-    );
-    const child = spawn("bun", [script, root], { stdio: ["ignore", "pipe", "pipe"] });
-    try {
-      const [ready] = await once(child.stdout, "data");
-      expect(String(ready).trim()).toBe("locked");
-      const lockPath = join(store.directory, "clock.lock");
-      const owners = await readdir(lockPath);
-      expect(owners).toHaveLength(1);
-      const old = new Date(0);
-      await utimes(lockPath, old, old);
-      await expect(store.readClock()).rejects.toThrow("Cache coordination timed out");
-      expect(await readdir(lockPath)).toEqual(owners);
-      expect(JSON.parse(await readFile(join(lockPath, owners[0] ?? "missing"), "utf8"))).toEqual({
-        pid: child.pid,
-        owner: expect.any(String),
-      });
-      const exited = once(child, "exit");
-      child.kill("SIGKILL");
-      await exited;
-      await store.bump(tagsFor(key));
-      expect(await store.readClock()).toMatchObject({ generation: 1 });
-    } finally {
-      child.kill("SIGKILL");
-    }
-  },
-);
 
-it(
-  "recovers children killed at clock acquisition and release boundaries",
-  { timeout: 15000 },
-  async () => {
-    const root = await directory();
-    const store = await FileStore.open("fixture", root);
-    const script = join(root, "lock-boundaries.ts");
-    await writeFile(
-      script,
-      `
-import { mock } from "bun:test";
-import * as fs from "node:fs/promises";
-const original = { ...fs };
-let armed = false;
-const boundary = process.argv[3];
-mock.module("node:fs/promises", () => ({
-  ...original,
-  mkdir: async (path, options) => {
-    const acquiring = String(path).endsWith("clock.lock");
-    if (armed && acquiring && boundary === "acquire-before") process.kill(process.pid, "SIGKILL");
-    const result = await original.mkdir(path, options);
-    if (armed && acquiring && boundary === "acquire-after") process.kill(process.pid, "SIGKILL");
-    return result;
-  },
-  rename: async (from, to) => {
-    const operation = String(to).endsWith("clock.lock") ? "acquire" : String(from).endsWith("clock.lock") ? "release" : "other";
-    if (armed && boundary === operation + "-before") process.kill(process.pid, "SIGKILL");
-    const result = await original.rename(from, to);
-    if (armed && boundary === operation + "-after") process.kill(process.pid, "SIGKILL");
-    return result;
-  },
-}));
-const { FileStore } = await import(${JSON.stringify(resolve("src/gh-tool/read/store.ts"))});
-const store = await FileStore.open("fixture", process.argv[2]);
-armed = true;
-await store["locked"](async () => {});
-`,
-    );
+it("recovers persisted clock acquisition and release states", async () => {
+  const root = await directory();
+  const store = await FileStore.open("fixture", root);
+  const dead = vi.spyOn(process, "kill").mockImplementation(() => {
+    throw Object.assign(new Error("dead"), { code: "ESRCH" });
+  });
+  try {
     for (const boundary of ["acquire-before", "acquire-after", "release-before", "release-after"]) {
-      const child = spawn("bun", [script, root, boundary], { stdio: "ignore" });
-      const [code, signal] = await once(child, "exit");
-      expect({ code, signal }).toEqual({ code: null, signal: "SIGKILL" });
-      const lock = join(store.directory, "clock.lock");
-      if (boundary === "acquire-after" || boundary === "release-before") {
-        const names = await readdir(lock);
-        expect(names).toHaveLength(1);
-        expect(JSON.parse(await readFile(join(lock, names[0] ?? "missing"), "utf8"))).toEqual({
-          pid: child.pid,
-          owner: expect.any(String),
-        });
-      } else
-        await expect(readFile(join(lock, "missing"))).rejects.toMatchObject({ code: "ENOENT" });
+      const path = join(
+        store.directory,
+        boundary === "acquire-after" || boundary === "release-before"
+          ? "clock.lock"
+          : `clock.lock.${boundary}.tmp`,
+      );
+      await mkdir(path, { mode: 0o700 });
+      await writeFile(
+        join(path, "owner.json"),
+        JSON.stringify({ pid: process.pid, owner: "owner" }),
+      );
       await expect(store.readClock()).resolves.toMatchObject({ generation: 0 });
     }
     await mkdir(join(store.directory, "clock.lock"), { mode: 0o700 });
     await expect(store.readClock()).resolves.toMatchObject({ generation: 0 });
-  },
-);
+  } finally {
+    dead.mockRestore();
+  }
+});
 
 it("fetches immutable data once through the read layer and bypasses it for an origin read", async () => {
   const store = await FileStore.open("identity", await directory());

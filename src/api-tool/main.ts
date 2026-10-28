@@ -44,15 +44,28 @@ const requestCommand = Command.make(
 ).pipe(
   Command.withDescription("Send a JSON REST request through an operator-owned credential proxy"),
 );
-const command = Command.make("api-tool", {}).pipe(Command.withSubcommands([requestCommand]));
-BunRuntime.runMain(
-  Command.run(command, { version: VERSION, renderErrors: false }).pipe(
+export const mainCommand = Command.make("api-tool", {}).pipe(
+  Command.withSubcommands([requestCommand]),
+);
+export const runMain = () =>
+  BunRuntime.runMain(
+    Command.run(mainCommand, { version: VERSION, renderErrors: false }).pipe(
+      Effect.provide(BunServices.layer),
+      Effect.tapError((error) =>
+        Console.error(
+          JSON.stringify(error instanceof ApiError ? safeError(error) : apiError("CONFIG_INVALID")),
+        ),
+      ),
+    ),
+    { disableErrorReporting: true },
+  );
+
+export const runProgram = (args: readonly string[]) =>
+  Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args).pipe(
     Effect.provide(BunServices.layer),
     Effect.tapError((error) =>
       Console.error(
         JSON.stringify(error instanceof ApiError ? safeError(error) : apiError("CONFIG_INVALID")),
       ),
     ),
-  ),
-  { disableErrorReporting: true },
-);
+  );

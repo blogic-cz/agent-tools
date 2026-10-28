@@ -225,7 +225,7 @@ const grantsCommand = makeDiagnosticCommand(
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("db-tool", {}).pipe(
+export const mainCommand = Command.make("db-tool", {}).pipe(
   Command.withDescription("Database Query Tool for Coding Agents"),
   Command.withSubcommands([
     sqlCommand,
@@ -261,6 +261,12 @@ const program = withRedactedOutput(withAudit("db", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });
+
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(
+    withAudit("db", Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args)),
+  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));

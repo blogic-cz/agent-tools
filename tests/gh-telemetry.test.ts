@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { captureOutput } from "./helpers/capture-output";
+
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -578,37 +579,36 @@ it("subtracts only subprocess calls that can spend the sampled resource", () => 
 it("persists rows, prunes seven-day history and drops writes while SQLite is locked", async () => {
   const root = await mkdtemp(join(tmpdir(), "gh-telemetry-db-"));
   try {
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `
-      import { Database } from "bun:sqlite";
-      import { openRequestTelemetry } from "./src/gh-tool/read/telemetry-store.ts";
-      import { cacheEvent } from "./src/gh-tool/read/telemetry.ts";
-      import { registerResolvedSecret } from "./src/shared/content-security.ts";
-      process.argv = ["bun", "gh-tool", "pr", "comment", "--body", "fixture-resolved-credential"];
-      const path = process.env.DB_PATH;
-      const store = openRequestTelemetry(path);
-      registerResolvedSecret("fixture-resolved-credential");
-      store.record({ ...cacheEvent("prHead"), method: "GET", status: 200, outcome: "200" });
-      store.record({ ...cacheEvent("prHead"), method: "GET", status: 304, outcome: "304" });
-      store.record({ ...cacheEvent("old"), ts: "2000-01-01T00:00:00.000Z" });
-      store.close();
-      const reopened = openRequestTelemetry(path);
-      const before = reopened.read("2000");
-      const lock = new Database(path);
-      lock.run("BEGIN IMMEDIATE");
-      reopened.record(cacheEvent("locked"));
-      lock.run("ROLLBACK");
-      const after = reopened.read("2000");
-      const raw = lock.query("SELECT command FROM github_requests").all();
-      lock.run("UPDATE github_requests SET command = ?", ["pr comment --body fixture-read-credential"]);
-      registerResolvedSecret("fixture-read-credential");
-      console.log(JSON.stringify({ before, after, raw, redactedRead: reopened.read("2000") }));
-      reopened.close(); lock.close();
-    `,
-      ],
+    const result = await captureOutput(
+      async () => {
+        const { Database } = await import("bun:sqlite");
+        const { openRequestTelemetry } = await import("#gh/read/telemetry-store");
+        const { cacheEvent } = await import("#gh/read/telemetry");
+        const { registerResolvedSecret } = await import("#shared/content-security");
+        process.argv = ["bun", "gh-tool", "pr", "comment", "--body", "fixture-resolved-credential"];
+        const path = join(root, "audit.sqlite");
+        const store = openRequestTelemetry(path);
+        registerResolvedSecret("fixture-resolved-credential");
+        store.record({ ...cacheEvent("prHead"), method: "GET", status: 200, outcome: "200" });
+        store.record({ ...cacheEvent("prHead"), method: "GET", status: 304, outcome: "304" });
+        store.record({ ...cacheEvent("old"), ts: "2000-01-01T00:00:00.000Z" });
+        store.close();
+        const reopened = openRequestTelemetry(path);
+        const before = reopened.read("2000");
+        const lock = new Database(path);
+        lock.run("BEGIN IMMEDIATE");
+        reopened.record(cacheEvent("locked"));
+        lock.run("ROLLBACK");
+        const after = reopened.read("2000");
+        const raw = lock.query("SELECT command FROM github_requests").all();
+        lock.run("UPDATE github_requests SET command = ?", [
+          "pr comment --body fixture-read-credential",
+        ]);
+        registerResolvedSecret("fixture-read-credential");
+        console.log(JSON.stringify({ before, after, raw, redactedRead: reopened.read("2000") }));
+        reopened.close();
+        lock.close();
+      },
       {
         cwd: join(__dirname, ".."),
         encoding: "utf8",
@@ -635,33 +635,31 @@ it("persists rows, prunes seven-day history and drops writes while SQLite is loc
 it("stores only the GitHub subcommand path and flag names in request telemetry", async () => {
   const root = await mkdtemp(join(tmpdir(), "gh-telemetry-command-"));
   try {
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `
-      import { Database } from "bun:sqlite";
-      import { openRequestTelemetry } from "./src/gh-tool/read/telemetry-store.ts";
-      import { cacheEvent } from "./src/gh-tool/read/telemetry.ts";
-      const commands = [
-        ["pr", "comment", "--pr", "12", "--body", "private text"],
-        ["pr", "create", "--field=value"],
-        ["pr", "comment", "-f", "value"],
-        ["pr", "view", "12"],
-        ["workflow", "logs", "--run", "102"],
-        ["telemetry", "--hours", "24"],
-      ];
-      for (const [index, args] of commands.entries()) {
-        process.argv = ["bun", "gh-tool", ...args];
-        const store = openRequestTelemetry(process.env.DB_PATH);
-        store.record(cacheEvent(String(index)));
-        store.close();
-      }
-      const db = new Database(process.env.DB_PATH);
-      console.log(JSON.stringify(db.query("SELECT command FROM github_requests ORDER BY id").all()));
-      db.close();
-    `,
-      ],
+    const result = await captureOutput(
+      async () => {
+        const { Database } = await import("bun:sqlite");
+        const { openRequestTelemetry } = await import("#gh/read/telemetry-store");
+        const { cacheEvent } = await import("#gh/read/telemetry");
+        const commands = [
+          ["pr", "comment", "--pr", "12", "--body", "private text"],
+          ["pr", "create", "--field=value"],
+          ["pr", "comment", "-f", "value"],
+          ["pr", "view", "12"],
+          ["workflow", "logs", "--run", "102"],
+          ["telemetry", "--hours", "24"],
+        ];
+        for (const [index, args] of commands.entries()) {
+          process.argv = ["bun", "gh-tool", ...args];
+          const store = openRequestTelemetry(join(root, "audit.sqlite"));
+          store.record(cacheEvent(String(index)));
+          store.close();
+        }
+        const db = new Database(join(root, "audit.sqlite"));
+        console.log(
+          JSON.stringify(db.query("SELECT command FROM github_requests ORDER BY id").all()),
+        );
+        db.close();
+      },
       {
         cwd: join(__dirname, ".."),
         encoding: "utf8",

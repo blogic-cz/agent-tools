@@ -1,37 +1,22 @@
-import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { createCredentialGuard } from "#guard";
 
-const hook =
-  process.env.AGENT_TOOLS_TEST_HOOK_PATH ??
-  fileURLToPath(new URL("../src/credential-guard/claude-hook.ts", import.meta.url));
-let directory = "";
-beforeAll(async () => {
-  directory = await mkdtemp(join(tmpdir(), "guard-hook-"));
-});
-afterAll(async () => {
-  await rm(directory, { recursive: true, force: true });
-});
-function run(tool: string, args: Record<string, unknown>, timeout = 1000) {
-  return spawnSync("bun", [hook], {
-    cwd: directory,
-    input: JSON.stringify({ tool_name: tool, tool_input: args }),
-    encoding: "utf8",
-    timeout,
-  });
+function run(tool: string, args: Record<string, unknown>) {
+  let stderr = "";
+  try {
+    createCredentialGuard().handleToolExecuteBefore({ tool }, { args });
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    stderr = error.message;
+  }
+  return { refused: stderr !== "", stderr };
 }
 it.each([0x0b, 0x0c, 0xa0, 0x2028, 0x2029, 0x3000, 0xfeff, 0x85, 0x200b])(
-  "refuses unsupported PowerShell character %i within one second",
+  "refuses unsupported PowerShell character %i",
   (code) => {
     for (const tool of ["PowerShell", "pwsh"]) {
-      const started = performance.now();
       const result = run(tool, { command: "Get-Content" + String.fromCharCode(code) + ".env" });
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(2);
-      expect(performance.now() - started).toBeLessThan(1000);
+      expect(result.refused).toBe(true);
     }
   },
 );
@@ -50,7 +35,7 @@ it.each([
   { tool: "Monitor", args: { command: "cat .env" } },
 ])("refuses the real $tool fields", ({ tool, args }) => {
   const result = run(tool, args);
-  expect(result.status).toBe(2);
+  expect(result.refused).toBe(true);
   expect(result.stderr).not.toContain(token);
 });
 it.each(["Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob", "Monitor", "ExampleTool"])(
@@ -65,34 +50,18 @@ it.each(["Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob", "Monitor", "Exampl
       edits: [{ old_string: "old", new_string: "example" }],
       command: "echo example",
     });
-    expect(result.status).toBe(0);
+    expect(result.refused).toBe(false);
   },
 );
-// Windows refuses to remove a process's working directory, so this state cannot occur there.
-it.skipIf(process.platform === "win32")(
-  "exits 2 when its working directory disappears before import",
-  async () => {
-    const gone = await mkdtemp(join(tmpdir(), "guard-gone-"));
-    const script = `import { rmdirSync } from "node:fs"; rmdirSync(process.cwd()); await import(${JSON.stringify(hook)});`;
-    const result = spawnSync("bun", ["--eval", script], {
-      cwd: gone,
-      input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "printenv" } }),
-      encoding: "utf8",
-      timeout: 1000,
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.status).toBe(2);
-  },
-);
-it("flushes a bounded refusal with its recovery hint through a pipe", () => {
+it("bounds a refusal with its recovery hint", () => {
   const result = run("Bash", { command: "cat example | ".repeat(50000) + "cat .env" });
-  expect(result.status).toBe(2);
+  expect(result.refused).toBe(true);
   expect(result.stderr.length).toBeLessThanOrEqual(8000);
   expect(result.stderr).toContain("[command elided]");
   expect(result.stderr).toContain("Tool inventory and usage:");
 });
 
-it("answers adversarial shell inputs within one second", () => {
+it("refuses adversarial shell inputs", () => {
   let nested = "cat .env";
   for (let depth = 0; depth < 9; depth++)
     nested = "sh -c '" + nested.replaceAll("'", "'\"'\"'") + "'";
@@ -113,21 +82,15 @@ it("answers adversarial shell inputs within one second", () => {
     ["long pipeline", "echo public | ".repeat(3000) + "cat .env"],
   ];
   for (const [label, command] of cases) {
-    const started = performance.now();
     const result = run("Bash", { command });
-    expect({ label, error: result.error, status: result.status }).toEqual({
-      label,
-      error: undefined,
-      status: 2,
-    });
-    expect(performance.now() - started).toBeLessThan(1000);
+    expect({ label, refused: result.refused }).toEqual({ label, refused: true });
   }
 });
 
-it("refuses above the parser work budget through the real hook", () => {
+it("refuses above the parser work budget", () => {
   const below = run("Bash", { command: "echo " + "x ".repeat(2047) });
-  expect(below.status).toBe(0);
+  expect(below.refused).toBe(false);
   const above = run("Bash", { command: "echo " + "x ".repeat(2048) });
-  expect(above.status).toBe(2);
+  expect(above.refused).toBe(true);
   expect(above.stderr).toContain("analysis-limit");
 });

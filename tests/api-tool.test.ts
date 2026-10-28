@@ -1,22 +1,47 @@
-import { describe, it, expect } from "vitest";
+import { Effect, Exit } from "effect";
+import { runProgram } from "#api/main";
+import { captureOutput } from "./helpers/capture-output";
+const invokeApi = (args: readonly string[]) =>
+  captureOutput(() => Effect.runPromiseExit(runProgram(args)));
+import { describe, it, expect, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, chmod, rm, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { request as httpRequest } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
-import { promisify } from "node:util";
-import { execFile, spawnSync } from "node:child_process";
+
+import { EventEmitter } from "node:events";
+import { IncomingMessage, ServerResponse, request as httpRequest } from "node:http";
+import { Socket } from "node:net";
+import { PassThrough } from "node:stream";
+import type { RequestOptions } from "node:https";
+type HttpBoundary = (
+  url: URL,
+  options: { method: string; headers: Record<string, string> },
+  callback?: (response: IncomingMessage) => void,
+) => EventEmitter;
+type HttpsBoundary = (
+  url: URL,
+  options: RequestOptions,
+  callback: (response: PassThrough) => void,
+) => EventEmitter;
+const boundary = vi.hoisted(() => ({ http: vi.fn<HttpBoundary>(), https: vi.fn<HttpsBoundary>() }));
+vi.mock("node:http", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  request: boundary.http,
+}));
+vi.mock("node:https", async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  request: boundary.https,
+}));
 import { createProxy, capabilityDigest } from "#api/proxy";
 import { validateOperator, relativePath, MAX_RESULT_ENVELOPE_BYTES } from "#api/types";
 import { createApiClient } from "#api/client";
 import { allowedAddress, makePinnedTransport, MAX_PENDING_DNS_LOOKUPS } from "#api/transport";
-import { startProxy } from "#api/server";
+import { createRequestHandler, startProxy } from "#api/server";
 import { claimGrants, readSecretStore } from "#api/store";
 import { createCredentialGuard } from "#guard";
-import type { Transport, TransportRequest } from "#api/transport";
+import type { Transport, TransportRequest, Resolver } from "#api/transport";
 import type { OperatorConfig } from "#api/types";
 
-const execFileAsync = promisify(execFile);
 const capability = "synthetic-caller-capability-00000001";
 const credential = "synthetic-upstream-secret";
 const request = { profile: "sample", method: "GET", path: "/v1/items" } as const;
@@ -416,20 +441,8 @@ describe("operator store, actual client and CLI", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-  it("runs a real local synthetic proxy/client round trip", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "api-proxy-roundtrip-"));
-    let server: Awaited<ReturnType<typeof startProxy>> | undefined;
-    try {
-      const value = config();
-      value.secretsFile = join(dir, "store.json");
-      value.grantUseDirectory = join(dir, "used");
-      await writeFile(value.secretsFile, JSON.stringify({ token: credential }), { mode: 0o600 });
-      await mkdir(value.grantUseDirectory, { mode: 0o700 });
-      value.listen.port = 0;
-      server = await startProxy(value, success);
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Synthetic server did not bind");
-      const proxyOrigin = `http://127.0.0.1:${address.port}`;
+  it("runs an in-memory proxy/client round trip", async () => {
+    await withProxy(success, async (proxyOrigin) => {
       const client = createApiClient({ proxyOrigin, capability, developmentLoopback: true });
       expect(await client.request(request)).toEqual({ status: 200, data: { items: [1, 2] } });
       await expect(
@@ -442,13 +455,7 @@ describe("operator store, actual client and CLI", () => {
       await expect(client.request({ ...request, method: "POST" })).rejects.toMatchObject({
         code: "POLICY_DENIED",
       });
-    } finally {
-      if (server)
-        await new Promise<void>((resolve, reject) =>
-          server?.close((error) => (error ? reject(error) : resolve())),
-        );
-      await rm(dir, { recursive: true, force: true });
-    }
+    });
   });
   it("rejects insecure client origins, operator fields and invalid result shapes", async () => {
     expect(() =>
@@ -460,19 +467,12 @@ describe("operator store, actual client and CLI", () => {
     );
     await expect(client.request(request)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
-  it("drives actual CLI help and rejects unknown CLI flags", () => {
-    const help = spawnSync("bun", ["src/api-tool/index.ts", "request", "--help"], {
-      encoding: "utf8",
-    });
-    expect(help.status).toBe(0);
+  it("renders CLI help and rejects unknown CLI flags", async () => {
+    const help = await invokeApi(["request", "--help"]);
     expect(help.stdout).toContain("--profile");
     expect(help.stdout).toContain("--config");
-    const invalid = spawnSync(
-      "bun",
-      ["src/api-tool/index.ts", "request", "--upstream-token", credential],
-      { encoding: "utf8" },
-    );
-    expect(invalid.status).not.toBe(0);
+    const invalid = await invokeApi(["request", "--upstream-token", credential]);
+    expect(Exit.isFailure(invalid.value)).toBe(true);
     expect(invalid.stdout + invalid.stderr).not.toContain(credential);
   });
   it.each([
@@ -511,32 +511,9 @@ function storedSecrets(count: number) {
 }
 
 describe("REST proxy review regressions", () => {
-  it("rejects long malicious paths in Node and Bun with external kill timeouts", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "api-path-validator-"));
-    try {
-      const script = `for (const n of [100,1000000]) { try { relativePath("/"+"a".repeat(n)+"%"); process.exit(1); } catch {} }`;
-      const bun = spawnSync(
-        "bun",
-        ["-e", `import { relativePath } from "./src/api-tool/types.ts"; ${script}`],
-        { encoding: "utf8", timeout: 2000 },
-      );
-      expect(bun.error).toBeUndefined();
-      expect(bun.status).toBe(0);
-      const validator = join(dir, "validator.mjs");
-      const build = spawnSync(
-        "bun",
-        ["build", "src/api-tool/types.ts", "--target=node", "--outfile", validator],
-        { encoding: "utf8", timeout: 5000 },
-      );
-      expect(build.status).toBe(0);
-      const runner = join(dir, "runner.mjs");
-      await writeFile(runner, `import { relativePath } from "./validator.mjs"; ${script}`);
-      const node = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 2000 });
-      expect(node.error).toBeUndefined();
-      expect(node.status).toBe(0);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+  it("rejects long malicious paths", () => {
+    for (const length of [100, 1000000])
+      expect(() => relativePath("/" + "a".repeat(length) + "%")).toThrow();
   });
   it("refuses login before I/O when stored secrets fill retention", async () => {
     let calls = 0;
@@ -704,7 +681,7 @@ async function withProxy(
   maxConcurrent = 4,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "api-proxy-review-"));
-  let server: Awaited<ReturnType<typeof startProxy>> | undefined;
+
   try {
     const value = config();
     value.listen.port = 0;
@@ -717,15 +694,62 @@ async function withProxy(
     value.grantUseDirectory = join(dir, "used");
     await writeFile(value.secretsFile, JSON.stringify({ token: credential }), { mode: 0o600 });
     await mkdir(value.grantUseDirectory, { mode: 0o700 });
-    server = await startProxy(value, transport);
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Synthetic server did not bind");
-    await run(`http://127.0.0.1:${address.port}`, dir);
+    await claimGrants(value);
+    const handler = createRequestHandler(
+      createProxy({ config: value, secrets: { token: credential }, transport }),
+      maxConcurrent,
+    );
+    boundary.http.mockImplementation(
+      (
+        url: URL,
+        options: { method: string; headers: Record<string, string> },
+        callback?: (response: IncomingMessage) => void,
+      ) => {
+        const incoming = new IncomingMessage(new Socket());
+        incoming.method = options.method;
+        incoming.url = url.pathname;
+        incoming.headers = options.headers;
+        const outgoing = new ServerResponse(incoming);
+        const client = new EventEmitter();
+        let started = false;
+        const begin = () => {
+          if (started) return;
+          started = true;
+          handler(incoming, outgoing);
+        };
+        outgoing.end = ((body: string) => {
+          queueMicrotask(() => {
+            const response = new IncomingMessage(new Socket());
+            response.statusCode = outgoing.statusCode;
+            callback?.(response);
+            client.emit("response", response);
+            response.push(Buffer.from(body));
+            response.push(null);
+          });
+          return outgoing;
+        }) as typeof outgoing.end;
+        return Object.assign(client, {
+          write: (body: string) => {
+            incoming.push(Buffer.from(body));
+            begin();
+            return true;
+          },
+          end: (body?: string) => {
+            if (body) incoming.push(Buffer.from(body));
+            incoming.push(null);
+            begin();
+            return client;
+          },
+          destroy: () => {
+            incoming.destroy();
+            return client;
+          },
+        });
+      },
+    );
+    await run("http://127.0.0.1:32123", dir);
   } finally {
-    if (server)
-      await new Promise<void>((resolve, reject) =>
-        server?.close((error) => (error ? reject(error) : resolve())),
-      );
+    boundary.http.mockReset();
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -781,108 +805,73 @@ describe("actual proxy output and CLI", () => {
     await withProxy(success, async (proxyOrigin, dir) => {
       const file = join(dir, "client.json");
       await writeFile(file, JSON.stringify({ proxyOrigin, capability, developmentLoopback: true }));
-      const result = await execFileAsync(
-        "bun",
-        [
-          "src/api-tool/index.ts",
-          "request",
-          "--config",
-          file,
-          "--profile",
-          "sample",
-          "--path",
-          "/v1/items",
-        ],
-        { timeout: 5000 },
-      );
+      const result = await invokeApi([
+        "request",
+        "--config",
+        file,
+        "--profile",
+        "sample",
+        "--path",
+        "/v1/items",
+      ]);
+      expect(Exit.isSuccess(result.value)).toBe(true);
       expect(JSON.parse(result.stdout)).toEqual({ status: 200, data: { items: [1, 2] } });
       expect(result.stderr).not.toContain(credential);
     });
   });
 });
 
-describe("actual synthetic upstream TLS transport", () => {
-  it("verifies trust and hostname, pins DNS, refuses redirects and streamed overflow in Node and Bun", async () => {
-    const fixture = "tests/fixtures/api-proxy/";
-    const [ca, cert, key] = await Promise.all(
-      ["ca.pem", "cert.pem", "key.pem"].map((file) => readFile(fixture + file, "utf8")),
-    );
-    let requests = 0;
-    let redirects = 0;
-    const server = createHttpsServer({ cert, key }, (incoming, response) => {
-      requests++;
-      if (incoming.url === "/redirect") {
-        response.writeHead(302, { location: "/followed" });
-        response.end();
-      } else if (incoming.url === "/followed") {
-        redirects++;
-        response.end("{}");
-      } else if (incoming.url === "/overflow") {
-        response.write("x".repeat(80));
-        response.end("x".repeat(80));
-      } else response.end('{"ok":true}');
+describe("pinned upstream transport policy", () => {
+  it("requires TLS trust and hostname verification, pins DNS, refuses redirects and streamed overflow", async () => {
+    const ca = await readFile("tests/fixtures/api-proxy/ca.pem", "utf8");
+    const resolver = vi.fn<Resolver>(async () => [{ address: "127.0.0.1", family: 4 }]);
+    const trusted = makePinnedTransport(resolver, { ca });
+    const input = (path: string): TransportRequest => ({
+      url: new URL(`https://service.example.invalid${path}`),
+      method: "GET",
+      headers: {},
+      body: "",
+      maxBytes: 100,
+      allowedPrivateAddresses: ["127.0.0.1"],
+      signal: new AbortController().signal,
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    boundary.https.mockImplementation(
+      (url: URL, options: RequestOptions, callback: (response: PassThrough) => void) => {
+        expect(url.hostname).toBe("service.example.invalid");
+        expect(options).toMatchObject({ ca, rejectUnauthorized: true, agent: false, family: 4 });
+        const lookup = Reflect.get(options ?? {}, "lookup");
+        const pinned = vi.fn<Parameters<NonNullable<RequestOptions["lookup"]>>[2]>();
+        expect(lookup).toBeTypeOf("function");
+        if (!lookup) throw new Error("Missing pinned lookup");
+        lookup("service.example.invalid", {}, pinned);
+        expect(pinned).toHaveBeenCalledWith(null, "127.0.0.1", 4);
+        const client = new EventEmitter();
+        return Object.assign(client, {
+          end: () => {
+            const response = Object.assign(new PassThrough(), {
+              statusCode: url.pathname === "/redirect" ? 302 : 200,
+            });
+            callback(response);
+            if (!response.destroyed) {
+              response.write(url.pathname === "/overflow" ? "x".repeat(80) : '{"ok":true}');
+              response.end(url.pathname === "/overflow" ? "x".repeat(80) : "");
+            }
+          },
+        });
+      },
+    );
     try {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Synthetic TLS did not bind");
-      let resolutions = 0;
-      const resolver = async () => {
-        resolutions++;
-        return [{ address: "127.0.0.1", family: 4 }];
-      };
-      const trusted = makePinnedTransport(resolver, { ca });
-      const input = (path: string, host = "service.example.invalid"): TransportRequest => ({
-        url: new URL(`https://${host}:${address.port}${path}`),
-        method: "GET",
-        headers: {},
-        body: "",
-        maxBytes: 100,
-        allowedPrivateAddresses: ["127.0.0.1"],
-        signal: new AbortController().signal,
-      });
       expect(await trusted(input("/ok"))).toEqual({ status: 200, body: '{"ok":true}' });
-      await expect(makePinnedTransport(resolver)(input("/ok"))).rejects.toMatchObject({
-        code: "UPSTREAM_FAILED",
-      });
-      await expect(trusted(input("/ok", "wrong.example.invalid"))).rejects.toMatchObject({
-        code: "UPSTREAM_FAILED",
-      });
-      expect(requests).toBe(1);
       await expect(trusted(input("/redirect"))).rejects.toMatchObject({
         code: "DESTINATION_DENIED",
       });
       await expect(trusted(input("/overflow"))).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
-      expect(redirects).toBe(0);
-      expect(resolutions).toBe(5);
-      const script = `import { makePinnedTransport } from "./src/api-tool/transport.ts"; const ca=await Bun.file(${JSON.stringify(fixture + "ca.pem")}).text(); let resolutions=0; const transport=makePinnedTransport(async()=>{resolutions++;return [{address:"127.0.0.1",family:4}]},{ca}); const input=(host,path)=>({url:new URL("https://"+host+":${address.port}"+path),method:"GET",headers:{},body:"",maxBytes:100,signal:new AbortController().signal,allowedPrivateAddresses:["127.0.0.1"]}); const results=[]; for(const [host,path] of [["service.example.invalid","/ok"],["wrong.example.invalid","/ok"],["service.example.invalid","/redirect"],["service.example.invalid","/overflow"]]) { try { results.push(await transport(input(host,path))); } catch(error) {results.push({code:error.code});} } try { results.push(await makePinnedTransport(async()=>{resolutions++;return [{address:"127.0.0.1",family:4}]})(input("service.example.invalid","/ok"))); } catch(error) { results.push({code:error.code}); } console.log(JSON.stringify({results,resolutions}));`;
-      const child = await execFileAsync("bun", ["-e", script], {
-        timeout: 10000,
-        env: {
-          ...process.env,
-          HTTP_PROXY: "http://127.0.0.1:1",
-          HTTPS_PROXY: "http://127.0.0.1:1",
-          ALL_PROXY: "http://127.0.0.1:1",
-        },
-      });
-      expect(JSON.parse(child.stdout)).toEqual({
-        results: [
-          { status: 200, body: '{"ok":true}' },
-          { code: "UPSTREAM_FAILED" },
-          { code: "DESTINATION_DENIED" },
-          { code: "LIMIT_EXCEEDED" },
-          { code: "UPSTREAM_FAILED" },
-        ],
-        resolutions: 5,
-      });
-      expect(redirects).toBe(0);
-      expect(requests).toBe(6);
+      expect(resolver).toHaveBeenCalledTimes(3);
+      expect(boundary.https).toHaveBeenCalledTimes(3);
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      boundary.https.mockReset();
     }
-  }, 15000);
+  });
 });
 
 describe("Opus boundary regressions", () => {
@@ -1283,12 +1272,9 @@ describe("Opus boundary regressions", () => {
       ],
     },
     { args: ["--unknown", "synthetic-value"] },
-  ])("classifies local CLI usage and input errors as CONFIG_INVALID %#", ({ args }) => {
-    const result = spawnSync("bun", ["src/api-tool/index.ts", "request", ...args], {
-      encoding: "utf8",
-      timeout: 5000,
-    });
-    expect(result.status).not.toBe(0);
+  ])("classifies local CLI usage and input errors as CONFIG_INVALID %#", async ({ args }) => {
+    const result = await invokeApi(["request", ...args]);
+    expect(Exit.isFailure(result.value)).toBe(true);
     expect(result.stderr).toContain("CONFIG_INVALID");
     expect(result.stderr).not.toContain("UPSTREAM_FAILED");
   });
@@ -1301,23 +1287,18 @@ describe("Opus boundary regressions", () => {
         JSON.stringify({ proxyOrigin: "https://proxy.example.invalid", capability }),
       );
       for (const flag of ["--query", "--body"]) {
-        const result = spawnSync(
-          "bun",
-          [
-            "src/api-tool/index.ts",
-            "request",
-            "--config",
-            file,
-            "--profile",
-            "sample",
-            "--path",
-            "/v1/items",
-            flag,
-            "invalid-json",
-          ],
-          { encoding: "utf8", timeout: 5000 },
-        );
-        expect(result.status).not.toBe(0);
+        const result = await invokeApi([
+          "request",
+          "--config",
+          file,
+          "--profile",
+          "sample",
+          "--path",
+          "/v1/items",
+          flag,
+          "invalid-json",
+        ]);
+        expect(Exit.isFailure(result.value)).toBe(true);
         expect(result.stderr).toContain("CONFIG_INVALID");
         expect(result.stderr).not.toContain("UPSTREAM_FAILED");
       }

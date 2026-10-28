@@ -222,7 +222,7 @@ const gistCommand = Command.make("gist", {}).pipe(
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("gh-tool", {}).pipe(
+export const mainCommand = Command.make("gh-tool", {}).pipe(
   Command.withDescription(
     `GitHub CLI Tool for Coding Agents
 
@@ -307,6 +307,7 @@ const observed = Effect.gen(function* () {
 });
 const program = observed.pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });

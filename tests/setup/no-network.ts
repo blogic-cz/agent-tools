@@ -1,3 +1,11 @@
+import { vi } from "vitest";
+import cluster from "node:cluster";
+import workerThreads from "node:worker_threads";
+import childProcess from "node:child_process";
+import net from "node:net";
+import tls from "node:tls";
+import dgram from "node:dgram";
+import { syncBuiltinESMExports } from "node:module";
 const blocked = ((input: string | URL | Request) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   return Promise.reject(
@@ -9,3 +17,56 @@ const blocked = ((input: string | URL | Request) => {
 }) as typeof globalThis.fetch;
 
 globalThis.fetch = blocked;
+
+function refuseProcess(): never {
+  throw new Error(
+    "Unit test attempted to start a real process. Inject the external process runner.",
+  );
+}
+vi.mock("node:child_process", async () => ({
+  ...(await vi.importActual<Record<string, unknown>>("node:child_process")),
+  spawn: refuseProcess,
+  spawnSync: refuseProcess,
+  exec: refuseProcess,
+  execSync: refuseProcess,
+  execFile: refuseProcess,
+  execFileSync: refuseProcess,
+  fork: refuseProcess,
+}));
+function refuseWorker(): never {
+  throw new Error("Unit test attempted a real worker. Inject the worker boundary.");
+}
+vi.mock("node:worker_threads", async () => ({
+  ...(await vi.importActual<Record<string, unknown>>("node:worker_threads")),
+  Worker: refuseWorker,
+}));
+Object.assign(workerThreads, { Worker: refuseWorker });
+Object.assign(globalThis, { Worker: refuseWorker });
+cluster.fork = refuseProcess;
+function refuseSocket(): never {
+  throw new Error("Unit test attempted a real socket. Inject the transport boundary.");
+}
+Object.assign(Bun, {
+  Worker: refuseWorker,
+  spawn: refuseProcess,
+  spawnSync: refuseProcess,
+  $: refuseProcess,
+  connect: refuseSocket,
+  listen: refuseSocket,
+  serve: refuseSocket,
+});
+Object.assign(childProcess, {
+  spawn: refuseProcess,
+  spawnSync: refuseProcess,
+  exec: refuseProcess,
+  execSync: refuseProcess,
+  execFile: refuseProcess,
+  execFileSync: refuseProcess,
+  fork: refuseProcess,
+});
+net.Server.prototype.listen = refuseSocket;
+net.Socket.prototype.connect = refuseSocket;
+tls.connect = refuseSocket;
+dgram.Socket.prototype.bind = refuseSocket;
+dgram.Socket.prototype.connect = refuseSocket;
+syncBuiltinESMExports();

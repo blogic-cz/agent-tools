@@ -1,3 +1,4 @@
+import { stubBun } from "./helpers/stub-bun";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { formatDiagnostics, runEffectDiagnostics } from "../scripts/effect-diagnostics";
@@ -5,7 +6,7 @@ import { formatDiagnostics, runEffectDiagnostics } from "../scripts/effect-diagn
 afterEach(() => vi.unstubAllGlobals());
 
 function mockDiagnosticProcess(stdout: string) {
-  vi.stubGlobal("Bun", {
+  stubBun({
     spawn: () => ({
       exited: Promise.resolve(1),
       stdout: new Response(stdout).body,

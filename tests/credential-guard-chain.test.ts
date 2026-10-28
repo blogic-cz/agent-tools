@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join as nativeJoin } from "node:path";
 const join = (...parts: string[]) => nativeJoin(...parts).replace(/\\/g, "/");
 import type { CredentialGuardConfig } from "#config/types";
-import { spawnSync } from "node:child_process";
 import { createCredentialGuard } from "#guard";
 
 const launch = [
@@ -139,14 +138,8 @@ describe("credential guard composition and copy permission", () => {
   it.each([
     launch.slice(1).join(" && "),
     'rtk proxy herdr agent start n --kind codex --pane w1:p1 && rtk proxy herdr agent prompt n "x"',
-  ])("runs the real Claude hook for %s", (command) => {
-    const result = spawnSync("bun", ["src/credential-guard/claude-hook.ts"], {
-      cwd: process.cwd(),
-      input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
-      encoding: "utf8",
-    });
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+  ])("accepts the launch chain %s", (command) => {
+    expect(() => check(command)).not.toThrow();
   });
   it("retains configured file and CLI policy for each part", () => {
     for (const config of [
