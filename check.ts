@@ -1,3 +1,6 @@
+// TODO: bun lint ships only in canary builds; oven-sh/bun#46439 enables it in release builds. After the first stable Bun with bun lint: use ["bun", "lint", "--no-script"] and raise packageManager and bun-version in CI.
+const lintCommand = ["bunx", "bun@1.4.4-canary.20261027.1", "lint", "--no-script"];
+
 import {
   runEffectDiagnostics,
   formatDiagnostics as formatEffectDiagnostics,
@@ -57,7 +60,7 @@ async function lint(): Promise<{
   success: boolean;
   output?: string;
 }> {
-  const result = await run(["bunx", "oxlint", "-c", "./.oxlintrc.json", "--deny-warnings"]);
+  const result = await run([...lintCommand, "-c", "./.oxlintrc.json", "--max-warnings", "0"]);
   return {
     success: result.exitCode === 0,
     output: result.exitCode !== 0 ? result.stderr || result.stdout : undefined,
@@ -68,7 +71,7 @@ async function typecheck(): Promise<{
   success: boolean;
   output?: string;
 }> {
-  const result = await run(["bun", "tsc", "--noEmit"]);
+  const result = await run(["bun", "effect-tsgo", "tsrs", "--noEmit", "-p", "tsconfig.json"]);
   return {
     success: result.exitCode === 0,
     output: result.exitCode !== 0 ? result.stdout || result.stderr : undefined,
@@ -100,7 +103,7 @@ async function format(): Promise<{
   success: boolean;
   output?: string;
 }> {
-  const result = await run(["bunx", "oxfmt"]);
+  const result = await run(["bun", "fmt", "--no-script"]);
   return {
     success: result.exitCode === 0,
     output: result.exitCode !== 0 ? result.stderr || result.stdout : undefined,
@@ -111,7 +114,7 @@ async function formatCheck(): Promise<{
   success: boolean;
   output?: string;
 }> {
-  const result = await run(["bunx", "oxfmt", "--check"]);
+  const result = await run(["bun", "fmt", "--no-script", "--check"]);
   return {
     success: result.exitCode === 0,
     output: result.exitCode !== 0 ? result.stderr || result.stdout : undefined,
@@ -311,6 +314,12 @@ async function runSingle(command: Command): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (Bun.argv[2] === "lint-files") {
+    const result = await run([...lintCommand, ...Bun.argv.slice(3)]);
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    process.exit(result.exitCode);
+  }
   const { command } = parseArgs();
 
   switch (command) {

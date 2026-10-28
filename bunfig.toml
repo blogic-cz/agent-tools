@@ -1,2 +1,15 @@
 [install]
 minimumReleaseAge = 259200
+minimumReleaseAgeExcludes = [
+  "@effect/tsgo",
+  "@effect/tsgo-darwin-arm64",
+  "@effect/tsgo-darwin-x64",
+  "@effect/tsgo-linux-arm",
+  "@effect/tsgo-linux-arm64",
+  "@effect/tsgo-linux-x64",
+  "@effect/tsgo-win32-arm64",
+  "@effect/tsgo-win32-x64",
+]
+
+[fmt]
+flavor = "oxfmt"
