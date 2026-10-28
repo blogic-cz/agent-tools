@@ -172,12 +172,28 @@
               {
                 "name": "child_process",
                 "message": "Tests must run in-process. Inject the external process runner."
+              },
+              {
+                "name": "node:worker_threads",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "worker_threads",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "node:cluster",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "cluster",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
               }
             ],
             "patterns": [
               {
                 "group": ["bun"],
-                "importNames": ["spawn", "spawnSync", "$"],
+                "importNames": ["spawn", "spawnSync", "$", "Worker"],
                 "message": "Tests must run in-process. Inject the external process runner."
               }
             ]
@@ -204,6 +220,56 @@
             "object": "process",
             "property": "execPath",
             "message": "Tests must run in-process. Call the real command program."
+          },
+          {
+            "property": "Worker",
+            "message": "Tests must run in-process. Inject the external process or worker runner."
+          }
+        ],
+        "eslint/no-restricted-globals": [
+          "error",
+          {
+            "name": "Worker",
+            "message": "Tests must run in-process. Inject the external process or worker runner."
+          },
+          {
+            "name": "eval",
+            "message": "Tests must run in-process. Inject the external process or worker runner."
+          },
+          {
+            "name": "Function",
+            "message": "Tests must run in-process. Inject the external process or worker runner."
+          }
+        ],
+        "eslint/no-restricted-modules": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "node:child_process",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "child_process",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "node:worker_threads",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "worker_threads",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "node:cluster",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              },
+              {
+                "name": "cluster",
+                "message": "Tests must run in-process. Inject the external process or worker runner."
+              }
+            ]
           }
         ]
       }
@@ -211,7 +277,10 @@
     {
       "files": ["tests/setup/no-network.ts", "tests/runtime-guard.test.ts"],
       "rules": {
-        "eslint/no-restricted-imports": "off"
+        "eslint/no-restricted-imports": "off",
+        "eslint/no-restricted-globals": "off",
+        "eslint/no-restricted-modules": "off",
+        "eslint/no-restricted-properties": "off"
       }
     }
   ]

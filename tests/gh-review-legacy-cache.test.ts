@@ -1,5 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { Effect, Result } from "effect";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { GitHubCommandError } from "#gh/errors";
 import { FileStore } from "#gh/read/store";
@@ -21,7 +23,7 @@ const node = (databaseId: number | null) => ({
 });
 
 async function fixture(ids: Array<number | null>, rateLimited = false) {
-  const root = await mkdtemp("/tmp/pr186-old-cache-");
+  const root = await mkdtemp(join(tmpdir(), "pr186-old-cache-"));
   const store = await FileStore.open("fixture", root);
   const key = { op: "reviewThreads" as const, repo, pr: 1 };
   const rawComment = {

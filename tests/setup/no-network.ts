@@ -1,4 +1,6 @@
 import { vi } from "vitest";
+import cluster from "node:cluster";
+import workerThreads from "node:worker_threads";
 import childProcess from "node:child_process";
 import net from "node:net";
 import tls from "node:tls";
@@ -16,7 +18,7 @@ const blocked = ((input: string | URL | Request) => {
 
 globalThis.fetch = blocked;
 
-function refuseProcess() {
+function refuseProcess(): never {
   throw new Error(
     "Unit test attempted to start a real process. Inject the external process runner.",
   );
@@ -31,10 +33,21 @@ vi.mock("node:child_process", async () => ({
   execFileSync: refuseProcess,
   fork: refuseProcess,
 }));
+function refuseWorker(): never {
+  throw new Error("Unit test attempted a real worker. Inject the worker boundary.");
+}
+vi.mock("node:worker_threads", async () => ({
+  ...(await vi.importActual<Record<string, unknown>>("node:worker_threads")),
+  Worker: refuseWorker,
+}));
+Object.assign(workerThreads, { Worker: refuseWorker });
+Object.assign(globalThis, { Worker: refuseWorker });
+cluster.fork = refuseProcess;
 function refuseSocket(): never {
   throw new Error("Unit test attempted a real socket. Inject the transport boundary.");
 }
 Object.assign(Bun, {
+  Worker: refuseWorker,
   spawn: refuseProcess,
   spawnSync: refuseProcess,
   $: refuseProcess,
