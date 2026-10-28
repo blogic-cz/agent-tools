@@ -107,6 +107,19 @@ it("refuses server-chosen names in the fish startup directory", () => {
 });
 
 it.each([
+  "wget -r -nH -P ~/.config https://example.com/",
+  "wget -r -nH -nd -P ~/.config https://example.com/",
+  "wget -r -nH --cut-dirs=1 -P ~/.config https://example.com/x/",
+  "cd /tmp && wget -r -nH -P ~/.. https://example.com/",
+  "cd /tmp && wget -r -nH -P /Users https://example.com/",
+  "wget -r -P /opt/downloads https://example.com/",
+])("refuses unbounded server-chosen wget prefixes: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+  });
+});
+
+it.each([
   "-r",
   "--recursive",
   "-m",
@@ -126,6 +139,61 @@ it.each([
       });
     }
   }
+});
+
+it.each([
+  "-r",
+  "--recursive",
+  "-m",
+  "--mirror",
+  "-p",
+  "--page-requisites",
+  "--content-disposition",
+  "--trust-server-names",
+])("bounds prefixes for every server-chosen wget mode: %s", (mode) => {
+  for (const directories of [
+    "",
+    "-nd",
+    "--no-directories",
+    "-nH",
+    "--cut-dirs=1",
+    "-nd -nH --cut-dirs=1",
+  ]) {
+    expect(bash(`wget ${mode} ${directories} -P . https://example.com/x`)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+    });
+    for (const prefix of [
+      "~/.config",
+      '"$HOME/downloads"',
+      "/opt/downloads",
+      "downloads/../other",
+      "/tmp/../other",
+      "~+",
+      "~-",
+      "~user",
+    ]) {
+      expect(bash(`wget ${mode} ${directories} -P ${prefix} https://example.com/x`)).toMatchObject({
+        findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+      });
+    }
+    for (const prefix of [
+      "downloads",
+      "./downloads",
+      "/tmp/job",
+      "/private/tmp/job",
+      "/var/folders/job",
+    ]) {
+      expect(bash(`wget ${mode} ${directories} -P ${prefix} https://example.com/x`)).toEqual({
+        kind: "pass",
+      });
+    }
+  }
+});
+
+it("allows server-chosen names under TMPDIR", () => {
+  expect(
+    bash('TMPDIR=/private/tmp/job; wget -r -nH -P "$TMPDIR/downloads" https://example.com/x'),
+  ).toEqual({ kind: "pass" });
 });
 
 it.each([

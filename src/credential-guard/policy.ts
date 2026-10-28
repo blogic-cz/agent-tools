@@ -957,6 +957,25 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           if (destination?.unknownNames) {
             if (invocationScope.cwd.kind !== "literal")
               emit("opaque-path", "server-chosen output directory has unknown context", span, true);
+            if (
+              value.kind !== "literal" ||
+              value.texts.some((prefix) => {
+                const parts = prefix.replace(/\\/g, "/").split("/");
+                if (parts.includes("..")) return true;
+                if (/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(prefix))
+                  return false;
+                return (
+                  /^(?:[~/]|[a-z]:)/i.test(prefix) ||
+                  parts.every((part) => part === "" || part === ".")
+                );
+              })
+            )
+              emit(
+                "no-analyzer",
+                "server-chosen output names require a temporary root or relative subdirectory",
+                span,
+                true,
+              );
             for (const target of paths) {
               const path = target.replace(/\/+$/, "") || "/";
               if (
