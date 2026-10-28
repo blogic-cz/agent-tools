@@ -4,6 +4,7 @@ type TsgoDiagnostic = {
   column: number;
   severity: "error" | "warning" | "message" | "suggestion";
   code: number;
+  name?: string;
   message: string;
 };
 
@@ -53,10 +54,10 @@ export async function runEffectDiagnostics(): Promise<EffectDiagnosticsResult> {
   ]);
 
   try {
-    if (exitCode !== 0) {
+    const result = JSON.parse(stdout) as TsgoResult;
+    if (exitCode !== 0 && result.summary.errors === 0 && result.summary.warnings === 0) {
       throw new Error(stderr.trim() || `effect-tsgo exited with code ${exitCode}`);
     }
-    const result = JSON.parse(stdout) as TsgoResult;
     return {
       files: result.summary.filesChecked,
       diagnostics: result.diagnostics,
@@ -94,7 +95,7 @@ export function formatDiagnostics(result: EffectDiagnosticsResult): string {
   return result.diagnostics
     .map(
       (diag) =>
-        `  ${diag.severity} [${diag.code}] ${diag.file}:${diag.line}:${diag.column}\n    ${diag.message}`,
+        `  ${diag.severity} [${diag.name ?? diag.code}] ${diag.file}:${diag.line}:${diag.column}\n    ${diag.message}`,
     )
     .join("\n");
 }
