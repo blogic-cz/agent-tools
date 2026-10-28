@@ -430,11 +430,12 @@ export const postIssueComment = Effect.fn("pr.postIssueComment")(function* (
 
 export const fetchDiscussionSummary = Effect.fn("pr.fetchDiscussionSummary")(function* (
   pr: number | null,
+  collectedThreads?: readonly ReviewThread[],
 ) {
   const [issueComments, reviewComments, threads] = yield* Effect.all([
     fetchIssueComments(pr, null, null, null),
     fetchComments(pr, null),
-    fetchThreads(pr, false),
+    collectedThreads === undefined ? fetchThreads(pr, false) : Effect.succeed(collectedThreads),
   ]);
 
   const latestIssueComment =

@@ -405,16 +405,19 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   const { info, value } = yield* withStableHead(
     prNumber,
     (number, headSha) =>
-      Effect.all([
-        fetchThreads(number, false, false, headSha),
-        fetchDiscussionSummary(number),
-        fetchCheckReport(number),
-        fetchReviews(number, null, null, null, headSha),
-        fetchComments(number, null, headSha),
-      ]),
+      Effect.gen(function* () {
+        const allThreads = yield* fetchThreads(number, false, false, headSha);
+        const [summary, checkReport, reviews, inlineComments] = yield* Effect.all([
+          fetchDiscussionSummary(number, allThreads),
+          fetchCheckReport(number),
+          fetchReviews(number, null, null, null, headSha),
+          fetchComments(number, null, headSha),
+        ]);
+        return { allThreads, summary, checkReport, reviews, inlineComments };
+      }),
     { operation: "review triage", command: "gh-tool pr review-triage" },
   );
-  const [allThreads, summary, checkReport, reviews, inlineComments] = value;
+  const { allThreads, summary, checkReport, reviews, inlineComments } = value;
   const checks = checkReport.checks ?? [];
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);
   const visibleOpenThreads = allThreads.filter((thread) => thread.isVisibleOpen);
@@ -526,6 +529,16 @@ export const fetchReviewTriageBatch = Effect.fn("pr.fetchReviewTriageBatch")(fun
     { concurrency: 5 },
   );
 });
+
+const reviewTriageBatchError = (
+  errors: readonly { readonly pr: number; readonly error: string }[],
+) =>
+  new GitHubCommandError({
+    message: `Failed to fetch review triage for PRs: ${errors.map(({ pr, error }) => `#${pr}: ${error}`).join("; ")}`,
+    command: "gh-tool pr review-triage --prs",
+    exitCode: 1,
+    stderr: "",
+  });
 
 export const prViewCommand = Command.make(
   "view",
@@ -1776,6 +1789,11 @@ export const prReviewTriageCommand = Command.make(
           const numbers = yield* parsePrNumbers(batch);
           const results = yield* fetchReviewTriageBatch(numbers);
           yield* logFormatted({ count: results.length, prs: results }, format);
+          const errors = results.filter(
+            (result): result is Extract<(typeof results)[number], { readonly error: string }> =>
+              "error" in result,
+          );
+          if (errors.length > 0) return yield* reviewTriageBatchError(errors);
           return;
         }
         const prNumber = Option.getOrNull(pr);

@@ -132,6 +132,7 @@ import {
   fetchCurrentReviews,
   fetchCurrentThreads,
   fetchReviewTriage,
+  fetchReviewTriageBatch,
   filterFeedback,
   omitTriageSections,
   parsePrNumbers,
@@ -9342,6 +9343,64 @@ describe("PR composite commands", () => {
   );
 
   it.effect(
+    "review-triage derives thread counts and classification from the collected threads",
+    () =>
+      Effect.gen(function* () {
+        let threadReads = 0;
+        const [result] = yield* fetchReviewTriageBatch([123]).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr" && args[1] === "view") {
+                  return Effect.succeed({ ...mockPRInfo, headRefOid: "stable-head" });
+                }
+                if (args[0] === "pr" && args[1] === "checks") {
+                  return Effect.succeed(mockChecksData);
+                }
+                return Effect.succeed({});
+              },
+              runGraphQL: () => {
+                threadReads += 1;
+                return Effect.succeed(
+                  threadReads === 1
+                    ? mockGraphQLThreadsResponse
+                    : {
+                        repository: {
+                          pullRequest: {
+                            reviewThreads: {
+                              nodes: [],
+                              pageInfo: { hasNextPage: false, endCursor: null },
+                            },
+                          },
+                        },
+                      },
+                );
+              },
+              runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+            }),
+          ),
+        );
+
+        expect(threadReads).toBe(1);
+        expect(result).toMatchObject({
+          visibleOpenReviewThreadsCount: 2,
+          unresolvedReviewThreadsCount: 1,
+          visibleOpenThreadIds: ["thread-1", "thread-2"],
+          classification: {
+            status: "needs_investigation",
+            reasons: expect.arrayContaining([
+              "visible_open_review_threads",
+              "unresolved_review_threads",
+            ]),
+          },
+        });
+        expect(result.visibleOpenReviewThreadsCount).toBe(result.visibleOpenThreadIds.length);
+        expect(result.classification.reasons).toContain("visible_open_review_threads");
+        expect(result.classification.reasons).toContain("unresolved_review_threads");
+      }),
+  );
+
+  it.effect(
     "review-triage batch is compact and reports a failed PR beside successful results",
     () =>
       Effect.gen(function* () {
@@ -9424,7 +9483,7 @@ describe("PR composite commands", () => {
           Effect.result,
         );
         stdoutWrite.mockRestore();
-        expect(Result.isSuccess(commandResult)).toBe(true);
+        expect(Result.isFailure(commandResult)).toBe(true);
         const output = stdout.join("").trim();
 
         expect(JSON.parse(output)).toEqual({
