@@ -120,6 +120,28 @@ it.each([
 });
 
 it.each([
+  "cd ~ && wget -r -nH -P .config https://example.com/",
+  "cd / && wget -r -nH -P Users https://example.com/",
+  "cd /users && wget -r -nH -P test/.config https://example.com/",
+  "cd ~ && wget -r -nH -P Library https://example.com/",
+  "cd /opt && wget -r -nH -P out https://example.com/",
+])("resolves server-chosen wget prefixes after cd: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+  });
+});
+
+it("allows a relative server-chosen wget prefix under a temporary working directory", () => {
+  expect(bash("cd /tmp && wget -r -nH -P out https://example.com/")).toEqual({ kind: "pass" });
+});
+
+it("refuses a relative server-chosen wget prefix after an unresolved cd", () => {
+  expect(bash('cd "$UNKNOWN" && wget -r -nH -P out https://example.com/')).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "opaque-path" })]),
+  });
+});
+
+it.each([
   "-r",
   "--recursive",
   "-m",

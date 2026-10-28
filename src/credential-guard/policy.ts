@@ -964,6 +964,16 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                 if (parts.includes("..")) return true;
                 if (/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(prefix))
                   return false;
+                if (
+                  mentions(invocationScope.cwd).some(
+                    (cwd) =>
+                      cwd !== normalizePath(context.cwd, context.home, "/") &&
+                      !/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(
+                        normalizePath(prefix, context.home, cwd),
+                      ),
+                  )
+                )
+                  return true;
                 return (
                   /^(?:[~/]|[a-z]:)/i.test(prefix) ||
                   parts.every((part) => part === "" || part === ".")
