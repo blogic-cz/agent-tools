@@ -9382,6 +9382,7 @@ describe("PR composite commands", () => {
         );
 
         expect(threadReads).toBe(1);
+        if ("error" in result) throw new Error(result.error);
         expect(result).toMatchObject({
           visibleOpenReviewThreadsCount: 2,
           unresolvedReviewThreadsCount: 1,
