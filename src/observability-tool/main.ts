@@ -16,7 +16,7 @@ import { traceCommand } from "./trace";
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("observability-tool", {}).pipe(
+export const mainCommand = Command.make("observability-tool", {}).pipe(
   Command.withDescription(
     "LGTM observability queries — Tempo traces, Loki logs, Prometheus metrics",
   ),
@@ -37,4 +37,12 @@ const program = withRedactedOutput(withAudit("observability", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, { disableErrorReporting: true });
+export const runMain = () => BunRuntime.runMain(program, { disableErrorReporting: true });
+
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(
+    withAudit(
+      "observability",
+      Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args),
+    ),
+  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));

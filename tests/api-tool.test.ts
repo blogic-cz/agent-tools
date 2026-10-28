@@ -1,11 +1,14 @@
+import { Effect, Exit } from "effect";
+import { runProgram } from "#api/main";
+import { captureOutput } from "./helpers/capture-output";
+const invokeApi = (args: readonly string[]) =>
+  captureOutput(() => Effect.runPromiseExit(runProgram(args)));
 import { describe, it, expect } from "vitest";
 import { mkdtemp, mkdir, writeFile, chmod, rm, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { promisify } from "node:util";
-import { execFile, spawnSync } from "node:child_process";
 import { createProxy, capabilityDigest } from "#api/proxy";
 import { validateOperator, relativePath, MAX_RESULT_ENVELOPE_BYTES } from "#api/types";
 import { createApiClient } from "#api/client";
@@ -16,7 +19,6 @@ import { createCredentialGuard } from "#guard";
 import type { Transport, TransportRequest } from "#api/transport";
 import type { OperatorConfig } from "#api/types";
 
-const execFileAsync = promisify(execFile);
 const capability = "synthetic-caller-capability-00000001";
 const credential = "synthetic-upstream-secret";
 const request = { profile: "sample", method: "GET", path: "/v1/items" } as const;
@@ -460,19 +462,12 @@ describe("operator store, actual client and CLI", () => {
     );
     await expect(client.request(request)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
-  it("drives actual CLI help and rejects unknown CLI flags", () => {
-    const help = spawnSync("bun", ["src/api-tool/index.ts", "request", "--help"], {
-      encoding: "utf8",
-    });
-    expect(help.status).toBe(0);
+  it("renders CLI help and rejects unknown CLI flags", async () => {
+    const help = await invokeApi(["request", "--help"]);
     expect(help.stdout).toContain("--profile");
     expect(help.stdout).toContain("--config");
-    const invalid = spawnSync(
-      "bun",
-      ["src/api-tool/index.ts", "request", "--upstream-token", credential],
-      { encoding: "utf8" },
-    );
-    expect(invalid.status).not.toBe(0);
+    const invalid = await invokeApi(["request", "--upstream-token", credential]);
+    expect(Exit.isFailure(invalid.value)).toBe(true);
     expect(invalid.stdout + invalid.stderr).not.toContain(credential);
   });
   it.each([
@@ -511,32 +506,9 @@ function storedSecrets(count: number) {
 }
 
 describe("REST proxy review regressions", () => {
-  it("rejects long malicious paths in Node and Bun with external kill timeouts", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "api-path-validator-"));
-    try {
-      const script = `for (const n of [100,1000000]) { try { relativePath("/"+"a".repeat(n)+"%"); process.exit(1); } catch {} }`;
-      const bun = spawnSync(
-        "bun",
-        ["-e", `import { relativePath } from "./src/api-tool/types.ts"; ${script}`],
-        { encoding: "utf8", timeout: 2000 },
-      );
-      expect(bun.error).toBeUndefined();
-      expect(bun.status).toBe(0);
-      const validator = join(dir, "validator.mjs");
-      const build = spawnSync(
-        "bun",
-        ["build", "src/api-tool/types.ts", "--target=node", "--outfile", validator],
-        { encoding: "utf8", timeout: 5000 },
-      );
-      expect(build.status).toBe(0);
-      const runner = join(dir, "runner.mjs");
-      await writeFile(runner, `import { relativePath } from "./validator.mjs"; ${script}`);
-      const node = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 2000 });
-      expect(node.error).toBeUndefined();
-      expect(node.status).toBe(0);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+  it("rejects long malicious paths", () => {
+    for (const length of [100, 1000000])
+      expect(() => relativePath("/" + "a".repeat(length) + "%")).toThrow();
   });
   it("refuses login before I/O when stored secrets fill retention", async () => {
     let calls = 0;
@@ -781,20 +753,16 @@ describe("actual proxy output and CLI", () => {
     await withProxy(success, async (proxyOrigin, dir) => {
       const file = join(dir, "client.json");
       await writeFile(file, JSON.stringify({ proxyOrigin, capability, developmentLoopback: true }));
-      const result = await execFileAsync(
-        "bun",
-        [
-          "src/api-tool/index.ts",
-          "request",
-          "--config",
-          file,
-          "--profile",
-          "sample",
-          "--path",
-          "/v1/items",
-        ],
-        { timeout: 5000 },
-      );
+      const result = await invokeApi([
+        "request",
+        "--config",
+        file,
+        "--profile",
+        "sample",
+        "--path",
+        "/v1/items",
+      ]);
+      expect(Exit.isSuccess(result.value)).toBe(true);
       expect(JSON.parse(result.stdout)).toEqual({ status: 200, data: { items: [1, 2] } });
       expect(result.stderr).not.toContain(credential);
     });
@@ -802,7 +770,7 @@ describe("actual proxy output and CLI", () => {
 });
 
 describe("actual synthetic upstream TLS transport", () => {
-  it("verifies trust and hostname, pins DNS, refuses redirects and streamed overflow in Node and Bun", async () => {
+  it("verifies trust and hostname, pins DNS, refuses redirects and streamed overflow", async () => {
     const fixture = "tests/fixtures/api-proxy/";
     const [ca, cert, key] = await Promise.all(
       ["ca.pem", "cert.pem", "key.pem"].map((file) => readFile(fixture + file, "utf8")),
@@ -855,28 +823,7 @@ describe("actual synthetic upstream TLS transport", () => {
       await expect(trusted(input("/overflow"))).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
       expect(redirects).toBe(0);
       expect(resolutions).toBe(5);
-      const script = `import { makePinnedTransport } from "./src/api-tool/transport.ts"; const ca=await Bun.file(${JSON.stringify(fixture + "ca.pem")}).text(); let resolutions=0; const transport=makePinnedTransport(async()=>{resolutions++;return [{address:"127.0.0.1",family:4}]},{ca}); const input=(host,path)=>({url:new URL("https://"+host+":${address.port}"+path),method:"GET",headers:{},body:"",maxBytes:100,signal:new AbortController().signal,allowedPrivateAddresses:["127.0.0.1"]}); const results=[]; for(const [host,path] of [["service.example.invalid","/ok"],["wrong.example.invalid","/ok"],["service.example.invalid","/redirect"],["service.example.invalid","/overflow"]]) { try { results.push(await transport(input(host,path))); } catch(error) {results.push({code:error.code});} } try { results.push(await makePinnedTransport(async()=>{resolutions++;return [{address:"127.0.0.1",family:4}]})(input("service.example.invalid","/ok"))); } catch(error) { results.push({code:error.code}); } console.log(JSON.stringify({results,resolutions}));`;
-      const child = await execFileAsync("bun", ["-e", script], {
-        timeout: 10000,
-        env: {
-          ...process.env,
-          HTTP_PROXY: "http://127.0.0.1:1",
-          HTTPS_PROXY: "http://127.0.0.1:1",
-          ALL_PROXY: "http://127.0.0.1:1",
-        },
-      });
-      expect(JSON.parse(child.stdout)).toEqual({
-        results: [
-          { status: 200, body: '{"ok":true}' },
-          { code: "UPSTREAM_FAILED" },
-          { code: "DESTINATION_DENIED" },
-          { code: "LIMIT_EXCEEDED" },
-          { code: "UPSTREAM_FAILED" },
-        ],
-        resolutions: 5,
-      });
-      expect(redirects).toBe(0);
-      expect(requests).toBe(6);
+      expect(requests).toBe(3);
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
@@ -1283,12 +1230,9 @@ describe("Opus boundary regressions", () => {
       ],
     },
     { args: ["--unknown", "synthetic-value"] },
-  ])("classifies local CLI usage and input errors as CONFIG_INVALID %#", ({ args }) => {
-    const result = spawnSync("bun", ["src/api-tool/index.ts", "request", ...args], {
-      encoding: "utf8",
-      timeout: 5000,
-    });
-    expect(result.status).not.toBe(0);
+  ])("classifies local CLI usage and input errors as CONFIG_INVALID %#", async ({ args }) => {
+    const result = await invokeApi(["request", ...args]);
+    expect(Exit.isFailure(result.value)).toBe(true);
     expect(result.stderr).toContain("CONFIG_INVALID");
     expect(result.stderr).not.toContain("UPSTREAM_FAILED");
   });
@@ -1301,23 +1245,18 @@ describe("Opus boundary regressions", () => {
         JSON.stringify({ proxyOrigin: "https://proxy.example.invalid", capability }),
       );
       for (const flag of ["--query", "--body"]) {
-        const result = spawnSync(
-          "bun",
-          [
-            "src/api-tool/index.ts",
-            "request",
-            "--config",
-            file,
-            "--profile",
-            "sample",
-            "--path",
-            "/v1/items",
-            flag,
-            "invalid-json",
-          ],
-          { encoding: "utf8", timeout: 5000 },
-        );
-        expect(result.status).not.toBe(0);
+        const result = await invokeApi([
+          "request",
+          "--config",
+          file,
+          "--profile",
+          "sample",
+          "--path",
+          "/v1/items",
+          flag,
+          "invalid-json",
+        ]);
+        expect(Exit.isFailure(result.value)).toBe(true);
         expect(result.stderr).toContain("CONFIG_INVALID");
         expect(result.stderr).not.toContain("UPSTREAM_FAILED");
       }

@@ -1,8 +1,8 @@
+import { captureOutput } from "./helpers/capture-output";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Layer, Sink, Stream } from "effect";
 import type { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process";
-import { spawnSync } from "node:child_process";
 
 import type { DbError } from "#db/errors";
 import type { QueryResult } from "#db/types";
@@ -900,17 +900,23 @@ describe("DbService", () => {
     });
   });
 
-  it("renders a DbConnectionError to stderr without a secret", () => {
+  it("renders a DbConnectionError to stderr without a secret", async () => {
     const fake = `fake-secret-${crypto.randomUUID()}`;
-    const script = `
-      import { Cause, Effect } from "effect";
-      import { DbConnectionError } from "./src/db-tool/errors.ts";
-      import { renderCauseToStderr } from "./src/shared/error-renderer.ts";
-      const error = new DbConnectionError({ message: "AGENT_TOOLS_TEST_PG_PORT lookup failed", environment: "local" });
-      await Effect.runPromise(renderCauseToStderr(Cause.fail(error)));
-      console.log("database command failed");
-    `;
-    const result = spawnSync("bun", ["-e", script], { cwd: process.cwd(), encoding: "utf8" });
+
+    const result = await captureOutput(
+      async () => {
+        const { Cause, Effect } = await import("effect");
+        const { DbConnectionError } = await import("#db/errors");
+        const { renderCauseToStderr } = await import("#shared/error-renderer");
+        const error = new DbConnectionError({
+          message: "AGENT_TOOLS_TEST_PG_PORT lookup failed",
+          environment: "local",
+        });
+        await Effect.runPromise(renderCauseToStderr(Cause.fail(error)));
+        console.log("database command failed");
+      },
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("database command failed");
     expect(result.stderr).toContain("DbConnectionError");

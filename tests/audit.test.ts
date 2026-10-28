@@ -1,297 +1,174 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdtemp, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Effect } from "effect";
+import { AuditService, makeAuditServiceLayer, resolveAuditDbPath, withAudit } from "#shared/audit";
 
-import { describe, expect, it } from "vitest";
-
-const PROJECT_ROOT = join(__dirname, "..");
-
-const createTempDir = (name: string): string => mkdtempSync(join(tmpdir(), `agent-tools-${name}-`));
-
-const removeTempDir = (path: string): void => {
-  rmSync(path, { recursive: true, force: true });
+const roots: string[] = [];
+const directory = async () => {
+  const root = await mkdtemp(join(tmpdir(), "agent-tools-audit-"));
+  roots.push(root);
+  return root;
 };
-
-const runBunScript = (script: string, env: Record<string, string> = {}) =>
-  spawnSync("bun", ["-e", script], {
-    cwd: PROJECT_ROOT,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ...env,
-    },
-  });
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
 
 describe("AuditService", () => {
-  it("records and lists audit entries", () => {
-    const tempDir = createTempDir("audit-record");
-    const dbPath = join(tempDir, "audit.sqlite");
-
-    try {
-      const result = runBunScript(
-        `
-import { Effect } from "effect";
-import { AuditService, makeAuditServiceLayer } from "./src/shared/audit.ts";
-
-const dbPath = process.env.DB_PATH;
-
-const program = Effect.gen(function* () {
-          const audit = yield* AuditService;
-          yield* audit.record({ tool: "gh", project: "/tmp/project-a", args: "pr status --format json", duration: 15, success: true });
-          const entries = yield* audit.listRecent();
-          return entries;
-}).pipe(Effect.provide(makeAuditServiceLayer({ dbPath })));
-
-const entries = await Effect.runPromise(program);
-console.log(JSON.stringify(entries));
-        `.trim(),
-        { DB_PATH: dbPath },
-      );
-
-      expect(result.status).toBe(0);
-      const entries = JSON.parse(result.stdout.trim()) as Array<Record<string, unknown>>;
-      expect(entries).toHaveLength(1);
-      expect(entries[0]).toMatchObject({
-        tool: "gh",
-        project: "/tmp/project-a",
-        args: "pr status --format json",
-        duration: 15,
-        success: true,
-        error: null,
-        exitCode: null,
-      });
-    } finally {
-      removeTempDir(tempDir);
-    }
-  });
-
-  it("purges entries older than the requested number of days", () => {
-    const tempDir = createTempDir("audit-purge");
-    const dbPath = join(tempDir, "audit.sqlite");
-
-    try {
-      const result = runBunScript(
-        `
-import { Database } from "bun:sqlite";
-import { Effect } from "effect";
-import { AuditService, makeAuditServiceLayer } from "./src/shared/audit.ts";
-
-const dbPath = process.env.DB_PATH;
-
-await Effect.runPromise(
-  Effect.gen(function* () {
-    const audit = yield* AuditService;
-    yield* audit.record({ tool: "session", project: "/tmp/project-b", args: "list", duration: 8, success: true });
-  }).pipe(Effect.provide(makeAuditServiceLayer({ dbPath, retentionDays: 3650 }))),
-);
-
-const db = new Database(dbPath, { strict: true });
-db.run(
-  "INSERT INTO audit_log (ts, tool, project, args, duration, success, error, exit_code) VALUES (strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-120 days'), ?, ?, ?, ?, ?, ?, ?)",
-  ["old", "/tmp/old-project", "old command", 1, 1, null, null],
-);
-db.close(false);
-
-const removed = await Effect.runPromise(
-  Effect.gen(function* () {
-  const audit = yield* AuditService;
-  return yield* audit.purgeOlderThanDays(90);
-  }).pipe(Effect.provide(makeAuditServiceLayer({ dbPath, retentionDays: 3650 }))),
-);
-
-      const verifyDb = new Database(dbPath, { strict: true });
-const remaining = verifyDb.query("SELECT count(*) AS count FROM audit_log WHERE tool = ?").get("old");
-verifyDb.close(false);
-
-console.log(JSON.stringify({ removed, remaining }));
-        `.trim(),
-        { DB_PATH: dbPath },
-      );
-
-      expect(result.status).toBe(0);
-      const parsed = JSON.parse(result.stdout.trim()) as {
-        removed: number;
-        remaining?: { count?: number };
-      };
-      expect(parsed.removed).toBeGreaterThanOrEqual(1);
-      expect(parsed.remaining?.count ?? 0).toBe(0);
-    } finally {
-      removeTempDir(tempDir);
-    }
-  });
-
-  it("withAudit records successful executions", () => {
-    const tempDir = createTempDir("audit-wrapper-success");
-    const dbPath = join(tempDir, "audit.sqlite");
-
-    try {
-      const result = runBunScript(
-        `
-import { Effect } from "effect";
-import { AuditService, makeAuditServiceLayer, withAudit } from "./src/shared/audit.ts";
-
-const dbPath = process.env.DB_PATH;
-
-const program = Effect.gen(function* () {
-  const value = yield* withAudit("gh", Effect.succeed("ok"));
-  const audit = yield* AuditService;
-  const entries = yield* audit.listRecent();
-  return { value, entries };
-}).pipe(Effect.provide(makeAuditServiceLayer({ dbPath })));
-
-console.log(JSON.stringify(await Effect.runPromise(program)));
-        `.trim(),
-        { DB_PATH: dbPath },
-      );
-
-      expect(result.status).toBe(0);
-      const parsed = JSON.parse(result.stdout.trim()) as {
-        value: string;
-        entries: Array<Record<string, unknown>>;
-      };
-      expect(parsed.value).toBe("ok");
-      expect(parsed.entries[0]).toMatchObject({ tool: "gh", success: true });
-      expect(typeof parsed.entries[0]?.project).toBe("string");
-    } finally {
-      removeTempDir(tempDir);
-    }
-  });
-
-  it("redacts rejected arguments and errors before audit persistence and on legacy reads", () => {
-    const tempDir = createTempDir("audit-redaction");
-    const dbPath = join(tempDir, "audit.sqlite");
-    const token = `ghp_${"A".repeat(36)}`;
-
-    try {
-      const result = runBunScript(
-        `
-import { Database } from "bun:sqlite";
-import { Effect } from "effect";
-import { AuditService, makeAuditServiceLayer, withAudit } from "./src/shared/audit.ts";
-
-const dbPath = process.env.DB_PATH;
-const token = process.env.SYNTHETIC_TOKEN;
-process.argv = [process.argv[0], "synthetic-cli", token];
-const program = Effect.gen(function* () {
-  const audit = yield* AuditService;
-  yield* withAudit("gh", Effect.fail(new Error("Rejected " + token))).pipe(Effect.catch(() => Effect.void));
-  const legacyDb = new Database(dbPath, { strict: true });
-  legacyDb.run("INSERT INTO audit_log (tool, project, args, duration, success, error, exit_code) VALUES (?, ?, ?, ?, ?, ?, ?)", ["old", "/tmp/" + token, "old " + token, 1, 0, "legacy " + token, 1]);
-  legacyDb.close(false);
-  const db = new Database(dbPath, { strict: true });
-  const raw = db.query("SELECT tool, project, args, error FROM audit_log ORDER BY id").all();
-  db.close(false);
-  const entries = yield* audit.listRecent();
-  return { raw, entries };
-}).pipe(Effect.provide(makeAuditServiceLayer({ dbPath })));
-
-console.log(JSON.stringify(await Effect.runPromise(program)));
-        `.trim(),
-        { DB_PATH: dbPath, SYNTHETIC_TOKEN: token },
-      );
-
-      expect(result.status).toBe(0);
-      const parsed = JSON.parse(result.stdout.trim()) as {
-        raw: Array<Record<string, string | null>>;
-        entries: Array<Record<string, string | null>>;
-      };
-      expect(JSON.stringify(parsed.raw[0])).not.toContain(token);
-      expect(JSON.stringify(parsed.raw[1])).toContain(token);
-      expect(JSON.stringify(parsed.entries)).not.toContain(token);
-      expect(parsed.entries[0]?.error).toContain("[REDACTED]");
-      expect(parsed.entries[0]?.args).toContain("[REDACTED]");
-      expect(parsed.entries[0]?.project).toContain("[REDACTED]");
-      expect(parsed.entries[1]?.error).toContain("[REDACTED]");
-      expect(parsed.entries[1]?.args).toContain("[REDACTED]");
-    } finally {
-      removeTempDir(tempDir);
-    }
-  });
-
-  it("audit layer failures never change program behavior", () => {
-    const result = runBunScript(
-      `
-import { Effect } from "effect";
-import { makeAuditServiceLayer, withAudit } from "./src/shared/audit.ts";
-
-const dbPath = "/dev/null/audit.sqlite";
-const successValue = await Effect.runPromise(
-  withAudit("gh", Effect.succeed("ok")).pipe(Effect.provide(makeAuditServiceLayer({ dbPath }))),
-);
-
-let errorMessage = "";
-try {
-  await Effect.runPromise(
-    withAudit("gh", Effect.fail(new Error("boom"))).pipe(Effect.provide(makeAuditServiceLayer({ dbPath }))),
-  );
-} catch (error) {
-  errorMessage = error instanceof Error ? error.message : String(error);
-}
-
-console.log(JSON.stringify({ successValue, errorMessage }));
-      `.trim(),
+  it("records and lists audit entries", async () => {
+    const dbPath = join(await directory(), "audit.sqlite");
+    const entries = await Effect.runPromise(
+      Effect.gen(function* () {
+        const audit = yield* AuditService;
+        yield* audit.record({
+          tool: "gh",
+          project: "/tmp/project-a",
+          args: "pr status --format json",
+          duration: 15,
+          success: true,
+        });
+        return yield* audit.listRecent();
+      }).pipe(Effect.provide(makeAuditServiceLayer({ dbPath }))),
     );
-
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout.trim()) as {
-      successValue: string;
-      errorMessage: string;
-    };
-    expect(parsed.successValue).toBe("ok");
-    expect(parsed.errorMessage).toBe("boom");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      tool: "gh",
+      project: "/tmp/project-a",
+      args: "pr status --format json",
+      duration: 15,
+      success: true,
+      error: null,
+      exitCode: null,
+    });
   });
 
-  it("reads dbPath and retentionDays from agent-tools.json5", () => {
-    const tempDir = createTempDir("audit-config");
-    const auditDir = join(tempDir, "audit-store");
-    const dbPath = join(auditDir, "custom.sqlite");
+  it("purges entries older than the requested number of days", async () => {
+    const dbPath = join(await directory(), "audit.sqlite");
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const audit = yield* AuditService;
+        yield* audit.record({
+          tool: "session",
+          project: "/tmp/project-b",
+          args: "list",
+          duration: 8,
+          success: true,
+        });
+        const db = new Database(dbPath);
+        try {
+          db.run(
+            "INSERT INTO audit_log (ts, tool, project, args, duration, success) VALUES (strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-120 days'), ?, ?, ?, ?, ?)",
+            ["old", "/tmp/old-project", "old command", 1, 1],
+          );
+          const removed = yield* audit.purgeOlderThanDays(90);
+          return {
+            removed,
+            remaining: db
+              .query("SELECT count(*) AS count FROM audit_log WHERE tool = ?")
+              .get("old"),
+          };
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.provide(makeAuditServiceLayer({ dbPath, retentionDays: 3650 }))),
+    );
+    expect(result.removed).toBe(1);
+    expect(result.remaining).toEqual({ count: 0 });
+  });
 
+  it("withAudit records successful executions", async () => {
+    const dbPath = join(await directory(), "audit.sqlite");
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const value = yield* withAudit("gh", Effect.succeed("ok"));
+        const audit = yield* AuditService;
+        return { value, entries: yield* audit.listRecent() };
+      }).pipe(Effect.provide(makeAuditServiceLayer({ dbPath }))),
+    );
+    expect(result.value).toBe("ok");
+    expect(result.entries[0]).toMatchObject({ tool: "gh", success: true });
+    expect(typeof result.entries[0]?.project).toBe("string");
+  });
+
+  it("redacts rejected arguments and errors before audit persistence and on legacy reads", async () => {
+    const dbPath = join(await directory(), "audit.sqlite");
+    const token = `ghp_${"A".repeat(36)}`;
+    vi.stubGlobal(
+      "process",
+      Object.assign(Object.create(process), { argv: [process.argv[0], "synthetic-cli", token] }),
+    );
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const audit = yield* AuditService;
+        yield* withAudit("gh", Effect.fail(new Error("Rejected " + token))).pipe(
+          Effect.catch(() => Effect.void),
+        );
+        const db = new Database(dbPath);
+        try {
+          db.run(
+            "INSERT INTO audit_log (tool, project, args, duration, success, error, exit_code) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ["old", "/tmp/" + token, "old " + token, 1, 0, "legacy " + token, 1],
+          );
+          return {
+            raw: db.query("SELECT tool, project, args, error FROM audit_log ORDER BY id").all(),
+            entries: yield* audit.listRecent(),
+          };
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.provide(makeAuditServiceLayer({ dbPath }))),
+    );
+    expect(JSON.stringify(result.raw[0])).not.toContain(token);
+    expect(JSON.stringify(result.raw[1])).toContain(token);
+    expect(JSON.stringify(result.entries)).not.toContain(token);
+    expect(result.entries[0]?.error).toContain("[REDACTED]");
+    expect(result.entries[0]?.args).toContain("[REDACTED]");
+    expect(result.entries[0]?.project).toContain("[REDACTED]");
+    expect(result.entries[1]?.error).toContain("[REDACTED]");
+    expect(result.entries[1]?.args).toContain("[REDACTED]");
+  });
+
+  it("audit layer failures never change program behavior", async () => {
+    const root = await directory();
+    const file = join(root, "file");
+    await writeFile(file, "not a directory");
+    const layer = makeAuditServiceLayer({ dbPath: join(file, "audit.sqlite") });
+    expect(
+      await Effect.runPromise(withAudit("gh", Effect.succeed("ok")).pipe(Effect.provide(layer))),
+    ).toBe("ok");
+    await expect(
+      Effect.runPromise(
+        withAudit("gh", Effect.fail(new Error("boom"))).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toThrow("boom");
+  });
+
+  it("reads dbPath and retentionDays from agent-tools.json5", async () => {
+    const root = await directory();
+    const dbPath = join(root, "audit-store", "custom.sqlite");
+    await writeFile(
+      join(root, "agent-tools.json5"),
+      JSON.stringify({ audit: { retentionDays: 14, dbPath } }),
+    );
+    const previous = process.cwd();
+    process.chdir(root);
     try {
-      writeFileSync(
-        join(tempDir, "agent-tools.json5"),
-        JSON.stringify({
-          audit: {
-            retentionDays: 14,
-            dbPath,
-          },
-        }),
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const value = yield* withAudit("audit", Effect.succeed("ok"));
+          const audit = yield* AuditService;
+          return { value, dbPath: audit.dbPath, entries: yield* audit.listRecent() };
+        }).pipe(Effect.provide(makeAuditServiceLayer())),
       );
-
-      const auditModulePath = JSON.stringify(join(PROJECT_ROOT, "src/shared/audit.ts"));
-
-      const result = runBunScript(
-        `
-import { existsSync } from "node:fs";
-import { Effect } from "effect";
-import { AuditService, withAudit, resolveAuditDbPath, makeAuditServiceLayer } from ${auditModulePath};
-
-process.chdir(${JSON.stringify(tempDir)});
-
-const program = Effect.gen(function* () {
-  const value = yield* withAudit("audit", Effect.succeed("ok"));
-  const audit = yield* AuditService;
-  const entries = yield* audit.listRecent();
-  return { value, dbPath: audit.dbPath, defaultPath: resolveAuditDbPath(), exists: existsSync(audit.dbPath), entries };
-}).pipe(Effect.provide(makeAuditServiceLayer()));
-
-console.log(JSON.stringify(await Effect.runPromise(program)));
-        `.trim(),
-      );
-
-      expect(result.status).toBe(0);
-      const parsed = JSON.parse(result.stdout.trim()) as {
-        dbPath: string;
-        defaultPath: string;
-        exists: boolean;
-        entries: Array<Record<string, unknown>>;
-      };
-      expect(parsed.dbPath).toBe(dbPath);
-      expect(parsed.dbPath).not.toBe(parsed.defaultPath);
-      expect(parsed.exists).toBe(true);
-      expect(parsed.entries[0]).toMatchObject({ tool: "audit" });
+      expect(result.dbPath).toBe(dbPath);
+      expect(result.dbPath).not.toBe(resolveAuditDbPath());
+      await access(dbPath);
+      expect(result.entries[0]).toMatchObject({ tool: "audit" });
     } finally {
-      removeTempDir(tempDir);
+      process.chdir(previous);
     }
   });
 });

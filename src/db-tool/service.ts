@@ -133,6 +133,10 @@ export function isFullyReadOnly(
 // Re-exported from the shared probe so existing `#db/service` consumers keep working.
 export { buildApiProbeArgs } from "#shared/k8s-probe";
 
+export const DbGuardianInProcess = Context.Reference<boolean>("@agent-tools/DbGuardianInProcess", {
+  defaultValue: () => false,
+});
+
 export class DbService extends Context.Service<
   DbService,
   {
@@ -156,6 +160,7 @@ export class DbService extends Context.Service<
         const sqlClient = yield* DbSqlClient;
         const secretEnvResolver = yield* SecretEnvResolver;
         const agentToolsConfig = yield* ConfigService;
+        const runGuardianInProcess = yield* DbGuardianInProcess;
         const dbConfig = yield* DbConfigService;
 
         if (!dbConfig) {
@@ -364,7 +369,7 @@ export class DbService extends Context.Service<
             prerequisiteConfig,
             (command, _label) => executeShellCommand(command),
             effect,
-            { tryWithoutPrerequisites: true },
+            { tryWithoutPrerequisites: true, runGuardianInProcess },
           ).pipe(
             Effect.mapError((error) =>
               isPrerequisiteRunError(error)

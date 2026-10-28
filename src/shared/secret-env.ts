@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
 import { relative, resolve as resolvePath } from "node:path";
 import { Context, Layer } from "effect";
@@ -75,101 +75,121 @@ const inspectFrame = (frame: Buffer): FrameInspection => {
   };
 };
 
-const runInteractiveZsh: ZshRunner = (name, timeoutMs) =>
-  new Promise((resolve) => {
-    if (process.env.VITEST !== undefined) {
-      const home = process.env.HOME;
-      const zdotdir = process.env.ZDOTDIR;
-      const relativeZdotdir = zdotdir ? relative(tmpdir(), resolvePath(zdotdir)) : "..";
-      if (
-        !home ||
-        !zdotdir ||
-        resolvePath(home) !== resolvePath(zdotdir) ||
-        relativeZdotdir === ".." ||
-        relativeZdotdir.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
-      ) {
+type ZshProcess = Pick<ReturnType<typeof spawn>, "pid" | "stdio" | "kill"> & {
+  on: {
+    (event: "error", listener: () => void): unknown;
+    (event: "exit", listener: (code: number | null) => void): unknown;
+  };
+};
+export type ZshLauncher = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ZshProcess;
+export const makeZshRunner =
+  (
+    launch: ZshLauncher = spawn,
+    terminate: (pid: number) => void = (pid) => {
+      process.kill(pid, "SIGKILL");
+    },
+  ): ZshRunner =>
+  (name, timeoutMs) =>
+    new Promise((resolve) => {
+      if (process.env.VITEST !== undefined) {
+        const home = process.env.HOME;
+        const zdotdir = process.env.ZDOTDIR;
+        const relativeZdotdir = zdotdir ? relative(tmpdir(), resolvePath(zdotdir)) : "..";
+        if (
+          !home ||
+          !zdotdir ||
+          resolvePath(home) !== resolvePath(zdotdir) ||
+          relativeZdotdir === ".." ||
+          relativeZdotdir.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+        ) {
+          resolve(failed(name));
+          return;
+        }
+      }
+
+      const childEnv = Object.fromEntries(
+        STARTUP_ENV_NAMES.flatMap((key) => {
+          const value = process.env[key];
+          return value === undefined ? [] : [[key, value]];
+        }),
+      );
+      const script = `export LC_ALL=C; if (( \${+parameters[$1]} )); then value=\${(P)1}; print -ru3 -- "set"; print -ru3 -- "\${#value}"; print -rn -- "$value" >&3; else print -ru3 -- "unset"; fi`;
+
+      let child: ZshProcess;
+      try {
+        child = launch("zsh", ["-i", "-c", script, "agent-tools-secret-env", name], {
+          detached: true,
+          env: childEnv,
+          stdio: ["ignore", "ignore", "ignore", "pipe"],
+        });
+      } catch {
         resolve(failed(name));
         return;
       }
-    }
 
-    const childEnv = Object.fromEntries(
-      STARTUP_ENV_NAMES.flatMap((key) => {
-        const value = process.env[key];
-        return value === undefined ? [] : [[key, value]];
-      }),
-    );
-    const script = `export LC_ALL=C; if (( \${+parameters[$1]} )); then value=\${(P)1}; print -ru3 -- "set"; print -ru3 -- "\${#value}"; print -rn -- "$value" >&3; else print -ru3 -- "unset"; fi`;
-
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn("zsh", ["-i", "-c", script, "agent-tools-secret-env", name], {
-        detached: true,
-        env: childEnv,
-        stdio: ["ignore", "ignore", "ignore", "pipe"],
-      });
-    } catch {
-      resolve(failed(name));
-      return;
-    }
-
-    const stream = child.stdio[3];
-    if (!stream || typeof stream === "number") {
-      child.kill("SIGKILL");
-      resolve(failed(name));
-      return;
-    }
-
-    const chunks: Buffer[] = [];
-    let exited = false;
-    let ended = false;
-    let exitCode: number | null = null;
-    let settled = false;
-    const killProcessGroup = () => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // The process group may already have exited.
+      const stream = child.stdio[3];
+      if (!stream || typeof stream === "number") {
+        child.kill("SIGKILL");
+        resolve(failed(name));
+        return;
       }
-    };
-    const finish = (result: LookupResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      stream.destroy();
-      killProcessGroup();
-      resolve(result);
-    };
-    const checkFrame = () => {
-      if (settled) return;
-      const inspection = inspectFrame(Buffer.concat(chunks));
-      if (inspection._tag === "malformed") return finish(failed(name));
-      if (!exited) return;
-      if (exitCode !== 0) return finish(failed(name));
-      if (inspection._tag === "complete") finish(inspection.result);
-      else if (ended) finish(failed(name));
-    };
-    const timer = setTimeout(() => {
-      finish(failed(name));
-    }, timeoutMs);
 
-    stream.on("data", (chunk: Buffer | string) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      checkFrame();
+      const chunks: Buffer[] = [];
+      let exited = false;
+      let ended = false;
+      let exitCode: number | null = null;
+      let settled = false;
+      const killProcessGroup = () => {
+        if (child.pid === undefined) return;
+        try {
+          terminate(-child.pid);
+        } catch {
+          // The process group may already have exited.
+        }
+      };
+      const finish = (result: LookupResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        stream.destroy();
+        killProcessGroup();
+        resolve(result);
+      };
+      const checkFrame = () => {
+        if (settled) return;
+        const inspection = inspectFrame(Buffer.concat(chunks));
+        if (inspection._tag === "malformed") return finish(failed(name));
+        if (!exited) return;
+        if (exitCode !== 0) return finish(failed(name));
+        if (inspection._tag === "complete") finish(inspection.result);
+        else if (ended) finish(failed(name));
+      };
+      const timer = setTimeout(() => {
+        finish(failed(name));
+      }, timeoutMs);
+
+      stream.on("data", (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        checkFrame();
+      });
+      stream.on("end", () => {
+        ended = true;
+        checkFrame();
+      });
+      stream.on("error", () => finish(failed(name)));
+      child.on("error", () => finish(failed(name)));
+      child.on("exit", (code) => {
+        exited = true;
+        exitCode = code;
+        checkFrame();
+      });
     });
-    stream.on("end", () => {
-      ended = true;
-      checkFrame();
-    });
-    stream.on("error", () => finish(failed(name)));
-    child.on("error", () => finish(failed(name)));
-    child.on("exit", (code) => {
-      exited = true;
-      exitCode = code;
-      checkFrame();
-    });
-  });
+
+const runInteractiveZsh = makeZshRunner();
 
 export class SecretEnvResolver extends Context.Service<
   SecretEnvResolver,

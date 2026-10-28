@@ -1,3 +1,5 @@
+import { stubBun } from "./helpers/stub-bun";
+import { captureOutput } from "./helpers/capture-output";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
@@ -20,7 +22,7 @@ import { TestClock, TestConsole } from "effect/testing";
 import type { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -76,7 +78,11 @@ import {
   watchPRs,
 } from "#gh/pr/core";
 import { togglePRCheckbox as togglePRCheckboxWithParser } from "#gh/pr/checkbox";
-import { findCheckboxLines, scanCheckboxOutline } from "#gh/pr/checkbox-markdown";
+import {
+  findCheckboxLines,
+  scanCheckboxOutline,
+  validateCheckboxEdit,
+} from "#gh/pr/checkbox-markdown";
 import {
   createReview,
   fetchComments,
@@ -613,11 +619,11 @@ describe("PR comment editing", () => {
 
   it.effect("reads body-file content without trimming before edit", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const body = "  from file\n\n";
       const fixture = yield* makeTextFixture("edit-comment-body.txt", body);
       let patchedBody: string | undefined;
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -651,8 +657,7 @@ describe("PR comment editing", () => {
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -717,9 +722,9 @@ describe("gist helpers", () => {
 
   it.effect("rejects gist creation when gh returns no URL", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const fixture = yield* makeTextFixture("snippet.txt", "example snippet");
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -735,8 +740,7 @@ describe("gist helpers", () => {
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -755,11 +759,11 @@ describe("gist helpers", () => {
 
   it.effect("rejects gist files containing credentials before invoking gh", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const fakeToken = `ghp_${"x".repeat(36)}`;
       const fixture = yield* makeTextFixture("snippet.txt", fakeToken);
       let invoked = false;
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -779,8 +783,7 @@ describe("gist helpers", () => {
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -795,10 +798,9 @@ describe("gist helpers", () => {
   it.effect("refuses credential paths and symlink targets before reading or sending", () =>
     Effect.gen(function* () {
       const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-path-policy-")));
-      const originalBun = Reflect.get(globalThis, "Bun");
       let reads = 0;
       let sends = 0;
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         file: (path: string) => ({
           bytes: () => {
             reads += 1;
@@ -889,8 +891,7 @@ describe("gist helpers", () => {
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(Effect.promise(() => rm(directory, { recursive: true, force: true }))),
@@ -900,12 +901,12 @@ describe("gist helpers", () => {
 
   it.effect("uploads the exact validated gist snapshot", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const safeContent = "safe snippet";
       const fixture = yield* makeTextFixture("snippet.txt", safeContent);
       let sourceReads = 0;
       let uploaded = "";
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({
           bytes: () => {
@@ -942,8 +943,7 @@ describe("gist helpers", () => {
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -957,12 +957,12 @@ describe("gist helpers", () => {
 
   it.effect("adds the exact validated gist snapshot", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const safeContent = "safe added file";
       const fixture = yield* makeTextFixture("new.txt", safeContent);
       let sourceReads = 0;
       let uploaded = "";
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({
           bytes: () => {
@@ -1005,8 +1005,7 @@ describe("gist helpers", () => {
       ).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -1020,10 +1019,10 @@ describe("gist helpers", () => {
 
   it.effect("cleans up gist snapshots when gh rejects the create", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const fixture = yield* makeTextFixture("snippet.txt", "safe snippet");
       let snapshotPath = "";
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -1050,8 +1049,7 @@ describe("gist helpers", () => {
         ),
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -1194,10 +1192,10 @@ describe("release publication content", () => {
 
   it.effect("resolves --notes-file through the outbound text validator", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const token = `ghp_${"x".repeat(36)}`;
       const fixture = yield* makeTextFixture("release-notes.md", token);
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -1209,8 +1207,7 @@ describe("release publication content", () => {
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -1223,10 +1220,10 @@ describe("release publication content", () => {
 
   it.effect("resolves safe --notes-file contents unchanged", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const notes = "A safe release summary";
       const fixture = yield* makeTextFixture("release-notes.md", notes);
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -1238,8 +1235,7 @@ describe("release publication content", () => {
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) Reflect.deleteProperty(globalThis, "Bun");
-            else Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -1533,7 +1529,7 @@ describe("GitHubService.runGh() error mapping", () => {
     const observed: ObservedGhCommand[] = [];
     let directory: string | undefined;
     let account = "fixture-account-A";
-    vi.stubGlobal("Bun", {
+    stubBun({
       spawn: () => ({ stdout: new Response(account).body, exited: Promise.resolve(0) }),
     });
     return Effect.gen(function* () {
@@ -1697,7 +1693,7 @@ describe("GitHubService.runGh() error mapping", () => {
       const observedGhCommands: ObservedGhCommand[] = [];
       const secret = `ghp_${"x".repeat(36)}`;
       const body = `${prefix}[ ] publish ${secret}\n`;
-      vi.stubGlobal("Bun", {
+      stubBun({
         spawn: () => ({
           stdout: new Response("synthetic-session-token").body,
           exited: Promise.resolve(0),
@@ -3125,7 +3121,7 @@ describe("PR checkbox", () => {
     const originalFetch = globalThis.fetch;
     const calls: ObservedGhCommand[] = [];
     vi.stubGlobal("fetch", async () => Response.json({ body }));
-    vi.stubGlobal("Bun", {
+    stubBun({
       spawn: () => ({
         stdout: new Response("synthetic-session-token").body,
         exited: Promise.resolve(0),
@@ -3168,8 +3164,7 @@ describe("PR checkbox", () => {
     );
   });
 
-  it("cross-checks checkbox decisions with the real Bun Markdown parser", () => {
-    const moduleUrl = new URL("../src/gh-tool/pr/checkbox-markdown.ts", import.meta.url).href;
+  it("cross-checks checkbox decisions with the real Bun Markdown parser", async () => {
     const cases = [
       {
         name: "list-contained fenced task",
@@ -3256,29 +3251,32 @@ describe("PR checkbox", () => {
         expected: "## Release\r\n- [x] write release notes\r\n",
       },
     ];
-    const script = `
-      import assert from "node:assert/strict";
-      const { findCheckboxLines, validateCheckboxEdit } = await import(${JSON.stringify(moduleUrl)});
-      const cases = ${JSON.stringify(cases)};
-      for (const test of cases) {
-        let updated = null;
-        try {
-          const matches = findCheckboxLines(test.body, test.match, test.section);
-          if (matches.length === 1) {
-            const selected = matches[0];
-            validateCheckboxEdit(test.body, selected.offset, "x");
-            updated = test.body.slice(0, selected.offset) + "x" + test.body.slice(selected.offset + 1);
+
+    const result = await captureOutput(
+      async () => {
+        for (const test of cases) {
+          let updated = null;
+          try {
+            const matches = findCheckboxLines(test.body, test.match, test.section);
+            if (matches.length === 1) {
+              const selected = matches[0];
+              validateCheckboxEdit(test.body, selected.offset, "x");
+              updated =
+                test.body.slice(0, selected.offset) + "x" + test.body.slice(selected.offset + 1);
+            }
+          } catch {
+            // An ambiguous task must remain unchanged.
           }
-        } catch {}
-        assert.equal(updated, test.expected, test.name);
-        if (updated !== null) {
-          let changes = 0;
-          for (let i = 0; i < test.body.length; i++) if (test.body[i] !== updated[i]) changes++;
-          assert.equal(changes, 1, test.name + " changed bytes outside the selected box");
+          expect(updated).toBe(test.expected);
+          if (updated !== null) {
+            let changes = 0;
+            for (let i = 0; i < test.body.length; i++) if (test.body[i] !== updated[i]) changes++;
+            expect(changes).toBe(1);
+          }
         }
-      }
-    `;
-    const result = spawnSync("bun", ["--eval", script], { encoding: "utf8" });
+      },
+      { encoding: "utf8" },
+    );
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
@@ -3677,7 +3675,7 @@ describe("PR checkbox", () => {
   it.effect("accepts the public command flags", () =>
     Effect.gen(function* () {
       const writes: string[][] = [];
-      vi.stubGlobal("Bun", {
+      stubBun({
         markdown: {
           render: (
             body: string,
@@ -9946,10 +9944,10 @@ describe("PR composite commands", () => {
 
   it.effect("resolveRequiredTextInput reads shell-sensitive body text from file", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
       const fixture = yield* makeTextFixture("reply-body.txt", inventedShellSensitiveText);
 
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         file: (filePath: string) => ({ bytes: () => readFile(filePath) }),
       });
@@ -9964,12 +9962,7 @@ describe("PR composite commands", () => {
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) {
-              Reflect.deleteProperty(globalThis, "Bun");
-              return;
-            }
-
-            Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
         Effect.ensuring(removeTextFixture(fixture.directory)),
@@ -10086,9 +10079,9 @@ describe("PR composite commands", () => {
 
   it.effect("resolveRequiredTextInput reads shell-sensitive body text from stdin", () =>
     Effect.gen(function* () {
-      const originalBun = Reflect.get(globalThis, "Bun");
+      const originalBun = { ...Bun };
 
-      Reflect.set(globalThis, "Bun", {
+      const restoreBun = stubBun({
         ...(typeof originalBun === "object" && originalBun !== null ? originalBun : {}),
         stdin: {
           text: () => Promise.resolve(inventedShellSensitiveText),
@@ -10107,12 +10100,7 @@ describe("PR composite commands", () => {
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (originalBun === undefined) {
-              Reflect.deleteProperty(globalThis, "Bun");
-              return;
-            }
-
-            Reflect.set(globalThis, "Bun", originalBun);
+            restoreBun();
           }),
         ),
       );

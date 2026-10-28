@@ -322,7 +322,7 @@ const readCommand = Command.make(
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("session-tool", {}).pipe(
+export const mainCommand = Command.make("session-tool", {}).pipe(
   Command.withDescription("OpenCode session history tool"),
   Command.withSubcommands([listCommand, readCommand, searchCommand, commandsCommand]),
 );
@@ -349,6 +349,7 @@ const program = withRedactedOutput(withAudit("session", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });

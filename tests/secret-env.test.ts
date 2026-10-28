@@ -1,6 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 import { Effect } from "effect";
 import type { Layer } from "effect";
@@ -9,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { redactSensitiveText } from "#shared/content-security";
 import {
   makeSecretEnvResolverLayer,
+  makeZshRunner,
+  type ZshLauncher,
   SecretEnvResolver,
   type LookupResult,
   type ZshRunner,
@@ -44,28 +45,6 @@ const lookupConfig = (layer: Layer.Layer<SecretEnvResolver>, name: string) =>
       return yield* Effect.promise(() => resolver.lookupConfigEnv(name));
     }).pipe(Effect.provide(layer)),
   );
-
-async function withZdotdir<T>(rc: string, run: (directory: string) => Promise<T>): Promise<T> {
-  const directory = await mkdtemp(join(tmpdir(), "agent-tools-secret-env-"));
-  const oldHome = process.env.HOME;
-  const oldZdotdir = process.env.ZDOTDIR;
-  const oldVitest = process.env.VITEST;
-  process.env.HOME = directory;
-  process.env.ZDOTDIR = directory;
-  delete process.env.VITEST;
-  await writeFile(join(directory, ".zshrc"), rc);
-  try {
-    return await run(directory);
-  } finally {
-    if (oldHome === undefined) delete process.env.HOME;
-    else process.env.HOME = oldHome;
-    if (oldZdotdir === undefined) delete process.env.ZDOTDIR;
-    else process.env.ZDOTDIR = oldZdotdir;
-    if (oldVitest === undefined) delete process.env.VITEST;
-    else process.env.VITEST = oldVitest;
-    await rm(directory, { recursive: true, force: true });
-  }
-}
 
 describe("SecretEnvResolver", () => {
   it("uses a defined process value, including empty strings, before the runner", async () => {
@@ -200,123 +179,100 @@ describe("SecretEnvResolver", () => {
     expect(String(error)).toContain("AGENT_TOOLS_SECRET_ENV_GUARD");
   });
 
-  it("round-trips newline and frame-like text over the dedicated pipe", async () =>
-    withZdotdir(
-      'export AGENT_TOOLS_SECRET_ENV_FRAME=$\'fake-secret-line-one\\nset\\n0\\nfake-secret-π-line-two\'\nprint -r -- "startup fake-secret-noise"\nprint -ru2 -- "startup fake-secret-stderr"\n',
-      async () => {
-        const value = await resolveSecret(
-          makeSecretEnvResolverLayer(undefined, 1000),
-          "AGENT_TOOLS_SECRET_ENV_FRAME",
-        );
-        expect(value).toBe("fake-secret-line-one\nset\n0\nfake-secret-π-line-two");
-      },
-    ));
+  const fakeShell = () => {
+    setEnv("VITEST", undefined);
+    const pipe = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42,
+      stdio: [null, null, null, pipe, null] satisfies ReturnType<ZshLauncher>["stdio"],
+      kill: vi.fn<() => boolean>(() => true),
+    });
+    const launch = vi.fn<ZshLauncher>(() => child);
+    const terminate = vi.fn<(pid: number) => void>();
+    return { pipe, child, launch, terminate, runner: makeZshRunner(launch, terminate) };
+  };
+  const frame = (value: string) => Buffer.from(`set\n${Buffer.byteLength(value)}\n${value}`);
 
-  it("rejects an empty value from real zsh", async () =>
-    withZdotdir("export AGENT_TOOLS_SECRET_ENV_EMPTY_FROM_ZSH=''\n", async () => {
-      const name = "AGENT_TOOLS_SECRET_ENV_EMPTY_FROM_ZSH";
-      const error = await resolveSecret(makeSecretEnvResolverLayer(undefined, 1000), name).then(
-        () => new Error("unexpected success"),
-        (cause: unknown) => cause,
-      );
-      expect(String(error)).toBe(`Error: ${name} is too short to redact safely`);
-    }));
+  it("round-trips newline and frame-like text over the dedicated pipe", async () => {
+    const shell = fakeShell();
+    const value = "fake-secret-line-one\nset\n0\nfake-secret-π-line-two";
+    const result = shell.runner("AGENT_TOOLS_SECRET_ENV_FRAME", 1000);
+    shell.pipe.emit("data", frame(value).subarray(0, 8));
+    shell.pipe.emit("data", frame(value).subarray(8));
+    shell.child.emit("exit", 0);
+    expect(await result).toEqual({ _tag: "found", value });
+    expect(shell.terminate).toHaveBeenCalledWith(-42);
+  });
+
+  it("rejects an empty value from the shell runner", async () => {
+    const shell = fakeShell();
+    const name = "AGENT_TOOLS_SECRET_ENV_EMPTY_FROM_ZSH";
+    const result = resolveSecret(makeSecretEnvResolverLayer(shell.runner), name);
+    await vi.waitFor(() => expect(shell.launch).toHaveBeenCalled());
+    shell.pipe.emit("data", frame(""));
+    shell.child.emit("exit", 0);
+    await expect(result).rejects.toThrow(`${name} is too short to redact safely`);
+  });
 
   it("passes allowlisted startup inputs and excludes other parent variables", async () => {
     setEnv("XDG_CONFIG_HOME", "fake-secret-allowed-selector");
-    const allowed = await withZdotdir(
-      'if [[ "$XDG_CONFIG_HOME" == fake-secret-allowed-selector ]]; then export AGENT_TOOLS_SECRET_ENV_ALLOWED=fake-secret-allowed-value; fi\n',
-      () =>
-        resolveSecret(
-          makeSecretEnvResolverLayer(undefined, 1000),
-          "AGENT_TOOLS_SECRET_ENV_ALLOWED",
-        ),
+    setEnv("AGENT_TOOLS_SECRET_ENV_PARENT_ONLY", "fake-secret-parent-only");
+    const shell = fakeShell();
+    const result = shell.runner("AGENT_TOOLS_SECRET_ENV_ALLOWED", 1000);
+    expect(shell.launch.mock.calls[0]?.[2].env).toMatchObject({
+      XDG_CONFIG_HOME: "fake-secret-allowed-selector",
+    });
+    expect(shell.launch.mock.calls[0]?.[2].env).not.toHaveProperty(
+      "AGENT_TOOLS_SECRET_ENV_PARENT_ONLY",
     );
-    expect(allowed).toBe("fake-secret-allowed-value");
-
-    const parentOnly = `fake-secret-${crypto.randomUUID()}`;
-    setEnv("AGENT_TOOLS_SECRET_ENV_PARENT_ONLY", parentOnly);
-    const absent = await withZdotdir(
-      'if [[ -n "$AGENT_TOOLS_SECRET_ENV_PARENT_ONLY" ]]; then export AGENT_TOOLS_SECRET_ENV_EXCLUDED=fake-secret-exposed; fi\n',
-      () =>
-        resolveSecret(
-          makeSecretEnvResolverLayer(undefined, 1000),
-          "AGENT_TOOLS_SECRET_ENV_EXCLUDED",
-        ).then(
-          () => "unexpected success",
-          (error: unknown) => String(error),
-        ),
-    );
-    expect(absent).toContain("AGENT_TOOLS_SECRET_ENV_EXCLUDED");
-    expect(absent).not.toContain(parentOnly);
+    shell.pipe.emit("data", frame("fake-secret-allowed-value"));
+    shell.child.emit("exit", 0);
+    expect(await result).toEqual({ _tag: "found", value: "fake-secret-allowed-value" });
   });
 
-  it("reports an unset shell parameter as absent", async () =>
-    withZdotdir("", async () => {
-      const error = await resolveSecret(
-        makeSecretEnvResolverLayer(undefined, 1000),
-        "AGENT_TOOLS_SECRET_ENV_UNSET",
-      ).then(
-        () => new Error("unexpected success"),
-        (cause: unknown) => cause,
-      );
-      expect(String(error)).toContain("AGENT_TOOLS_SECRET_ENV_UNSET");
-      expect(String(error)).not.toContain("fake-secret-");
-    }));
+  it("reports an unset shell parameter as absent", async () => {
+    const shell = fakeShell();
+    const result = shell.runner("AGENT_TOOLS_SECRET_ENV_UNSET", 1000);
+    shell.pipe.emit("data", Buffer.from("unset\n"));
+    shell.child.emit("exit", 0);
+    expect(await result).toEqual({ _tag: "absent" });
+  });
 
-  it("rejects startup text written to the private frame pipe", async () =>
-    withZdotdir(
-      'print -ru3 -- "fake-secret-corrupt-frame"\nexport AGENT_TOOLS_SECRET_ENV_CORRUPT=fake-secret-real-value\n',
-      async () => {
-        const error = await resolveSecret(
-          makeSecretEnvResolverLayer(undefined, 1000),
-          "AGENT_TOOLS_SECRET_ENV_CORRUPT",
-        ).then(
-          () => new Error("unexpected success"),
-          (cause: unknown) => cause,
-        );
-        expect(String(error)).toContain("AGENT_TOOLS_SECRET_ENV_CORRUPT");
-        expect(String(error)).not.toContain("fake-secret-");
-      },
-    ));
+  it("rejects startup text written to the private frame pipe", async () => {
+    const shell = fakeShell();
+    const result = shell.runner("AGENT_TOOLS_SECRET_ENV_CORRUPT", 1000);
+    shell.pipe.emit("data", Buffer.from("fake-secret-corrupt-frame\n"));
+    expect(await result).toEqual({ _tag: "failed", reason: "AGENT_TOOLS_SECRET_ENV_CORRUPT" });
+    expect(shell.terminate).toHaveBeenCalledWith(-42);
+  });
 
-  it.each([
-    ["a disowned background process", "/bin/sleep 30 &!\nwhile true; do :; done\n"],
-    ["a hanging rc", "while true; do :; done\n"],
-  ])("settles within the timeout when zsh hangs with %s", async (_label, rc) =>
-    withZdotdir(rc, async () => {
-      const started = Date.now();
-      await expect(
-        resolveSecret(makeSecretEnvResolverLayer(undefined, 150), "AGENT_TOOLS_SECRET_ENV_TIMEOUT"),
-      ).rejects.toThrow("AGENT_TOOLS_SECRET_ENV_TIMEOUT");
-      expect(Date.now() - started).toBeLessThan(1500);
-    }),
+  it.each(["a disowned background process", "a hanging rc"])(
+    "settles at the deadline when the shell hangs with %s",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        const shell = fakeShell();
+        const result = shell.runner("AGENT_TOOLS_SECRET_ENV_TIMEOUT", 150);
+        await vi.advanceTimersByTimeAsync(149);
+        expect(shell.terminate).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await result).toEqual({ _tag: "failed", reason: "AGENT_TOOLS_SECRET_ENV_TIMEOUT" });
+        expect(shell.terminate).toHaveBeenCalledWith(-42);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
   );
 
-  it.each([
-    ["a background process in the child group", "/bin/sleep 30 &!\n"],
-    [
-      "a daemon in a separate session",
-      '/usr/bin/perl -MPOSIX -e \'setsid(); open(my $f, q{>}, $ARGV[0]); print $f $$; close($f); sleep 30\' "$ZDOTDIR/daemon.pid" &!\nwhile [[ ! -s "$ZDOTDIR/daemon.pid" ]]; do /bin/sleep 0.01; done\n',
-    ],
-  ])("returns a valid value while %s keeps fd 3 open", async (_label, startup) =>
-    withZdotdir(
-      `${startup}export AGENT_TOOLS_SECRET_ENV_BACKGROUND=fake-secret-background-value\n`,
-      async (directory) => {
-        const started = Date.now();
-        const value = await resolveSecret(
-          makeSecretEnvResolverLayer(undefined, 1500),
-          "AGENT_TOOLS_SECRET_ENV_BACKGROUND",
-        );
-        expect(value).toBe("fake-secret-background-value");
-        expect(Date.now() - started).toBeLessThan(1000);
-
-        if (startup.includes("setsid")) {
-          const pidFile = join(directory, "daemon.pid");
-          const pid = Number(await readFile(pidFile, "utf8"));
-          process.kill(pid, "SIGKILL");
-        }
-      },
-    ),
+  it.each(["a background process in the child group", "a daemon in a separate session"])(
+    "returns a valid value while %s keeps fd 3 open",
+    async () => {
+      const shell = fakeShell();
+      const result = shell.runner("AGENT_TOOLS_SECRET_ENV_BACKGROUND", 1500);
+      shell.pipe.emit("data", frame("fake-secret-background-value"));
+      shell.child.emit("exit", 0);
+      expect(await result).toEqual({ _tag: "found", value: "fake-secret-background-value" });
+      expect(shell.pipe.destroyed).toBe(true);
+    },
   );
 });

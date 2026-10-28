@@ -1,3 +1,4 @@
+import { beforeEach, vi } from "vitest";
 const blocked = ((input: string | URL | Request) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   return Promise.reject(
@@ -9,3 +10,23 @@ const blocked = ((input: string | URL | Request) => {
 }) as typeof globalThis.fetch;
 
 globalThis.fetch = blocked;
+
+const refuseProcess = () => {
+  throw new Error(
+    "Unit test attempted to start a real process. Inject the external process runner.",
+  );
+};
+vi.mock("node:child_process", async () => ({
+  ...(await vi.importActual<Record<string, unknown>>("node:child_process")),
+  spawn: refuseProcess,
+  spawnSync: refuseProcess,
+  exec: refuseProcess,
+  execSync: refuseProcess,
+  execFile: refuseProcess,
+  execFileSync: refuseProcess,
+  fork: refuseProcess,
+}));
+beforeEach(() => {
+  vi.spyOn(Bun, "spawn").mockImplementation(refuseProcess);
+  vi.spyOn(Bun, "spawnSync").mockImplementation(refuseProcess);
+});

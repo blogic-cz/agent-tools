@@ -1,10 +1,10 @@
+import { captureOutput } from "./helpers/capture-output";
 import { describe, expect, it } from "vitest";
 import { decode as decodeToon } from "@toon-format/toon";
 import { Console, Effect, Terminal } from "effect";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 
 import { formatAny } from "#shared/format";
 import { withRedactedOutput } from "#shared/output-boundary";
@@ -100,13 +100,17 @@ describe("shared content security", () => {
     });
   });
 
-  it("keeps logText JSON parseable after output sanitization", () => {
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `import { Effect } from "effect"; import { formatAny, logText } from "./src/shared/format.ts"; const result = { api_key: "synthetic-api-key-value-12345678901234567890", nested: { safe: "ok" } }; await Effect.runPromise(logText(formatAny(result, "json")));`,
-      ],
+  it("keeps logText JSON parseable after output sanitization", async () => {
+    const result = await captureOutput(
+      async () => {
+        const { Effect } = await import("effect");
+        const { formatAny, logText } = await import("#shared/format");
+        const result = {
+          api_key: "synthetic-api-key-value-12345678901234567890",
+          nested: { safe: "ok" },
+        };
+        await Effect.runPromise(logText(formatAny(result, "json")));
+      },
       { cwd: process.cwd(), encoding: "utf8" },
     );
     expect(result.status).toBe(0);
@@ -116,13 +120,18 @@ describe("shared content security", () => {
     expect(parsed.nested.safe).toBe("ok");
   });
 
-  it("keeps nested TOON fields intact through logText redaction", () => {
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `import { Effect } from "effect"; import { formatAny, logText } from "./src/shared/format.ts"; const value = { api_key: { averylongsafefieldname: "hello" }, status: "ready", token: "${githubToken}" }; await Effect.runPromise(logText(formatAny(value, "toon")));`,
-      ],
+  it("keeps nested TOON fields intact through logText redaction", async () => {
+    const result = await captureOutput(
+      async () => {
+        const { Effect } = await import("effect");
+        const { formatAny, logText } = await import("#shared/format");
+        const value = {
+          api_key: { averylongsafefieldname: "hello" },
+          status: "ready",
+          token: `${githubToken}`,
+        };
+        await Effect.runPromise(logText(formatAny(value, "toon")));
+      },
       { cwd: process.cwd(), encoding: "utf8" },
     );
     expect(result.status).toBe(0);
@@ -138,13 +147,15 @@ describe("shared content security", () => {
     });
   });
 
-  it("redacts credentials from rendered errors", () => {
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `import { Cause, Effect } from "effect"; import { renderCauseToStderr } from "./src/shared/error-renderer.ts"; await Effect.runPromise(renderCauseToStderr(Cause.fail(new Error("Rejected ${githubToken}"))));`,
-      ],
+  it("redacts credentials from rendered errors", async () => {
+    const result = await captureOutput(
+      async () => {
+        const { Cause, Effect } = await import("effect");
+        const { renderCauseToStderr } = await import("#shared/error-renderer");
+        await Effect.runPromise(
+          renderCauseToStderr(Cause.fail(new Error(`Rejected ${githubToken}`))),
+        );
+      },
       { cwd: process.cwd(), encoding: "utf8" },
     );
     expect(result.status).toBe(0);
@@ -152,13 +163,20 @@ describe("shared content security", () => {
     expect(result.stderr).not.toContain(githubToken);
   });
 
-  it("renders invalid CLI arguments through the shared redacted diagnostic", () => {
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `import { BunServices } from "@effect/platform-bun"; import { Effect } from "effect"; import { Command, Flag } from "effect/cli"; import { renderCauseToStderr } from "./src/shared/error-renderer.ts"; const command = Command.make("test-tool", { count: Flag.Int("count") }, () => Effect.void); const program = Command.runWith(command, { version: "1", renderErrors: false })(["--count", "${githubToken}"]).pipe(Effect.provide(BunServices.layer), Effect.tapCause(renderCauseToStderr)); await Effect.runPromiseExit(program);`,
-      ],
+  it("renders invalid CLI arguments through the shared redacted diagnostic", async () => {
+    const result = await captureOutput(
+      async () => {
+        const { BunServices } = await import("@effect/platform-bun");
+        const { Effect } = await import("effect");
+        const { Command, Flag } = await import("effect/cli");
+        const { renderCauseToStderr } = await import("#shared/error-renderer");
+        const command = Command.make("test-tool", { count: Flag.Int("count") }, () => Effect.void);
+        const program = Command.runWith(command, { version: "1", renderErrors: false })([
+          "--count",
+          `${githubToken}`,
+        ]).pipe(Effect.provide(BunServices.layer), Effect.tapCause(renderCauseToStderr));
+        await Effect.runPromiseExit(program);
+      },
       { cwd: process.cwd(), encoding: "utf8" },
     );
     expect(result.status).toBe(0);
@@ -198,7 +216,7 @@ describe("shared content security", () => {
     expect(output.match(/\[REDACTED\]/g)).toHaveLength(2);
   });
 
-  it("checks canonical targets before reading outbound text files", () => {
+  it("checks canonical targets before reading outbound text files", async () => {
     const directory = mkdtempSync(join(tmpdir(), "content-security-files-"));
     const sensitiveFile = join(directory, ".env.synthetic");
     const sensitiveLink = join(directory, "ordinary.txt");
@@ -210,12 +228,42 @@ describe("shared content security", () => {
     symlinkSync(safeFile, safeLink);
 
     try {
-      const result = spawnSync(
-        "bun",
-        [
-          "-e",
-          `import { Effect } from "effect"; import { readValidatedOutboundFile, resolveRequiredTextInput } from "./src/gh-tool/text-input.ts"; let blocked = false; try { await Effect.runPromise(readValidatedOutboundFile(process.env.SENSITIVE_LINK, "gh-test")); } catch { blocked = true; } let inputBlocked = false; try { await Effect.runPromise(resolveRequiredTextInput({ command: "gh-test", value: null, fileValue: process.env.SENSITIVE_LINK, valueFlag: "--body", fileFlag: "--body-file", label: "body" })); } catch { inputBlocked = true; } const safe = await Effect.runPromise(readValidatedOutboundFile(process.env.SAFE_LINK, "gh-test")); console.log(JSON.stringify({ blocked, inputBlocked, safeText: safe.text, exactBytes: new TextDecoder().decode(safe.bytes) }));`,
-        ],
+      const result = await captureOutput(
+        async () => {
+          const { Effect } = await import("effect");
+          const { readValidatedOutboundFile, resolveRequiredTextInput } =
+            await import("#gh/text-input");
+          let blocked = false;
+          try {
+            await Effect.runPromise(readValidatedOutboundFile(sensitiveLink, "gh-test"));
+          } catch {
+            blocked = true;
+          }
+          let inputBlocked = false;
+          try {
+            await Effect.runPromise(
+              resolveRequiredTextInput({
+                command: "gh-test",
+                value: null,
+                fileValue: sensitiveLink,
+                valueFlag: "--body",
+                fileFlag: "--body-file",
+                label: "body",
+              }),
+            );
+          } catch {
+            inputBlocked = true;
+          }
+          const safe = await Effect.runPromise(readValidatedOutboundFile(safeLink, "gh-test"));
+          console.log(
+            JSON.stringify({
+              blocked,
+              inputBlocked,
+              safeText: safe.text,
+              exactBytes: new TextDecoder().decode(safe.bytes),
+            }),
+          );
+        },
         {
           cwd: process.cwd(),
           encoding: "utf8",

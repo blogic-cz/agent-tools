@@ -1,5 +1,6 @@
+import { captureOutput } from "./helpers/capture-output";
 import { describe, expect, it } from "@effect/vitest";
-import { spawnSync } from "node:child_process";
+
 import { Effect, Layer, Option, Result } from "effect";
 import { vi } from "vitest";
 
@@ -340,29 +341,38 @@ describe("secret response error handling", () => {
     }),
   );
 
-  it("captures CLI stdout and stderr without an echoed token", () => {
+  it("captures CLI stdout and stderr without an echoed token", async () => {
     const token = `fake-secret-${crypto.randomUUID()}`;
-    const script = `
-      import { Cause, Effect, Layer, Option, Result } from "effect";
-      import { ConfigService } from "./src/config/loader.ts";
-      import { SecretEnvResolver } from "./src/shared/secret-env.ts";
-      import { formatObservabilityError, resolveConfig } from "./src/observability-tool/shared.ts";
-      import { renderCauseToStderr } from "./src/shared/error-renderer.ts";
-      const token = ${JSON.stringify(token)};
-      const tokenEnvVar = "AGENT_TOOLS_OBSERVABILITY_CLI_TOKEN";
-      delete process.env[tokenEnvVar];
-      globalThis.fetch = async () => new Response(token, { status: 401 });
-      const config = Layer.succeed(ConfigService, { observability: { default: { environments: { local: { url: "https://grafana.invalid", tokenEnvVar } } } } });
-      const resolver = SecretEnvResolver.testLayer(async () => ({ _tag: "found", value: token }));
-      await Effect.runPromise(Effect.gen(function* () {
-        const result = yield* resolveConfig("local", Option.none()).pipe(Effect.result);
-        if (Result.isFailure(result)) {
-          console.log(formatObservabilityError(result.failure));
-          yield* renderCauseToStderr(Cause.fail(result.failure));
-        }
-      }).pipe(Effect.provide(Layer.merge(config, resolver))));
-    `;
-    const result = spawnSync("bun", ["-e", script], { cwd: process.cwd(), encoding: "utf8" });
+
+    const result = await captureOutput(
+      async () => {
+        const { Cause, Effect, Layer, Option, Result } = await import("effect");
+        const { ConfigService } = await import("#config/loader");
+        const { SecretEnvResolver } = await import("#shared/secret-env");
+        const { formatObservabilityError, resolveConfig } = await import("#observability/shared");
+        const { renderCauseToStderr } = await import("#shared/error-renderer");
+
+        const tokenEnvVar = "AGENT_TOOLS_OBSERVABILITY_CLI_TOKEN";
+        delete process.env[tokenEnvVar];
+        vi.stubGlobal("fetch", async () => new Response(token, { status: 401 }));
+        const config = Layer.succeed(ConfigService, {
+          observability: {
+            default: { environments: { local: { url: "https://grafana.invalid", tokenEnvVar } } },
+          },
+        });
+        const resolver = SecretEnvResolver.testLayer(async () => ({ _tag: "found", value: token }));
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const result = yield* resolveConfig("local", Option.none()).pipe(Effect.result);
+            if (Result.isFailure(result)) {
+              console.log(formatObservabilityError(result.failure));
+              yield* renderCauseToStderr(Cause.fail(result.failure));
+            }
+          }).pipe(Effect.provide(Layer.merge(config, resolver))),
+        );
+      },
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[REDACTED]");
     expect(result.stderr).toContain("ObservabilityToolError");

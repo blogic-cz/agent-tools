@@ -157,6 +157,56 @@
       "rules": {
         "eslint/no-restricted-imports": "off"
       }
+    },
+    {
+      "files": ["tests/**/*.ts", "scripts/**/*.test.ts", "src/**/*.test.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "node:child_process",
+                "message": "Tests must run in-process. Inject the external process runner."
+              },
+              {
+                "name": "child_process",
+                "message": "Tests must run in-process. Inject the external process runner."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["bun"],
+                "importNames": ["spawn", "spawnSync", "$"],
+                "message": "Tests must run in-process. Inject the external process runner."
+              }
+            ]
+          }
+        ],
+        "eslint/no-restricted-properties": [
+          "error",
+          {
+            "object": "Bun",
+            "property": "spawn",
+            "message": "Tests must run in-process. Inject the external process runner."
+          },
+          {
+            "object": "Bun",
+            "property": "spawnSync",
+            "message": "Tests must run in-process. Inject the external process runner."
+          },
+          {
+            "object": "Bun",
+            "property": "$",
+            "message": "Tests must run in-process. Inject the external process runner."
+          },
+          {
+            "object": "process",
+            "property": "execPath",
+            "message": "Tests must run in-process. Call the real command program."
+          }
+        ]
+      }
     }
   ]
 }

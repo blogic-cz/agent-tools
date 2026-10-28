@@ -87,11 +87,13 @@ export class FileStore {
   private constructor(
     readonly directory: string,
     readonly identity: string,
+    private readonly contentionTimeoutMs: number,
   ) {}
 
   static async open(
     identity: string,
     directory = process.env["GH_TOOL_CACHE_DIR"] ?? defaultCacheDirectory(),
+    options: { contentionTimeoutMs?: number } = {},
   ): Promise<FileStore> {
     const uid = process.getuid?.();
     if (uid === undefined) throw new Error("Cache ownership cannot be verified");
@@ -116,7 +118,11 @@ export class FileStore {
         await checkDirectory(path);
       }),
     );
-    const store = new FileStore(join(directory, "gh-read-v1"), identity);
+    const store = new FileStore(
+      join(directory, "gh-read-v1"),
+      identity,
+      options.contentionTimeoutMs ?? 2000,
+    );
     await mkdir(store.ghCacheDirectory, { recursive: true, mode: 0o700 });
     await checkDirectory(store.ghCacheDirectory);
     await store.readClock();
@@ -226,7 +232,7 @@ export class FileStore {
           }
         },
         25,
-        2000,
+        this.contentionTimeoutMs,
       );
       try {
         return await body();

@@ -1,3 +1,4 @@
+import { stubBun } from "./helpers/stub-bun";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vitest";
 import { Effect, Fiber, Result } from "effect";
@@ -28,7 +29,7 @@ describe("GitHub request snapshots", () => {
       process.env = { NOVEL_SECRET: escapedSecret };
       const auth = vi.fn<() => void>();
       const fetch = vi.fn<ApiFetch>();
-      vi.stubGlobal("Bun", { spawn: auth });
+      stubBun({ spawn: auth });
       vi.stubGlobal("fetch", fetch);
       for (const body of [
         { password: secret },
@@ -56,7 +57,7 @@ describe("GitHub request snapshots", () => {
       process.env = {};
       const auth = vi.fn<() => void>();
       const fetch = vi.fn<ApiFetch>();
-      vi.stubGlobal("Bun", { spawn: auth });
+      stubBun({ spawn: auth });
       vi.stubGlobal("fetch", fetch);
       const circular: Record<string, unknown> = {};
       circular.self = circular;
@@ -242,7 +243,7 @@ describe("GitHub child environment", () => {
         stdout: new Response("synthetic-fallback\n").body,
         exited: Promise.resolve(0),
       }));
-      vi.stubGlobal("Bun", { spawn });
+      stubBun({ spawn });
       process.env = { GH_TOKEN: "synthetic-gh", GITHUB_TOKEN: "synthetic-github" };
       expect(yield* resolveGitHubToken()).toBe("synthetic-gh");
       delete process.env.GH_TOKEN;
@@ -292,7 +293,7 @@ describe("GitHub outbound file failures", () => {
           () => Promise.reject(new Error("synthetic read failure")),
           () => Promise.resolve(new Uint8Array([0xff])),
         ]) {
-          vi.stubGlobal("Bun", { file: () => ({ bytes }) });
+          stubBun({ file: () => ({ bytes }) });
           const result = yield* readValidatedOutboundFile(path, "gh-test").pipe(Effect.result);
           expect(Result.isFailure(result)).toBe(true);
         }

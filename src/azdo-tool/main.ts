@@ -184,7 +184,7 @@ EXAMPLES:
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("azdo-tool", {}).pipe(
+export const mainCommand = Command.make("azdo-tool", {}).pipe(
   Command.withDescription(
     `Azure DevOps Tool for Coding Agents (READ-ONLY)
 
@@ -219,6 +219,15 @@ const program = withRedactedOutput(withAudit("azdo", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });
+
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(
+    withAudit(
+      "azdo",
+      Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args),
+    ),
+  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));

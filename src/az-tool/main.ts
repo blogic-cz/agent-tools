@@ -110,7 +110,7 @@ EXAMPLES:
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("az-tool", {}).pipe(
+export const mainCommand = Command.make("az-tool", {}).pipe(
   Command.withDescription(
     `Azure Platform Tool for Coding Agents (READ-ONLY)
 
@@ -150,6 +150,12 @@ const program = withRedactedOutput(withAudit("az", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });
+
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(
+    withAudit("az", Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args)),
+  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));

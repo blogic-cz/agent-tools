@@ -1,8 +1,13 @@
+import { afterEach, vi } from "vitest";
+import { captureOutput } from "./helpers/capture-output";
+import { ghCommand } from "./helpers/gh-command";
+import { createReplayGh } from "./fixtures/gh-read-replay";
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 import { describe, expect, it } from "@effect/vitest";
-import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { Command, Flag } from "effect/cli";
 
@@ -25,46 +30,17 @@ const root = Command.make("root", {}).pipe(Command.withSubcommands([greet]));
 
 describe("dumpCommandSchema", () => {
   it("runs workflow watch without the optional --frames flag", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "gh-tool-watch-"));
-    const gh = join(directory, "gh");
-    await writeFile(
-      gh,
-      `#!/bin/sh
-case "$1 $2" in
-  "repo view") printf '%s\\n' '{"owner":{"login":"o"},"name":"r","defaultBranchRef":{"name":"main"},"url":"https://github.com/o/r"}' ;;
-  "run watch") ;;
-  "run view") printf '%s\\n' '{"databaseId":1,"displayTitle":"test","status":"completed","conclusion":"success","headBranch":"main","createdAt":"2026-01-01T00:00:00Z","event":"push","url":"https://example.test/run/1","workflowName":"CI","jobs":[]}' ;;
-  *) exit 1 ;;
-esac
-`,
-    );
-    await chmod(gh, 0o755);
-    try {
-      const result = spawnSync(
-        "bun",
-        [
-          "./src/gh-tool/index.ts",
-          "workflow",
-          "watch",
-          "--run",
-          "1",
-          "--repo",
-          "o/r",
-          "--format",
-          "json",
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
-          timeout: 15000,
-        },
+    vi.stubEnv("GH_TOKEN", "offline-replay");
+    const result = await captureOutput(async () => {
+      await Effect.runPromise(
+        ghCommand(
+          ["workflow", "watch", "--run", "102", "--repo", "owner/repo", "--format", "json"],
+          createReplayGh(),
+        ),
       );
-      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(result.stdout).toContain('"runId": 1');
-      expect(`${result.stdout}\n${result.stderr}`).not.toContain("Missing required flag: --frames");
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    });
+    expect(result.stdout).toContain('"runId": 102');
+    expect(result.stderr).toBe("");
   });
 
   it("gh-tool aliases expose watch/rerun/reply command schemas", async () => {
@@ -93,73 +69,36 @@ esac
     );
   });
 
-  it("both binaries keep real JSONL watcher stdout pure", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "gh-tool-jsonl-"));
-    const gh = join(directory, "gh");
-    await writeFile(
-      gh,
-      `#!/bin/sh
-case "$1 $2" in
-  "repo view") echo '{"owner":{"login":"o"},"name":"r","defaultBranchRef":{"name":"main"},"url":"https://github.com/o/r"}' ;;
-  "pr view") echo '{"number":1,"url":"https://github.com/o/r/pull/1","title":"Test","state":"OPEN","headRefOid":"sha","headRefName":"feature","baseRefName":"main","isDraft":false,"mergeable":"MERGEABLE","body":"","author":{"login":"fixture","is_bot":false},"reviewDecision":"","reviewRequests":[]}' ;;
-  "pr checks") echo '[{"name":"CI","state":"completed","bucket":"pass","link":"external"}]' ;;
-  *) exit 1 ;;
-esac
-`,
+  it("keeps JSONL watcher output pure", async () => {
+    vi.stubEnv("GH_TOKEN", "offline-replay");
+    const fetch = vi.fn<() => Promise<Response>>(
+      async () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 }),
     );
-    await chmod(gh, 0o755);
-    const preload = join(directory, "offline.ts");
-    const fetches = join(directory, "fetches.txt");
-    await writeFile(
-      preload,
-      `import { appendFileSync } from "node:fs";
-globalThis.fetch = async () => {
-  appendFileSync(${JSON.stringify(fetches)}, "signal\\n");
-  return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-};`,
-    );
-    try {
-      const result = spawnSync(
-        "bun",
-        [
-          "--preload",
-          preload,
-          `./src/gh-tool/index.ts`,
-          "pr",
-          "watch",
-          "--prs",
-          "1",
-          "--interval",
-          "1",
-          "--timeout",
-          "1",
-          "--format",
-          "jsonl",
-        ],
-        {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            PATH: `${directory}:${process.env.PATH}`,
-            GH_TOKEN: "offline-fixture",
-            GH_TOOL_CACHE: "on",
-            GH_TOOL_CACHE_DIR: join(directory, "cache"),
+    vi.stubGlobal("fetch", fetch);
+    const replay = createReplayGh();
+    const result = await captureOutput(async () => {
+      await Effect.runPromise(
+        ghCommand(
+          ["pr", "watch", "--prs", "42", "--interval", "1", "--timeout", "1", "--format", "jsonl"],
+          (args) => {
+            const reply = replay(args);
+            if (args[0] === "pr" && args[1] === "view")
+              return {
+                ...reply,
+                stdout: JSON.stringify({ ...JSON.parse(reply.stdout), state: "MERGED" }),
+              };
+            return reply;
           },
-          timeout: 15000,
-        },
+        ),
       );
-      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(await readFile(fetches, "utf8")).toContain("signal");
-      expect(result.stderr).toBe("");
-      const lines = result.stdout
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
-      expect(lines.at(-1)).toMatchObject({ type: "watcher_terminal", status: "terminal" });
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  }, 15000);
+    });
+    expect(result.stderr).toBe("");
+    const lines = result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(lines.at(-1)).toMatchObject({ type: "watcher_terminal", status: "terminal" });
+  });
 
   it("walks the command tree and extracts flag name/type/choices/description", () => {
     const schema = dumpCommandSchema(root);

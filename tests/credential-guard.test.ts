@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { captureOutput } from "./helpers/capture-output";
+
 import { describe, expect, it, test } from "vitest";
 
 import {
@@ -70,7 +71,7 @@ describe("credential guard handler error redaction", () => {
     }
   });
 
-  it("redacts process environment values and protects raw adapter error output", () => {
+  it("redacts process environment values and protects raw adapter error output", async () => {
     const envName = "AGENT_TOOLS_SYNTHETIC_AUTH_TOKEN";
     const envValue = "synthetic-auth-value-0123456789";
     const previousValue = process.env[envName];
@@ -92,12 +93,20 @@ describe("credential guard handler error redaction", () => {
       else process.env[envName] = previousValue;
     }
 
-    const result = spawnSync(
-      "bun",
-      [
-        "-e",
-        `import { createCredentialGuard } from "./src/credential-guard/index.ts"; const token = process.env.SYNTHETIC_TOKEN; try { createCredentialGuard().handleToolExecuteBefore({ tool: "Bash" }, { args: { command: "cat .env; echo " + token } }); } catch (error) { process.stderr.write(error.message); }`,
-      ],
+    const result = await captureOutput(
+      async () => {
+        const { createCredentialGuard } = await import("#guard");
+        const token = process.env.SYNTHETIC_TOKEN;
+        try {
+          createCredentialGuard().handleToolExecuteBefore(
+            { tool: "Bash" },
+            { args: { command: "cat .env; echo " + token } },
+          );
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          process.stderr.write(error.message);
+        }
+      },
       {
         cwd: process.cwd(),
         encoding: "utf8",

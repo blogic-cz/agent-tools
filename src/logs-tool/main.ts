@@ -221,7 +221,7 @@ const readCommand = Command.make(
 
 const commandsCommand = makeSchemaCommand(() => mainCommand);
 
-const mainCommand = Command.make("logs-tool", {}).pipe(
+export const mainCommand = Command.make("logs-tool", {}).pipe(
   Command.withDescription("Application Logs Tool for Coding Agents"),
   Command.withSubcommands([listCommand, readCommand, commandsCommand]),
 );
@@ -249,6 +249,15 @@ const program = withRedactedOutput(withAudit("logs", cli)).pipe(
   Effect.tapCause(renderCauseToStderr),
 );
 
-BunRuntime.runMain(program, {
-  disableErrorReporting: true,
-});
+export const runMain = () =>
+  BunRuntime.runMain(program, {
+    disableErrorReporting: true,
+  });
+
+export const runProgram = (args: readonly string[]) =>
+  withRedactedOutput(
+    withAudit(
+      "logs",
+      Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args),
+    ),
+  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));

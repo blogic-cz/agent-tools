@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,31 +29,7 @@ function writeJson(filePath: string, value: unknown): void {
   writeFileSync(filePath, JSON.stringify(value));
 }
 
-async function withBunConfigFileShim(run: () => Promise<void>): Promise<void> {
-  const previousBun = globalThis.Bun;
-  Object.defineProperty(globalThis, "Bun", {
-    configurable: true,
-    value: {
-      file: (filePath: string) => ({
-        exists: async () => existsSync(filePath),
-        text: async () => readFileSync(filePath, "utf8"),
-      }),
-      JSON5: {
-        parse: JSON.parse,
-      },
-    },
-  });
-
-  try {
-    await run();
-  } finally {
-    if (previousBun) {
-      Object.defineProperty(globalThis, "Bun", { configurable: true, value: previousBun });
-    } else {
-      Reflect.deleteProperty(globalThis, "Bun");
-    }
-  }
-}
+const withBunConfigFileShim = (run: () => Promise<void>) => run();
 
 describe("getToolConfig", () => {
   it("returns undefined when config is undefined", () => {
