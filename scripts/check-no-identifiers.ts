@@ -18,7 +18,8 @@ function isDocumentationIp(value: string): boolean {
 }
 
 function findGenericLeak(text: string): string | null {
-  if (/[A-Z0-9._%+-]{2,}@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text)) return "email address";
+  // An unanchored match needs only the final two characters before @.
+  if (/[A-Z0-9._%+-]{2}@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text)) return "email address";
   if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(text))
     return "uuid";
   if (/\b(?:gh[ps]_|github_pat_)[A-Za-z0-9_]{20,}/.test(text)) return "github token shape";
