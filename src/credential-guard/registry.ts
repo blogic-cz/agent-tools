@@ -3119,6 +3119,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "-A",
         "--catenate",
         "--concatenate",
+        "--delete",
         "-t",
         "--list",
         "-v",
@@ -3221,7 +3222,18 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "--execute": { roles: [data], issue: unknown("wget output configuration") },
       "--config": { roles: [path], issue: unknown("wget output configuration") },
       "--input-metalink": { roles: [path], issue: unknown("wget output configuration") },
-      ...flags("-q", "-c", "-nv", "-N", "-r", "-np", "-nd", "-nc"),
+      ...flags(
+        "-q",
+        "-c",
+        "-nv",
+        "-N",
+        "-r",
+        "--recursive",
+        "--content-disposition",
+        "-np",
+        "-nd",
+        "-nc",
+      ),
     },
   },
   { name: "seq", operands: [data], semantics: "seq" },
@@ -3656,6 +3668,8 @@ function classifyInvocation(
   const writerCandidates: { index: number; literal: string }[] = [];
   let wgetOutputDocument = false;
   let wgetInputFile = false;
+  let wgetServerOutput = false;
+  let wgetExplicitPrefix = false;
   let wgetDirectoryPrefix: string | undefined = ".";
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
@@ -4205,21 +4219,18 @@ function classifyInvocation(
     entry.name === "tar" &&
     argv.slice(1).some((word, index) => {
       if (word === undefined) return false;
-      const longOption =
-        word === "-W"
-          ? argv[index + 2]?.split("=", 1)[0]
-          : word.startsWith("-W")
-            ? word.slice(2).split("=", 1)[0]
-            : undefined;
+      const longOption = /^-[^-]*W/.test(word)
+        ? (word.slice(word.indexOf("W") + 1) || argv[index + 2])?.split("=", 1)[0]
+        : undefined;
       if (
         longOption &&
-        ["create", "append", "update", "catenate", "concatenate"].some((option) =>
+        ["create", "append", "update", "catenate", "concatenate", "delete"].some((option) =>
           option.startsWith(longOption),
         )
       )
         return true;
       if (word.startsWith("--"))
-        return ["--create", "--append", "--update", "--catenate", "--concatenate"].some(
+        return ["--create", "--append", "--update", "--catenate", "--concatenate", "--delete"].some(
           (option) => word.length > 2 && option.startsWith(word.split("=")[0] ?? word),
         );
       const cluster =
@@ -4376,6 +4387,7 @@ function classifyInvocation(
         )
           break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
+        if (entry.name === "wget" && a[offset] === "r") wgetServerOutput = true;
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
@@ -4402,6 +4414,7 @@ function classifyInvocation(
           .every((c) => options[`-${c}`]?.roles.length === 0)
       ) {
         for (const c of a.slice(1)) {
+          if (entry.name === "wget" && c === "r") wgetServerOutput = true;
           const issue = options[`-${c}`]?.issue;
           if (issue) issues.push(issue);
         }
@@ -4449,6 +4462,11 @@ function classifyInvocation(
         issues.push(unknown("git config override"));
     }
     if (!endOptions && option && a.startsWith("-")) {
+      if (
+        entry.name === "wget" &&
+        ["-r", "--recursive", "--content-disposition"].includes(optionName)
+      )
+        wgetServerOutput = true;
       if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
         wgetOutputDocument = true;
       if (entry.name === "wget" && ["-i", "--input-file"].includes(optionName))
@@ -4475,8 +4493,10 @@ function classifyInvocation(
       for (let i = 0; i < option.roles.length; i++) {
         const role = option.roles[i] ?? data;
         const index = i === 0 && attached !== undefined ? position : ++position;
-        if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName))
+        if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName)) {
+          wgetExplicitPrefix = true;
           wgetDirectoryPrefix = attached ?? argv[index];
+        }
         if (
           index >= argv.length &&
           !(
@@ -4863,6 +4883,8 @@ function classifyInvocation(
     }
   }
   if (entry.name === "wget" && !wgetOutputDocument) {
+    if (wgetServerOutput && !wgetExplicitPrefix)
+      issues.push(unknown("wget server-chosen output names are not known"));
     if (
       wgetInputFile &&
       (wgetDirectoryPrefix === undefined ||
