@@ -18,6 +18,25 @@ it.each([
 });
 
 it.each([
+  "cd ~/.claude && printf x > comm?nds/x.md",
+  "cd ~/.claude && printf x | tee comm?nds/x.md",
+  "cd ~/.claude && printf x > sk?lls/x/SKILL.md",
+  "cd ~/.claude && cp /tmp/x sk?lls/foo/SKILL.md",
+  "cd ~/.claude && cp /tmp/x hoo?s/x.sh",
+  "cd ~/.claude && tee ag?nts/x.md < /tmp/x",
+  "cd ~/.claude && touch comm?nds/x.md",
+  "cd ~/.claude && truncate -s 0 comm?nds/x.md",
+  "cd ~/.claude && cat /tmp/x >> comm*/x.md",
+  "cd ~/.agents && printf x > sk?lls/x/SKILL.md",
+  "cd ~/.agents && cp /tmp/x sk*/x/SKILL.md",
+  "cd /repo/.claude && printf x > comm*/x.md",
+  "cd ~/.claude/ && printf x > ./comm?nds/x.md",
+  "cd ~/.claude/commands && printf x > ../sk?lls/x.md",
+  "cd .claude && cp f c*/x.md",
+  "cd .claude && echo x > c*/x.md",
+  "cd /repo/.claude && cp f ./c*/x.md",
+  "cd /repo/.claude && cp f s*/x/SKILL.md",
+  "cd /repo/.agents && cp f s*/x/SKILL.md",
   "sed -i 's/x/y/' AGENT?.md",
   "sed -i 's/x/y/' AGENT[]S].md",
   "sed -i 's/x/y/' AGENT[S].md",
@@ -47,10 +66,66 @@ it.each([
   "wget -qr https://example.com/x",
   "wget --recursive https://example.com/x",
   "wget --content-disposition https://example.com/x",
+  "wget -m https://example.com/",
+  "wget --mirror https://example.com/",
+  "wget -mnd https://example.com/",
+  "wget -p -nd https://example.com/",
+  "wget --page-requisites https://example.com/",
+  "wget --trust-server-names https://example.com/",
 ])("refuses server-chosen wget names in the current directory: %s", (command) => {
   expect(bash(command)).toMatchObject({
     findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
   });
+});
+
+it.each([
+  "wget -r -nd -P ~ https://example.com/",
+  "wget -r -nd -P /users/test https://example.com/",
+  'wget -r -nd -P "$HOME" https://example.com/',
+  "wget --content-disposition -P ~ https://example.com/x",
+  "cd ~ && wget -r -nd -P . https://example.com/",
+  "cd ~ && wget --content-disposition -P . https://example.com/x",
+  "wget -r -nd -P . https://example.com/",
+  "wget --content-disposition -P . https://example.com/x",
+  "wget -r -nd -P ./ https://example.com/",
+  "wget -r -nd -P '' https://example.com/",
+  "wget -r -nd --directory-prefix= https://example.com/",
+  'wget -r -nd -P "$PWD" https://example.com/',
+  "wget -r -nd -P .. https://example.com/",
+  "wget -qrP. https://example.com/",
+  "wget -rP. https://example.com/",
+])("refuses server-chosen names at home, cwd, or a parent: %s", (command) => {
+  expect(bash(command)).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+  });
+});
+
+it("refuses server-chosen names in the fish startup directory", () => {
+  expect(bash("wget -r -nd -P ~/.config/fish https://example.com/")).toMatchObject({
+    findings: expect.arrayContaining([expect.objectContaining({ rule: "startup-mutation" })]),
+  });
+});
+
+it.each([
+  "-r",
+  "--recursive",
+  "-m",
+  "--mirror",
+  "-p",
+  "--page-requisites",
+  "--content-disposition",
+  "--trust-server-names",
+])("checks every server-chosen wget mode: %s", (mode) => {
+  for (const directories of ["", "-nd", "--no-directories"]) {
+    expect(bash(`wget ${mode} ${directories} -P . https://example.com/x`)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "no-analyzer" })]),
+    });
+    for (const prefix of ["downloads", "/tmp/job"]) {
+      expect(bash(`wget ${mode} ${directories} -P ${prefix} https://example.com/x`)).toEqual({
+        kind: "pass",
+      });
+    }
+  }
 });
 
 it.each([

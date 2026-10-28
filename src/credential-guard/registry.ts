@@ -125,6 +125,7 @@ export type InvocationPlan = {
     readonly index: number;
     readonly sources: readonly number[];
     readonly directory: boolean;
+    readonly unknownNames?: boolean;
   }[];
   readonly inPlaceBackupSuffix: string | null;
   readonly scriptLanguage: Language;
@@ -3229,9 +3230,15 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
         "-N",
         "-r",
         "--recursive",
+        "-m",
+        "--mirror",
+        "-p",
+        "--page-requisites",
         "--content-disposition",
+        "--trust-server-names",
         "-np",
         "-nd",
+        "--no-directories",
         "-nc",
       ),
     },
@@ -3670,6 +3677,7 @@ function classifyInvocation(
   let wgetInputFile = false;
   let wgetServerOutput = false;
   let wgetExplicitPrefix = false;
+  let wgetPrefixIndex: number | undefined;
   let wgetDirectoryPrefix: string | undefined = ".";
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
@@ -4387,7 +4395,7 @@ function classifyInvocation(
         )
           break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
-        if (entry.name === "wget" && a[offset] === "r") wgetServerOutput = true;
+        if (entry.name === "wget" && /[rmp]/.test(a[offset] ?? "")) wgetServerOutput = true;
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
@@ -4414,7 +4422,7 @@ function classifyInvocation(
           .every((c) => options[`-${c}`]?.roles.length === 0)
       ) {
         for (const c of a.slice(1)) {
-          if (entry.name === "wget" && c === "r") wgetServerOutput = true;
+          if (entry.name === "wget" && /[rmp]/.test(c)) wgetServerOutput = true;
           const issue = options[`-${c}`]?.issue;
           if (issue) issues.push(issue);
         }
@@ -4464,7 +4472,16 @@ function classifyInvocation(
     if (!endOptions && option && a.startsWith("-")) {
       if (
         entry.name === "wget" &&
-        ["-r", "--recursive", "--content-disposition"].includes(optionName)
+        [
+          "-r",
+          "--recursive",
+          "-m",
+          "--mirror",
+          "-p",
+          "--page-requisites",
+          "--content-disposition",
+          "--trust-server-names",
+        ].includes(optionName)
       )
         wgetServerOutput = true;
       if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
@@ -4495,6 +4512,7 @@ function classifyInvocation(
         const index = i === 0 && attached !== undefined ? position : ++position;
         if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName)) {
           wgetExplicitPrefix = true;
+          wgetPrefixIndex = index;
           wgetDirectoryPrefix = attached ?? argv[index];
         }
         if (
@@ -4885,6 +4903,13 @@ function classifyInvocation(
   if (entry.name === "wget" && !wgetOutputDocument) {
     if (wgetServerOutput && !wgetExplicitPrefix)
       issues.push(unknown("wget server-chosen output names are not known"));
+    if (wgetServerOutput && wgetPrefixIndex !== undefined)
+      directoryWrites.push({
+        index: wgetPrefixIndex,
+        sources: [],
+        directory: true,
+        unknownNames: true,
+      });
     if (
       wgetInputFile &&
       (wgetDirectoryPrefix === undefined ||

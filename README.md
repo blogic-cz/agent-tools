@@ -741,7 +741,11 @@ The Bash `agent-config-write` rule refuses writes to these paths:
 - Home `.agents/skills/` and replacement of the home `.agents` directory itself.
 - Replacement of a `.claude` directory itself.
 
-The rule checks redirects, `tee`, in-place `sed`, copy and link destinations, and supported writer operands. These include `rsync`, `ditto`, `tmutil restore` destinations, archive output files and destinations, `git checkout` paths with or without `--`, `patch`, `truncate`, `touch`, and `wget` output paths. Without an output-document option, the `wget` URL basename supplies the output name. A glob that can match a protected name refuses. A bracket expression that the matcher cannot translate also refuses. A configured copy grant remains subject to the filesystem proof above.
+The rule checks redirects, `tee`, in-place `sed`, copy and link destinations, and supported writer operands. These include `rsync`, `ditto`, `tmutil restore` destinations, archive output files and destinations, `git checkout` paths with or without `--`, `patch`, `truncate`, `touch`, and `wget` output paths. Archive writes include clustered tar `-W <mode>`, `tar --delete`, and `tar -A`.
+
+Without an output-document option, the `wget` URL basename supplies the output name. Modes that let the server choose output names require an explicit `-P` or `--directory-prefix`. These modes include `-r`/`--recursive`, `-m`/`--mirror`, `-p`/`--page-requisites`, `--content-disposition`, and `--trust-server-names`, including with `-nd`/`--no-directories`. The prefix must pass destination checks. Home, the current directory, its parents, and startup directories such as `~/.config/fish` refuse. An ordinary project subdirectory or temporary root can pass.
+
+Glob checks compare normalized path components with protected names. File names match at the final component. Protected directory names match under `.claude` or `.agents` as applicable. A relative path has unknown leading context, so its leading glob component also checks `commands`, `agents`, `skills`, and `hooks`. Leading parent components retain this check. A bracket expression that the matcher cannot translate also refuses. A configured copy grant remains subject to the filesystem proof above.
 
 Work data such as `~/.agents/jobs/`, `~/.claude/plans/`, and `~/.claude/projects/` remains writable. Ordinary document paths such as `README.md` remain writable. Reading an instruction file or copying it to `/tmp/x.md` can pass.
 

@@ -124,7 +124,10 @@ function agentConfigGlob(value: Value): boolean {
             "settings.json",
             "settings.local.json",
           );
-        if (/^\.claude$/i.test(parts[index - 1] ?? ""))
+        if (
+          /^\.claude$/i.test(parts[index - 1] ?? "") ||
+          (!posix.isAbsolute(text) && (index === 0 || parts[index - 1] === ".."))
+        )
           names.push("commands", "agents", "skills", "hooks");
         if (/^\.agents$/i.test(parts[index - 1] ?? "")) names.push("skills");
         return names.some((name) => pattern.test(name));
@@ -951,6 +954,36 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                 emit("startup-mutation", "in-place write to startup configuration", span, true);
           }
           const destination = plan.directoryWrites.find((write) => write.index === operand.index);
+          if (destination?.unknownNames) {
+            if (invocationScope.cwd.kind !== "literal")
+              emit("opaque-path", "server-chosen output directory has unknown context", span, true);
+            for (const target of paths) {
+              const path = target.replace(/\/+$/, "") || "/";
+              if (
+                path ===
+                  (normalizePath(context.home, context.home, context.cwd).replace(/\/+$/, "") ||
+                    "/") ||
+                mentions(invocationScope.cwd).some((cwd) => {
+                  const directory =
+                    normalizePath(cwd, context.home, context.cwd).replace(/\/+$/, "") || "/";
+                  return directory === path || directory.startsWith(`${path === "/" ? "" : path}/`);
+                })
+              )
+                emit(
+                  "no-analyzer",
+                  "server-chosen output names may overwrite the home or working directory",
+                  span,
+                  true,
+                );
+              if (/(?:^|\/)\.config\/fish(?:\/|$)/.test(path))
+                emit(
+                  "startup-mutation",
+                  "server-chosen output names may write startup configuration",
+                  span,
+                  true,
+                );
+            }
+          }
           const agentTargets = [...paths];
           if (
             scope.dialect === "bash" &&
