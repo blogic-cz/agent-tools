@@ -9400,9 +9400,9 @@ describe("PR composite commands", () => {
           renderErrors: false,
         })(["--pr", "999", "--prs", "123,124", "--format", "json"]).pipe(
           Effect.provide(layer),
-          Effect.ensuring(Effect.sync(() => stdoutWrite.mockRestore())),
           Effect.result,
         );
+        stdoutWrite.mockRestore();
         expect(Result.isSuccess(commandResult)).toBe(true);
         const output = stdout.join("").trim();
 
