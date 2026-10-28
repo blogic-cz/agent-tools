@@ -483,6 +483,50 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   };
 });
 
+type CompactReviewTriage = {
+  readonly pr: number;
+  readonly classification: ReviewTriageClassification;
+  readonly visibleOpenReviewThreadsCount: number;
+  readonly unrepliedReviewThreadsCount: number;
+  readonly unresolvedReviewThreadsCount: number;
+  readonly visibleOpenThreadIds: readonly string[];
+};
+
+const compactReviewTriage = (
+  pr: number,
+  result: {
+    readonly classification: ReviewTriageClassification;
+    readonly summary: ReviewTriageSummary;
+    readonly visibleOpenThreads: ReadonlyArray<{ readonly threadId: string }>;
+  },
+): CompactReviewTriage => ({
+  pr,
+  classification: result.classification,
+  visibleOpenReviewThreadsCount: result.summary.visibleOpenReviewThreadsCount,
+  unrepliedReviewThreadsCount: result.summary.unrepliedReviewThreadsCount,
+  unresolvedReviewThreadsCount: result.summary.unresolvedReviewThreadsCount,
+  visibleOpenThreadIds: result.visibleOpenThreads.map((thread) => thread.threadId),
+});
+
+export const fetchReviewTriageBatch = Effect.fn("pr.fetchReviewTriageBatch")(function* (
+  prs: readonly number[],
+) {
+  return yield* Effect.forEach(
+    prs,
+    (pr) =>
+      fetchReviewTriage(pr).pipe(
+        Effect.map((result) => compactReviewTriage(pr, result)),
+        Effect.catch((error) =>
+          Effect.succeed({
+            pr,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      ),
+    { concurrency: 5 },
+  );
+});
+
 export const prViewCommand = Command.make(
   "view",
   {
@@ -1715,12 +1759,25 @@ export const prReviewTriageCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    prs: Flag.String("prs").pipe(
+      Flag.withDescription(
+        "Comma-separated PR numbers for a compact batch summary (overrides --pr)",
+      ),
+      Flag.optional,
+    ),
     repo: repoOption,
   },
-  ({ format, omit, pr, repo }) =>
+  ({ format, omit, pr, prs, repo }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
+        const batch = Option.getOrNull(prs);
+        if (batch !== null) {
+          const numbers = yield* parsePrNumbers(batch);
+          const results = yield* fetchReviewTriageBatch(numbers);
+          yield* logFormatted({ count: results.length, prs: results }, format);
+          return;
+        }
         const prNumber = Option.getOrNull(pr);
         const result = yield* fetchReviewTriage(prNumber);
         yield* logFormatted(
@@ -1731,7 +1788,7 @@ export const prReviewTriageCommand = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Composite: PR info + merge-readiness verdict + unresolved threads + visible-open threads + discussion summary + checks status in one call",
+    "Composite: PR info + merge-readiness verdict + unresolved and visible-open threads + discussion summary + checks status; use --prs for a compact batch summary",
   ),
 );
 
