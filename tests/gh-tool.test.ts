@@ -132,10 +132,12 @@ import {
   fetchCurrentReviews,
   fetchCurrentThreads,
   fetchReviewTriage,
+  fetchReviewTriageBatch,
   filterFeedback,
   omitTriageSections,
   parsePrNumbers,
   parseReviewers,
+  prReviewTriageCommand,
   requestReview,
   trimNoisyBody,
 } from "#gh/pr/commands";
@@ -9337,6 +9339,179 @@ describe("PR composite commands", () => {
           threads: { current_head: 0, pre_existing: 0, unknown: 2 },
         });
         expect(result.inlineComments).toHaveLength(3);
+      }),
+  );
+
+  it.effect(
+    "review-triage derives thread counts and classification from the collected threads",
+    () =>
+      Effect.gen(function* () {
+        let threadReads = 0;
+        const [result] = yield* fetchReviewTriageBatch([123]).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                if (args[0] === "pr" && args[1] === "view") {
+                  return Effect.succeed({ ...mockPRInfo, headRefOid: "stable-head" });
+                }
+                if (args[0] === "pr" && args[1] === "checks") {
+                  return Effect.succeed(mockChecksData);
+                }
+                return Effect.succeed({});
+              },
+              runGraphQL: () => {
+                threadReads += 1;
+                return Effect.succeed(
+                  threadReads === 1
+                    ? mockGraphQLThreadsResponse
+                    : {
+                        repository: {
+                          pullRequest: {
+                            reviewThreads: {
+                              nodes: [],
+                              pageInfo: { hasNextPage: false, endCursor: null },
+                            },
+                          },
+                        },
+                      },
+                );
+              },
+              runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+            }),
+          ),
+        );
+
+        expect(threadReads).toBe(1);
+        if ("error" in result) throw new Error(result.error);
+        expect(result).toMatchObject({
+          visibleOpenReviewThreadsCount: 2,
+          unresolvedReviewThreadsCount: 1,
+          visibleOpenThreadIds: ["thread-1", "thread-2"],
+          classification: {
+            status: "needs_investigation",
+            reasons: expect.arrayContaining([
+              "visible_open_review_threads",
+              "unresolved_review_threads",
+            ]),
+          },
+        });
+        expect(result.visibleOpenReviewThreadsCount).toBe(result.visibleOpenThreadIds.length);
+        expect(result.classification.reasons).toContain("visible_open_review_threads");
+        expect(result.classification.reasons).toContain("unresolved_review_threads");
+      }),
+  );
+
+  it.effect(
+    "review-triage batch is compact and reports a failed PR beside successful results",
+    () =>
+      Effect.gen(function* () {
+        const layer = createMockGhLayer({
+          runGhJson: (args) => {
+            if (args[0] === "pr" && args[1] === "view" && args[2] === "124") {
+              return Effect.fail(
+                new GitHubNotFoundError({
+                  message: "PR #124 not found",
+                  identifier: "124",
+                  resource: "pull request",
+                }),
+              );
+            }
+            if (args[0] === "pr" && args[1] === "view") {
+              return Effect.succeed({ ...mockPRInfo, headRefOid: "stable-head" });
+            }
+            if (args[0] === "pr" && args[1] === "checks") {
+              return Effect.succeed(mockChecksData);
+            }
+            return Effect.succeed({});
+          },
+          runGraphQL: () => Effect.succeed(mockGraphQLThreadsResponse),
+          runGh: (args) => {
+            const apiPath = args[1] ?? "";
+            if (apiPath.includes("issues") && apiPath.includes("comments")) {
+              return Effect.succeed({
+                stdout: JSON.stringify(mockIssueCommentsRaw),
+                stderr: "",
+                exitCode: 0,
+              });
+            }
+            if (apiPath.includes("pulls") && apiPath.includes("comments")) {
+              return Effect.succeed({
+                stdout: JSON.stringify(mockTriageReviewCommentsRaw),
+                stderr: "",
+                exitCode: 0,
+              });
+            }
+            return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
+          },
+        });
+        const cliLayer = Layer.mergeAll(
+          FileSystem.layerNoop({}),
+          Path.layer,
+          Stdio.layerTest({}),
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.die("review-triage CLI must not spawn a process"),
+            ),
+          ),
+          Layer.succeed(
+            Terminal.Terminal,
+            Terminal.make({
+              columns: Effect.succeed(80),
+              rows: Effect.succeed(24),
+              readInput: Effect.die("unused"),
+              readLine: Effect.die("unused"),
+              display: () => Effect.void,
+            }),
+          ),
+        );
+
+        const stdout: string[] = [];
+        const stdoutWrite = vi.spyOn(process.stdout, "write");
+        stdoutWrite.mockImplementation(((chunk: unknown, ...args: unknown[]) => {
+          stdout.push(String(chunk));
+          const callback = args.find((arg) => typeof arg === "function") as
+            | ((error?: Error | null) => void)
+            | undefined;
+          callback?.();
+          return true;
+        }) as typeof process.stdout.write);
+        const commandResult = yield* Command.runWith(prReviewTriageCommand, {
+          version: "test",
+          renderErrors: false,
+        })(["--pr", "999", "--prs", "123,124", "--format", "json"]).pipe(
+          Effect.provide(Layer.merge(cliLayer, layer)),
+          Effect.result,
+        );
+        stdoutWrite.mockRestore();
+        expect(Result.isFailure(commandResult)).toBe(true);
+        const output = stdout.join("").trim();
+
+        expect(JSON.parse(output)).toEqual({
+          count: 2,
+          prs: [
+            {
+              pr: 123,
+              classification: {
+                status: "needs_investigation",
+                reasons: [
+                  "failed_checks",
+                  "visible_open_review_threads",
+                  "unreplied_review_threads",
+                  "unresolved_review_threads",
+                ],
+              },
+              visibleOpenReviewThreadsCount: 2,
+              unrepliedReviewThreadsCount: 1,
+              unresolvedReviewThreadsCount: 1,
+              visibleOpenThreadIds: ["thread-1", "thread-2"],
+            },
+            { pr: 124, error: "PR #124 not found" },
+          ],
+        });
+        expect(output).not.toContain("Please fix this");
+        expect(output).not.toContain("diffHunk");
+        expect(output).not.toContain("@@");
       }),
   );
 

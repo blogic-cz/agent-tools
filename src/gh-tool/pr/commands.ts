@@ -405,16 +405,19 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   const { info, value } = yield* withStableHead(
     prNumber,
     (number, headSha) =>
-      Effect.all([
-        fetchThreads(number, false, false, headSha),
-        fetchDiscussionSummary(number),
-        fetchCheckReport(number),
-        fetchReviews(number, null, null, null, headSha),
-        fetchComments(number, null, headSha),
-      ]),
+      Effect.gen(function* () {
+        const allThreads = yield* fetchThreads(number, false, false, headSha);
+        const [summary, checkReport, reviews, inlineComments] = yield* Effect.all([
+          fetchDiscussionSummary(number, allThreads),
+          fetchCheckReport(number),
+          fetchReviews(number, null, null, null, headSha),
+          fetchComments(number, null, headSha),
+        ]);
+        return { allThreads, summary, checkReport, reviews, inlineComments };
+      }),
     { operation: "review triage", command: "gh-tool pr review-triage" },
   );
-  const [allThreads, summary, checkReport, reviews, inlineComments] = value;
+  const { allThreads, summary, checkReport, reviews, inlineComments } = value;
   const checks = checkReport.checks ?? [];
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);
   const visibleOpenThreads = allThreads.filter((thread) => thread.isVisibleOpen);
@@ -482,6 +485,60 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
     },
   };
 });
+
+type CompactReviewTriage = {
+  readonly pr: number;
+  readonly classification: ReviewTriageClassification;
+  readonly visibleOpenReviewThreadsCount: number;
+  readonly unrepliedReviewThreadsCount: number;
+  readonly unresolvedReviewThreadsCount: number;
+  readonly visibleOpenThreadIds: readonly string[];
+};
+
+const compactReviewTriage = (
+  pr: number,
+  result: {
+    readonly classification: ReviewTriageClassification;
+    readonly summary: ReviewTriageSummary;
+    readonly visibleOpenThreads: ReadonlyArray<{ readonly threadId: string }>;
+  },
+): CompactReviewTriage => ({
+  pr,
+  classification: result.classification,
+  visibleOpenReviewThreadsCount: result.summary.visibleOpenReviewThreadsCount,
+  unrepliedReviewThreadsCount: result.summary.unrepliedReviewThreadsCount,
+  unresolvedReviewThreadsCount: result.summary.unresolvedReviewThreadsCount,
+  visibleOpenThreadIds: result.visibleOpenThreads.map((thread) => thread.threadId),
+});
+
+export const fetchReviewTriageBatch = Effect.fn("pr.fetchReviewTriageBatch")(function* (
+  prs: readonly number[],
+) {
+  return yield* Effect.forEach(
+    prs,
+    (pr) =>
+      fetchReviewTriage(pr).pipe(
+        Effect.map((result) => compactReviewTriage(pr, result)),
+        Effect.catch((error) =>
+          Effect.succeed({
+            pr,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      ),
+    { concurrency: 5 },
+  );
+});
+
+const reviewTriageBatchError = (
+  errors: readonly { readonly pr: number; readonly error: string }[],
+) =>
+  new GitHubCommandError({
+    message: `Failed to fetch review triage for PRs: ${errors.map(({ pr, error }) => `#${pr}: ${error}`).join("; ")}`,
+    command: "gh-tool pr review-triage --prs",
+    exitCode: 1,
+    stderr: "",
+  });
 
 export const prViewCommand = Command.make(
   "view",
@@ -1715,12 +1772,30 @@ export const prReviewTriageCommand = Command.make(
       Flag.withDescription("PR number (default: current branch PR)"),
       Flag.optional,
     ),
+    prs: Flag.String("prs").pipe(
+      Flag.withDescription(
+        "Comma-separated PR numbers for a compact batch summary (overrides --pr)",
+      ),
+      Flag.optional,
+    ),
     repo: repoOption,
   },
-  ({ format, omit, pr, repo }) =>
+  ({ format, omit, pr, prs, repo }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
+        const batch = Option.getOrNull(prs);
+        if (batch !== null) {
+          const numbers = yield* parsePrNumbers(batch);
+          const results = yield* fetchReviewTriageBatch(numbers);
+          yield* logFormatted({ count: results.length, prs: results }, format);
+          const errors = results.filter(
+            (result): result is Extract<(typeof results)[number], { readonly error: string }> =>
+              "error" in result,
+          );
+          if (errors.length > 0) return yield* reviewTriageBatchError(errors);
+          return;
+        }
         const prNumber = Option.getOrNull(pr);
         const result = yield* fetchReviewTriage(prNumber);
         yield* logFormatted(
@@ -1731,7 +1806,7 @@ export const prReviewTriageCommand = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Composite: PR info + merge-readiness verdict + unresolved threads + visible-open threads + discussion summary + checks status in one call",
+    "Composite: PR info + merge-readiness verdict + unresolved and visible-open threads + discussion summary + checks status; use --prs for a compact batch summary",
   ),
 );
 
