@@ -9384,6 +9384,27 @@ describe("PR composite commands", () => {
             return Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 });
           },
         });
+        const cliLayer = Layer.mergeAll(
+          FileSystem.layerNoop({}),
+          Path.layer,
+          Stdio.layerTest({}),
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.die("review-triage CLI must not spawn a process"),
+            ),
+          ),
+          Layer.succeed(
+            Terminal.Terminal,
+            Terminal.make({
+              columns: Effect.succeed(80),
+              rows: Effect.succeed(24),
+              readInput: Effect.die("unused"),
+              readLine: Effect.die("unused"),
+              display: () => Effect.void,
+            }),
+          ),
+        );
 
         const stdout: string[] = [];
         const stdoutWrite = vi.spyOn(process.stdout, "write");
@@ -9399,7 +9420,7 @@ describe("PR composite commands", () => {
           version: "test",
           renderErrors: false,
         })(["--pr", "999", "--prs", "123,124", "--format", "json"]).pipe(
-          Effect.provide(layer),
+          Effect.provide(Layer.merge(cliLayer, layer)),
           Effect.result,
         );
         stdoutWrite.mockRestore();
