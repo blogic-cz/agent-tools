@@ -125,7 +125,6 @@ export type InvocationPlan = {
     readonly index: number;
     readonly sources: readonly number[];
     readonly directory: boolean;
-    readonly unknownNames?: boolean;
   }[];
   readonly inPlaceBackupSuffix: string | null;
   readonly scriptLanguage: Language;
@@ -3223,24 +3222,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
       "--execute": { roles: [data], issue: unknown("wget output configuration") },
       "--config": { roles: [path], issue: unknown("wget output configuration") },
       "--input-metalink": { roles: [path], issue: unknown("wget output configuration") },
-      ...flags(
-        "-q",
-        "-c",
-        "-nv",
-        "-N",
-        "-r",
-        "--recursive",
-        "-m",
-        "--mirror",
-        "-p",
-        "--page-requisites",
-        "--content-disposition",
-        "--trust-server-names",
-        "-np",
-        "-nd",
-        "--no-directories",
-        "-nc",
-      ),
+      ...flags("-q", "-c", "-nv", "-N", "-r", "-np", "-nd", "-nc"),
     },
   },
   { name: "seq", operands: [data], semantics: "seq" },
@@ -3675,9 +3657,6 @@ function classifyInvocation(
   const writerCandidates: { index: number; literal: string }[] = [];
   let wgetOutputDocument = false;
   let wgetInputFile = false;
-  let wgetServerOutput = false;
-  let wgetExplicitPrefix = false;
-  let wgetPrefixIndex: number | undefined;
   let wgetDirectoryPrefix: string | undefined = ".";
   let inPlaceBackupSuffix: string | null = null;
   let sedEmptySuffix = false;
@@ -4395,7 +4374,6 @@ function classifyInvocation(
         )
           break;
         if (!option) issues.push(unknown(`unclassified writer option -${a[offset]}`));
-        if (entry.name === "wget" && /[rmp]/.test(a[offset] ?? "")) wgetServerOutput = true;
         const finding = option?.issue;
         if (finding) issues.push(finding);
         offset++;
@@ -4422,7 +4400,6 @@ function classifyInvocation(
           .every((c) => options[`-${c}`]?.roles.length === 0)
       ) {
         for (const c of a.slice(1)) {
-          if (entry.name === "wget" && /[rmp]/.test(c)) wgetServerOutput = true;
           const issue = options[`-${c}`]?.issue;
           if (issue) issues.push(issue);
         }
@@ -4470,20 +4447,6 @@ function classifyInvocation(
         issues.push(unknown("git config override"));
     }
     if (!endOptions && option && a.startsWith("-")) {
-      if (
-        entry.name === "wget" &&
-        [
-          "-r",
-          "--recursive",
-          "-m",
-          "--mirror",
-          "-p",
-          "--page-requisites",
-          "--content-disposition",
-          "--trust-server-names",
-        ].includes(optionName)
-      )
-        wgetServerOutput = true;
       if (entry.name === "wget" && ["-O", "--output-document"].includes(optionName))
         wgetOutputDocument = true;
       if (entry.name === "wget" && ["-i", "--input-file"].includes(optionName))
@@ -4510,11 +4473,8 @@ function classifyInvocation(
       for (let i = 0; i < option.roles.length; i++) {
         const role = option.roles[i] ?? data;
         const index = i === 0 && attached !== undefined ? position : ++position;
-        if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName)) {
-          wgetExplicitPrefix = true;
-          wgetPrefixIndex = index;
+        if (entry.name === "wget" && ["-P", "--directory-prefix"].includes(optionName))
           wgetDirectoryPrefix = attached ?? argv[index];
-        }
         if (
           index >= argv.length &&
           !(
@@ -4901,15 +4861,6 @@ function classifyInvocation(
     }
   }
   if (entry.name === "wget" && !wgetOutputDocument) {
-    if (wgetServerOutput && !wgetExplicitPrefix)
-      issues.push(unknown("wget server-chosen output names are not known"));
-    if (wgetServerOutput && wgetPrefixIndex !== undefined)
-      directoryWrites.push({
-        index: wgetPrefixIndex,
-        sources: [],
-        directory: true,
-        unknownNames: true,
-      });
     if (
       wgetInputFile &&
       (wgetDirectoryPrefix === undefined ||

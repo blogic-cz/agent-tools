@@ -954,65 +954,6 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
                 emit("startup-mutation", "in-place write to startup configuration", span, true);
           }
           const destination = plan.directoryWrites.find((write) => write.index === operand.index);
-          if (destination?.unknownNames) {
-            if (invocationScope.cwd.kind !== "literal")
-              emit("opaque-path", "server-chosen output directory has unknown context", span, true);
-            if (
-              value.kind !== "literal" ||
-              value.texts.some((prefix) => {
-                const parts = prefix.replace(/\\/g, "/").split("/");
-                if (parts.includes("..")) return true;
-                if (/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(prefix))
-                  return false;
-                if (
-                  mentions(invocationScope.cwd).some(
-                    (cwd) =>
-                      cwd !== normalizePath(context.cwd, context.home, "/") &&
-                      !/^\/(?:tmp|private\/tmp|(?:private\/)?var\/folders)(?:\/|$)/.test(
-                        normalizePath(prefix, context.home, cwd),
-                      ),
-                  )
-                )
-                  return true;
-                return (
-                  /^(?:[~/]|[a-z]:)/i.test(prefix) ||
-                  parts.every((part) => part === "" || part === ".")
-                );
-              })
-            )
-              emit(
-                "no-analyzer",
-                "server-chosen output names require a temporary root or relative subdirectory",
-                span,
-                true,
-              );
-            for (const target of paths) {
-              const path = target.replace(/\/+$/, "") || "/";
-              if (
-                path ===
-                  (normalizePath(context.home, context.home, context.cwd).replace(/\/+$/, "") ||
-                    "/") ||
-                mentions(invocationScope.cwd).some((cwd) => {
-                  const directory =
-                    normalizePath(cwd, context.home, context.cwd).replace(/\/+$/, "") || "/";
-                  return directory === path || directory.startsWith(`${path === "/" ? "" : path}/`);
-                })
-              )
-                emit(
-                  "no-analyzer",
-                  "server-chosen output names may overwrite the home or working directory",
-                  span,
-                  true,
-                );
-              if (/(?:^|\/)\.config\/fish(?:\/|$)/.test(path))
-                emit(
-                  "startup-mutation",
-                  "server-chosen output names may write startup configuration",
-                  span,
-                  true,
-                );
-            }
-          }
           const agentTargets = [...paths];
           if (
             scope.dialect === "bash" &&
