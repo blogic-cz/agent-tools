@@ -1165,6 +1165,78 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
     startup: ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "_JAVA_OPTIONS", "JAVA_HOME"],
   },
   {
+    name: "hc",
+    rejectsAbbreviations: true,
+    options: {
+      ...flags("--json", "--help", "-h", "--version", "-V", "--skill", "--licenses"),
+    },
+    operands: [data],
+    subcommands: {
+      ...Object.fromEntries(
+        [
+          "get",
+          "keys",
+          "interrupt",
+          "attach",
+          "kill",
+          "rm",
+          "label",
+          "keep",
+          "ls",
+          "read",
+          "wait",
+          "templates",
+          "events",
+          "schema",
+          "connect",
+          "server",
+        ].map((name) => [
+          name,
+          {
+            operands: [data],
+            options: {
+              ...flags("--all", "--off", "--wait", "--force"),
+              "--lines": arg(data),
+              "--output": arg(data),
+              "--children": arg(data),
+              "--timeout": arg(data),
+            },
+          },
+        ]),
+      ),
+      send: {
+        operands: [data, path],
+        options: {
+          ...flags("--force", "--json", "--wait"),
+          "--if": arg(data),
+          "--timeout": arg(data),
+        },
+      },
+      run: {
+        operands: [data],
+        options: {
+          ...flags("--bg", "--outlive-parent", "--no-parent", "--no-notify", "--rm", "--keep"),
+          "--name": arg(data),
+          "--cwd": arg(path),
+          "--on": arg(data),
+          "--label": arg(data),
+          "--parent": arg(data),
+          "--timeout": arg(data),
+        },
+      },
+      exec: {
+        operands: [data],
+        options: {
+          ...flags("-i", "--stdin"),
+          "--cwd": arg(path),
+          "--on": arg(data),
+          "--env": { roles: [data], issue: unknown("hc environment override") },
+          "--timeout": arg(data),
+        },
+      },
+    },
+  },
+  {
     name: "herdr",
     options: {
       "--session": arg(data),
@@ -4231,7 +4303,11 @@ function classifyInvocation(
     }
     const a = argv[position];
     if (a === undefined) {
-      if (["env", "forward", "timeout", "xargs"].includes(entry.semantics ?? ""))
+      if (
+        ["env", "forward", "timeout", "xargs"].includes(entry.semantics ?? "") ||
+        (entry.name === "hc" &&
+          (mode === entry.subcommands?.run || mode === entry.subcommands?.exec))
+      )
         issues.push({
           kind: "missing-knowledge",
           rule: "opaque-executable",
@@ -4457,8 +4533,8 @@ function classifyInvocation(
         (attached ?? argv[position + 1]) === undefined
       )
         issues.push(unknown("Bun option operand is not literal"));
-      if (entry.name === "bun" && optionName === "--cwd") {
-        if (cwdOperands.length) issues.push(unknown("repeated Bun working directory"));
+      if (["bun", "hc"].includes(entry.name) && optionName === "--cwd") {
+        if (cwdOperands.length) issues.push(unknown(`repeated ${entry.name} working directory`));
         cwdOperands.push({
           index: attached === undefined ? position + 1 : position,
           ...(attached !== undefined ? { literal: attached } : {}),
@@ -4581,6 +4657,18 @@ function classifyInvocation(
       position++;
       continue;
     }
+    if (
+      entry.name === "hc" &&
+      (mode === entry.subcommands?.run || mode === entry.subcommands?.exec)
+    ) {
+      if (mode === entry.subcommands?.run && position === argv.length - 1) {
+        roles.push({ index: position, role: code("bash") });
+        roles.push({ index: position, role: path });
+        issues.push(...unknownOperandIssues([a]));
+        codeSeen = true;
+      } else child(position);
+      break;
+    }
     if (entry.name === "git" && mode === entry.subcommands?.bisect?.subcommands?.run) {
       child(position);
       break;
@@ -4669,6 +4757,8 @@ function classifyInvocation(
   if (effect && effect !== "none") issues.push(effect);
   if (!positional.length && !children.length && !codeSeen && entry.bare) issues.push(entry.bare);
   roles.push(...optionRoles);
+  if (entry.name === "hc" && mode === entry.subcommands?.send)
+    issues.push(...unknownOperandIssues(positional.slice(1).map((index) => argv[index])));
   const operands =
     (filterOption && ["sed", "awk"].includes(entry.semantics ?? "")) ||
     (filterOption &&
