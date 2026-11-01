@@ -1,4 +1,4 @@
-import { reads, writes } from "#gh/read/index";
+import { reads, resolveRepo, writes } from "#gh/read/index";
 import { repoSlug } from "#gh/read/keys";
 import { Command, Flag, Param } from "effect/cli";
 import { Console, Effect, Option } from "effect";
@@ -509,6 +509,28 @@ const compactReviewTriage = (
   unrepliedReviewThreadsCount: result.summary.unrepliedReviewThreadsCount,
   unresolvedReviewThreadsCount: result.summary.unresolvedReviewThreadsCount,
   visibleOpenThreadIds: result.visibleOpenThreads.map((thread) => thread.threadId),
+});
+
+const fetchReviewTriageSummary = Effect.fn("pr.fetchReviewTriageSummary")(function* (pr: number) {
+  const repo = yield* resolveRepo(null);
+  return yield* reads
+    .prReviewTriageSummary(repo, pr)
+    .pipe(Effect.map((result) => ({ pr, ...result })));
+});
+
+const fetchReviewTriageSummaryBatch = Effect.fn("pr.fetchReviewTriageSummaryBatch")(function* (
+  prs: readonly number[],
+) {
+  return yield* Effect.forEach(
+    prs,
+    (pr) =>
+      fetchReviewTriageSummary(pr).pipe(
+        Effect.catch((error) =>
+          Effect.succeed({ pr, error: error instanceof Error ? error.message : String(error) }),
+        ),
+      ),
+    { concurrency: 5 },
+  );
 });
 
 export const fetchReviewTriageBatch = Effect.fn("pr.fetchReviewTriageBatch")(function* (
@@ -1835,12 +1857,23 @@ export const prReviewTriageBatchCommand = Command.make(
     format: formatOption,
     prs: Flag.String("prs").pipe(Flag.withDescription("Comma-separated PR numbers")),
     repo: repoOption,
+    summary: Flag.Boolean("summary").pipe(
+      Flag.withDescription(
+        "Fetch only PR state, review thread counts, and check names and buckets",
+      ),
+      Flag.withDefault(false),
+    ),
   },
-  ({ format, prs, repo }) =>
+  ({ format, prs, repo, summary }) =>
     withRepo(
       repo,
       Effect.gen(function* () {
         const numbers = yield* parsePrNumbers(prs);
+        if (summary) {
+          const results = yield* fetchReviewTriageSummaryBatch(numbers);
+          yield* logFormatted(results, format);
+          return;
+        }
         const results = yield* Effect.all(
           numbers.map((prNumber) => fetchReviewTriage(prNumber)),
           { concurrency: "unbounded" },
