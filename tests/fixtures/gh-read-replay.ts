@@ -234,7 +234,16 @@ export const createReplayGh = () => {
       if (args[2] === "44") {
         printError("no checks reported");
         exitCode = 1;
-      } else print([check(args[2] === "43" ? "fail" : "pending")]);
+      } else {
+        const requestedFields = (args[args.indexOf("--json") + 1] ?? "").split(",");
+        print([
+          Object.fromEntries(
+            Object.entries(check(args[2] === "43" ? "fail" : "pending")).filter(([key]) =>
+              requestedFields.includes(key),
+            ),
+          ),
+        ]);
+      }
     } else if (args[0] === "issue" && target === "view")
       print(project(assigned ? { ...issue, assignees: [{ login }] } : issue));
     else if (args[0] === "issue" && target === "edit") {
@@ -276,47 +285,79 @@ export const createReplayGh = () => {
       else print(project(value));
     } else if (args[0] === "api" && target === "graphql") {
       const query = args.join(" ");
-      const node = query.includes("reviewThreads")
-        ? {
-            reviewThreads: {
-              nodes: [
-                {
-                  id: "thread-1",
-                  isResolved: false,
-                  comments: {
-                    nodes: [
-                      {
-                        id: "comment-1",
-                        databaseId: 1,
-                        path: inline.path,
-                        line: inline.line,
-                        body: inline.body,
-                        author: { login: "reviewer" },
-                        commit: { oid: pr.headRefOid },
-                      },
-                    ],
-                    pageInfo: { hasNextPage: false, endCursor: null },
+      if (query.includes("reviewRequests") && query.includes("reviewThreads")) {
+        const prNumber = Number(args.find((arg) => arg.startsWith("pr="))?.slice(3) ?? 42);
+        print({
+          data: {
+            repository: {
+              pullRequest: {
+                number: prNumber,
+                title: "Example PR",
+                state: "OPEN",
+                isDraft: false,
+                baseRefName: "main",
+                reviewDecision: "APPROVED",
+                mergeable: "MERGEABLE",
+                reviewRequests: {
+                  nodes: [{ requestedReviewer: { login: "reviewer" } }],
+                },
+                reviewThreads: {
+                  nodes: [
+                    { isResolved: false, comments: { nodes: [{ replyTo: null }] } },
+                    {
+                      isResolved: true,
+                      comments: { nodes: [{ replyTo: null }, { replyTo: { id: "comment-1" } }] },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        });
+      } else {
+        const node = query.includes("reviewThreads")
+          ? {
+              reviewThreads: {
+                nodes: [
+                  {
+                    id: "thread-1",
+                    isResolved: false,
+                    comments: {
+                      nodes: [
+                        {
+                          id: "comment-1",
+                          databaseId: 1,
+                          path: inline.path,
+                          line: inline.line,
+                          body: inline.body,
+                          author: { login: "reviewer" },
+                          commit: { oid: pr.headRefOid },
+                        },
+                      ],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
                   },
-                },
-              ],
-              pageInfo: { hasNextPage: false, endCursor: null },
-            },
-          }
-        : {
-            reviewRequests: {
-              nodes: [{ requestedReviewer: { __typename: "User", login: "reviewer" } }],
-            },
-            reviews: {
-              nodes: [
-                {
-                  author: { login: "reviewer" },
-                  state: "COMMENTED",
-                  submittedAt: review.submitted_at,
-                },
-              ],
-            },
-          };
-      print({ data: { repository: { pullRequest: node } } });
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            }
+          : {
+              reviewRequests: {
+                nodes: [{ requestedReviewer: { __typename: "User", login: "reviewer" } }],
+              },
+              reviews: {
+                nodes: [
+                  {
+                    author: { login: "reviewer" },
+                    state: "COMMENTED",
+                    submittedAt: review.submitted_at,
+                  },
+                ],
+              },
+            };
+        print({ data: { repository: { pullRequest: node } } });
+      }
     } else if (args[0] === "api" && target.includes("/comments?"))
       print([target.includes("/pulls/") ? inline : comment]);
     else if (args[0] === "api" && target.includes("/reviews?")) print([review]);

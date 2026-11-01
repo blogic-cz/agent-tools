@@ -278,6 +278,184 @@ export const prChecks = Effect.fn("reads.prChecks")(function* (
   });
 });
 
+const PR_REVIEW_TRIAGE_SUMMARY_QUERY = `
+  query($owner: String!, $name: String!, $pr: Int!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        number
+        title
+        state
+        isDraft
+        baseRefName
+        reviewDecision
+        mergeable
+        reviewRequests(first: 100) {
+          nodes {
+            requestedReviewer {
+              ... on User { login }
+              ... on Team { slug }
+              ... on Bot { login }
+              ... on EnterpriseTeam { name }
+              ... on Mannequin { login }
+            }
+          }
+        }
+        reviewThreads(first: 100, after: $after) {
+          nodes {
+            isResolved
+            comments(first: 2) {
+              nodes { replyTo { id } }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+`;
+
+const PR_REVIEW_THREAD_COUNTS_QUERY = `
+  query($owner: String!, $name: String!, $pr: Int!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $after) {
+          nodes {
+            isResolved
+            comments(first: 2) {
+              nodes { replyTo { id } }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+`;
+
+type PrReviewTriageSummaryPage = {
+  readonly repository: {
+    readonly pullRequest: {
+      readonly number: number;
+      readonly title: string;
+      readonly state: string;
+      readonly isDraft: boolean;
+      readonly baseRefName: string;
+      readonly reviewDecision: string | null;
+      readonly mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+      readonly reviewRequests: {
+        readonly nodes: ReadonlyArray<{
+          readonly requestedReviewer: {
+            readonly login?: string;
+            readonly slug?: string;
+            readonly name?: string;
+          } | null;
+        }>;
+      };
+      readonly reviewThreads: {
+        readonly nodes: ReadonlyArray<{
+          readonly isResolved: boolean;
+          readonly comments: {
+            readonly nodes: ReadonlyArray<{ readonly replyTo: { readonly id: string } | null }>;
+          };
+        }>;
+        readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
+      };
+    };
+  };
+};
+
+export type PrReviewTriageSummary = {
+  readonly info: {
+    readonly number: number;
+    readonly title: string;
+    readonly state: string;
+    readonly isDraft: boolean;
+    readonly baseRefName: string;
+    readonly reviewDecision: string;
+    readonly mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+    readonly reviewRequests: ReadonlyArray<{ readonly login: string }>;
+  };
+  readonly summary: {
+    readonly unresolvedReviewThreadsCount: number;
+    readonly unrepliedReviewThreadsCount: number;
+  };
+  readonly checks: ReadonlyArray<{ readonly name: string; readonly bucket: string }>;
+};
+
+export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(function* (
+  repo: RepoRef,
+  pr: number,
+) {
+  const gh = yield* GitHubService;
+  const variables = { owner: repo.owner, name: repo.name, pr, after: null as string | null };
+  const first = (yield* gh.runGraphQL(
+    PR_REVIEW_TRIAGE_SUMMARY_QUERY,
+    variables,
+  )) as PrReviewTriageSummaryPage;
+  const firstPage = first.repository.pullRequest;
+  let unresolvedReviewThreadsCount = 0;
+  let unrepliedReviewThreadsCount = 0;
+  const countThreads = (
+    threads: PrReviewTriageSummaryPage["repository"]["pullRequest"]["reviewThreads"]["nodes"],
+  ) => {
+    for (const thread of threads) {
+      if (!thread.isResolved) unresolvedReviewThreadsCount++;
+      if (!thread.comments.nodes.some((comment) => comment.replyTo !== null))
+        unrepliedReviewThreadsCount++;
+    }
+  };
+  countThreads(firstPage.reviewThreads.nodes);
+
+  let pageInfo = firstPage.reviewThreads.pageInfo;
+  while (pageInfo.hasNextPage && pageInfo.endCursor !== null) {
+    const response = (yield* gh.runGraphQL(PR_REVIEW_THREAD_COUNTS_QUERY, {
+      ...variables,
+      after: pageInfo.endCursor,
+    })) as PrReviewTriageSummaryPage;
+    const pullRequest = response.repository.pullRequest;
+    countThreads(pullRequest.reviewThreads.nodes);
+    pageInfo = pullRequest.reviewThreads.pageInfo;
+  }
+
+  const checks = yield* gh
+    .runGhJson<ReadonlyArray<{ readonly name: string; readonly bucket: string }>>([
+      "pr",
+      "checks",
+      String(pr),
+      "--repo",
+      repoSlug(repo),
+      "--json",
+      "name,bucket",
+    ])
+    .pipe(
+      Effect.catchTag("GitHubCommandError", (error) =>
+        /no checks reported/i.test(`${error.message}\n${error.stderr}`)
+          ? Effect.succeed([])
+          : Effect.fail(error),
+      ),
+    );
+  const reviewRequests = firstPage.reviewRequests.nodes.flatMap(({ requestedReviewer }) => {
+    if (requestedReviewer === null) return [];
+    const login = requestedReviewer.login ?? requestedReviewer.slug ?? requestedReviewer.name;
+    return login === undefined ? [] : [{ login }];
+  });
+
+  return {
+    info: {
+      number: firstPage.number,
+      title: firstPage.title,
+      state: firstPage.state,
+      isDraft: firstPage.isDraft,
+      baseRefName: firstPage.baseRefName,
+      reviewDecision: firstPage.reviewDecision ?? "",
+      mergeable: firstPage.mergeable,
+      reviewRequests,
+    },
+    summary: { unresolvedReviewThreadsCount, unrepliedReviewThreadsCount },
+    checks,
+  };
+});
+
 const movedHead = (pr: number) =>
   new GitHubCommandError({
     command: `gh-tool pr checks --pr ${pr}`,

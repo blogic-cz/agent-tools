@@ -100,6 +100,55 @@ it("replays published 1.7.5 outputs with original review location fields without
   }
 });
 
+it("review-triage-batch summary returns hook fields with a smaller GitHub fetch", async () => {
+  const calls: string[][] = [];
+  const replay = createReplayGh();
+  const result = await invoke(
+    replayFlags(["pr", "review-triage-batch", "--prs", "42,43,44", "--summary"]),
+    (args) => {
+      calls.push([...args]);
+      return replay(args);
+    },
+  );
+
+  const entries = JSON.parse(result.stdout) as {
+    info: Record<string, unknown>;
+    summary: Record<string, unknown>;
+    checks: ReadonlyArray<Record<string, unknown>>;
+  }[];
+  expect(result.stderr).toBe("");
+  expect(entries).toHaveLength(3);
+  expect(entries[0]).toEqual({
+    pr: 42,
+    info: {
+      number: 42,
+      title: "Example PR",
+      state: "OPEN",
+      isDraft: false,
+      baseRefName: "main",
+      reviewDecision: "APPROVED",
+      mergeable: "MERGEABLE",
+      reviewRequests: [{ login: "reviewer" }],
+    },
+    summary: { unresolvedReviewThreadsCount: 1, unrepliedReviewThreadsCount: 1 },
+    checks: [{ name: "Build", bucket: "pending" }],
+  });
+  expect(entries[2]).toMatchObject({ pr: 44, checks: [] });
+  expect(JSON.stringify(entries)).not.toMatch(/body|threads|diffHunk|inlineComments|reviews/);
+  expect(calls).toHaveLength(6);
+  expect(calls.filter((args) => args[1] === "graphql")).toHaveLength(3);
+  expect(calls.filter((args) => args[1] === "checks")).toHaveLength(3);
+  const query = calls.find((args) => args[1] === "graphql")?.join(" ") ?? "";
+  expect(query).toContain("reviewThreads(first: 100");
+  expect(query).toContain("comments(first: 2)");
+  expect(query).toContain("replyTo { id }");
+  expect(query).not.toContain("body");
+  expect(query).not.toContain("diffHunk");
+  expect(
+    calls.filter((args) => args[1] === "checks").every((args) => args.at(-1) === "name,bucket"),
+  ).toBe(true);
+});
+
 it("L706 preserves public GitHub login through assignee and comment output", async () => {
   vi.stubEnv("GITHUB_AUTH_USER", "fixture-operator");
   for (const argv of [

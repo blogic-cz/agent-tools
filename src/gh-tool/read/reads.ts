@@ -6,7 +6,15 @@ import { cachedRead, ReadCache } from "./cache";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
 import { issueView, issueList, issueComments } from "./issues";
-import { prView, prList, prChecks, prHead, prBody, checkSignal } from "./pulls";
+import {
+  prView,
+  prList,
+  prChecks,
+  prHead,
+  prBody,
+  checkSignal,
+  prReviewTriageSummary,
+} from "./pulls";
 import { prComments, prReviews, reviewThreads, lastHumanReviewer } from "./reviews";
 import { reviewGuards } from "./review-guards";
 import type { RepoRef, RunFilter } from "./keys";
@@ -375,6 +383,7 @@ export const reads = {
   prView,
   prList,
   prChecks,
+  prReviewTriageSummary,
   prHead,
   prBody,
   checkSignal,
