@@ -550,7 +550,7 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
       /econnreset|enotfound|network.*(?:error|timeout)|connection (?:reset|refused)|could not resolve host/i,
     ],
     ["test_failure", /\[Test Failure\]|Assertion(?:Error|Exception)/i],
-    ["timeout", /timed? ?out|deadline exceeded/i],
+    ["timeout", /(?<![\w-])(?:timed? ?out|deadline exceeded)(?![\w-])/i],
     ["lint_failure", /\b(?:eslint|oxlint|lint)\b.*(?:error|failed)|lint failed/i],
     ["build_failure", /\b(?:build|compile|typescript)\b.*(?:error|failed)|compilation failed/i],
     ["test_failure", /\b(?:test|tests|vitest|jest|pytest)\b.*(?:fail|error)|\d+ failing/i],
