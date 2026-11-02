@@ -2421,6 +2421,10 @@ describe("Workflow log diagnosis", () => {
     "deadline exceeded",
     "The job has timed out.",
     "Timeout of 60000ms exceeded.",
+    "connect ETIMEDOUT 1.2.3.4:443",
+    "ESOCKETTIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "ConnectTimeoutError: Connect Timeout Error",
   ])("detects the real timeout %s after echoed environment variables", (message) => {
     const diagnosis = diagnoseLogEntries([
       { step: "Run Claude Code Review", message: "MCP_TIMEOUT:" },
