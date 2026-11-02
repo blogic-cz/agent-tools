@@ -540,6 +540,11 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
       : /\b(install|checkout|restore|setup)\b/i.test(text)
         ? false
         : null;
+  const timeoutPattern = /timed? ?out|deadline exceeded/i;
+  const stripTimeoutOptions = (message: string) =>
+    message.replace(/(^|\s)--\S*timeout[^\s=]*(?:=[^\s]*|\s+\S+)?/gi, "$1");
+  const timeoutValue = (message: string) =>
+    stripTimeoutOptions(message.trim().replace(/^[A-Z][A-Z0-9_]*(?::|=)\s*/, ""));
   const matched = [
     [
       "infrastructure",
@@ -550,13 +555,16 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
       /econnreset|enotfound|network.*(?:error|timeout)|connection (?:reset|refused)|could not resolve host/i,
     ],
     ["test_failure", /\[Test Failure\]|Assertion(?:Error|Exception)/i],
-    ["timeout", /timed? ?out|deadline exceeded/i],
+    ["timeout", timeoutPattern],
     ["lint_failure", /\b(?:eslint|oxlint|lint)\b.*(?:error|failed)|lint failed/i],
     ["build_failure", /\b(?:build|compile|typescript)\b.*(?:error|failed)|compilation failed/i],
     ["test_failure", /\b(?:test|tests|vitest|jest|pytest)\b.*(?:fail|error)|\d+ failing/i],
   ] as const;
   for (const [category, pattern] of matched) {
-    const error = find(pattern);
+    const error =
+      category === "timeout"
+        ? (lines.find((line) => timeoutPattern.test(timeoutValue(line))) ?? null)
+        : find(pattern);
     if (error !== null) {
       return {
         category,

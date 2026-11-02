@@ -2379,6 +2379,70 @@ describe("gh CLI value schemas", () => {
 });
 
 describe("Workflow log diagnosis", () => {
+  it.each([
+    "MCP_TIMEOUT:",
+    "MCP_TOOL_TIMEOUT: 60000",
+    "MCP_TIMEOUT=60000",
+    "MAX_MCP_OUTPUT_TOKENS: 25000",
+  ])("does not classify the environment assignment %s as a timeout", (message) => {
+    const diagnosis = diagnoseLogEntries([{ step: "Run Claude Code Review", message }]);
+
+    expect(diagnosis.category).not.toBe("timeout");
+    expect(diagnosis.firstRelevantError).toBeNull();
+  });
+
+  it("does not report a timeout for a successful Claude review with echoed environment variables", () => {
+    const diagnosis = diagnoseLogEntries([
+      { step: "Run Claude Code Review", message: "env:" },
+      { step: "Run Claude Code Review", message: "MCP_TIMEOUT:" },
+      { step: "Run Claude Code Review", message: "MCP_TOOL_TIMEOUT: 60000" },
+      { step: "Run Claude Code Review", message: '"subtype": "success",' },
+      { step: "Run Claude Code Review", message: '"is_error": false,' },
+      { step: "Revoke app token", message: "--connect-timeout 5 \\" },
+      {
+        step: "Check review result",
+        message: 'STRUCTURED_OUTPUT: {"result":"PASSED","findings":[]}',
+      },
+      { step: "Check review result", message: "Claude reported PASSED." },
+    ]);
+
+    expect(diagnosis.category).not.toBe("timeout");
+    expect(diagnosis.firstRelevantError).toBeNull();
+  });
+
+  it.each(["--connect-timeout 5", "--timeout 600", "--timeout-minutes 60"])(
+    "does not classify the command option %s as a timeout",
+    (message) => {
+      expect(diagnoseLogEntries([{ step: "Run command", message }]).category).not.toBe("timeout");
+    },
+  );
+
+  it.each([
+    "Error: The operation timed out",
+    "ERROR: The operation timed out",
+    "FATAL: deadline exceeded",
+    "DEADLINE_EXCEEDED: read timed out",
+    "deadline exceeded",
+    "The job has timed out.",
+    "Timeout of 60000ms exceeded.",
+    "connect ETIMEDOUT 1.2.3.4:443",
+    "ESOCKETTIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "ConnectTimeoutError: Connect Timeout Error",
+    "TimeoutError: socket operation failed",
+    "SocketTimeoutException: read expired",
+    "request failed with --timeout=30 after Error: The operation timed out",
+  ])("detects the real timeout %s after echoed environment variables", (message) => {
+    const diagnosis = diagnoseLogEntries([
+      { step: "Run Claude Code Review", message: "MCP_TIMEOUT:" },
+      { step: "Run Claude Code Review", message: "MCP_TOOL_TIMEOUT: 60000" },
+      { step: "Run Claude Code Review", message },
+    ]);
+
+    expect(diagnosis.category).toBe("timeout");
+    expect(diagnosis.firstRelevantError).toBe(message);
+  });
+
   it("classifies known failures and keeps fingerprints stable", () => {
     const cases = [
       ["No space left on device", "infrastructure"],
