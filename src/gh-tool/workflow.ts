@@ -541,9 +541,10 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
         ? false
         : null;
   const timeoutPattern = /timed? ?out|deadline exceeded/i;
-  const timeoutAssignment = /^[A-Z][A-Z0-9_]*(?::(?:\s+.+)?|=.+)$/;
   const stripTimeoutOptions = (message: string) =>
     message.replace(/(^|\s)--\S*timeout[^\s=]*(?:=[^\s]*|\s+\S+)?/gi, "$1");
+  const timeoutValue = (message: string) =>
+    stripTimeoutOptions(message.trim().replace(/^[A-Z][A-Z0-9_]*(?::|=)\s*/, ""));
   const matched = [
     [
       "infrastructure",
@@ -562,11 +563,7 @@ export const diagnoseLogEntries = (entries: readonly LogEntry[]): LogDiagnosis =
   for (const [category, pattern] of matched) {
     const error =
       category === "timeout"
-        ? (lines.find(
-            (line) =>
-              !timeoutAssignment.test(line.trim()) &&
-              timeoutPattern.test(stripTimeoutOptions(line)),
-          ) ?? null)
+        ? (lines.find((line) => timeoutPattern.test(timeoutValue(line))) ?? null)
         : find(pattern);
     if (error !== null) {
       return {
