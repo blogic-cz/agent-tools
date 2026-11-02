@@ -2419,6 +2419,9 @@ describe("Workflow log diagnosis", () => {
 
   it.each([
     "Error: The operation timed out",
+    "ERROR: The operation timed out",
+    "FATAL: deadline exceeded",
+    "DEADLINE_EXCEEDED: read timed out",
     "deadline exceeded",
     "The job has timed out.",
     "Timeout of 60000ms exceeded.",
