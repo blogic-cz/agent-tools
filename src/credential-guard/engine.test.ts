@@ -1278,6 +1278,15 @@ describe("registry and paths", () => {
     "src/secret/key.txt",
     "kubeconfig-prod",
   ])("normalizes and refuses %s", (path) => expect(isSensitivePath(path, context)).toBe(true));
+  it.each([
+    "kubernetes/applications/demo/templates/secretproviderclass.yaml",
+    "kubernetes/applications/demo/base/secretproviderclass.yaml",
+  ])("allows reading SecretProviderClass manifest %s", (path) => {
+    expect(bash(`rg -n conflict ${path}`).kind).toBe("pass");
+  });
+  it("still refuses a real secret file", () => {
+    expect(bash("rg -n conflict kubernetes/applications/demo/base/.env").kind).toBe("violation");
+  });
   it("normalizes separators, drive letters, case and dot segments", () =>
     expect(normalizePath("C:\\APP\\src\\..\\main.ts", context.home, context.cwd)).toBe(
       "c:/app/main.ts",

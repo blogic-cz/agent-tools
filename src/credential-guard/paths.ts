@@ -23,6 +23,7 @@ export const DEFAULT_BLOCKED_PATH_PATTERNS: RegExp[] = [
 
 export const DEFAULT_ALLOWED_PATH_PATTERNS: RegExp[] = [
   /\.env\.(?:example|template|sample)[^/]*$/i,
+  /(?:^|\/)secretproviderclass\.ya?ml$/i,
 ];
 
 const PROCESS_ENVIRONMENT_PATH =
