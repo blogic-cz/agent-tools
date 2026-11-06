@@ -1491,6 +1491,12 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   timeoutSeconds: number,
   quiet = false,
 ) {
+  const hasPendingCheckThatCanReplaceFailure = (checks: CheckResult[]) =>
+    checks
+      .filter((check) => check.bucket === "fail")
+      .every((check) => extractRunIdFromCheckLink(check.link) === null) &&
+    checks.some((check) => check.bucket === "pending");
+
   if (watch) {
     const started = Number(yield* Clock.currentTimeMillis);
     const graceDeadlineMs =
@@ -1517,7 +1523,9 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
         ({ checks, at }) =>
           checks.length === 0
             ? at >= graceDeadlineMs
-            : (failFast && checks.some((check) => check.bucket === "fail")) ||
+            : (failFast &&
+                checks.some((check) => check.bucket === "fail") &&
+                !hasPendingCheckThatCanReplaceFailure(checks)) ||
               checks.every((check) => check.bucket !== "pending"),
         { intervalMs: (value) => value.intervalMs, timeoutMs: timeoutSeconds * 1000 },
       )
@@ -1544,7 +1552,8 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
     const results = yield* fetchCheckResults(pr);
     if (
       results.some((check) => check.bucket === "fail") &&
-      (failFast || !results.some((check) => check.bucket === "pending"))
+      ((failFast && !hasPendingCheckThatCanReplaceFailure(results)) ||
+        (!failFast && !results.some((check) => check.bucket === "pending")))
     )
       return yield* new GitHubCommandError({
         command: buildChecksCommand(pr, true),

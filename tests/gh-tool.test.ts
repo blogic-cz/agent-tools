@@ -7060,6 +7060,98 @@ describe("Issue triage", () => {
 });
 
 describe("watch polling budget", () => {
+  it.effect("keeps watching failed external checks while another check is pending", () =>
+    Effect.gen(function* () {
+      let watchAttempts = 0;
+      const fiber = yield* Effect.forkChild(
+        fetchChecks(123, true, true, 300, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.gen(function* () {
+                  watchAttempts += 1;
+                  const pending = Number(yield* Clock.currentTimeMillis) < 30_000;
+                  return [
+                    {
+                      name: ".NET PR / Code Coverage Status",
+                      state: "FAILURE",
+                      bucket: "fail",
+                      link: "external",
+                    },
+                    {
+                      name: ".NET PR / Test Results",
+                      state: "FAILURE",
+                      bucket: "fail",
+                      link: "external",
+                    },
+                    {
+                      name: "Build and Test",
+                      state: pending ? "IN_PROGRESS" : "SUCCESS",
+                      bucket: pending ? "pending" : "pass",
+                      link: "https://example.test/actions/runs/123",
+                    },
+                  ];
+                }),
+            }),
+          ),
+          Effect.result,
+        ),
+      );
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("16 seconds");
+      yield* TestClock.adjust("30 seconds");
+      const result = yield* Fiber.join(fiber);
+
+      expect(watchAttempts).toBeGreaterThan(2);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure._tag).toBe("GitHubCommandError");
+    }),
+  );
+
+  it.effect(
+    "fails fast on a run-backed failure beside an external failure and a pending check",
+    () =>
+      Effect.gen(function* () {
+        let watchAttempts = 0;
+        const result = yield* fetchChecks(123, true, true, 300, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.sync(() => {
+                  watchAttempts += 1;
+                  return [
+                    {
+                      name: "Unit tests",
+                      state: "FAILURE",
+                      bucket: "fail",
+                      link: "https://github.com/owner/repo/actions/runs/1/job/2",
+                    },
+                    {
+                      name: ".NET PR / Test Results",
+                      state: "FAILURE",
+                      bucket: "fail",
+                      link: "external",
+                    },
+                    {
+                      name: "Build and Test",
+                      state: "IN_PROGRESS",
+                      bucket: "pending",
+                      link: "https://example.test/actions/runs/123",
+                    },
+                  ];
+                }),
+            }),
+          ),
+          Effect.result,
+        );
+
+        expect(watchAttempts).toBe(1);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure._tag).toBe("GitHubCommandError");
+      }),
+  );
+
   it.effect("backs off unchanged pending checks and caps the interval at one minute", () =>
     Effect.gen(function* () {
       const times: number[] = [];
