@@ -1492,9 +1492,10 @@ export const fetchChecks = Effect.fn("pr.fetchChecks")(function* (
   quiet = false,
 ) {
   const hasPendingCheckThatCanReplaceFailure = (checks: CheckResult[]) =>
-    checks.some(
-      (check) => check.bucket === "fail" && extractRunIdFromCheckLink(check.link) === null,
-    ) && checks.some((check) => check.bucket === "pending");
+    checks
+      .filter((check) => check.bucket === "fail")
+      .every((check) => extractRunIdFromCheckLink(check.link) === null) &&
+    checks.some((check) => check.bucket === "pending");
 
   if (watch) {
     const started = Number(yield* Clock.currentTimeMillis);

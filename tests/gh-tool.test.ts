@@ -7109,6 +7109,49 @@ describe("watch polling budget", () => {
     }),
   );
 
+  it.effect(
+    "fails fast on a run-backed failure beside an external failure and a pending check",
+    () =>
+      Effect.gen(function* () {
+        let watchAttempts = 0;
+        const result = yield* fetchChecks(123, true, true, 300, true).pipe(
+          Effect.provide(
+            createMockGhLayer({
+              runGhJson: () =>
+                Effect.sync(() => {
+                  watchAttempts += 1;
+                  return [
+                    {
+                      name: "Unit tests",
+                      state: "FAILURE",
+                      bucket: "fail",
+                      link: "https://github.com/owner/repo/actions/runs/1/job/2",
+                    },
+                    {
+                      name: ".NET PR / Test Results",
+                      state: "FAILURE",
+                      bucket: "fail",
+                      link: "external",
+                    },
+                    {
+                      name: "Build and Test",
+                      state: "IN_PROGRESS",
+                      bucket: "pending",
+                      link: "https://example.test/actions/runs/123",
+                    },
+                  ];
+                }),
+            }),
+          ),
+          Effect.result,
+        );
+
+        expect(watchAttempts).toBe(1);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure._tag).toBe("GitHubCommandError");
+      }),
+  );
+
   it.effect("backs off unchanged pending checks and caps the interval at one minute", () =>
     Effect.gen(function* () {
       const times: number[] = [];
