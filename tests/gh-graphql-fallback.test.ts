@@ -401,6 +401,7 @@ describe("GraphQL REST fallback", () => {
         ]);
         expect(value).toMatchObject({ number: 12, headRefOid: "abc" });
         expect(calls.every((args) => args[0] === "api" && !args.includes("graphql"))).toBe(true);
+        expect(calls.some((args) => args[3]?.includes("/rules/branches/"))).toBe(false);
       }),
       calls,
     );

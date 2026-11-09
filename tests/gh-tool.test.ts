@@ -9359,6 +9359,48 @@ describe("PR composite commands", () => {
     }),
   );
 
+  it.effect("review-triage stays ready when REST finds no review rule", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchReviewTriage(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
+              if (args[0] === "pr" && args[1] === "view")
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: "MERGEABLE",
+                  headRefOid: "stable-head",
+                  reviewDecision: "",
+                });
+              if (args[0] === "pr" && args[1] === "checks")
+                return Effect.succeed([
+                  { name: "CI", state: "SUCCESS", bucket: "pass", link: "https://example.test" },
+                ]);
+              return Effect.succeed({});
+            },
+            runGraphQL: () =>
+              Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                  },
+                },
+              }),
+            runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+
+      expect(result.ready).toEqual({
+        ready: true,
+        mergeable: "MERGEABLE",
+        reviewDecision: "",
+        blocking: [],
+      });
+    }),
+  );
+
   it.effect("review-triage discards checks and feedback collected across a push race", () =>
     Effect.gen(function* () {
       let views = 0;
