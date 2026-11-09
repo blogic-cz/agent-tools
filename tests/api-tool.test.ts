@@ -283,6 +283,583 @@ describe("REST credential proxy boundaries", () => {
     });
     expect(calls).toBe(1);
   });
+  it("reads nested login tokens from plain objects and protects minted tokens", async () => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { password: "token" },
+      tokenPath: ["userInfo", "token"],
+    };
+    const calls: TransportRequest[] = [];
+    const proxy = proxyFor(async (input) => {
+      calls.push(input);
+      return input.url.pathname === "/auth/login"
+        ? { status: 200, body: '{"userInfo":{"token":"nested-token"}}' }
+        : { status: 200, body: '{"echo":"nested-token"}' };
+    }, value);
+    await expect(proxy.request(capability, request)).rejects.toMatchObject({
+      code: "DISCLOSURE_DENIED",
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.headers.authorization).toBe("Bearer nested-token");
+  });
+  it.each([
+    ['{"userInfo":{}}', ["userInfo", "token"]],
+    ['{"userInfo":[]}', ["userInfo", "token"]],
+    ['{"userInfo":{"token":4}}', ["userInfo", "token"]],
+  ])("refuses malformed nested login token paths before API request", async (body, tokenPath) => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { password: "token" },
+      tokenPath,
+    };
+    const calls: TransportRequest[] = [];
+    const proxy = proxyFor(async (input) => {
+      calls.push(input);
+      return { status: 200, body };
+    }, value);
+    await expect(proxy.request(capability, request)).rejects.toMatchObject({
+      code: "UPSTREAM_FAILED",
+    });
+    expect(calls.map((call) => call.url.pathname)).toEqual(["/auth/login"]);
+  });
+  it("rejects conflicting login token selectors", () => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { password: "token" },
+      tokenField: "token",
+      tokenPath: ["userInfo", "token"],
+    };
+    expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
+    for (const tokenReuseMs of [0, 86400001]) {
+      const invalid = config();
+      invalid.profiles.sample.auth = {
+        kind: "login",
+        path: "/auth/login",
+        fields: { password: "token" },
+        tokenField: "token",
+        tokenReuseMs,
+      };
+      expect(() => validateOperator(invalid)).toThrow("CONFIG_INVALID");
+    }
+    for (const tokenPath of [[], [""], Array(9).fill("segment")]) {
+      const invalid = config();
+      invalid.profiles.sample.auth = {
+        kind: "login",
+        path: "/auth/login",
+        fields: { password: "token" },
+        tokenPath,
+      };
+      expect(() => validateOperator(invalid)).toThrow("CONFIG_INVALID");
+    }
+  });
+  it("sends literal login fields without treating them as secrets", async () => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { clientId: { literal: "synthetic-client" }, password: { secretRef: "token" } },
+      tokenField: "token",
+    };
+    let loginBody: unknown;
+    const proxy = proxyFor(async (input) => {
+      if (input.url.pathname === "/auth/login") {
+        loginBody = JSON.parse(input.body);
+        return { status: 200, body: '{"token":"minted-token"}' };
+      }
+      return { status: 200, body: '{"echo":"synthetic-client"}' };
+    }, value);
+    await expect(proxy.request(capability, request)).resolves.toEqual({
+      status: 200,
+      data: { echo: "synthetic-client" },
+    });
+    expect(loginBody).toEqual({ clientId: "synthetic-client", password: credential });
+    expect(() => {
+      const onlyLiterals = config();
+      onlyLiterals.profiles.sample.auth = {
+        kind: "login",
+        path: "/auth/login",
+        fields: { clientId: { literal: "synthetic-client" } },
+        tokenField: "token",
+      };
+      validateOperator(onlyLiterals);
+    }).toThrow("CONFIG_INVALID");
+  });
+  it("merges bodyFields into a client JSON object and protects injected secrets", async () => {
+    const value = config();
+    value.profiles.sample.methods = ["POST"];
+    value.profiles.sample.auth = {
+      kind: "bodyFields",
+      fields: { apiKey: { secretRef: "token" }, clientId: { literal: "synthetic-client" } },
+    };
+    let captured: TransportRequest | undefined;
+    const proxy = proxyFor(async (input) => {
+      captured = input;
+      return { status: 200, body: '{"echo":"synthetic-client"}' };
+    }, value);
+    await expect(
+      proxy.request(capability, { ...request, method: "POST", body: { query: "safe" } }),
+    ).resolves.toEqual({ status: 200, data: { echo: "synthetic-client" } });
+    expect(captured?.body).toBe(
+      JSON.stringify({ query: "safe", apiKey: credential, clientId: "synthetic-client" }),
+    );
+    expect(() => {
+      const invalid = config();
+      invalid.profiles.sample.methods = ["POST"];
+      invalid.profiles.sample.auth = {
+        kind: "bodyFields",
+        fields: { apiKey: { literal: "only-literal" } },
+      };
+      validateOperator(invalid);
+    }).toThrow("CONFIG_INVALID");
+    const duplicate = config();
+    duplicate.profiles.sample.methods = ["POST"];
+    duplicate.profiles.sample.auth = {
+      kind: "bodyFields",
+      fields: { ApiKey: { secretRef: "token" }, apikey: { literal: "duplicate" } },
+    };
+    expect(() => validateOperator(duplicate)).toThrow("CONFIG_INVALID");
+    for (const invalid of [
+      { ...request, method: "POST", body: { APIKEY: "client" } },
+      { ...request, method: "POST", body: { CLIENTID: "client" } },
+      { ...request, method: "POST", body: [] },
+      { ...request, method: "POST", body: null },
+      { ...request, method: "POST", body: "text" },
+      { ...request, method: "POST" },
+      { ...request, method: "GET", body: {} },
+    ]) {
+      let calls = 0;
+      const guarded = proxyFor(async () => {
+        calls++;
+        return { status: 200, body: "{}" };
+      }, value);
+      await expect(guarded.request(capability, invalid)).rejects.toBeDefined();
+      expect(calls).toBe(0);
+    }
+  });
+  it("requires explicit non-GET methods for bodyFields and checks merged size", async () => {
+    for (const methods of [undefined, ["GET"], ["GET", "POST"]] as const) {
+      const value = config();
+      value.profiles.sample.methods = methods;
+      value.profiles.sample.auth = { kind: "bodyFields", fields: { key: { secretRef: "token" } } };
+      expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
+    }
+    const value = config();
+    value.profiles.sample.maxRequestBytes = 35;
+    value.profiles.sample.methods = ["POST"];
+    value.profiles.sample.auth = { kind: "bodyFields", fields: { key: { secretRef: "token" } } };
+    let calls = 0;
+    const proxy = proxyFor(async () => {
+      calls++;
+      return { status: 200, body: "{}" };
+    }, value);
+    await expect(
+      proxy.request(capability, { ...request, method: "POST", body: { value: "x" } }),
+    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    expect(calls).toBe(0);
+    expect(() => createProxy({ config: value, secrets: {}, transport: success })).toThrow(
+      "CREDENTIAL_UNAVAILABLE",
+    );
+  });
+  it("keeps bodyFields safe for own __proto__ keys and literal overrides", async () => {
+    const value = config();
+    value.profiles.sample.methods = ["POST"];
+    value.profiles.sample.auth = {
+      kind: "bodyFields",
+      fields: { clientId: { literal: "server-client" }, apiKey: { secretRef: "token" } },
+    };
+    const body = JSON.parse('{"__proto__":{"polluted":true},"query":"safe"}');
+    let captured: TransportRequest | undefined;
+    await proxyFor(async (input) => {
+      captured = input;
+      return success(input);
+    }, value).request(capability, { ...request, method: "POST", body });
+    expect(captured?.body).toBe(
+      '{"__proto__":{"polluted":true},"query":"safe","clientId":"server-client","apiKey":"synthetic-upstream-secret"}',
+    );
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+  it.each([credential, Buffer.from(credential).toString("base64"), encodeURIComponent(credential)])(
+    "blocks secret echoes from bodyFields: %s",
+    async (echo) => {
+      const value = config();
+      value.profiles.sample.methods = ["POST"];
+      value.profiles.sample.auth = {
+        kind: "bodyFields",
+        fields: { apiKey: { secretRef: "token" } },
+      };
+      const proxy = proxyFor(async () => ({ status: 200, body: JSON.stringify({ echo }) }), value);
+      await expect(
+        proxy.request(capability, { ...request, method: "POST", body: {} }),
+      ).rejects.toMatchObject({ code: "DISCLOSURE_DENIED" });
+    },
+  );
+  it("reuses login tokens until expiry and drops them after 401", async () => {
+    let time = 100;
+    const value = loginConfig();
+    if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+    value.profiles.sample.auth.tokenReuseMs = 20;
+    value.grants[0]!.maxRequests = 10;
+    let logins = 0;
+    let failNext = false;
+    const proxy = createProxy({
+      config: value,
+      secrets: { token: credential },
+      now: () => time,
+      transport: async (input) => {
+        if (input.url.pathname === "/auth/login") {
+          logins++;
+          return { status: 200, body: JSON.stringify({ token: `minted-${logins}` }) };
+        }
+        if (failNext) {
+          failNext = false;
+          return { status: 401, body: "{}" };
+        }
+        return success(input);
+      },
+    });
+    await proxy.request(capability, request);
+    await proxy.request(capability, request);
+    expect(logins).toBe(1);
+    time += 20;
+    await proxy.request(capability, request);
+    expect(logins).toBe(2);
+    failNext = true;
+    await expect(proxy.request(capability, request)).resolves.toEqual({ status: 401, data: {} });
+    await proxy.request(capability, request);
+    expect(logins).toBe(3);
+  });
+  it("shares concurrent first login when token reuse is enabled and keeps default behavior", async () => {
+    const value = loginConfig();
+    if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+    value.profiles.sample.auth.tokenReuseMs = 1000;
+    let complete: ((result: { status: number; body: string }) => void) | undefined;
+    let logins = 0;
+    const proxy = proxyFor((input) => {
+      if (input.url.pathname !== "/auth/login") return success(input);
+      logins++;
+      return new Promise((resolve) => {
+        complete = resolve;
+      });
+    }, value);
+    const first = proxy.request(capability, request);
+    const second = proxy.request(capability, request);
+    await Promise.resolve();
+    expect(logins).toBe(1);
+    complete?.({ status: 200, body: '{"token":"shared-token"}' });
+    await Promise.all([first, second]);
+
+    const defaultConfig = loginConfig();
+    let defaultLogins = 0;
+    const noReuse = proxyFor(async (input) => {
+      if (input.url.pathname === "/auth/login") {
+        defaultLogins++;
+        return { status: 200, body: '{"token":"fresh-token"}' };
+      }
+      return success(input);
+    }, defaultConfig);
+    await noReuse.request(capability, request);
+    await noReuse.request(capability, request);
+    expect(defaultLogins).toBe(2);
+  });
+  it("keeps a shared login alive when one waiting grant expires", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const shortCapability = "synthetic-short-capability-00000001";
+      const validCapability = "synthetic-valid-capability-00000001";
+      const value = loginConfig();
+      value.profiles.sample.timeoutMs = 200;
+      if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+      value.profiles.sample.auth.tokenReuseMs = 1000;
+      value.grants[0]!.digest = capabilityDigest(shortCapability);
+      value.grants[0]!.expiresAt = Date.now() + 25;
+      value.grants[0]!.maxRequests = 2;
+      value.grants.push({
+        ...value.grants[0]!,
+        digest: capabilityDigest(validCapability),
+        expiresAt: Date.now() + 1000,
+      });
+      let logins = 0;
+      let apiCalls = 0;
+      const proxy = proxyFor((input) => {
+        if (input.url.pathname === "/auth/login") {
+          logins++;
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(
+              () => resolve({ status: 200, body: '{"token":"shared-token"}' }),
+              50,
+            );
+            input.signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(new Error("login aborted"));
+              },
+              { once: true },
+            );
+          });
+        }
+        apiCalls++;
+        return success(input);
+      }, value);
+
+      const shortRequest = proxy.request(shortCapability, request);
+      const validRequest = proxy.request(validCapability, request);
+      const shortResult = shortRequest.then(
+        (result) => ({ status: "resolved" as const, result }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      const validResult = validRequest.then(
+        (result) => ({ status: "resolved" as const, result }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await shortResult).toMatchObject({
+        status: "rejected",
+        error: { code: "DEADLINE_EXCEEDED" },
+      });
+      expect(apiCalls).toBe(0);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await validResult).toEqual({
+        status: "resolved",
+        result: { status: 200, data: { items: [1, 2] } },
+      });
+      expect(logins).toBe(1);
+      expect(apiCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("lets a revoked login waiter leave while another grant still waits", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const revokedCapability = "synthetic-revoked-capability-00000001";
+      const validCapability = "synthetic-valid-capability-00000002";
+      const value = loginConfig();
+      if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+      value.profiles.sample.auth.tokenReuseMs = 1000;
+      value.grants[0]!.digest = capabilityDigest(revokedCapability);
+      value.grants[0]!.expiresAt = Date.now() + 10000;
+      value.grants.push({
+        ...value.grants[0]!,
+        digest: capabilityDigest(validCapability),
+      });
+      let finishLogin: ((result: { status: number; body: string }) => void) | undefined;
+      let loginSignal: AbortSignal | undefined;
+      const proxy = proxyFor((input) => {
+        if (input.url.pathname !== "/auth/login") return success(input);
+        loginSignal = input.signal;
+        return new Promise((resolve) => {
+          finishLogin = resolve;
+        });
+      }, value);
+
+      let revokedSettled = false;
+      const revokedResult = proxy.request(revokedCapability, request).then(
+        () => {
+          revokedSettled = true;
+          return { status: "resolved" as const };
+        },
+        (error: unknown) => {
+          revokedSettled = true;
+          return { status: "rejected" as const, error };
+        },
+      );
+      const validResult = proxy.request(validCapability, request);
+      proxy.revoke(capabilityDigest(revokedCapability));
+      await vi.advanceTimersByTimeAsync(0);
+      const revokedBeforeLoginSettled = revokedSettled;
+      const loginAbortedWithValidWaiter = loginSignal?.aborted;
+      finishLogin?.({ status: 200, body: '{"token":"shared-token"}' });
+
+      expect(revokedBeforeLoginSettled).toBe(true);
+      await expect(revokedResult).resolves.toMatchObject({
+        status: "rejected",
+        error: { code: "UNAUTHORIZED" },
+      });
+      await expect(validResult).resolves.toEqual({ status: 200, data: { items: [1, 2] } });
+      expect(loginAbortedWithValidWaiter).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("aborts a non-reused login at its caller runtime lifetime", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const value = loginConfig();
+      value.profiles.sample.timeoutMs = 200;
+      value.grants[0]!.lifetimeMs = 50;
+      value.grants[0]!.expiresAt = Date.now() + 10000;
+      let loginSignal: AbortSignal | undefined;
+      let rejectLogin: ((error: unknown) => void) | undefined;
+      const proxy = proxyFor((input) => {
+        if (input.url.pathname !== "/auth/login") return success(input);
+        loginSignal = input.signal;
+        return new Promise((_resolve, reject) => {
+          rejectLogin = reject;
+          input.signal.addEventListener("abort", () => reject(new Error("login aborted")), {
+            once: true,
+          });
+        });
+      }, value);
+
+      const result = proxy.request(capability, request).then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      expect(await result).toMatchObject({
+        status: "rejected",
+        error: { code: "DEADLINE_EXCEEDED" },
+      });
+      const abortedAtDeadline = loginSignal?.aborted;
+      rejectLogin?.(new Error("settle ignored abort"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(abortedAtDeadline).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps grant concurrency reserved until an aborted login transport settles", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const value = loginConfig();
+      value.profiles.sample.timeoutMs = 50;
+      value.grants[0]!.lifetimeMs = 10000;
+      value.grants[0]!.expiresAt = Date.now() + 10000;
+      value.grants[0]!.maxConcurrent = 1;
+      value.maxConcurrent = 2;
+      const logins: ((result: { status: number; body: string }) => void)[] = [];
+      let apiCalls = 0;
+      const proxy = proxyFor((input) => {
+        if (input.url.pathname === "/auth/login")
+          return new Promise((resolve) => {
+            logins.push(resolve);
+          });
+        apiCalls++;
+        return success(input);
+      }, value);
+
+      const firstRequest = proxy.request(capability, request).then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      expect(await firstRequest).toMatchObject({
+        status: "rejected",
+        error: { code: "DEADLINE_EXCEEDED" },
+      });
+      const blockedRequest = proxy.request(capability, request).then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await Promise.resolve();
+      const loginsBeforeSettlement = logins.length;
+      for (const [index, finish] of logins.entries())
+        finish({ status: 200, body: JSON.stringify({ token: `minted-${index}` }) });
+      const blockedResult = await blockedRequest;
+      expect(loginsBeforeSettlement).toBe(1);
+      expect(blockedResult).toMatchObject({
+        status: "rejected",
+        error: { code: "BUDGET_EXHAUSTED" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const nextRequest = proxy.request(capability, request);
+      await Promise.resolve();
+      logins.at(-1)?.({ status: 200, body: '{"token":"next-token"}' });
+      await expect(nextRequest).resolves.toEqual({ status: 200, data: { items: [1, 2] } });
+      expect(apiCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("aborts a login after its last caller lifetime and keeps capacity until settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const shortCapability = "synthetic-short-capability-00000002";
+      const nextCapability = "synthetic-next-capability-00000002";
+      const value = loginConfig();
+      value.profiles.sample.timeoutMs = 2000;
+      if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+      value.profiles.sample.auth.tokenReuseMs = 1000;
+      value.grants[0]!.digest = capabilityDigest(shortCapability);
+      value.grants[0]!.lifetimeMs = 50;
+      value.grants[0]!.expiresAt = Date.now() + 10000;
+      value.grants[0]!.maxConcurrent = 1;
+      value.grants.push({
+        ...value.grants[0]!,
+        digest: capabilityDigest(nextCapability),
+        lifetimeMs: 10000,
+      });
+      value.maxConcurrent = 1;
+      const logins: {
+        input: TransportRequest;
+        finish: (result: { status: number; body: string }) => void;
+      }[] = [];
+      let apiCalls = 0;
+      const proxy = proxyFor((input) => {
+        if (input.url.pathname === "/auth/login")
+          return new Promise((resolve) => {
+            logins.push({ input, finish: resolve });
+          });
+        apiCalls++;
+        return Promise.resolve({ status: 200, body: '{"echo":"orphan-token"}' });
+      }, value);
+
+      const firstRequest = proxy.request(shortCapability, request).then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      expect(logins).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(await firstRequest).toMatchObject({
+        status: "rejected",
+        error: { code: "DEADLINE_EXCEEDED" },
+      });
+      const loginAbortedAfterLastWaiterLeft = logins[0]?.input.signal.aborted;
+
+      const blockedRequest = proxy.request(nextCapability, request).then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await Promise.resolve();
+      for (const [index, login] of logins.entries())
+        login.finish({
+          status: 200,
+          body: JSON.stringify({ token: index === 0 ? "orphan-token" : "active-token" }),
+        });
+      const blockedResult = await blockedRequest;
+      expect(loginAbortedAfterLastWaiterLeft).toBe(true);
+      expect(blockedResult).toMatchObject({
+        status: "rejected",
+        error: { code: "BUDGET_EXHAUSTED" },
+      });
+      expect(logins).toHaveLength(1);
+      expect(apiCalls).toBe(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const lastRequest = proxy.request(nextCapability, request);
+      await Promise.resolve();
+      const loginCountAfterLastWaiterSettled = logins.length;
+      logins.at(-1)?.finish({ status: 200, body: '{"token":"active-token"}' });
+      await expect(lastRequest).rejects.toMatchObject({ code: "DISCLOSURE_DENIED" });
+      expect(loginCountAfterLastWaiterSettled).toBe(2);
+      expect(apiCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("bounds cumulative requests and byte reservations even when requests fail", async () => {
     const value = config();
     value.grants[0]!.maxRequests = 1;
