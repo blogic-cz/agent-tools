@@ -4,9 +4,10 @@ import { ChildProcessSpawner } from "effect/process";
 import { ConfigService } from "#config";
 import { GitHubService } from "#gh/read/transport";
 import { reviewThreads } from "#gh/read/reviews";
-import { withFallbackOutput } from "#gh/read/graphql-fallback";
+import { reportFallback, withFallbackOutput } from "#gh/read/graphql-fallback";
 import { classifyReviewTriage } from "#gh/pr/commands";
 import { Telemetry, type RequestEvent } from "#gh/read/telemetry";
+import { submitPendingReview } from "#gh/pr/review";
 
 const pull = {
   number: 12,
@@ -86,6 +87,162 @@ const provide = <A, E>(
   );
 
 describe("GraphQL REST fallback", () => {
+  it.effect("reads lists and checks through REST, including legacy statuses", () => {
+    const calls: string[][] = [];
+    return provide(
+      Effect.gen(function* () {
+        const gh = yield* GitHubService;
+        const list = yield* gh.runGhJson<Array<{ number: number }>>([
+          "pr",
+          "list",
+          "--head",
+          "feature",
+          "--state",
+          "open",
+          "--json",
+          "number",
+        ]);
+        expect(list.map((item) => item.number)).toEqual([12]);
+        const checks = yield* gh.runGhJson<Array<{ name: string; bucket: string }>>([
+          "pr",
+          "checks",
+          "12",
+          "--json",
+          "name,state,bucket,link",
+        ]);
+        expect(checks).toMatchObject([
+          { name: "Build", bucket: "pass" },
+          { name: "Deploy", bucket: "fail" },
+        ]);
+        expect(calls.every((args) => args[0] === "api" && !args.includes("graphql"))).toBe(true);
+      }),
+      calls,
+      (args) => {
+        const path = args[3] ?? "";
+        const data = path.includes("/pulls?")
+          ? [[pull]]
+          : path.includes("/check-runs?")
+            ? [
+                {
+                  check_runs: [
+                    {
+                      name: "Build",
+                      status: "completed",
+                      conclusion: "success",
+                      html_url: "external",
+                    },
+                  ],
+                },
+              ]
+            : path.includes("/status?")
+              ? [
+                  {
+                    statuses: [
+                      { context: "Deploy", state: "failure", target_url: "external" },
+                      { context: "Deploy", state: "success", target_url: "old" },
+                    ],
+                  },
+                ]
+              : undefined;
+        return data === undefined
+          ? undefined
+          : { stdout: JSON.stringify(data), stderr: "", exitCode: 0 };
+      },
+    );
+  });
+  it.effect("does not carry the GraphQL block into a new service instance", () => {
+    const calls: string[][] = [];
+    const attempt = () =>
+      provide(
+        Effect.gen(function* () {
+          const gh = yield* GitHubService;
+          yield* gh.runGhJson(["pr", "view", "12", "--json", "number,reviewDecision"]);
+        }),
+        calls,
+      );
+    return Effect.gen(function* () {
+      yield* attempt();
+      yield* attempt();
+      expect(calls.filter((args) => args[0] === "pr")).toHaveLength(2);
+    });
+  });
+  it.effect("reports one warning and metadata for an empty JSON array", () =>
+    Effect.gen(function* () {
+      const current = yield* Console.Console;
+      const warnings: unknown[] = [];
+      const output: unknown[] = [];
+      yield* withFallbackOutput(
+        Effect.gen(function* () {
+          yield* reportFallback(["review thread resolution"]);
+          yield* reportFallback(["reviewDecision"]);
+          yield* Console.log("[]");
+        }),
+      ).pipe(
+        Effect.provideService(Console.Console, {
+          ...current,
+          log: (...args) => {
+            output.push(...args);
+          },
+          warn: (...args) => {
+            warnings.push(...args);
+          },
+        }),
+      );
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0])).toContain("review thread resolution, reviewDecision");
+      expect(JSON.parse(String(output[0]))).toMatchObject({
+        items: [],
+        fallback: { source: "REST", unknown: ["review thread resolution", "reviewDecision"] },
+      });
+    }),
+  );
+  it.effect("submits an owned pending review through REST without more GraphQL attempts", () => {
+    const calls: string[][] = [];
+    return provide(
+      Effect.gen(function* () {
+        const result = yield* submitPendingReview(12, null, "Review complete");
+        expect(result).toMatchObject({
+          submitted: true,
+          reviewId: "review-node",
+          state: "COMMENTED",
+        });
+        expect(calls.filter((args) => args.includes("graphql"))).toHaveLength(1);
+        expect(calls.filter((args) => args.includes("POST"))).toHaveLength(1);
+      }),
+      calls,
+      (args) => {
+        const path = args[3];
+        const review = {
+          id: 9,
+          node_id: "review-node",
+          state: "PENDING",
+          body: "Draft review",
+          user: { login: "author" },
+          pull_request_url: "https://api.github.com/repos/owner/repo/pulls/12",
+        };
+        const data =
+          path === "repos/owner/repo"
+            ? {
+                owner: { login: "owner" },
+                name: "repo",
+                default_branch: "main",
+                html_url: "https://github.com/owner/repo",
+              }
+            : path === "user"
+              ? { login: "author" }
+              : path?.endsWith("/events")
+                ? { node_id: "review-node", state: "COMMENTED" }
+                : path?.endsWith("/reviews")
+                  ? [[review]]
+                  : path?.endsWith("/comments")
+                    ? [[{ body: "Comment" }]]
+                    : undefined;
+        return data === undefined
+          ? undefined
+          : { stdout: JSON.stringify(data), stderr: "", exitCode: 0 };
+      },
+    );
+  });
   it.effect("keeps REST thread resolution unknown and audits the fallback", () => {
     const calls: string[][] = [];
     const events: RequestEvent[] = [];

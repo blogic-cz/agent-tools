@@ -163,33 +163,80 @@ export const restPorcelain = (
     args[1] === "close" &&
     selector !== undefined &&
     /^\d+$/.test(selector) &&
-    !args.includes("--comment") &&
     !args.includes("--delete-branch")
   )
-    return read([
-      "api",
-      "--method",
-      "PATCH",
-      `repos/${repo}/pulls/${selector}`,
-      "-f",
-      "state=closed",
-    ]);
+    return Effect.gen(function* () {
+      const comment = option(args, "--comment");
+      if (comment !== undefined)
+        yield* read([
+          "api",
+          "--method",
+          "POST",
+          `repos/${repo}/issues/${selector}/comments`,
+          "-f",
+          `body=${comment}`,
+        ]);
+      return yield* read([
+        "api",
+        "--method",
+        "PATCH",
+        `repos/${repo}/pulls/${selector}`,
+        "-f",
+        "state=closed",
+      ]);
+    });
   if (!args.includes("--json")) return null;
   const projectPull = (pull: ReturnType<typeof pullFromRest>) => {
     const fields = new Set([...(option(args, "--json") ?? "").split(","), "reviewDecision"]);
     return Object.fromEntries(
       Object.entries(pull)
         .filter(([key]) => fields.has(key))
-        .sort(([a], [b]) => a.localeCompare(b)),
+        .toSorted(([a], [b]) => a.localeCompare(b)),
     );
   };
   if (args[1] === "view" && selector !== undefined && /^\d+$/.test(selector))
     return restPull(read, repo, selector).pipe(Effect.map(projectPull));
-  if (
-    args[1] === "list" &&
-    option(args, "--search") === undefined &&
-    option(args, "--author") === undefined
-  )
+  if (args[1] === "list" && option(args, "--search") !== undefined)
+    return Effect.gen(function* () {
+      const state = option(args, "--state") ?? "open";
+      const query = [
+        option(args, "--search"),
+        `repo:${repo}`,
+        "is:pr",
+        ...(state === "all" ? [] : [`is:${state}`]),
+        ...["author", "head", "base"].flatMap((flag) => {
+          const value = option(args, `--${flag}`);
+          return value === undefined ? [] : [`${flag}:${value}`];
+        }),
+      ].join(" ");
+      const params = new URLSearchParams({
+        q: query,
+        per_page: "100",
+        sort: "created",
+        order: "desc",
+      });
+      const pages = yield* parseRest(
+        Schema.Array(
+          Schema.Struct({
+            incomplete_results: Schema.Boolean,
+            items: Schema.Array(Schema.Struct({ number: Schema.Number })),
+          }),
+        ),
+        yield* restPages(read, `search/issues?${params}`),
+      );
+      if (pages.some((page) => page.incomplete_results))
+        return yield* new GitHubCommandError({
+          command: "pr list",
+          exitCode: 1,
+          message: "GitHub REST search returned incomplete results",
+          stderr: "GitHub REST search returned incomplete results",
+        });
+      return yield* Effect.forEach(
+        pages.flatMap((page) => page.items).slice(0, Number(option(args, "--limit") ?? 30)),
+        (item) => restPull(read, repo, String(item.number)).pipe(Effect.map(projectPull)),
+      );
+    });
+  if (args[1] === "list")
     return Effect.gen(function* () {
       const state = option(args, "--state") ?? "open";
       const params = new URLSearchParams({
@@ -197,18 +244,28 @@ export const restPorcelain = (
         per_page: "100",
       });
       const head = option(args, "--head");
-      if (head !== undefined)
-        params.set("head", head.includes(":") ? head : `${repo.split("/")[0]}:${head}`);
+      if (head?.includes(":")) params.set("head", head);
       const base = option(args, "--base");
       if (base !== undefined) params.set("base", base);
       const pages = yield* parseRest(
         Schema.Array(Schema.Array(RestPull)),
         yield* restPages(read, `repos/${repo}/pulls?${params}`),
       );
+      let author = option(args, "--author");
+      if (author === "@me")
+        author = (yield* parseRest(
+          Schema.Struct({ login: Schema.String }),
+          yield* restGet(read, "user"),
+        )).login;
       return pages
         .flat()
         .map(pullFromRest)
         .filter((pull) => state !== "merged" || pull.state === "MERGED")
+        .filter((pull) => head === undefined || head.includes(":") || pull.headRefName === head)
+        .filter(
+          (pull) =>
+            author === undefined || pull.author.login.toLowerCase() === author.toLowerCase(),
+        )
         .slice(0, Number(option(args, "--limit") ?? 30))
         .map(projectPull);
     });
@@ -287,7 +344,13 @@ const bucket = (state: string) => {
     case "stale":
     case "startup_failure":
       return "fail";
-    default:
+    case "queued":
+    case "in_progress":
+    case "pending":
+    case "waiting":
+    case "requested":
       return "pending";
+    default:
+      return "unknown";
   }
 };

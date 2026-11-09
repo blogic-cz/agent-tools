@@ -1,5 +1,6 @@
 import { Console, Context, Effect, Schema } from "effect";
 import type { JsonRead } from "./rest-porcelain";
+import type { GhError } from "./transport";
 import { parseRest, restGet, restPages, restPull } from "./rest-porcelain";
 import { GitHubCommandError } from "#gh/errors";
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
@@ -8,14 +9,14 @@ export type Fallback = { source: "REST"; reason: string; unknown: string[] };
 export const FallbackState = Context.Reference<{ notices: Fallback[] } | null>("gh/FallbackState", {
   defaultValue: () => null,
 });
+const fallbackMessage = (unknown: string[]) =>
+  `GitHub GraphQL is blocked (rate limit); answered from REST. Unknown: ${unknown.join(", ") || "none"}.`;
 export const reportFallback = (unknown: string[]) =>
   Effect.gen(function* () {
     const notice: Fallback = { source: "REST", reason: "GitHub GraphQL rate limit", unknown };
     const state = yield* FallbackState;
     state?.notices.push(notice);
-    yield* Console.warn(
-      `GitHub GraphQL is blocked (rate limit); answered from REST. Unknown: ${unknown.join(", ") || "none"}.`,
-    );
+    if (state === null) yield* Console.warn(fallbackMessage(unknown));
     yield* recordRequest({
       ...ghSubprocessEvent(["api", "graphql"], 0),
       method: "FALLBACK",
@@ -28,9 +29,18 @@ export const withFallbackOutput = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const current = yield* Console.Console;
     const state = { notices: [] as Fallback[] };
+    let warned = false;
+    const flushWarning = () => {
+      if (warned || state.notices.length === 0) return;
+      warned = true;
+      current.warn(
+        fallbackMessage([...new Set(state.notices.flatMap((notice) => notice.unknown))]),
+      );
+    };
     const console = {
       ...current,
-      log: (...args: readonly unknown[]) =>
+      log: (...args: readonly unknown[]) => {
+        flushWarning();
         current.log(
           ...args.map((arg) => {
             if (state.notices.length === 0 || typeof arg !== "string") return arg;
@@ -43,9 +53,7 @@ export const withFallbackOutput = <A, E, R>(program: Effect.Effect<A, E, R>) =>
                 unknown: [...new Set(state.notices.flatMap((notice) => notice.unknown))],
               };
               return JSON.stringify(
-                Array.isArray(value)
-                  ? value.map((item) => ({ ...item, fallback }))
-                  : { ...value, fallback },
+                Array.isArray(value) ? { items: value, fallback } : { ...value, fallback },
                 null,
                 arg.includes("\n") ? 2 : undefined,
               );
@@ -53,11 +61,13 @@ export const withFallbackOutput = <A, E, R>(program: Effect.Effect<A, E, R>) =>
               return arg;
             }
           }),
-        ),
+        );
+      },
     };
     return yield* program.pipe(
       Effect.provideService(FallbackState, state),
       Effect.provideService(Console.Console, console),
+      Effect.ensuring(Effect.sync(flushWarning)),
     );
   });
 const Comment = Schema.Struct({
@@ -75,9 +85,9 @@ export const restGraphql = (
   query: string,
   variables: Record<string, string | number | null>,
   read: JsonRead,
-): Effect.Effect<unknown, import("./transport").GhError> | null => {
+): Effect.Effect<unknown, GhError> | null => {
   if (
-    query.includes("mutation") ||
+    (query.includes("mutation") && !query.includes("submitPullRequestReview")) ||
     typeof variables.owner !== "string" ||
     typeof variables.name !== "string" ||
     typeof variables.pr !== "number"
@@ -85,21 +95,32 @@ export const restGraphql = (
     return null;
   const repo = `${variables.owner}/${variables.name}`;
   const root = `repos/${repo}/pulls/${variables.pr}`;
+  if (
+    query.includes("states: [PENDING]") ||
+    query.includes("... on PullRequestReview {") ||
+    query.includes("submitPullRequestReview")
+  )
+    return pendingRest(query, variables, read, root, repo, variables.pr);
   if (query.includes("reviewThreads"))
     return Effect.gen(function* () {
       const comments = (yield* parseRest(
         Schema.Array(Schema.Array(Comment)),
         yield* restPages(read, `${root}/comments`),
       )).flat();
-      const roots = comments.filter(
-        (comment) => comment.in_reply_to_id === undefined || comment.in_reply_to_id === null,
-      );
-      const nodes = roots.map((comment) => ({
-        id: `rest-thread:${comment.id}`,
+      const groups = new Map<number, Array<typeof Comment.Type>>();
+      for (const comment of comments) {
+        const root = comment.in_reply_to_id ?? comment.id;
+        const group = groups.get(root) ?? [];
+        group.push(comment);
+        groups.set(root, group);
+      }
+      const nodes = [...groups.entries()].map(([root, group]) => ({
+        id: `rest-thread:${root}`,
         isResolved: null,
         comments: {
-          nodes: [comment, ...comments.filter((reply) => reply.in_reply_to_id === comment.id)].map(
-            (item) => ({
+          nodes: group
+            .toSorted((a, b) => Number(b.id === root) - Number(a.id === root))
+            .map((item) => ({
               id: item.node_id,
               databaseId: item.id,
               path: item.path,
@@ -111,8 +132,7 @@ export const restGraphql = (
                 item.in_reply_to_id === undefined || item.in_reply_to_id === null
                   ? null
                   : { id: String(item.in_reply_to_id) },
-            }),
-          ),
+            })),
           pageInfo: { hasNextPage: false, endCursor: null },
         },
       }));
@@ -195,4 +215,114 @@ export const graphqlLimitError = () =>
     exitCode: 1,
     message: "GraphQL rate limit already exceeded",
     stderr: "GraphQL rate limit already exceeded",
+  });
+
+const PendingReview = Schema.Struct({
+  id: Schema.Number,
+  node_id: Schema.String,
+  state: Schema.String,
+  body: Schema.NullOr(Schema.String),
+  user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
+  pull_request_url: Schema.String,
+});
+const pendingRest = (
+  query: string,
+  variables: Record<string, string | number | null>,
+  read: JsonRead,
+  root: string,
+  repo: string,
+  pr: number,
+): Effect.Effect<unknown, GhError> =>
+  Effect.gen(function* () {
+    const reviews = (yield* parseRest(
+      Schema.Array(Schema.Array(PendingReview)),
+      yield* restPages(read, `${root}/reviews`),
+    )).flat();
+    const viewer = yield* parseRest(
+      Schema.Struct({ login: Schema.String }),
+      yield* restGet(read, "user"),
+    );
+    const pageInfo = { hasNextPage: false, endCursor: null };
+    if (query.includes("states: [PENDING]")) {
+      const fallback = yield* reportFallback([]);
+      return {
+        fallback,
+        viewer,
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: reviews
+                .filter((review) => review.state === "PENDING")
+                .map((review) => ({
+                  id: review.node_id,
+                  state: review.state,
+                  author: review.user,
+                })),
+              pageInfo,
+            },
+          },
+        },
+      };
+    }
+    const review = reviews.find((item) => item.node_id === variables.reviewId);
+    if (
+      review === undefined ||
+      review.state !== "PENDING" ||
+      review.user?.login !== viewer.login ||
+      review.pull_request_url !== `https://api.github.com/${root}`
+    )
+      return yield* new GitHubCommandError({
+        command: "gh-tool pr submit-review",
+        exitCode: 1,
+        message: "REST could not verify an owned pending review on this PR",
+        stderr: "REST could not verify an owned pending review on this PR",
+      });
+    if (query.includes("submitPullRequestReview")) {
+      if (
+        typeof variables.event !== "string" ||
+        !["COMMENT", "APPROVE", "REQUEST_CHANGES"].includes(variables.event) ||
+        typeof variables.body !== "string"
+      )
+        return yield* new GitHubCommandError({
+          command: "gh-tool pr submit-review",
+          exitCode: 1,
+          message: "Invalid review event or body",
+          stderr: "Invalid review event or body",
+        });
+      const result = yield* parseRest(
+        Schema.Struct({ node_id: Schema.String, state: Schema.String }),
+        yield* read([
+          "api",
+          "--method",
+          "POST",
+          `${root}/reviews/${review.id}/events`,
+          "-f",
+          `event=${variables.event}`,
+          "-f",
+          `body=${variables.body}`,
+        ]),
+      );
+      const fallback = yield* reportFallback([]);
+      return {
+        fallback,
+        submitPullRequestReview: { pullRequestReview: { id: result.node_id, state: result.state } },
+      };
+    }
+    const comments = (yield* parseRest(
+      Schema.Array(Schema.Array(Schema.Struct({ body: Schema.String }))),
+      yield* restPages(read, `${root}/reviews/${review.id}/comments`),
+    )).flat();
+    const fallback = yield* reportFallback([]);
+    return {
+      fallback,
+      viewer,
+      node: {
+        id: review.node_id,
+        state: review.state,
+        body: review.body,
+        author: review.user,
+        pullRequest: { number: pr, repository: { nameWithOwner: repo } },
+        comments: { nodes: comments, pageInfo },
+      },
+    };
   });

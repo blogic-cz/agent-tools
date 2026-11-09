@@ -53,9 +53,15 @@ export const reviewGuards = {
         after,
       });
     }),
-  pendingReviewContent: (reviewId: string, after: string | null) =>
+  pendingReviewContent: (reviewId: string, after: string | null, repo: RepoRef, pr: number) =>
     Effect.gen(function* () {
       const gh = yield* GitHubService;
-      return yield* gh.runGraphQL(PENDING_REVIEW_CONTENT_QUERY, { reviewId, after });
+      return yield* gh.runGraphQL(PENDING_REVIEW_CONTENT_QUERY, {
+        reviewId,
+        after,
+        owner: repo.owner,
+        name: repo.name,
+        pr,
+      });
     }),
 };

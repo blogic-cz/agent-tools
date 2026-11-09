@@ -413,14 +413,19 @@ export class GitHubService extends Context.Service<
               args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
             }
             const rest = restPorcelain(args, rawJson, target);
-            const mutation = args[0] === "pr" && ["merge", "close"].includes(args[1] ?? "");
+            const usesGraphql =
+              args[0] === "pr" ||
+              args[0] === "repo" ||
+              (args[0] === "api" && args[1] === "graphql");
+            const mutation = args[0] === "pr" && args[1] === "merge";
             if (rest !== null && !graphFieldsRequested(args) && !mutation) {
               return { stdout: JSON.stringify(yield* rest), stderr: "", exitCode: 0 };
             }
             const fallback = (error: GhError): Effect.Effect<GhResult, GhError> =>
               Effect.gen(function* () {
-                if (rest === null || !isGraphqlLimit(error)) return yield* Effect.fail(error);
+                if (!usesGraphql || !isGraphqlLimit(error)) return yield* Effect.fail(error);
                 graphqlBlocked = true;
+                if (rest === null) return yield* Effect.fail(error);
                 const value = yield* rest;
                 const unknown = ["reviewDecision", "mergeStateStatus"].filter((field) =>
                   args.some((arg) => arg.split(",").includes(field)),
@@ -432,6 +437,8 @@ export class GitHubService extends Context.Service<
                 return { stdout: JSON.stringify(output), stderr: "", exitCode: 0 };
               });
             if (graphqlBlocked && rest !== null) return yield* fallback(graphqlLimitError());
+            if (graphqlBlocked && args[0] === "api" && args[1] === "graphql")
+              return yield* graphqlLimitError();
             if (graphqlBlocked && args[0] === "pr" && args[1] === "ready")
               return yield* new GitHubCommandError({
                 command: "gh pr ready",
@@ -439,6 +446,7 @@ export class GitHubService extends Context.Service<
                 message: "GitHub GraphQL is blocked; REST cannot change draft status",
                 stderr: "GitHub GraphQL is blocked; REST cannot change draft status",
               });
+            if (graphqlBlocked && usesGraphql) return yield* graphqlLimitError();
             return yield* runGhRaw(args).pipe(Effect.catch(fallback));
           });
 

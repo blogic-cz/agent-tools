@@ -133,7 +133,13 @@ export const reviewThreads = Effect.fn("reads.reviewThreads")(function* (
       Schema.decodeUnknownSync(CachedThreads)(raw);
       return raw as ThreadNode[];
     },
-    fetch: originThreads(repo, pr),
+    fetch: originThreads(repo, pr).pipe(
+      Effect.catchTag("GitHubCommandError", (error) =>
+        error.stderr === "GitHub GraphQL is blocked; REST cannot perform this operation"
+          ? originThreads(repo, pr)
+          : Effect.fail(error),
+      ),
+    ),
     signal: reviewPages(repo, pr, "prComments").pipe(Effect.map(snapshotDigest)),
     maxAgeMs: () => OPS.reviewThreads.maxAgeMs,
     cacheableWhen: (nodes) => nodes.every((node) => node.isResolved !== null),

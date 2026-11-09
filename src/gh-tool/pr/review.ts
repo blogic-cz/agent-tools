@@ -1011,6 +1011,8 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
     const pendingReview = (yield* reads.reviewGuards.pendingReviewContent(
       targetReviewId,
       afterComment,
+      repoInfo,
+      resolvedPr,
     )) as PendingReviewContentQueryResult;
 
     const review = pendingReview?.node;
@@ -1088,6 +1090,9 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
       reviewId: targetReviewId,
       event: REVIEW_EVENT_API[event],
       body: body ?? "",
+      owner: repoInfo.owner,
+      name: repoInfo.name,
+      pr: resolvedPr,
     },
     reviewTags(repoInfo, resolvedPr, "reviews"),
   )) as SubmitReviewResult;

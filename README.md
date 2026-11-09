@@ -370,7 +370,8 @@ Repository facts, PR facts, head/state PR lists, and CI checks use REST. PR fact
 `reviewDecision: "UNKNOWN"` because REST cannot compute the GraphQL review decision.
 Explicit GraphQL review reads retry through REST when GitHub reports a rate limit.
 The command prints a short warning on stderr and adds `fallback` metadata to JSON
-objects. Review thread `isResolved` and resolution counts are `null` when REST cannot
+objects. Array results use `{ "items": [...], "fallback": {...} }` during fallback,
+including empty results. Review thread `isResolved` and resolution counts are `null` when REST cannot
 know them. Such threads remain visible and unknown resolution blocks readiness.
 The block lasts only for the current process. Workflow reads already use REST through
 `gh run`. Merge fallback preserves the requested head SHA. Draft status and thread
