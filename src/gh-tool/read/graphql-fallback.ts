@@ -1,7 +1,7 @@
 import { Console, Context, Effect, Schema } from "effect";
 import type { JsonRead } from "./rest-porcelain";
 import type { GhError } from "./transport";
-import { parseRest, restGet, restPages, restPull } from "./rest-porcelain";
+import { parseRest, restGet, restPages, restPull, restReviewDecision } from "./rest-porcelain";
 import { GitHubCommandError } from "#gh/errors";
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
 
@@ -137,15 +137,26 @@ export const restGraphql = (
         },
       }));
       const pull = yield* restPull(read, repo, String(variables.pr));
+      const reviewDecision = query.includes("reviewDecision")
+        ? yield* restReviewDecision(read, {
+            repo,
+            number: variables.pr,
+            baseRefName: pull.baseRefName,
+            headSha: pull.headSha,
+          })
+        : pull.reviewDecision;
       const fallback = yield* reportFallback([
         "review thread resolution",
-        ...(query.includes("reviewDecision") ? ["reviewDecision"] : []),
+        ...(query.includes("reviewDecision") && reviewDecision === "UNKNOWN"
+          ? ["reviewDecision"]
+          : []),
       ]);
       return {
         fallback,
         repository: {
           pullRequest: {
             ...pull,
+            reviewDecision,
             reviewRequests: {
               nodes: pull.reviewRequests.map((reviewer) => ({ requestedReviewer: reviewer })),
             },

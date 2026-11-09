@@ -490,9 +490,21 @@ export class GitHubService extends Context.Service<
                 graphqlBlocked = true;
                 if (rest === null) return yield* Effect.fail(error);
                 const value = yield* rest;
-                const unknown = ["reviewDecision", "mergeStateStatus"].filter((field) =>
+                const values = Array.isArray(value) ? value : [value];
+                const unknown = ["mergeStateStatus"].filter((field) =>
                   args.some((arg) => arg.split(",").includes(field)),
                 );
+                if (
+                  args.some((arg) => arg.split(",").includes("reviewDecision")) &&
+                  values.some(
+                    (item) =>
+                      typeof item === "object" &&
+                      item !== null &&
+                      "reviewDecision" in item &&
+                      item.reviewDecision === "UNKNOWN",
+                  )
+                )
+                  unknown.push("reviewDecision");
                 const notice = yield* reportFallback(unknown);
                 const output = Array.isArray(value)
                   ? value.map((item) => ({ ...item, fallback: notice }))

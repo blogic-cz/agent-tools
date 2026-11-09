@@ -368,9 +368,11 @@ that GitHub squash commits exclude changes from an already squashed parent.
 
 Repository facts, PR facts, head/state PR lists, and CI checks use REST. `pr close` without
 `--delete-branch` also uses only REST: it verifies the PR, posts the optional comment,
-then closes the PR, in the same order as `gh pr close`. PR facts report
-`reviewDecision: "UNKNOWN"` because REST cannot compute the GraphQL review decision.
-Explicit GraphQL review reads retry through REST when GitHub reports a rate limit.
+then closes the PR, in the same order as `gh pr close`. When GraphQL is blocked, PR facts
+compute `reviewDecision` from REST branch review rules and reviews. The result stays `UNKNOWN`
+when those facts cannot be read, or when code-owner or
+last-push approval needs proof that REST cannot provide. Explicit GraphQL review reads retry
+through REST when GitHub reports a rate limit.
 The command prints a short warning on stderr and adds `fallback` metadata to JSON
 objects. Array results use `{ "items": [...], "fallback": {...} }` during fallback,
 including empty results. Review thread `isResolved` and resolution counts are `null` when REST cannot

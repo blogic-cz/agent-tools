@@ -3,6 +3,7 @@ import { GitHubCommandError } from "#gh/errors";
 import type { GhError } from "./transport";
 
 export type JsonRead = (args: string[]) => Effect.Effect<unknown, GhError>;
+export type ReviewDecision = "" | "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "UNKNOWN";
 const User = Schema.Struct({ login: Schema.String, type: Schema.String });
 const Ref = Schema.Struct({
   ref: Schema.String,
@@ -88,6 +89,136 @@ export const restPull = (read: JsonRead, repo: string, number: string) =>
       yield* parseRest(RestPull, yield* restGet(read, `repos/${repo}/pulls/${number}`)),
     );
   });
+
+type ReviewRule = {
+  approvals: number;
+  codeOwner: boolean;
+  dismissStale: boolean;
+  lastPush: boolean;
+};
+const RestReviewRule = Schema.Struct({
+  required_approving_review_count: Schema.optional(Schema.Number),
+  require_code_owner_review: Schema.optional(Schema.Boolean),
+  dismiss_stale_reviews_on_push: Schema.optional(Schema.Boolean),
+  require_last_push_approval: Schema.optional(Schema.Boolean),
+});
+const reviewRule = (parameters: unknown) => {
+  const decoded = Schema.decodeUnknownSync(RestReviewRule)(parameters);
+  return {
+    approvals: decoded.required_approving_review_count ?? 0,
+    codeOwner: decoded.require_code_owner_review ?? false,
+    dismissStale: decoded.dismiss_stale_reviews_on_push ?? false,
+    lastPush: decoded.require_last_push_approval ?? false,
+  };
+};
+const noRulesets = (error: unknown) =>
+  error instanceof Error &&
+  (/HTTP 404|Not Found/i.test(error.message) ||
+    (/HTTP 403/i.test(error.message) &&
+      /Upgrade to GitHub Pro|make this repository public/i.test(error.message)));
+const restValue = <A>(read: JsonRead, path: string, schema: Schema.Codec<A>) =>
+  Effect.either(restGet(read, path).pipe(Effect.flatMap((value) => parseRest(schema, value))));
+const Rulesets = Schema.Array(
+  Schema.Struct({ type: Schema.String, parameters: Schema.optional(Schema.Unknown) }),
+);
+
+export const restReviewDecision = (
+  read: JsonRead,
+  input: { repo: string; number: number; baseRefName: string; headSha: string },
+): Effect.Effect<ReviewDecision> =>
+  Effect.gen(function* () {
+    const base = encodeURIComponent(input.baseRefName);
+    const rulesetResult = yield* restValue(
+      read,
+      `repos/${input.repo}/rules/branches/${base}`,
+      Rulesets,
+    );
+    let rulesets: ReviewRule[] = [];
+    if (rulesetResult._tag === "Left") {
+      if (!noRulesets(rulesetResult.left)) return "UNKNOWN";
+    } else {
+      try {
+        rulesets = rulesetResult.right.flatMap((rule) =>
+          rule.type === "pull_request" ? [reviewRule(rule.parameters)] : [],
+        );
+      } catch {
+        return "UNKNOWN";
+      }
+    }
+
+    const branchResult = yield* restValue(
+      read,
+      `repos/${input.repo}/branches/${base}`,
+      Schema.Struct({ protected: Schema.Boolean }),
+    );
+    if (branchResult._tag === "Left") return "UNKNOWN";
+
+    let classic: ReviewRule[] = [];
+    if (branchResult.right.protected) {
+      const protectionResult = yield* restValue(
+        read,
+        `repos/${input.repo}/branches/${base}/protection/required_pull_request_reviews`,
+        RestReviewRule,
+      );
+      if (protectionResult._tag === "Left") {
+        if (!/HTTP 404|Not Found/i.test(protectionResult.left.message)) return "UNKNOWN";
+      } else {
+        classic = [reviewRule(protectionResult.right)];
+      }
+    }
+
+    const rules = [...rulesets, ...classic];
+    if (rules.length === 0) return "";
+    const required: ReviewRule = {
+      approvals: Math.max(...rules.map((rule) => rule.approvals)),
+      codeOwner: rules.some((rule) => rule.codeOwner),
+      dismissStale: rules.some((rule) => rule.dismissStale),
+      lastPush: rules.some((rule) => rule.lastPush),
+    };
+    if (required.codeOwner || required.lastPush) return "UNKNOWN";
+
+    const reviewsResult = yield* restValue(
+      read,
+      `repos/${input.repo}/pulls/${input.number}/reviews`,
+      Schema.Array(
+        Schema.Array(
+          Schema.Struct({
+            id: Schema.Number,
+            user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
+            state: Schema.String,
+            submitted_at: Schema.NullOr(Schema.String),
+            commit_id: Schema.String,
+          }),
+        ),
+      ),
+    );
+    if (reviewsResult._tag === "Left") return "UNKNOWN";
+
+    const latest = new Map<string, (typeof reviewsResult.right)[number][number]>();
+    for (const review of reviewsResult.right.flat()) {
+      const state = review.state.toUpperCase();
+      if (review.user === null || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state))
+        continue;
+      const login = review.user.login.toLowerCase();
+      const current = latest.get(login);
+      if (
+        current === undefined ||
+        (review.submitted_at ?? "") > (current.submitted_at ?? "") ||
+        (review.submitted_at === current.submitted_at && review.id > current.id)
+      )
+        latest.set(login, review);
+    }
+    const currentReviews = [...latest.values()];
+    if (currentReviews.some((review) => review.state.toUpperCase() === "CHANGES_REQUESTED"))
+      return "CHANGES_REQUESTED";
+    const approvals = currentReviews.filter(
+      (review) =>
+        review.state.toUpperCase() === "APPROVED" &&
+        (!required.dismissStale || review.commit_id === input.headSha),
+    ).length;
+    return approvals >= required.approvals ? "APPROVED" : "REVIEW_REQUIRED";
+  });
+
 const option = (args: readonly string[], flag: string) => {
   const index = args.indexOf(flag);
   return index < 0 ? undefined : args[index + 1];
@@ -188,16 +319,28 @@ export const restPorcelain = (
       ]);
     });
   if (!args.includes("--json")) return null;
-  const projectPull = (pull: ReturnType<typeof pullFromRest>) => {
-    const fields = new Set([...(option(args, "--json") ?? "").split(","), "reviewDecision"]);
-    return Object.fromEntries(
-      Object.entries(pull)
-        .filter(([key]) => fields.has(key))
-        .toSorted(([a], [b]) => a.localeCompare(b)),
-    );
-  };
+  const fields = new Set((option(args, "--json") ?? "").split(","));
+  const projectPull = (pull: ReturnType<typeof pullFromRest>) =>
+    Effect.gen(function* () {
+      const value = fields.has("reviewDecision")
+        ? {
+            ...pull,
+            reviewDecision: yield* restReviewDecision(read, {
+              repo,
+              number: pull.number,
+              baseRefName: pull.baseRefName,
+              headSha: pull.headSha,
+            }),
+          }
+        : pull;
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => fields.has(key))
+          .toSorted(([a], [b]) => a.localeCompare(b)),
+      );
+    });
   if (args[1] === "view" && selector !== undefined && /^\d+$/.test(selector))
-    return restPull(read, repo, selector).pipe(Effect.map(projectPull));
+    return restPull(read, repo, selector).pipe(Effect.flatMap(projectPull));
   if (args[1] === "list" && option(args, "--search") !== undefined)
     return Effect.gen(function* () {
       const state = option(args, "--state") ?? "open";
@@ -270,10 +413,10 @@ export const restPorcelain = (
         )
         .slice(0, Number(option(args, "--limit") ?? 30));
       return yield* Effect.forEach(pulls, (pull) =>
-        (option(args, "--json")?.split(",").includes("mergeable")
+        (fields.has("mergeable")
           ? restPull(read, repo, String(pull.number))
           : Effect.succeed(pull)
-        ).pipe(Effect.map(projectPull)),
+        ).pipe(Effect.flatMap(projectPull)),
       );
     });
   if (args[1] === "checks" && selector !== undefined && /^\d+$/.test(selector))
