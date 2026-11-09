@@ -602,7 +602,9 @@ describe("GraphQL REST fallback", () => {
           expect(values).toHaveLength(command === "view" ? 1 : 2);
           for (const item of values) expect(item).toMatchObject({ reviewDecision: "" });
           expect(calls.filter((args) => args[3]?.endsWith("/rules/branches/main"))).toHaveLength(1);
-          expect(calls.filter((args) => args[3]?.endsWith("/branches/main"))).toHaveLength(1);
+          expect(calls.filter((args) => args[3] === "repos/owner/repo/branches/main")).toHaveLength(
+            1,
+          );
           expect(calls.some((args) => args[0] === "pr" || args.includes("graphql"))).toBe(false);
         }),
         calls,
@@ -639,6 +641,8 @@ describe("GraphQL REST fallback", () => {
         if (path.includes("/pulls?"))
           return ok([[pull, { ...pull, number: 13, base: { ...pull.base, ref: "restricted" } }]]);
         if (path.endsWith("/rules/branches/main")) return ok([]);
+        if (path === "repos/owner/repo/pulls/13")
+          return ok({ ...pull, number: 13, base: { ...pull.base, ref: "restricted" } });
         if (path.endsWith("/rules/branches/restricted"))
           return failure("HTTP 403 Resource not accessible");
         if (path.endsWith("/branches/main")) return ok({ protected: false });

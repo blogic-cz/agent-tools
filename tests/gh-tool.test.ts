@@ -2326,7 +2326,7 @@ describe("PR view", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
           ],
         },
         {
@@ -3128,7 +3128,7 @@ describe("PR edit", () => {
           "--repo",
           "test-owner/test-repo",
           "--json",
-          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
         ],
         ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
@@ -4035,7 +4035,7 @@ describe("PR merge head condition", () => {
               "view",
               "123",
               "--json",
-              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
             ],
           ]);
         }),
@@ -4217,7 +4217,7 @@ describe("PR merge head condition", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
       ]);
       expect(mutations).toEqual([["pr", "merge", "123", "--squash"]]);
     }),
@@ -12071,7 +12071,7 @@ describe("PR creation safety", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision",
             "--base",
             "main",
             "--head",

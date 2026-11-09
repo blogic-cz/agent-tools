@@ -15,29 +15,33 @@ it("pr checks --prs marks a PR whose checks gh did not report instead of returni
         (args) => {
           const path = args[3] ?? "";
           if (args[0] === "api") {
-            const data = path.includes("/pulls/")
-              ? restPullFixture(Number(path.split("/").at(-1)), {
-                  owner: "test-owner",
-                  name: "test-repo",
-                  head: path.endsWith("1396") ? MERGED_HEAD : OPEN_HEAD,
-                  state: path.endsWith("1396") ? "MERGED" : "OPEN",
-                })
-              : path.includes("/check-runs")
-                ? [
-                    {
-                      check_runs: path.includes(MERGED_HEAD)
-                        ? []
-                        : [
-                            {
-                              name: "Build and Test",
-                              status: "completed",
-                              conclusion: "success",
-                              html_url: "external",
-                            },
-                          ],
-                    },
-                  ]
-                : [{ statuses: [] }];
+            const data = path.includes("/rules/branches/")
+              ? []
+              : path.includes("/branches/")
+                ? { protected: false }
+                : path.includes("/pulls/")
+                  ? restPullFixture(Number(path.split("/").at(-1)), {
+                      owner: "test-owner",
+                      name: "test-repo",
+                      head: path.endsWith("1396") ? MERGED_HEAD : OPEN_HEAD,
+                      state: path.endsWith("1396") ? "MERGED" : "OPEN",
+                    })
+                  : path.includes("/check-runs")
+                    ? [
+                        {
+                          check_runs: path.includes(MERGED_HEAD)
+                            ? []
+                            : [
+                                {
+                                  name: "Build and Test",
+                                  status: "completed",
+                                  conclusion: "success",
+                                  html_url: "external",
+                                },
+                              ],
+                        },
+                      ]
+                    : [{ statuses: [] }];
             return { stdout: JSON.stringify(data), stderr: "", exitCode: 0 };
           }
           if (args[0] === "pr" && args[1] === "view")
