@@ -399,28 +399,6 @@ export class GitHubService extends Context.Service<
                 ["config", "--get", "branch." + localBranch + ".remote"],
                 "git",
               );
-              let head =
-                trackingBranch.exitCode === 0
-                  ? trackingBranch.stdout.trim().replace(/^refs\/heads\//, "")
-                  : localBranch;
-              if (trackingRemote.exitCode === 0 && trackingRemote.stdout.trim() !== ".") {
-                const remote = yield* executeGh(
-                  ["remote", "get-url", trackingRemote.stdout.trim()],
-                  "git",
-                );
-                const owner =
-                  remote.exitCode === 0
-                    ? /[:/]([^/:]+)\/[^/]+?(?:\.git)?$/.exec(remote.stdout.trim())?.[1]
-                    : undefined;
-                if (owner === undefined)
-                  return yield* new GitHubCommandError({
-                    command: "pr view",
-                    exitCode: 1,
-                    message: "Cannot determine the tracking repository; pass --pr",
-                    stderr: remote.stderr,
-                  });
-                head = owner + ":" + head;
-              }
               if (trackingBranch.exitCode > 1 || trackingRemote.exitCode > 1)
                 return yield* new GitHubCommandError({
                   command: "pr view",
@@ -428,44 +406,74 @@ export class GitHubService extends Context.Service<
                   message: "Cannot read tracking configuration; pass --pr",
                   stderr: trackingBranch.stderr + trackingRemote.stderr,
                 });
-              const repoIndex = args.indexOf("--repo");
-              const selectedRepo = repoIndex < 0 ? target : args[repoIndex + 1];
-              const pulls = yield* runGh([
-                "pr",
-                "list",
-                "--head",
-                head,
-                "--state",
-                "all",
-                "--limit",
-                "100",
-                "--json",
-                "number,state",
-                ...(selectedRepo === undefined ? [] : ["--repo", selectedRepo]),
-              ]);
-              const candidates = yield* Effect.try({
-                try: () =>
-                  Schema.decodeUnknownSync(
-                    Schema.Array(Schema.Struct({ number: Schema.Number, state: Schema.String })),
-                  )(JSON.parse(pulls.stdout)),
-                catch: (error) =>
-                  new GitHubCommandError({
+              const pullNumber =
+                trackingBranch.exitCode === 0
+                  ? /^refs\/pull\/(\d+)\/head$/.exec(trackingBranch.stdout.trim())?.[1]
+                  : undefined;
+              if (pullNumber !== undefined) {
+                args = [args[0], args[1] ?? "view", pullNumber, ...args.slice(2)];
+              } else {
+                let head =
+                  trackingBranch.exitCode === 0
+                    ? trackingBranch.stdout.trim().replace(/^refs\/heads\//, "")
+                    : localBranch;
+                if (trackingRemote.exitCode === 0 && trackingRemote.stdout.trim() !== ".") {
+                  const remote = yield* executeGh(
+                    ["remote", "get-url", trackingRemote.stdout.trim()],
+                    "git",
+                  );
+                  const owner =
+                    remote.exitCode === 0
+                      ? /[:/]([^/:]+)\/[^/]+?(?:\.git)?$/.exec(remote.stdout.trim())?.[1]
+                      : undefined;
+                  if (owner === undefined)
+                    return yield* new GitHubCommandError({
+                      command: "pr view",
+                      exitCode: 1,
+                      message: "Cannot determine the tracking repository; pass --pr",
+                      stderr: remote.stderr,
+                    });
+                  head = owner + ":" + head;
+                }
+                const repoIndex = args.indexOf("--repo");
+                const selectedRepo = repoIndex < 0 ? target : args[repoIndex + 1];
+                const pulls = yield* runGh([
+                  "pr",
+                  "list",
+                  "--head",
+                  head,
+                  "--state",
+                  "all",
+                  "--limit",
+                  "100",
+                  "--json",
+                  "number,state",
+                  ...(selectedRepo === undefined ? [] : ["--repo", selectedRepo]),
+                ]);
+                const candidates = yield* Effect.try({
+                  try: () =>
+                    Schema.decodeUnknownSync(
+                      Schema.Array(Schema.Struct({ number: Schema.Number, state: Schema.String })),
+                    )(JSON.parse(pulls.stdout)),
+                  catch: (error) =>
+                    new GitHubCommandError({
+                      command: "pr view",
+                      exitCode: 1,
+                      message: String(error),
+                      stderr: String(error),
+                    }),
+                });
+                const open = candidates.filter((pull) => pull.state === "OPEN");
+                const matches = open.length > 0 ? open : candidates.slice(0, 1);
+                if (matches.length !== 1 || matches[0] === undefined)
+                  return yield* new GitHubCommandError({
                     command: "pr view",
                     exitCode: 1,
-                    message: String(error),
-                    stderr: String(error),
-                  }),
-              });
-              const open = candidates.filter((pull) => pull.state === "OPEN");
-              const matches = open.length > 0 ? open : candidates.slice(0, 1);
-              if (matches.length !== 1 || matches[0] === undefined)
-                return yield* new GitHubCommandError({
-                  command: "pr view",
-                  exitCode: 1,
-                  message: "Cannot identify one PR for the current branch; pass --pr",
-                  stderr: "Current branch has zero or multiple PRs",
-                });
-              args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
+                    message: "Cannot identify one PR for the current branch; pass --pr",
+                    stderr: "Current branch has zero or multiple PRs",
+                  });
+                args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
+              }
             }
             const rest = restPorcelain(args, rawJson, target);
             const usesGraphql =
