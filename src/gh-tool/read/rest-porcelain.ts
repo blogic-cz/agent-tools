@@ -166,6 +166,8 @@ export const restPorcelain = (
     !args.includes("--delete-branch")
   )
     return Effect.gen(function* () {
+      const pull = yield* restPull(read, repo, selector);
+      if (pull.state !== "OPEN") return pull;
       const comment = option(args, "--comment");
       if (comment !== undefined)
         yield* read([
@@ -257,7 +259,7 @@ export const restPorcelain = (
           Schema.Struct({ login: Schema.String }),
           yield* restGet(read, "user"),
         )).login;
-      return pages
+      const pulls = pages
         .flat()
         .map(pullFromRest)
         .filter((pull) => state !== "merged" || pull.state === "MERGED")
@@ -266,8 +268,13 @@ export const restPorcelain = (
           (pull) =>
             author === undefined || pull.author.login.toLowerCase() === author.toLowerCase(),
         )
-        .slice(0, Number(option(args, "--limit") ?? 30))
-        .map(projectPull);
+        .slice(0, Number(option(args, "--limit") ?? 30));
+      return yield* Effect.forEach(pulls, (pull) =>
+        (option(args, "--json")?.split(",").includes("mergeable")
+          ? restPull(read, repo, String(pull.number))
+          : Effect.succeed(pull)
+        ).pipe(Effect.map(projectPull)),
+      );
     });
   if (args[1] === "checks" && selector !== undefined && /^\d+$/.test(selector))
     return Effect.gen(function* () {

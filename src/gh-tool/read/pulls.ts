@@ -398,7 +398,7 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
     PR_REVIEW_TRIAGE_SUMMARY_QUERY,
     variables,
   )) as PrReviewTriageSummaryPage;
-  const firstPage = first.repository.pullRequest;
+  let firstPage = first.repository.pullRequest;
   let unresolvedReviewThreadsCount = 0;
   let resolutionUnknown = false;
   let unrepliedReviewThreadsCount = 0;
@@ -421,6 +421,12 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
       after: pageInfo.endCursor,
     })) as PrReviewTriageSummaryPage;
     const pullRequest = response.repository.pullRequest;
+    if ("fallback" in response) {
+      unresolvedReviewThreadsCount = 0;
+      unrepliedReviewThreadsCount = 0;
+      resolutionUnknown = false;
+      firstPage = pullRequest;
+    }
     countThreads(pullRequest.reviewThreads.nodes);
     pageInfo = pullRequest.reviewThreads.pageInfo;
   }

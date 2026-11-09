@@ -208,7 +208,7 @@ export const restGraphql = (
 };
 export const isGraphqlLimit = (error: unknown) =>
   error instanceof GitHubCommandError &&
-  /rate.?limit|already exceeded|secondary limit|abuse detection/i.test(error.stderr);
+  /rate.?limit|already exceeded|secondary limit|abuse detection|HTTP 429/i.test(error.stderr);
 export const rateLimitResponse = (stdout: string): string | null => {
   try {
     const value = Schema.decodeUnknownSync(

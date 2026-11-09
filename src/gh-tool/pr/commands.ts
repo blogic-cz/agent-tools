@@ -406,7 +406,7 @@ const countFeedbackOrigins = (items: ReadonlyArray<{ feedbackOrigin: string }>) 
 export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   prNumber: number | null,
 ) {
-  const { info, value } = yield* withStableHead(
+  const { info: baseInfo, value } = yield* withStableHead(
     prNumber,
     (number, headSha) =>
       Effect.gen(function* () {
@@ -417,10 +417,19 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
           fetchReviews(number, null, null, null, headSha),
           fetchComments(number, null, headSha),
         ]);
-        return { allThreads, summary, checkReport, reviews, inlineComments };
+        const gh = yield* GitHubService;
+        const { reviewDecision } = yield* gh.runGhJson<{ reviewDecision: string }>([
+          "pr",
+          "view",
+          String(number),
+          "--json",
+          "reviewDecision",
+        ]);
+        return { allThreads, summary, checkReport, reviews, inlineComments, reviewDecision };
       }),
     { operation: "review triage", command: "gh-tool pr review-triage" },
   );
+  const info = { ...baseInfo, reviewDecision: value.reviewDecision };
   const { allThreads, summary, checkReport, reviews, inlineComments } = value;
   const checks = checkReport.checks ?? [];
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);

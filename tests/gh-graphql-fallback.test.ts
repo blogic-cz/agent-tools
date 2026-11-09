@@ -3,6 +3,7 @@ import { Console, Effect, Layer, Result, Sink, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import { ConfigService } from "#config";
 import { GitHubService } from "#gh/read/transport";
+import { prReviewTriageSummary } from "#gh/read/pulls";
 import { reviewThreads } from "#gh/read/reviews";
 import { reportFallback, withFallbackOutput } from "#gh/read/graphql-fallback";
 import { classifyReviewTriage } from "#gh/pr/commands";
@@ -437,3 +438,185 @@ describe("GraphQL REST fallback", () => {
     });
   });
 });
+
+const ok = (data: unknown): Reply => ({ stdout: JSON.stringify(data), stderr: "", exitCode: 0 });
+const failure = (stderr: string): Reply => ({ stdout: "", stderr, exitCode: 1 });
+it.effect("falls back on a bare GraphQL HTTP 429", () =>
+  provide(
+    Effect.gen(function* () {
+      const nodes = yield* reviewThreads({ owner: "owner", name: "repo" }, 12, "origin");
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0]?.isResolved).toBeNull();
+    }),
+    [],
+    (args) => (args.includes("graphql") ? failure("gh: Too Many Requests (HTTP 429)") : undefined),
+  ),
+);
+for (const kind of ["summary", "threads"] as const)
+  it.effect(`replaces earlier GraphQL pages on REST fallback for ${kind}`, () => {
+    let pages = 0;
+    const comments = Array.from({ length: 101 }, (_, i) => ({
+      id: i + 1,
+      node_id: `comment-${i + 1}`,
+      path: "file.ts",
+      line: 1,
+      body: "Check",
+      user: { login: "reviewer" },
+      commit_id: "abc",
+    }));
+    return provide(
+      Effect.gen(function* () {
+        if (kind === "summary") {
+          const result = yield* prReviewTriageSummary({ owner: "owner", name: "repo" }, 12);
+          expect(result.summary.unrepliedReviewThreadsCount).toBe(101);
+          expect(result.summary.unresolvedReviewThreadsCount).toBeNull();
+        } else {
+          const result = yield* reviewThreads({ owner: "owner", name: "repo" }, 12, "origin");
+          expect(result).toHaveLength(101);
+          expect(new Set(result.map((node) => node.id)).size).toBe(101);
+        }
+      }),
+      [],
+      (args) => {
+        if (args.includes("graphql")) {
+          if (pages++ > 0) return failure("GraphQL RATE_LIMIT");
+          return ok({
+            data: {
+              repository: {
+                pullRequest: {
+                  number: 12,
+                  title: "Example",
+                  state: "OPEN",
+                  isDraft: false,
+                  baseRefName: "main",
+                  reviewDecision: "APPROVED",
+                  mergeable: "MERGEABLE",
+                  reviewRequests: { nodes: [] },
+                  reviewThreads: {
+                    nodes: comments.slice(0, 100).map((comment) => ({
+                      id: comment.node_id,
+                      isResolved: false,
+                      comments: {
+                        nodes: [
+                          {
+                            id: comment.node_id,
+                            databaseId: comment.id,
+                            path: comment.path,
+                            line: 1,
+                            body: comment.body,
+                            author: comment.user,
+                            commit: { oid: "abc" },
+                            replyTo: null,
+                          },
+                        ],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    })),
+                    pageInfo: { hasNextPage: true, endCursor: "page-1" },
+                  },
+                },
+              },
+            },
+          });
+        }
+        if (args[3]?.endsWith("/comments")) return ok([comments]);
+        if (args[3]?.includes("/check-runs?")) return ok([{ check_runs: [] }]);
+        if (args[3]?.includes("/status?")) return ok([{ statuses: [] }]);
+        return undefined;
+      },
+    );
+  });
+for (const state of ["closed", "merged"])
+  it.effect(`finds a ${state} PR from the current branch`, () =>
+    provide(
+      Effect.gen(function* () {
+        const gh = yield* GitHubService;
+        const result = yield* gh.runGhJson<{ number: number; state: string }>([
+          "pr",
+          "view",
+          "--json",
+          "number,state",
+        ]);
+        expect(result).toEqual({
+          number: 12,
+          state: state.toUpperCase(),
+          reviewDecision: "UNKNOWN",
+        });
+      }),
+      [],
+      (args) => {
+        if (args[0] === "branch") return { stdout: "feature\n", stderr: "", exitCode: 0 };
+        if (args[0] === "config") return failure("unset");
+        if (args[3]?.includes("/pulls?"))
+          return ok(
+            args[3].includes("state=all")
+              ? [[{ ...pull, state: "closed", merged: state === "merged" }]]
+              : [[]],
+          );
+        return ok({ ...pull, state: "closed", merged: state === "merged" });
+      },
+    ),
+  );
+it.effect("uses the tracking head and fork owner for current branch lookup", () => {
+  const calls: string[][] = [];
+  return provide(
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      const result = yield* gh.runGhJson<{ number: number }>(["pr", "view", "--json", "number"]);
+      expect(result.number).toBe(12);
+      expect(calls.some((args) => args[3]?.includes("head=alice%3Afeature"))).toBe(true);
+    }),
+    calls,
+    (args) => {
+      if (args[0] === "branch") return { stdout: "work\n", stderr: "", exitCode: 0 };
+      if (args[0] === "config")
+        return {
+          stdout: args[2]?.endsWith(".merge") ? "refs/heads/feature\n" : "alice\n",
+          stderr: "",
+          exitCode: 0,
+        };
+      if (args[0] === "remote")
+        return { stdout: "git@github.com:alice/fork.git\n", stderr: "", exitCode: 0 };
+      if (args[3]?.includes("/pulls?")) return ok([[pull]]);
+      return undefined;
+    },
+  );
+});
+it.effect("verifies the PR before writing a close comment", () => {
+  const calls: string[][] = [];
+  return provide(
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      const result = yield* gh
+        .runGh(["pr", "close", "12", "--comment", "Closing"])
+        .pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      expect(calls.some((args) => args.includes("POST"))).toBe(false);
+      expect(calls.some((args) => args.includes("PATCH"))).toBe(false);
+    }),
+    calls,
+    (args) => (args.includes("GET") ? failure("HTTP 404 Not Found") : ok({})),
+  );
+});
+it.effect("hydrates mergeability absent from REST list summaries", () =>
+  provide(
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      const result = yield* gh.runGhJson<Array<{ mergeable: string }>>([
+        "pr",
+        "list",
+        "--json",
+        "number,mergeable",
+      ]);
+      expect(result[0]?.mergeable).toBe("MERGEABLE");
+    }),
+    [],
+    (args) => {
+      if (args[3]?.includes("/pulls?")) {
+        const { mergeable: _, ...summary } = pull;
+        return ok([[summary]]);
+      }
+      return ok({ ...pull, mergeable: true });
+    },
+  ),
+);

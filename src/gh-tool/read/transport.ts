@@ -390,15 +390,46 @@ export class GitHubService extends Context.Service<
                   message: "Cannot determine the current branch; pass --pr",
                   stderr: branch.stderr,
                 });
+              const localBranch = branch.stdout.trim();
+              const trackingBranch = yield* executeGh(
+                ["config", "--get", "branch." + localBranch + ".merge"],
+                "git",
+              );
+              const trackingRemote = yield* executeGh(
+                ["config", "--get", "branch." + localBranch + ".remote"],
+                "git",
+              );
+              let head =
+                trackingBranch.exitCode === 0
+                  ? trackingBranch.stdout.trim().replace(/^refs\/heads\//, "")
+                  : localBranch;
+              if (trackingRemote.exitCode === 0 && trackingRemote.stdout.trim() !== ".") {
+                const remote = yield* executeGh(
+                  ["remote", "get-url", trackingRemote.stdout.trim()],
+                  "git",
+                );
+                const owner =
+                  remote.exitCode === 0
+                    ? /[:/]([^/:]+)\/[^/]+?(?:\.git)?$/.exec(remote.stdout.trim())?.[1]
+                    : undefined;
+                if (owner === undefined)
+                  return yield* new GitHubCommandError({
+                    command: "pr view",
+                    exitCode: 1,
+                    message: "Cannot determine the tracking repository; pass --pr",
+                    stderr: remote.stderr,
+                  });
+                head = owner + ":" + head;
+              }
               const repoIndex = args.indexOf("--repo");
               const selectedRepo = repoIndex < 0 ? target : args[repoIndex + 1];
               const pulls = yield* runGh([
                 "pr",
                 "list",
                 "--head",
-                branch.stdout.trim(),
+                head,
                 "--state",
-                "open",
+                "all",
                 "--limit",
                 "2",
                 "--json",
@@ -422,8 +453,8 @@ export class GitHubService extends Context.Service<
                 return yield* new GitHubCommandError({
                   command: "pr view",
                   exitCode: 1,
-                  message: "Cannot identify one open PR for the current branch; pass --pr",
-                  stderr: "Current branch has zero or multiple open PRs",
+                  message: "Cannot identify one PR for the current branch; pass --pr",
+                  stderr: "Current branch has zero or multiple PRs",
                 });
               args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
             }

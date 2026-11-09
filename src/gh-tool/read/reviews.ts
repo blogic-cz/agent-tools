@@ -60,6 +60,7 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
       after,
     })) as ThreadsQueryResult;
 
+    if ("fallback" in response) nodes.length = 0;
     const page = response.repository.pullRequest.reviewThreads;
     for (const node of page.nodes) {
       let commentsAfter = node.comments.pageInfo?.endCursor ?? null;

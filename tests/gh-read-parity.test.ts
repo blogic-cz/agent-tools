@@ -120,11 +120,6 @@ it("replays published 1.7.5 outputs with original review location fields without
       if (["review-triage", "review-triage-batch"].includes(entry.argv[1] ?? ""))
         expected = expected.replace(/^( +)"reviews": \[$/gm, '$1"checksStatus": "reported",\n$&');
     }
-    expected = expected.replace(/"reviewDecision": (""|null)/g, '"reviewDecision": "UNKNOWN"');
-    expected = expected.replace(
-      /("unresolved_threads")(\n\s*\])/g,
-      '$1,\n        "review=UNKNOWN"$2',
-    );
     const result = await invoke(replayFlags(entry.argv));
     const pr = Number(entry.argv[entry.argv.indexOf("--pr") + 1]) || 42;
     expect(JSON.parse(result.stdout)).toEqual(restExpected(JSON.parse(expected), pr));
