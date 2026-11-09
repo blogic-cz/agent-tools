@@ -598,9 +598,7 @@ it.effect("resolves a tracked PR ref by number in the selected repository", () =
       expect(result.number).toBe(12);
       expect(calls.some((args) => args.includes("repos/owner/repo/pulls/12"))).toBe(true);
       expect(
-        calls.some((args) =>
-          args.some((arg) => arg.includes("refs%2Fpull%2F12%2Fhead")),
-        ),
+        calls.some((args) => args.some((arg) => arg.includes("refs%2Fpull%2F12%2Fhead"))),
       ).toBe(false);
     }),
     calls,
