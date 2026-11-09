@@ -208,7 +208,8 @@ export const createReplayGh = () => {
       bucket,
       link: "external",
     });
-    if (args[0] === "branch" && target === "--show-current") printText("feat/example");
+    if (args[0] === "config") exitCode = 1;
+    else if (args[0] === "branch" && target === "--show-current") printText("feat/example");
     else if (args[0] === "api" && /^repos\/[^/]+\/[^/]+$/.test(target))
       print({
         owner: { login: "owner" },
