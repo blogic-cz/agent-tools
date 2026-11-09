@@ -359,8 +359,13 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
     const resolved: string[] = [];
     if (value.kind === "stream") return [];
     if (
-      (value.kind === "opaque" &&
-        !value.globPatterns?.every((pattern) => CODE_OR_PROSE_EXTENSION.test(pattern))) ||
+      value.kind === "opaque" &&
+      value.globPatterns !== undefined &&
+      !value.globPatterns.every((pattern) => CODE_OR_PROSE_EXTENSION.test(pattern))
+    )
+      emit("opaque-path", "glob does not end in a code or prose extension", span, true);
+    else if (
+      (value.kind === "opaque" && value.globPatterns === undefined) ||
       scope.cwd.kind !== "literal"
     )
       emit("opaque-path", "path is not a finite literal", span, true);

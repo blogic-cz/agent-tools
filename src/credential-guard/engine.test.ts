@@ -378,6 +378,19 @@ describe("agent configuration boundaries", () => {
     });
   });
   it.each([
+    ["rg -n x --glob '*.json' src", "glob does not end in a code or prose extension"],
+    ["rg -n x -g '*.env' src", "glob does not end in a code or prose extension"],
+    ["cp *.txt /tmp/dir/", "glob does not end in a code or prose extension"],
+    ['cat "$OLDPWD/README.md"', "path is not a finite literal"],
+  ])("names why %s is an opaque path", (command, detail) => {
+    expect(bash(command)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "opaque-path", detail })]),
+    });
+  });
+  it("allows a glob that ends in a code or prose extension", () => {
+    expect(bash("rg -n x --glob '*.cs' src").kind).toBe("pass");
+  });
+  it.each([
     ["cp *.txt /tmp/dir/", "opaque-path"],
     ["cp --target-directory=/tmp/dir a b", "no-analyzer"],
   ])("preserves the base refusal for %s", (command, rule) => {
