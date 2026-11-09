@@ -112,7 +112,8 @@ const recovery: Readonly<Record<string, string>> = {
   "secret-source":
     "Use a bounded wrapper operation with filtered output. Do not dump credentials or the environment.",
   "sensitive-path": "Use a nonsensitive example or template, or a bounded wrapper operation.",
-  "opaque-path": "Use literal nonsensitive file paths.",
+  "opaque-path":
+    "Use literal nonsensitive file paths. A glob must end in a code or prose extension, such as *.ts, *.cs or *.md.",
   "opaque-executable": "Use a literal executable name.",
   "opaque-code": "Use a supported literal shell body or a repository-owned bounded operation.",
   "opaque-env-name": "Use an exact approved environment variable name.",
