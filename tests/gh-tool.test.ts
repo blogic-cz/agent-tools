@@ -9395,7 +9395,7 @@ describe("PR composite commands", () => {
       expect(result.ready).toEqual({
         ready: true,
         mergeable: "MERGEABLE",
-        reviewDecision: "",
+        reviewDecision: null,
         blocking: [],
       });
     }),

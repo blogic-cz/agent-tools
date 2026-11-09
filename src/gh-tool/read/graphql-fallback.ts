@@ -94,7 +94,8 @@ export const restGraphql = (
   )
     return null;
   const repo = `${variables.owner}/${variables.name}`;
-  const root = `repos/${repo}/pulls/${variables.pr}`;
+  const pr = variables.pr;
+  const root = `repos/${repo}/pulls/${pr}`;
   if (
     query.includes("states: [PENDING]") ||
     query.includes("... on PullRequestReview {") ||
@@ -136,11 +137,11 @@ export const restGraphql = (
           pageInfo: { hasNextPage: false, endCursor: null },
         },
       }));
-      const pull = yield* restPull(read, repo, String(variables.pr));
+      const pull = yield* restPull(read, repo, String(pr));
       const reviewDecision = query.includes("reviewDecision")
         ? yield* restReviewDecision(read, {
             repo,
-            number: variables.pr,
+            number: pr,
             baseRefName: pull.baseRefName,
             headSha: pull.headSha,
           })

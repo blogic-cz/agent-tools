@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { GitHubCommandError } from "#gh/errors";
 import type { GhError } from "./transport";
 
@@ -117,7 +117,10 @@ const noRulesets = (error: unknown) =>
     (/HTTP 403/i.test(error.message) &&
       /Upgrade to GitHub Pro|make this repository public/i.test(error.message)));
 const restValue = <A>(read: JsonRead, path: string, schema: Schema.Codec<A>) =>
-  Effect.either(restGet(read, path).pipe(Effect.flatMap((value) => parseRest(schema, value))));
+  restGet(read, path).pipe(
+    Effect.flatMap((value) => parseRest(schema, value)),
+    Effect.result,
+  );
 const Rulesets = Schema.Array(
   Schema.Struct({ type: Schema.String, parameters: Schema.optional(Schema.Unknown) }),
 );
@@ -134,11 +137,11 @@ export const restReviewDecision = (
       Rulesets,
     );
     let rulesets: ReviewRule[] = [];
-    if (rulesetResult._tag === "Left") {
-      if (!noRulesets(rulesetResult.left)) return "UNKNOWN";
+    if (Result.isFailure(rulesetResult)) {
+      if (!noRulesets(rulesetResult.failure)) return "UNKNOWN";
     } else {
       try {
-        rulesets = rulesetResult.right.flatMap((rule) =>
+        rulesets = rulesetResult.success.flatMap((rule) =>
           rule.type === "pull_request" ? [reviewRule(rule.parameters)] : [],
         );
       } catch {
@@ -151,19 +154,19 @@ export const restReviewDecision = (
       `repos/${input.repo}/branches/${base}`,
       Schema.Struct({ protected: Schema.Boolean }),
     );
-    if (branchResult._tag === "Left") return "UNKNOWN";
+    if (Result.isFailure(branchResult)) return "UNKNOWN";
 
     let classic: ReviewRule[] = [];
-    if (branchResult.right.protected) {
+    if (branchResult.success.protected) {
       const protectionResult = yield* restValue(
         read,
         `repos/${input.repo}/branches/${base}/protection/required_pull_request_reviews`,
         RestReviewRule,
       );
-      if (protectionResult._tag === "Left") {
-        if (!/HTTP 404|Not Found/i.test(protectionResult.left.message)) return "UNKNOWN";
+      if (Result.isFailure(protectionResult)) {
+        if (!/HTTP 404|Not Found/i.test(protectionResult.failure.message)) return "UNKNOWN";
       } else {
-        classic = [reviewRule(protectionResult.right)];
+        classic = [reviewRule(protectionResult.success)];
       }
     }
 
@@ -192,10 +195,10 @@ export const restReviewDecision = (
         ),
       ),
     );
-    if (reviewsResult._tag === "Left") return "UNKNOWN";
+    if (Result.isFailure(reviewsResult)) return "UNKNOWN";
 
-    const latest = new Map<string, (typeof reviewsResult.right)[number][number]>();
-    for (const review of reviewsResult.right.flat()) {
+    const latest = new Map<string, (typeof reviewsResult.success)[number][number]>();
+    for (const review of reviewsResult.success.flat()) {
       const state = review.state.toUpperCase();
       if (review.user === null || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state))
         continue;
@@ -319,10 +322,11 @@ export const restPorcelain = (
       ]);
     });
   if (!args.includes("--json")) return null;
-  const fields = new Set((option(args, "--json") ?? "").split(","));
+  const requestedFields = new Set((option(args, "--json") ?? "").split(","));
+  const fields = new Set([...requestedFields, "reviewDecision"]);
   const projectPull = (pull: ReturnType<typeof pullFromRest>) =>
     Effect.gen(function* () {
-      const value = fields.has("reviewDecision")
+      const value = requestedFields.has("reviewDecision")
         ? {
             ...pull,
             reviewDecision: yield* restReviewDecision(read, {
@@ -471,9 +475,9 @@ export const restPorcelain = (
           link: status.target_url ?? "",
         });
       }
-      const fields = (option(args, "--json") ?? "").split(",");
+      const checkFields = (option(args, "--json") ?? "").split(",");
       return checks.map((check) =>
-        Object.fromEntries(Object.entries(check).filter(([key]) => fields.includes(key))),
+        Object.fromEntries(Object.entries(check).filter(([key]) => checkFields.includes(key))),
       );
     });
   return null;

@@ -502,7 +502,12 @@ describe("GraphQL REST fallback", () => {
   );
 
   it.effect("computes review decisions from latest reviewer states", () => {
-    const cases = [
+    const cases: Array<{
+      name: string;
+      reviews: unknown[];
+      stale?: boolean;
+      expected: string;
+    }> = [
       {
         name: "one approval on the current head",
         reviews: [
@@ -583,8 +588,8 @@ describe("GraphQL REST fallback", () => {
         stale: true,
         expected: "REVIEW_REQUIRED",
       },
-    ] as const;
-    return Effect.forEach(cases, ({ name, reviews, stale, expected }) =>
+    ];
+    return Effect.forEach(cases, ({ reviews, stale, expected }) =>
       decision({
         rulesets: [
           {
@@ -597,7 +602,7 @@ describe("GraphQL REST fallback", () => {
         ],
         reviews: [...reviews],
       }).pipe(
-        Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision, name).toBe(expected))),
+        Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision).toBe(expected))),
       ),
     );
   });
