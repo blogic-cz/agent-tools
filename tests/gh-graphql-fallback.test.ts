@@ -1,14 +1,25 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Console, Effect, Layer, Result, Sink, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ConfigService } from "#config";
 import { GitHubService } from "#gh/read/transport";
-import { PR_VIEW_FIELDS, PR_LIST_FIELDS, prReviewTriageSummary } from "#gh/read/pulls";
+import {
+  PR_VIEW_FIELDS,
+  PR_LIST_FIELDS,
+  prList,
+  prReviewTriageSummary,
+  prView,
+} from "#gh/read/pulls";
 import { reviewThreads } from "#gh/read/reviews";
 import { reportFallback, withFallbackOutput } from "#gh/read/graphql-fallback";
 import { classifyReviewTriage } from "#gh/pr/commands";
 import { Telemetry, type RequestEvent } from "#gh/read/telemetry";
 import { submitPendingReview } from "#gh/pr/review";
+import { ReadCache } from "#gh/read/cache";
+import { FileStore } from "#gh/read/store";
 
 const pull = {
   number: 12,
@@ -488,6 +499,152 @@ describe("GraphQL REST fallback", () => {
       },
     );
   };
+
+  const runCachedPRRead = (
+    operation: "list" | "view" | "currentBranch",
+    store: FileStore,
+    calls: string[][],
+    events: RequestEvent[],
+    blocked: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const current = yield* Console.Console;
+      const output: string[] = [];
+      const warnings: string[] = [];
+      const result = yield* withFallbackOutput(
+        Effect.gen(function* () {
+          const repo = { owner: "owner", name: "repo" };
+          const value =
+            operation === "list"
+              ? yield* prList(repo, {
+                  state: "open",
+                  limit: 30,
+                  author: null,
+                  base: null,
+                  head: null,
+                  search: null,
+                })
+              : yield* prView(repo, {
+                  by: operation === "currentBranch" ? "currentBranch" : "number",
+                  ...(operation === "currentBranch" ? {} : { number: 12 }),
+                });
+          yield* Console.log(JSON.stringify(value));
+          return value;
+        }),
+      ).pipe(
+        Effect.provide(GitHubService.layer),
+        Effect.provide(
+          setup(calls, (args) => {
+            if (args[0] === "pr") return blocked ? undefined : ok({ reviewDecision: "APPROVED" });
+            const path = args[3] ?? "";
+            if (path.includes("/pulls?")) return ok([[pull]]);
+            if (path.endsWith("/rules/branches/main"))
+              return ok([
+                {
+                  type: "pull_request",
+                  parameters: {
+                    required_approving_review_count: 1,
+                    require_code_owner_review: true,
+                  },
+                },
+              ]);
+            if (path.endsWith("/branches/main")) return ok({ protected: false });
+            if (path.endsWith("/pulls/12")) return ok(pull);
+            return undefined;
+          }),
+        ),
+        Effect.provide(
+          Layer.succeed(ConfigService, { github: { default: { owner: "owner", repo: "repo" } } }),
+        ),
+        Effect.provideService(ReadCache, { store, warned: false }),
+        Effect.provideService(Telemetry, {
+          record: (event) => events.push(event),
+          read: () => [],
+          close: () => {},
+        }),
+        Effect.provideService(Console.Console, {
+          ...current,
+          log: (...args) => output.push(...args.map(String)),
+          warn: (...args) => warnings.push(...args.map(String)),
+        }),
+      );
+      return { result, output, warnings };
+    });
+
+  for (const operation of ["list", "view"] as const)
+    it.effect(`does not cache fallback ${operation} reads across service instances`, () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-pr-fallback-cache-")));
+        return yield* Effect.acquireUseRelease(
+          Effect.promise(() => FileStore.open("fixture", root)),
+          (store) =>
+            Effect.gen(function* () {
+              const calls: string[][] = [];
+              const firstEvents: RequestEvent[] = [];
+              const secondEvents: RequestEvent[] = [];
+              const first = yield* runCachedPRRead(operation, store, calls, firstEvents, true);
+              const second = yield* runCachedPRRead(operation, store, calls, secondEvents, true);
+              const firstOutput = JSON.parse(first.output[0] ?? "null");
+              const secondOutput = JSON.parse(second.output[0] ?? "null");
+              expect(calls.filter((args) => args[0] === "pr" && args[1] === "view")).toHaveLength(
+                2,
+              );
+              expect(firstOutput.fallback.unknown).toContain("reviewDecision");
+              expect(secondOutput.fallback.unknown).toContain("reviewDecision");
+              expect(first.warnings.join(" ")).toContain("Unknown: reviewDecision");
+              expect(second.warnings.join(" ")).toContain("Unknown: reviewDecision");
+              expect(firstEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
+              expect(secondEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
+            }),
+          () => Effect.promise(() => rm(root, { recursive: true, force: true })),
+        );
+      }),
+    );
+
+  it.effect("does not seed a fallback current-branch PR view", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-pr-fallback-seed-")));
+      return yield* Effect.acquireUseRelease(
+        Effect.promise(() => FileStore.open("fixture", root)),
+        (store) =>
+          Effect.gen(function* () {
+            const calls: string[][] = [];
+            const firstEvents: RequestEvent[] = [];
+            const secondEvents: RequestEvent[] = [];
+            const first = yield* runCachedPRRead("currentBranch", store, calls, firstEvents, true);
+            const second = yield* runCachedPRRead("view", store, calls, secondEvents, false);
+            expect(first.result).toMatchObject({ number: 12, headRefOid: "abc" });
+            expect(JSON.parse(first.output[0] ?? "null").fallback.unknown).toContain(
+              "reviewDecision",
+            );
+            expect((second.result as { reviewDecision: string }).reviewDecision).toBe("APPROVED");
+            expect(calls.filter((args) => args[0] === "pr" && args[1] === "view")).toHaveLength(2);
+          }),
+        () => Effect.promise(() => rm(root, { recursive: true, force: true })),
+      );
+    }),
+  );
+
+  it.effect("still caches healthy PR list decisions", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-pr-healthy-cache-")));
+      return yield* Effect.acquireUseRelease(
+        Effect.promise(() => FileStore.open("fixture", root)),
+        (store) =>
+          Effect.gen(function* () {
+            const calls: string[][] = [];
+            const firstEvents: RequestEvent[] = [];
+            const secondEvents: RequestEvent[] = [];
+            const first = yield* runCachedPRRead("list", store, calls, firstEvents, false);
+            const second = yield* runCachedPRRead("list", store, calls, secondEvents, false);
+            expect(first.result).toMatchObject([{ reviewDecision: "APPROVED" }]);
+            expect(second.result).toMatchObject([{ reviewDecision: "APPROVED" }]);
+            expect(calls.filter((args) => args[0] === "pr" && args[1] === "view")).toHaveLength(1);
+          }),
+        () => Effect.promise(() => rm(root, { recursive: true, force: true })),
+      );
+    }),
+  );
 
   it.effect("refuses a permission-masked classic protection 404", () =>
     decision({ branch: { protected: true }, protectionError: "HTTP 404 Not Found" }).pipe(
