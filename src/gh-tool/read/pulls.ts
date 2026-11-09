@@ -8,6 +8,7 @@ import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
+import { isFallbackResult } from "./graphql-fallback";
 import type { RepoRef } from "./keys";
 import { parsePreserving } from "./porcelain";
 
@@ -221,7 +222,8 @@ export const prList = Effect.fn("reads.prList")(function* (
       gh
         .runGhJson<PrListItem[]>(args)
         .pipe(Effect.map((value) => ({ kind: "fresh" as const, value }))),
-    cacheableWhen: (value) => value.every((item) => !("fallback" in item)),
+    cacheableWhen: (value) =>
+      !isFallbackResult(value) && value.every((item) => !("fallback" in item)),
   });
 });
 

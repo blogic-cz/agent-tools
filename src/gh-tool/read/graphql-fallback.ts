@@ -6,6 +6,14 @@ import { GitHubCommandError } from "#gh/errors";
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
 
 export type Fallback = { source: "REST"; reason: string; unknown: string[] };
+const fallbackResults = new WeakSet<object>();
+export const markFallbackResult = <A extends object>(value: A): A => {
+  fallbackResults.add(value);
+  return value;
+};
+export const isFallbackResult = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && fallbackResults.has(value);
+
 export const FallbackState = Context.Reference<{ notices: Fallback[] } | null>("gh/FallbackState", {
   defaultValue: () => null,
 });

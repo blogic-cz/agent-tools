@@ -11,7 +11,9 @@ import {
 } from "./rest-porcelain";
 import {
   graphqlLimitError,
+  isFallbackResult,
   isGraphqlLimit,
+  markFallbackResult,
   reportFallback,
   restGraphql,
   rateLimitResponse,
@@ -575,7 +577,11 @@ export class GitHubService extends Context.Service<
                 const output = Array.isArray(value)
                   ? value.map((item) => ({ ...item, fallback: notice }))
                   : { ...Object(value), fallback: notice };
-                return { stdout: JSON.stringify(output), stderr: "", exitCode: 0 };
+                return markFallbackResult({
+                  stdout: JSON.stringify(output),
+                  stderr: "",
+                  exitCode: 0,
+                });
               });
             const jsonFields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
             if (
@@ -686,7 +692,9 @@ export class GitHubService extends Context.Service<
                 }),
             }).pipe(Effect.mapError((error) => error as GhError));
 
-            return parsed;
+            return isFallbackResult(result) && typeof parsed === "object" && parsed !== null
+              ? markFallbackResult(parsed)
+              : parsed;
           }).pipe(Effect.withSpan("GitHubService.runGhJson"));
 
         const runGraphQLRaw = Effect.fn("GitHubService.runGraphQL")(function* (
