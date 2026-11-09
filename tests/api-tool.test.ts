@@ -283,6 +283,287 @@ describe("REST credential proxy boundaries", () => {
     });
     expect(calls).toBe(1);
   });
+  it("reads nested login tokens from plain objects and protects minted tokens", async () => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { password: "token" },
+      tokenPath: ["userInfo", "token"],
+    };
+    const calls: TransportRequest[] = [];
+    const proxy = proxyFor(async (input) => {
+      calls.push(input);
+      return input.url.pathname === "/auth/login"
+        ? { status: 200, body: '{"userInfo":{"token":"nested-token"}}' }
+        : { status: 200, body: '{"echo":"nested-token"}' };
+    }, value);
+    await expect(proxy.request(capability, request)).rejects.toMatchObject({
+      code: "DISCLOSURE_DENIED",
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.headers.authorization).toBe("Bearer nested-token");
+  });
+  it.each([
+    ['{"userInfo":{}}', ["userInfo", "token"]],
+    ['{"userInfo":[]}', ["userInfo", "token"]],
+    ['{"userInfo":{"token":4}}', ["userInfo", "token"]],
+  ])("refuses malformed nested login token paths before API request", async (body, tokenPath) => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { password: "token" },
+      tokenPath,
+    };
+    const calls: TransportRequest[] = [];
+    const proxy = proxyFor(async (input) => {
+      calls.push(input);
+      return { status: 200, body };
+    }, value);
+    await expect(proxy.request(capability, request)).rejects.toMatchObject({
+      code: "UPSTREAM_FAILED",
+    });
+    expect(calls.map((call) => call.url.pathname)).toEqual(["/auth/login"]);
+  });
+  it("rejects conflicting login token selectors", () => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { password: "token" },
+      tokenField: "token",
+      tokenPath: ["userInfo", "token"],
+    };
+    expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
+    for (const tokenReuseMs of [0, 86400001]) {
+      const invalid = config();
+      invalid.profiles.sample.auth = {
+        kind: "login",
+        path: "/auth/login",
+        fields: { password: "token" },
+        tokenField: "token",
+        tokenReuseMs,
+      };
+      expect(() => validateOperator(invalid)).toThrow("CONFIG_INVALID");
+    }
+    for (const tokenPath of [[], [""], Array(9).fill("segment")]) {
+      const invalid = config();
+      invalid.profiles.sample.auth = {
+        kind: "login",
+        path: "/auth/login",
+        fields: { password: "token" },
+        tokenPath,
+      };
+      expect(() => validateOperator(invalid)).toThrow("CONFIG_INVALID");
+    }
+  });
+  it("sends literal login fields without treating them as secrets", async () => {
+    const value = config();
+    value.profiles.sample.auth = {
+      kind: "login",
+      path: "/auth/login",
+      fields: { clientId: { literal: "synthetic-client" }, password: { secretRef: "token" } },
+      tokenField: "token",
+    };
+    const proxy = proxyFor(
+      async (input) =>
+        input.url.pathname === "/auth/login"
+          ? { status: 200, body: '{"token":"minted-token"}' }
+          : { status: 200, body: '{"echo":"synthetic-client"}' },
+      value,
+    );
+    await expect(proxy.request(capability, request)).resolves.toEqual({
+      status: 200,
+      data: { echo: "synthetic-client" },
+    });
+    expect(() => {
+      const onlyLiterals = config();
+      onlyLiterals.profiles.sample.auth = {
+        kind: "login",
+        path: "/auth/login",
+        fields: { clientId: { literal: "synthetic-client" } },
+        tokenField: "token",
+      };
+      validateOperator(onlyLiterals);
+    }).toThrow("CONFIG_INVALID");
+  });
+  it("merges bodyFields into a client JSON object and protects injected secrets", async () => {
+    const value = config();
+    value.profiles.sample.methods = ["POST"];
+    value.profiles.sample.auth = {
+      kind: "bodyFields",
+      fields: { apiKey: { secretRef: "token" }, clientId: { literal: "synthetic-client" } },
+    };
+    let captured: TransportRequest | undefined;
+    const proxy = proxyFor(async (input) => {
+      captured = input;
+      return { status: 200, body: '{"echo":"synthetic-client"}' };
+    }, value);
+    await expect(
+      proxy.request(capability, { ...request, method: "POST", body: { query: "safe" } }),
+    ).resolves.toEqual({ status: 200, data: { echo: "synthetic-client" } });
+    expect(captured?.body).toBe(
+      JSON.stringify({ query: "safe", apiKey: credential, clientId: "synthetic-client" }),
+    );
+    expect(() => {
+      const invalid = config();
+      invalid.profiles.sample.auth = {
+        kind: "bodyFields",
+        fields: { apiKey: { literal: "only-literal" } },
+      };
+      validateOperator(invalid);
+    }).toThrow("CONFIG_INVALID");
+    const duplicate = config();
+    duplicate.profiles.sample.methods = ["POST"];
+    duplicate.profiles.sample.auth = {
+      kind: "bodyFields",
+      fields: { ApiKey: { secretRef: "token" }, apikey: { literal: "duplicate" } },
+    };
+    expect(() => validateOperator(duplicate)).toThrow("CONFIG_INVALID");
+    for (const invalid of [
+      { ...request, method: "POST", body: { APIKEY: "client" } },
+      { ...request, method: "POST", body: { CLIENTID: "client" } },
+      { ...request, method: "POST", body: [] },
+      { ...request, method: "POST", body: null },
+      { ...request, method: "POST", body: "text" },
+      { ...request, method: "POST" },
+      { ...request, method: "GET", body: {} },
+    ]) {
+      let calls = 0;
+      const guarded = proxyFor(async () => {
+        calls++;
+        return { status: 200, body: "{}" };
+      }, value);
+      await expect(guarded.request(capability, invalid)).rejects.toBeDefined();
+      expect(calls).toBe(0);
+    }
+  });
+  it("requires explicit non-GET methods for bodyFields and checks merged size", async () => {
+    for (const methods of [undefined, ["GET"], ["GET", "POST"]] as const) {
+      const value = config();
+      value.profiles.sample.methods = methods;
+      value.profiles.sample.auth = { kind: "bodyFields", fields: { key: { secretRef: "token" } } };
+      expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
+    }
+    const value = config();
+    value.profiles.sample.maxRequestBytes = 20;
+    value.profiles.sample.methods = ["POST"];
+    value.profiles.sample.auth = { kind: "bodyFields", fields: { key: { secretRef: "token" } } };
+    let calls = 0;
+    const proxy = proxyFor(async () => {
+      calls++;
+      return { status: 200, body: "{}" };
+    }, value);
+    await expect(
+      proxy.request(capability, { ...request, method: "POST", body: { value: "x".repeat(20) } }),
+    ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    expect(calls).toBe(0);
+    expect(() => createProxy({ config: value, secrets: {}, transport: success })).toThrow(
+      "CREDENTIAL_UNAVAILABLE",
+    );
+  });
+  it("keeps bodyFields safe for own __proto__ keys and literal overrides", async () => {
+    const value = config();
+    value.profiles.sample.methods = ["POST"];
+    value.profiles.sample.auth = {
+      kind: "bodyFields",
+      fields: { clientId: { literal: "server-client" }, apiKey: { secretRef: "token" } },
+    };
+    const body = JSON.parse('{"__proto__":{"polluted":true},"query":"safe"}');
+    let captured: TransportRequest | undefined;
+    await proxyFor(async (input) => {
+      captured = input;
+      return success(input);
+    }, value).request(capability, { ...request, method: "POST", body });
+    expect(captured?.body).toBe(
+      '{"__proto__":{"polluted":true},"query":"safe","clientId":"server-client","apiKey":"synthetic-upstream-secret"}',
+    );
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+  it.each([credential, Buffer.from(credential).toString("base64"), encodeURIComponent(credential)])(
+    "blocks secret echoes from bodyFields: %s",
+    async (echo) => {
+      const value = config();
+      value.profiles.sample.methods = ["POST"];
+      value.profiles.sample.auth = {
+        kind: "bodyFields",
+        fields: { apiKey: { secretRef: "token" } },
+      };
+      const proxy = proxyFor(async () => ({ status: 200, body: JSON.stringify({ echo }) }), value);
+      await expect(
+        proxy.request(capability, { ...request, method: "POST", body: {} }),
+      ).rejects.toMatchObject({ code: "DISCLOSURE_DENIED" });
+    },
+  );
+  it("reuses login tokens until expiry and drops them after 401", async () => {
+    let time = 100;
+    const value = loginConfig();
+    if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+    value.profiles.sample.auth.tokenReuseMs = 20;
+    value.grants[0]!.maxRequests = 10;
+    let logins = 0;
+    let failNext = false;
+    const proxy = createProxy({
+      config: value,
+      secrets: { token: credential },
+      now: () => time,
+      transport: async (input) => {
+        if (input.url.pathname === "/auth/login") {
+          logins++;
+          return { status: 200, body: JSON.stringify({ token: `minted-${logins}` }) };
+        }
+        if (failNext) {
+          failNext = false;
+          return { status: 401, body: "{}" };
+        }
+        return success(input);
+      },
+    });
+    await proxy.request(capability, request);
+    await proxy.request(capability, request);
+    expect(logins).toBe(1);
+    time += 20;
+    await proxy.request(capability, request);
+    expect(logins).toBe(2);
+    failNext = true;
+    await expect(proxy.request(capability, request)).resolves.toEqual({ status: 401, data: {} });
+    await proxy.request(capability, request);
+    expect(logins).toBe(3);
+  });
+  it("shares concurrent first login when token reuse is enabled and keeps default behavior", async () => {
+    const value = loginConfig();
+    if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+    value.profiles.sample.auth.tokenReuseMs = 1000;
+    let complete: ((result: { status: number; body: string }) => void) | undefined;
+    let logins = 0;
+    const proxy = proxyFor((input) => {
+      if (input.url.pathname !== "/auth/login") return success(input);
+      logins++;
+      return new Promise((resolve) => {
+        complete = resolve;
+      });
+    }, value);
+    const first = proxy.request(capability, request);
+    const second = proxy.request(capability, request);
+    await Promise.resolve();
+    expect(logins).toBe(1);
+    complete?.({ status: 200, body: '{"token":"shared-token"}' });
+    await Promise.all([first, second]);
+
+    const defaultConfig = loginConfig();
+    let defaultLogins = 0;
+    const noReuse = proxyFor(async (input) => {
+      if (input.url.pathname === "/auth/login") {
+        defaultLogins++;
+        return { status: 200, body: '{"token":"fresh-token"}' };
+      }
+      return success(input);
+    }, defaultConfig);
+    await noReuse.request(capability, request);
+    await noReuse.request(capability, request);
+    expect(defaultLogins).toBe(2);
+  });
   it("bounds cumulative requests and byte reservations even when requests fail", async () => {
     const value = config();
     value.grants[0]!.maxRequests = 1;

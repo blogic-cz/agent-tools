@@ -4,6 +4,15 @@ import { Schema } from "effect";
 import { apiError } from "./errors";
 
 export const Method = Schema.Literals(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const SecretField = Schema.Union([
+  Schema.String,
+  Schema.Struct({ secretRef: Schema.String }),
+  Schema.Struct({ literal: Schema.Json }),
+]);
+const ConfiguredField = Schema.Union([
+  Schema.Struct({ secretRef: Schema.String }),
+  Schema.Struct({ literal: Schema.Json }),
+]);
 const Auth = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("bearer"), secretRef: Schema.String }),
   Schema.Struct({
@@ -19,8 +28,14 @@ const Auth = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("login"),
     path: Schema.String,
-    fields: Schema.Record(Schema.String, Schema.String),
-    tokenField: Schema.String,
+    fields: Schema.Record(Schema.String, SecretField),
+    tokenField: Schema.optionalKey(Schema.String),
+    tokenPath: Schema.optionalKey(Schema.Array(Schema.String)),
+    tokenReuseMs: Schema.optionalKey(Schema.Number),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("bodyFields"),
+    fields: Schema.Record(Schema.String, ConfiguredField),
   }),
 ]);
 export const ProfileSchema = Schema.Struct({
@@ -188,13 +203,58 @@ export function validateOperator(value: unknown): OperatorConfig {
       throw apiError("CONFIG_INVALID");
     if (profile.auth.kind === "login") {
       relativePath(profile.auth.path);
+      const fields = Object.values(profile.auth.fields);
+      if (
+        !fields.length ||
+        !fields.some((fieldValue) => typeof fieldValue === "string" || "secretRef" in fieldValue) ||
+        (profile.auth.tokenField !== undefined && profile.auth.tokenPath !== undefined) ||
+        (profile.auth.tokenField === undefined && profile.auth.tokenPath === undefined) ||
+        (profile.auth.tokenField !== undefined && !profile.auth.tokenField) ||
+        (profile.auth.tokenPath !== undefined &&
+          (profile.auth.tokenPath.length < 1 ||
+            profile.auth.tokenPath.length > 8 ||
+            profile.auth.tokenPath.some((segment) => !segment))) ||
+        (profile.auth.tokenReuseMs !== undefined && !bounded(profile.auth.tokenReuseMs, 86400000))
+      )
+        throw apiError("CONFIG_INVALID");
       const minimumBody = JSON.stringify(
-        Object.fromEntries(Object.keys(profile.auth.fields).map((field) => [field, ""])),
+        Object.fromEntries(
+          Object.entries(profile.auth.fields).map(([field, fieldValue]) => [
+            field,
+            typeof fieldValue === "string"
+              ? ""
+              : "secretRef" in fieldValue
+                ? ""
+                : fieldValue.literal,
+          ]),
+        ),
       );
       if (
         Buffer.byteLength(profile.auth.path) + Buffer.byteLength(minimumBody) >
         profile.maxRequestBytes
       )
+        throw apiError("CONFIG_INVALID");
+    }
+    if (profile.auth.kind === "bodyFields") {
+      const fields = Object.entries(profile.auth.fields);
+      const normalized = fields.map(([field]) => field.toLowerCase());
+      if (
+        !fields.length ||
+        !fields.some(([, fieldValue]) => "secretRef" in fieldValue) ||
+        new Set(normalized).size !== normalized.length ||
+        profile.methods === undefined ||
+        profile.methods.includes("GET")
+      )
+        throw apiError("CONFIG_INVALID");
+      const minimumBody = JSON.stringify(
+        Object.fromEntries(
+          fields.map(([field, fieldValue]) => [
+            field,
+            "secretRef" in fieldValue ? "" : fieldValue.literal,
+          ]),
+        ),
+      );
+      if (Buffer.byteLength(minimumBody) > profile.maxRequestBytes)
         throw apiError("CONFIG_INVALID");
     }
   }
