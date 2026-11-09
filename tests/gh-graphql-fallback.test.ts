@@ -3,7 +3,7 @@ import { Console, Effect, Layer, Result, Sink, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import { ConfigService } from "#config";
 import { GitHubService } from "#gh/read/transport";
-import { prReviewTriageSummary } from "#gh/read/pulls";
+import { PR_VIEW_FIELDS, PR_LIST_FIELDS, prReviewTriageSummary } from "#gh/read/pulls";
 import { reviewThreads } from "#gh/read/reviews";
 import { reportFallback, withFallbackOutput } from "#gh/read/graphql-fallback";
 import { classifyReviewTriage } from "#gh/pr/commands";
@@ -445,6 +445,7 @@ describe("GraphQL REST fallback", () => {
     protection?: unknown;
     protectionError?: string;
     reviews?: unknown[];
+    reviewPages?: unknown[][];
   }) => {
     const calls: string[][] = [];
     return provide(
@@ -470,11 +471,91 @@ describe("GraphQL REST fallback", () => {
           return scenario.protectionError === undefined
             ? ok(scenario.protection ?? {})
             : failure(scenario.protectionError);
-        if (path === "repos/owner/repo/pulls/12/reviews") return ok([scenario.reviews ?? []]);
+        if (path === "repos/owner/repo/pulls/12/reviews") {
+          expect(args).toContain("--paginate");
+          expect(args).toContain("--slurp");
+          return ok(args.includes("--paginate") && args.includes("--slurp")
+            ? scenario.reviewPages ?? [scenario.reviews ?? []]
+            : scenario.reviews ?? []);
+        }
         return undefined;
       },
     );
   };
+
+  it.effect("refuses a permission-masked classic protection 404", () =>
+    decision({ branch: { protected: true }, protectionError: "HTTP 404 Not Found" }).pipe(
+      Effect.tap((value) => Effect.sync(() => {
+        expect(value.reviewDecision).toBe("UNKNOWN");
+        expect(value.fallback.unknown).toContain("reviewDecision");
+      })),
+    ),
+  );
+  it.effect("reads classic code-owner review requirements", () =>
+    decision({ branch: { protected: true }, protection: {
+      required_approving_review_count: 1, require_code_owner_reviews: true,
+      dismiss_stale_reviews: false, require_last_push_approval: false,
+    } }).pipe(Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision).toBe("UNKNOWN")))),
+  );
+  it.effect("excludes classic stale approvals", () =>
+    decision({ branch: { protected: true }, protection: {
+      required_approving_review_count: 1, require_code_owner_reviews: false,
+      dismiss_stale_reviews: true, require_last_push_approval: false,
+    }, reviews: [{ id: 1, user: { login: "reviewer" }, state: "APPROVED",
+      submitted_at: "2026-01-01T00:00:00Z", commit_id: "old" }] }).pipe(
+      Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision).toBe("REVIEW_REQUIRED"))),
+    ),
+  );
+  it.effect("uses the latest review from a second page", () =>
+    decision({ rulesets: [{ type: "pull_request", parameters: { required_approving_review_count: 1 } }],
+      reviewPages: [[{ id: 1, user: { login: "reviewer" }, state: "APPROVED", submitted_at: "2026-01-01T00:00:00Z", commit_id: "abc" }],
+        [{ id: 2, user: { login: "reviewer" }, state: "CHANGES_REQUESTED", submitted_at: "2026-01-02T00:00:00Z", commit_id: "abc" }]],
+    }).pipe(Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision).toBe("CHANGES_REQUESTED")))),
+  );
+  it.effect("projects search-list PR objects", () => provide(Effect.gen(function* () {
+    const gh = yield* GitHubService;
+    const value = yield* gh.runGhJson<unknown>(["pr", "list", "--search", "is:open", "--json", "number,title"]);
+    expect(value).toEqual([{ number: 12, title: "Example", reviewDecision: "UNKNOWN" }]);
+  }), [], (args) => args[3]?.startsWith("search/issues?") ? ok([{ incomplete_results: false, items: [{ number: 12 }] }]) : undefined));
+  for (const command of ["view", "list"]) {
+    it.effect(`restores healthy ${command} decisions and shares base rules`, () => {
+      const calls: string[][] = [];
+      return provide(Effect.gen(function* () {
+        const gh = yield* GitHubService;
+        const fields = command === "view" ? PR_VIEW_FIELDS : PR_LIST_FIELDS;
+        const value = yield* gh.runGhJson<unknown>(["pr", command, ...(command === "view" ? ["12"] : []), "--json", fields]);
+        const values = Array.isArray(value) ? value : [value];
+        expect(values).toHaveLength(command === "view" ? 1 : 2);
+        for (const item of values) expect(item).toMatchObject({ reviewDecision: "" });
+        expect(calls.filter((args) => args[3]?.endsWith("/rules/branches/main"))).toHaveLength(1);
+        expect(calls.filter((args) => args[3]?.endsWith("/branches/main"))).toHaveLength(1);
+        expect(calls.some((args) => args[0] === "pr" || args.includes("graphql"))).toBe(false);
+      }), calls, (args) => {
+        const path = args[3] ?? "";
+        if (path.includes("/rules/branches/")) return ok([]);
+        if (path.endsWith("/branches/main")) return ok({ protected: false });
+        if (path.includes("/pulls?")) return ok([[pull, { ...pull, number: 13 }]]);
+        return undefined;
+      });
+    });
+  }
+  it.effect("uses GraphQL only for REST-unknown decisions on healthy lists", () => {
+    const calls: string[][] = [];
+    return provide(Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      const values = yield* gh.runGhJson<Array<{ reviewDecision: string }>>(["pr", "list", "--json", PR_LIST_FIELDS]);
+      expect(values.map((item) => item.reviewDecision)).toEqual(["", "APPROVED"]);
+      expect(calls.filter((args) => args[0] === "pr")).toEqual([["pr", "view", "13", "--repo", "owner/repo", "--json", "reviewDecision"]]);
+    }), calls, (args) => {
+      if (args[0] === "pr") return ok({ reviewDecision: args[2] === "13" ? "APPROVED" : null });
+      const path = args[3] ?? "";
+      if (path.includes("/pulls?")) return ok([[pull, { ...pull, number: 13, base: { ...pull.base, ref: "restricted" } }]]);
+      if (path.endsWith("/rules/branches/main")) return ok([]);
+      if (path.endsWith("/rules/branches/restricted")) return failure("HTTP 403 Resource not accessible");
+      if (path.endsWith("/branches/main")) return ok({ protected: false });
+      return undefined;
+    });
+  });
 
   it.effect("computes no review requirement when rulesets are unavailable on a free plan", () =>
     decision({
