@@ -182,7 +182,7 @@ export const requestReview = (pr: number, reviewers: string) =>
 type ReviewTriageSummary = {
   readonly visibleOpenReviewThreadsCount: number;
   readonly unrepliedReviewThreadsCount: number;
-  readonly unresolvedReviewThreadsCount: number;
+  readonly unresolvedReviewThreadsCount: number | null;
 };
 
 type ReviewTriageClassification = {
@@ -206,7 +206,11 @@ export const classifyReviewTriage = (
       : []),
     ...(summary.visibleOpenReviewThreadsCount > 0 ? ["visible_open_review_threads"] : []),
     ...(summary.unrepliedReviewThreadsCount > 0 ? ["unreplied_review_threads"] : []),
-    ...(summary.unresolvedReviewThreadsCount > 0 ? ["unresolved_review_threads"] : []),
+    ...(summary.unresolvedReviewThreadsCount === null
+      ? ["unknown_review_thread_resolution"]
+      : summary.unresolvedReviewThreadsCount > 0
+        ? ["unresolved_review_threads"]
+        : []),
   ];
   return { status: reasons.length > 0 ? "needs_investigation" : "clear", reasons };
 };
@@ -402,7 +406,7 @@ const countFeedbackOrigins = (items: ReadonlyArray<{ feedbackOrigin: string }>) 
 export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   prNumber: number | null,
 ) {
-  const { info, value } = yield* withStableHead(
+  const { info: baseInfo, value } = yield* withStableHead(
     prNumber,
     (number, headSha) =>
       Effect.gen(function* () {
@@ -413,10 +417,13 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
           fetchReviews(number, null, null, null, headSha),
           fetchComments(number, null, headSha),
         ]);
-        return { allThreads, summary, checkReport, reviews, inlineComments };
+        const repo = yield* resolveRepo(null);
+        const reviewDecision = yield* reads.prReviewDecision(repo, number);
+        return { allThreads, summary, checkReport, reviews, inlineComments, reviewDecision };
       }),
     { operation: "review triage", command: "gh-tool pr review-triage" },
   );
+  const info = { ...baseInfo, reviewDecision: value.reviewDecision };
   const { allThreads, summary, checkReport, reviews, inlineComments } = value;
   const checks = checkReport.checks ?? [];
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);
@@ -438,7 +445,9 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   ) {
     blocking.push("unknown_checks");
   }
-  if (summary.unresolvedReviewThreadsCount > 0) blocking.push("unresolved_threads");
+  if (summary.unresolvedReviewThreadsCount === null)
+    blocking.push("unknown_review_thread_resolution");
+  else if (summary.unresolvedReviewThreadsCount > 0) blocking.push("unresolved_threads");
   if (info.reviewDecision !== "" && info.reviewDecision !== "APPROVED") {
     blocking.push(`review=${info.reviewDecision}`);
   }
@@ -491,7 +500,7 @@ type CompactReviewTriage = {
   readonly classification: ReviewTriageClassification;
   readonly visibleOpenReviewThreadsCount: number;
   readonly unrepliedReviewThreadsCount: number;
-  readonly unresolvedReviewThreadsCount: number;
+  readonly unresolvedReviewThreadsCount: number | null;
   readonly visibleOpenThreadIds: readonly string[];
 };
 

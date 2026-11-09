@@ -8,13 +8,14 @@ import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
+import { isFallbackResult } from "./graphql-fallback";
 import type { RepoRef } from "./keys";
 import { parsePreserving } from "./porcelain";
 
 export const PR_VIEW_FIELDS =
-  "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit";
+  "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision";
 export const PR_LIST_FIELDS =
-  "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,reviewDecision,headRepositoryOwner";
+  "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision";
 export type PrListFilter = {
   state: string;
   limit: number;
@@ -38,7 +39,7 @@ const Pull = Schema.Struct({
   ),
   createdAt: Schema.optional(Schema.String),
   reviewDecision: Schema.optional(Schema.String),
-  headRepositoryOwner: Schema.optional(Schema.Struct({ login: Schema.String })),
+  headRepositoryOwner: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
 });
 
 const PullView = Schema.Struct({
@@ -48,7 +49,13 @@ const PullView = Schema.Struct({
   baseSha: Schema.optional(Schema.NullOr(Schema.String)),
   body: Schema.String,
   author: Schema.Struct({ login: Schema.String, is_bot: Schema.Boolean }),
-  reviewDecision: Schema.Literals(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""]),
+  reviewDecision: Schema.Literals([
+    "APPROVED",
+    "CHANGES_REQUESTED",
+    "REVIEW_REQUIRED",
+    "UNKNOWN",
+    "",
+  ]),
   reviewRequests: Schema.mutable(
     Schema.Array(
       Schema.Union([
@@ -159,7 +166,7 @@ export const prView = Effect.fn("reads.prView")(function* (
   if (selector.by === "currentBranch" || repo === null) {
     const fence = yield* readFence;
     const data = (yield* fetch()).value;
-    if (repo !== null && consistency !== "origin" && fence !== null) {
+    if (repo !== null && consistency !== "origin" && fence !== null && !("fallback" in data)) {
       const head = yield* prHead(repo, data.number).pipe(Effect.orElseSucceed(() => null));
       if (head !== null && head.headSha === data.headRefOid)
         yield* seedRead(
@@ -177,6 +184,7 @@ export const prView = Effect.fn("reads.prView")(function* (
     fetch: Effect.suspend(() => gh.runGhJson<PrView>(args)),
     signal: prHead(repo, selector.number).pipe(Effect.map((head) => head.signature)),
     maxAgeMs: () => OPS.prView.maxAgeMs,
+    cacheableWhen: (value) => !("fallback" in value),
   });
 });
 
@@ -214,6 +222,8 @@ export const prList = Effect.fn("reads.prList")(function* (
       gh
         .runGhJson<PrListItem[]>(args)
         .pipe(Effect.map((value) => ({ kind: "fresh" as const, value }))),
+    cacheableWhen: (value) =>
+      !isFallbackResult(value) && value.every((item) => !("fallback" in item)),
   });
 });
 
@@ -353,7 +363,7 @@ type PrReviewTriageSummaryPage = {
       };
       readonly reviewThreads: {
         readonly nodes: ReadonlyArray<{
-          readonly isResolved: boolean;
+          readonly isResolved: boolean | null;
           readonly comments: {
             readonly nodes: ReadonlyArray<{ readonly replyTo: { readonly id: string } | null }>;
           };
@@ -376,7 +386,7 @@ export type PrReviewTriageSummary = {
     readonly reviewRequests: ReadonlyArray<{ readonly login: string }>;
   };
   readonly summary: {
-    readonly unresolvedReviewThreadsCount: number;
+    readonly unresolvedReviewThreadsCount: number | null;
     readonly unrepliedReviewThreadsCount: number;
   };
   readonly checks: ReadonlyArray<{ readonly name: string; readonly bucket: string }>;
@@ -392,14 +402,16 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
     PR_REVIEW_TRIAGE_SUMMARY_QUERY,
     variables,
   )) as PrReviewTriageSummaryPage;
-  const firstPage = first.repository.pullRequest;
+  let firstPage = first.repository.pullRequest;
   let unresolvedReviewThreadsCount = 0;
+  let resolutionUnknown = false;
   let unrepliedReviewThreadsCount = 0;
   const countThreads = (
     threads: PrReviewTriageSummaryPage["repository"]["pullRequest"]["reviewThreads"]["nodes"],
   ) => {
     for (const thread of threads) {
-      if (!thread.isResolved) unresolvedReviewThreadsCount++;
+      if (thread.isResolved === null) resolutionUnknown = true;
+      if (thread.isResolved === false) unresolvedReviewThreadsCount++;
       if (!thread.comments.nodes.some((comment) => comment.replyTo !== null))
         unrepliedReviewThreadsCount++;
     }
@@ -413,6 +425,12 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
       after: pageInfo.endCursor,
     })) as PrReviewTriageSummaryPage;
     const pullRequest = response.repository.pullRequest;
+    if ("fallback" in response) {
+      unresolvedReviewThreadsCount = 0;
+      unrepliedReviewThreadsCount = 0;
+      resolutionUnknown = false;
+      firstPage = pullRequest;
+    }
     countThreads(pullRequest.reviewThreads.nodes);
     pageInfo = pullRequest.reviewThreads.pageInfo;
   }
@@ -451,7 +469,10 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
       mergeable: firstPage.mergeable,
       reviewRequests,
     },
-    summary: { unresolvedReviewThreadsCount, unrepliedReviewThreadsCount },
+    summary: {
+      unresolvedReviewThreadsCount: resolutionUnknown ? null : unresolvedReviewThreadsCount,
+      unrepliedReviewThreadsCount,
+    },
     checks,
   };
 });
@@ -464,3 +485,32 @@ const movedHead = (pr: number) =>
     stderr: "PR head changed while collecting checks",
     retryable: true,
   });
+
+export const prReviewDecision = Effect.fn("reads.prReviewDecision")(function* (
+  repo: RepoRef,
+  pr: number,
+) {
+  const gh = yield* GitHubService;
+  const result = yield* gh.runGhJson<unknown>([
+    "pr",
+    "view",
+    String(pr),
+    "--repo",
+    repoSlug(repo),
+    "--json",
+    "reviewDecision",
+  ]);
+  return yield* Effect.try({
+    try: () =>
+      Schema.decodeUnknownSync(Schema.Struct({ reviewDecision: PullView.fields.reviewDecision }))(
+        result,
+      ).reviewDecision,
+    catch: (cause) =>
+      new GitHubCommandError({
+        command: "pr view",
+        exitCode: 1,
+        message: "Invalid review decision",
+        stderr: String(cause),
+      }),
+  });
+});

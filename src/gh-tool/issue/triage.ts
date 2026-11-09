@@ -61,7 +61,7 @@ type ReviewTriageSnapshot = {
   readonly summary: {
     readonly visibleOpenReviewThreadsCount: number;
     readonly unrepliedReviewThreadsCount: number;
-    readonly unresolvedReviewThreadsCount: number;
+    readonly unresolvedReviewThreadsCount: number | null;
     readonly latestIssueComment: IssueComment | null;
   };
   readonly checks: readonly CheckResult[];

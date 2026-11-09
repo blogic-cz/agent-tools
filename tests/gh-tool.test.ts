@@ -1,3 +1,4 @@
+import { restPullFixture } from "./fixtures/gh-rest-pull";
 import { stubBun } from "./helpers/stub-bun";
 import { captureOutput } from "./helpers/capture-output";
 import { describe, expect, it } from "@effect/vitest";
@@ -319,6 +320,20 @@ function createMockGhSpawnerLayer(observed: ObservedGhCommand[]) {
           extendEnv: command.options.extendEnv,
         });
 
+        if (command.args[0] === "api" && command.args[2] === "GET") {
+          const path = command.args[3] ?? "";
+          const [, owner = "test-owner", name = "test-repo"] = path.split("/");
+          stdout = JSON.stringify(
+            path.includes("/pulls/")
+              ? restPullFixture(1, { owner, name })
+              : {
+                  owner: { login: owner },
+                  name,
+                  default_branch: "main",
+                  html_url: `https://github.com/${owner}/${name}`,
+                },
+          );
+        }
         if (command.args[0] === "repo" && command.args[1] === "view") {
           const repo = command.args[2] ?? "test-owner/test-repo";
           const [owner = "test-owner", name = "test-repo"] = repo.split("/");
@@ -1836,11 +1851,10 @@ describe("GitHubService.runGh() error mapping", () => {
       Effect.tap(() =>
         Effect.sync(() => {
           expect(observedGhCommands[0]?.args).toEqual([
-            "repo",
-            "view",
-            "test-owner/test-be",
-            "--json",
-            "owner,name,defaultBranchRef,url",
+            "api",
+            "--method",
+            "GET",
+            "repos/test-owner/test-be",
           ]);
           expect(observedGhCommands[0]?.ghRepo).toBe("test-owner/test-be");
         }),
@@ -2312,7 +2326,7 @@ describe("PR view", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
           ],
         },
         {
@@ -3114,7 +3128,7 @@ describe("PR edit", () => {
           "--repo",
           "test-owner/test-repo",
           "--json",
-          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
         ],
         ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
@@ -4021,7 +4035,7 @@ describe("PR merge head condition", () => {
               "view",
               "123",
               "--json",
-              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
             ],
           ]);
         }),
@@ -4203,7 +4217,7 @@ describe("PR merge head condition", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision",
       ]);
       expect(mutations).toEqual([["pr", "merge", "123", "--squash"]]);
     }),
@@ -6427,6 +6441,8 @@ describe("pr feedback (aggregated review-response inventory)", () => {
         const layer = createMockGhLayer({
           runGhJson: (args) => {
             if (args[0] !== "pr" || args[1] !== "view") return Effect.succeed([]);
+            if (args.at(-1) === "reviewDecision")
+              return Effect.succeed({ reviewDecision: "APPROVED" });
             views += 1;
             return Effect.succeed({ ...mockPRInfo, headRefOid: views % 2 ? "head-a" : "head-b" });
           },
@@ -9343,6 +9359,48 @@ describe("PR composite commands", () => {
     }),
   );
 
+  it.effect("review-triage stays ready when REST finds no review rule", () =>
+    Effect.gen(function* () {
+      const result = yield* fetchReviewTriage(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
+              if (args[0] === "pr" && args[1] === "view")
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: "MERGEABLE",
+                  headRefOid: "stable-head",
+                  reviewDecision: "",
+                });
+              if (args[0] === "pr" && args[1] === "checks")
+                return Effect.succeed([
+                  { name: "CI", state: "SUCCESS", bucket: "pass", link: "https://example.test" },
+                ]);
+              return Effect.succeed({});
+            },
+            runGraphQL: () =>
+              Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                  },
+                },
+              }),
+            runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+
+      expect(result.ready).toEqual({
+        ready: true,
+        mergeable: "MERGEABLE",
+        reviewDecision: null,
+        blocking: [],
+      });
+    }),
+  );
+
   it.effect("review-triage discards checks and feedback collected across a push race", () =>
     Effect.gen(function* () {
       let views = 0;
@@ -9352,6 +9410,8 @@ describe("PR composite commands", () => {
           createMockGhLayer({
             runGhJson: (args) => {
               if (args[0] === "pr" && args[1] === "view") {
+                if (args.at(-1) === "reviewDecision")
+                  return Effect.succeed({ reviewDecision: "APPROVED" });
                 views += 1;
                 return Effect.succeed({
                   ...mockPRInfo,
@@ -9400,6 +9460,7 @@ describe("PR composite commands", () => {
       Effect.gen(function* () {
         const layer = createMockGhLayer({
           runGhJson: (args) => {
+            if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
             if (args[0] === "pr" && args[1] === "view") {
               return Effect.succeed(mockPRInfo);
             }
@@ -9505,6 +9566,7 @@ describe("PR composite commands", () => {
           Effect.provide(
             createMockGhLayer({
               runGhJson: (args) => {
+                if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
                 if (args[0] === "pr" && args[1] === "view") {
                   return Effect.succeed({ ...mockPRInfo, headRefOid: "stable-head" });
                 }
@@ -9561,6 +9623,7 @@ describe("PR composite commands", () => {
       Effect.gen(function* () {
         const layer = createMockGhLayer({
           runGhJson: (args) => {
+            if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
             if (args[0] === "pr" && args[1] === "view" && args[2] === "124") {
               return Effect.fail(
                 new GitHubNotFoundError({
@@ -12008,7 +12071,7 @@ describe("PR creation safety", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,reviewDecision,headRepositoryOwner",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision",
             "--base",
             "main",
             "--head",

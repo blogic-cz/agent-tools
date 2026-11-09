@@ -1,3 +1,4 @@
+import { restPullFixture } from "./gh-rest-pull";
 const pr = {
   author: { login: "author", is_bot: false },
   baseRefName: "main",
@@ -191,7 +192,7 @@ export const createReplayGh = () => {
       },
     };
     const fields = args[args.indexOf("--json") + 1] ?? "";
-    const target = args[1] ?? "";
+    const target = args[0] === "api" && args[1] === "--method" ? (args[3] ?? "") : (args[1] ?? "");
     const project = (value: Record<string, unknown>) =>
       Object.fromEntries(
         Object.keys(value)
@@ -207,7 +208,40 @@ export const createReplayGh = () => {
       bucket,
       link: "external",
     });
-    if (args[0] === "repo" && target === "view")
+    if (args[0] === "config") exitCode = 1;
+    else if (args[0] === "branch" && target === "--show-current") printText("feat/example");
+    else if (args[0] === "api" && /^repos\/[^/]+\/[^/]+$/.test(target))
+      print({
+        owner: { login: "owner" },
+        name: "repo",
+        default_branch: "main",
+        html_url: "https://github.com/owner/repo",
+      });
+    else if (args[0] === "api" && /\/pulls\/\d+$/.test(target) && !args.includes("--jq"))
+      print({
+        ...restPullFixture(Number(target.split("/").at(-1)), {
+          head: (target.endsWith("43") ? "c" : target.endsWith("44") ? "d" : "a").repeat(40),
+        }),
+        html_url: pr.url,
+      });
+    else if (args[0] === "api" && target.includes("/pulls?")) print([[restPullFixture()]]);
+    else if (args[0] === "api" && target.includes("/check-runs?"))
+      print([
+        {
+          check_runs: target.includes("d".repeat(40))
+            ? []
+            : [
+                {
+                  name: "Build",
+                  status: target.includes("c".repeat(40)) ? "completed" : "in_progress",
+                  conclusion: target.includes("c".repeat(40)) ? "failure" : null,
+                  html_url: "external",
+                },
+              ],
+        },
+      ]);
+    else if (args[0] === "api" && target.includes("/status?")) print([{ statuses: [] }]);
+    else if (args[0] === "repo" && target === "view")
       print({
         owner: { login: "owner" },
         name: "repo",

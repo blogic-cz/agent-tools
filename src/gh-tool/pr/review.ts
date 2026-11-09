@@ -465,13 +465,19 @@ export const fetchDiscussionSummary = Effect.fn("pr.fetchDiscussionSummary")(fun
     visibleOpenReviewThreadsCount: threads.filter((thread) => thread.isVisibleOpen).length,
     repliedReviewThreadsCount: threads.length - unrepliedReviewThreadsCount,
     unrepliedReviewThreadsCount,
-    resolvedUnrepliedReviewThreadsCount: threads.filter(
-      (thread) => thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
-    ).length,
-    unresolvedReviewThreadsCount: threads.filter((thread) => !thread.isResolved).length,
-    unresolvedUnrepliedReviewThreadsCount: threads.filter(
-      (thread) => !thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
-    ).length,
+    resolvedUnrepliedReviewThreadsCount: threads.some((thread) => thread.isResolved === null)
+      ? null
+      : threads.filter(
+          (thread) => thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
+        ).length,
+    unresolvedReviewThreadsCount: threads.some((thread) => thread.isResolved === null)
+      ? null
+      : threads.filter((thread) => thread.isResolved === false).length,
+    unresolvedUnrepliedReviewThreadsCount: threads.some((thread) => thread.isResolved === null)
+      ? null
+      : threads.filter(
+          (thread) => !thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
+        ).length,
   };
 });
 
@@ -750,6 +756,15 @@ export const replyAndResolveComment = Effect.fn("pr.replyAndResolveComment")(fun
   }
   const inferredThreadId = matches[0]?.id;
   if (inferredThreadId === undefined) return yield* Effect.die("matched thread missing");
+  if (inferredThreadId.startsWith("rest-thread:"))
+    return yield* new GitHubCommandError({
+      command: "gh-tool pr reply-and-resolve",
+      exitCode: 1,
+      message:
+        "GitHub GraphQL is blocked; REST cannot resolve a review thread. No reply was posted.",
+      stderr: "REST cannot resolve a review thread",
+      hint: "Retry after GitHub lifts the GraphQL limit, or post a reply separately.",
+    });
   if (threadId !== null && threadId !== inferredThreadId) {
     return yield* Effect.fail(
       new GitHubCommandError({
@@ -996,6 +1011,8 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
     const pendingReview = (yield* reads.reviewGuards.pendingReviewContent(
       targetReviewId,
       afterComment,
+      repoInfo,
+      resolvedPr,
     )) as PendingReviewContentQueryResult;
 
     const review = pendingReview?.node;
@@ -1073,6 +1090,9 @@ export const submitPendingReview = Effect.fn("pr.submitPendingReview")(function*
       reviewId: targetReviewId,
       event: REVIEW_EVENT_API[event],
       body: body ?? "",
+      owner: repoInfo.owner,
+      name: repoInfo.name,
+      pr: resolvedPr,
     },
     reviewTags(repoInfo, resolvedPr, "reviews"),
   )) as SubmitReviewResult;

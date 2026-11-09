@@ -1,6 +1,23 @@
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Schema, Stream } from "effect";
+import {
+  graphFieldsRequested,
+  restPorcelain,
+  restReviewDecision,
+  parseRest,
+  type ReviewDecisionInput,
+  type ReviewDecision,
+} from "./rest-porcelain";
+import {
+  graphqlLimitError,
+  isFallbackResult,
+  isGraphqlLimit,
+  markFallbackResult,
+  reportFallback,
+  restGraphql,
+  rateLimitResponse,
+} from "./graphql-fallback";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
@@ -177,14 +194,14 @@ export class GitHubService extends Context.Service<
           return getGitHubConfig(config);
         });
 
-        const executeGh = (args: string[]) =>
+        const executeGh = (args: string[], binary: string = GH_BINARY) =>
           Effect.scoped(
             Effect.gen(function* () {
               const ghRepo = yield* RepoTarget;
               const cache = yield* ReadCache;
               const credential = yield* SessionCredential;
               const cacheDirectory = cache?.store?.ghCacheDirectory;
-              const command = ChildProcess.make(GH_BINARY, args, {
+              const command = ChildProcess.make(binary, args, {
                 stdout: "pipe",
                 stderr: "pipe",
                 env: {
@@ -207,7 +224,8 @@ export class GitHubService extends Context.Service<
               const stdout = stdoutChunk.join("");
               const stderr = stderrChunk.join("");
               const exitCode = yield* proc.exitCode;
-              yield* recordRequest(ghSubprocessEvent(args, Number(exitCode)));
+              if (binary === GH_BINARY)
+                yield* recordRequest(ghSubprocessEvent(args, Number(exitCode)));
 
               return {
                 stdout,
@@ -233,6 +251,15 @@ export class GitHubService extends Context.Service<
           const result = yield* executeGh(args);
 
           if (result.exitCode !== 0) {
+            const limit =
+              args[0] === "api" && args[1] === "graphql" ? rateLimitResponse(result.stdout) : null;
+            if (limit !== null)
+              return yield* new GitHubCommandError({
+                command: "gh api graphql",
+                exitCode: result.exitCode,
+                message: limit,
+                stderr: limit,
+              });
             if (
               result.stderr.includes("not logged in") ||
               result.stderr.includes("gh auth login")
@@ -326,7 +353,7 @@ export class GitHubService extends Context.Service<
         });
 
         // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
-        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
+        const runGhRaw = (args: string[]): Effect.Effect<GhResult, GhError> => {
           const canRetry = isSafeRetryRead(args);
           return Effect.gen(function* () {
             yield* validateOutboundText(args.join("\n"), "gh-tool");
@@ -338,6 +365,248 @@ export class GitHubService extends Context.Service<
             });
           });
         };
+
+        let graphqlBlocked = false;
+        const ruleReads = new Map<string, Effect.Effect<unknown, GhError>>();
+        const uncachedJson = (args: string[]) =>
+          runGhRaw(args).pipe(
+            Effect.flatMap((result) =>
+              Effect.try({
+                try: () => JSON.parse(result.stdout) as unknown,
+                catch: (error) =>
+                  new GitHubCommandError({
+                    command: "gh REST",
+                    exitCode: 1,
+                    message: String(error),
+                    stderr: String(error),
+                  }),
+              }),
+            ),
+          );
+        const rawJson = (args: string[]): Effect.Effect<unknown, GhError> =>
+          Effect.gen(function* () {
+            const path = args[3];
+            if (
+              args[0] !== "api" ||
+              args[2] !== "GET" ||
+              path === undefined ||
+              !/^repos\/[^/]+\/[^/]+\/(?:rules\/branches\/[^/]+|branches\/[^/]+(?:\/protection\/required_pull_request_reviews)?)$/.test(
+                path,
+              )
+            )
+              return yield* uncachedJson(args);
+            let read = ruleReads.get(path);
+            if (read === undefined) {
+              read = yield* Effect.cached(uncachedJson(args));
+              ruleReads.set(path, read);
+            }
+            return yield* read;
+          });
+        const resolveDecision = (
+          input: ReviewDecisionInput,
+        ): Effect.Effect<ReviewDecision, GhError> =>
+          Effect.gen(function* () {
+            const decision = yield* restReviewDecision(rawJson, input);
+            if (decision !== "UNKNOWN" || graphqlBlocked) return decision;
+            return yield* rawJson([
+              "pr",
+              "view",
+              String(input.number),
+              "--repo",
+              input.repo,
+              "--json",
+              "reviewDecision",
+            ]).pipe(
+              Effect.flatMap((value) =>
+                parseRest(
+                  Schema.Struct({
+                    reviewDecision: Schema.NullOr(
+                      Schema.Literals([
+                        "APPROVED",
+                        "CHANGES_REQUESTED",
+                        "REVIEW_REQUIRED",
+                        "UNKNOWN",
+                        "",
+                      ]),
+                    ),
+                  }),
+                  value,
+                ),
+              ),
+              Effect.map((value) => value.reviewDecision ?? ""),
+              Effect.catch((error) => {
+                if (!isGraphqlLimit(error)) return Effect.fail(error);
+                graphqlBlocked = true;
+                return Effect.succeed("UNKNOWN" as const);
+              }),
+            );
+          });
+        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> =>
+          Effect.gen(function* () {
+            yield* validateOutboundText(args.join("\n"), "gh-tool");
+            const target = yield* RepoTarget;
+            if (
+              args[0] === "pr" &&
+              ["view", "checks"].includes(args[1] ?? "") &&
+              (args[2] === undefined || args[2].startsWith("-"))
+            ) {
+              const branch = yield* executeGh(["branch", "--show-current"], "git");
+              if (branch.exitCode !== 0 || branch.stdout.trim() === "")
+                return yield* new GitHubCommandError({
+                  command: "git branch --show-current",
+                  exitCode: 1,
+                  message: "Cannot determine the current branch; pass --pr",
+                  stderr: branch.stderr,
+                });
+              const localBranch = branch.stdout.trim();
+              const trackingBranch = yield* executeGh(
+                ["config", "--get", "branch." + localBranch + ".merge"],
+                "git",
+              );
+              const trackingRemote = yield* executeGh(
+                ["config", "--get", "branch." + localBranch + ".remote"],
+                "git",
+              );
+              if (trackingBranch.exitCode > 1 || trackingRemote.exitCode > 1)
+                return yield* new GitHubCommandError({
+                  command: "pr view",
+                  exitCode: 1,
+                  message: "Cannot read tracking configuration; pass --pr",
+                  stderr: trackingBranch.stderr + trackingRemote.stderr,
+                });
+              const pullNumber =
+                trackingBranch.exitCode === 0
+                  ? /^refs\/pull\/(\d+)\/head$/.exec(trackingBranch.stdout.trim())?.[1]
+                  : undefined;
+              if (pullNumber !== undefined) {
+                args = [args[0], args[1] ?? "view", pullNumber, ...args.slice(2)];
+              } else {
+                let head =
+                  trackingBranch.exitCode === 0
+                    ? trackingBranch.stdout.trim().replace(/^refs\/heads\//, "")
+                    : localBranch;
+                if (trackingRemote.exitCode === 0 && trackingRemote.stdout.trim() !== ".") {
+                  const remote = yield* executeGh(
+                    ["remote", "get-url", trackingRemote.stdout.trim()],
+                    "git",
+                  );
+                  const owner =
+                    remote.exitCode === 0
+                      ? /[:/]([^/:]+)\/[^/]+?(?:\.git)?$/.exec(remote.stdout.trim())?.[1]
+                      : undefined;
+                  if (owner === undefined)
+                    return yield* new GitHubCommandError({
+                      command: "pr view",
+                      exitCode: 1,
+                      message: "Cannot determine the tracking repository; pass --pr",
+                      stderr: remote.stderr,
+                    });
+                  head = owner + ":" + head;
+                }
+                const repoIndex = args.indexOf("--repo");
+                const selectedRepo = repoIndex < 0 ? target : args[repoIndex + 1];
+                const pulls = yield* runGh([
+                  "pr",
+                  "list",
+                  "--head",
+                  head,
+                  "--state",
+                  "all",
+                  "--limit",
+                  "100",
+                  "--json",
+                  "number,state",
+                  ...(selectedRepo === undefined ? [] : ["--repo", selectedRepo]),
+                ]);
+                const candidates = yield* Effect.try({
+                  try: () =>
+                    Schema.decodeUnknownSync(
+                      Schema.Array(Schema.Struct({ number: Schema.Number, state: Schema.String })),
+                    )(JSON.parse(pulls.stdout)),
+                  catch: (error) =>
+                    new GitHubCommandError({
+                      command: "pr view",
+                      exitCode: 1,
+                      message: String(error),
+                      stderr: String(error),
+                    }),
+                });
+                const open = candidates.filter((pull) => pull.state === "OPEN");
+                const matches = open.length > 0 ? open : candidates.slice(0, 1);
+                if (matches.length !== 1 || matches[0] === undefined)
+                  return yield* new GitHubCommandError({
+                    command: "pr view",
+                    exitCode: 1,
+                    message: "Cannot identify one PR for the current branch; pass --pr",
+                    stderr: "Current branch has zero or multiple PRs",
+                  });
+                args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
+              }
+            }
+            const rest = restPorcelain(args, rawJson, target, resolveDecision);
+            const usesGraphql =
+              args[0] === "pr" ||
+              args[0] === "repo" ||
+              (args[0] === "api" && args[1] === "graphql");
+            const mutation = args[0] === "pr" && args[1] === "merge";
+            const fallback = (
+              error: GhError,
+              resolved?: { value: unknown },
+            ): Effect.Effect<GhResult, GhError> =>
+              Effect.gen(function* () {
+                if (!usesGraphql || !isGraphqlLimit(error)) return yield* Effect.fail(error);
+                graphqlBlocked = true;
+                if (rest === null) return yield* Effect.fail(error);
+                const value = resolved === undefined ? yield* rest : resolved.value;
+                const values = Array.isArray(value) ? value : [value];
+                const unknown = ["mergeStateStatus"].filter((field) =>
+                  args.some((arg) => arg.split(",").includes(field)),
+                );
+                if (
+                  args.some((arg) => arg.split(",").includes("reviewDecision")) &&
+                  values.some(
+                    (item) =>
+                      typeof item === "object" &&
+                      item !== null &&
+                      "reviewDecision" in item &&
+                      item.reviewDecision === "UNKNOWN",
+                  )
+                )
+                  unknown.push("reviewDecision");
+                const notice = yield* reportFallback(unknown);
+                const output = Array.isArray(value)
+                  ? value.map((item) => ({ ...item, fallback: notice }))
+                  : { ...Object(value), fallback: notice };
+                return markFallbackResult({
+                  stdout: JSON.stringify(output),
+                  stderr: "",
+                  exitCode: 0,
+                });
+              });
+            const jsonFields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
+            if (
+              rest !== null &&
+              !mutation &&
+              (!graphFieldsRequested(args) || !jsonFields.includes("mergeStateStatus"))
+            ) {
+              const value = yield* rest;
+              if (graphqlBlocked && graphFieldsRequested(args))
+                return yield* fallback(graphqlLimitError(), { value });
+              return { stdout: JSON.stringify(value), stderr: "", exitCode: 0 };
+            }
+            if (graphqlBlocked && rest !== null) return yield* fallback(graphqlLimitError());
+            if (graphqlBlocked && args[0] === "api" && args[1] === "graphql")
+              return yield* graphqlLimitError();
+            if (graphqlBlocked && args[0] === "pr" && args[1] === "ready")
+              return yield* new GitHubCommandError({
+                command: "gh pr ready",
+                exitCode: 1,
+                message: "GitHub GraphQL is blocked; REST cannot change draft status",
+                stderr: "GitHub GraphQL is blocked; REST cannot change draft status",
+              });
+            if (graphqlBlocked && usesGraphql) return yield* graphqlLimitError();
+            return yield* runGhRaw(args).pipe(Effect.catch(fallback));
+          });
 
         const writePRCheckbox = Effect.fn("GitHubService.writePRCheckbox")(function* (
           opts: PRCheckboxWrite,
@@ -423,10 +692,12 @@ export class GitHubService extends Context.Service<
                 }),
             }).pipe(Effect.mapError((error) => error as GhError));
 
-            return parsed;
+            return isFallbackResult(result) && typeof parsed === "object" && parsed !== null
+              ? markFallbackResult(parsed)
+              : parsed;
           }).pipe(Effect.withSpan("GitHubService.runGhJson"));
 
-        const runGraphQL = Effect.fn("GitHubService.runGraphQL")(function* (
+        const runGraphQLRaw = Effect.fn("GitHubService.runGraphQL")(function* (
           query: string,
           variables: Record<string, string | number | null>,
         ) {
@@ -447,7 +718,13 @@ export class GitHubService extends Context.Service<
           const result = yield* runGh(args);
 
           const response = yield* Effect.try({
-            try: () => JSON.parse(result.stdout) as { errors?: unknown[]; data?: unknown },
+            try: () =>
+              JSON.parse(result.stdout) as {
+                errors?: unknown[];
+                data?: unknown;
+                type?: string;
+                code?: string;
+              },
             catch: (error) =>
               new GitHubCommandError({
                 message: `Failed to parse GraphQL response: ${error instanceof Error ? error.message : String(error)}`,
@@ -466,8 +743,38 @@ export class GitHubService extends Context.Service<
             });
           }
 
+          if (response.type === "RATE_LIMIT" || response.code === "graphql_rate_limit")
+            return yield* new GitHubCommandError({
+              command: "gh api graphql",
+              exitCode: 0,
+              message: "GitHub GraphQL RATE_LIMIT",
+              stderr: "GitHub GraphQL RATE_LIMIT",
+            });
           return response.data as unknown;
         });
+
+        const runGraphQL = (query: string, variables: Record<string, string | number | null>) =>
+          Effect.gen(function* () {
+            const rest = restGraphql(query, variables, rawJson);
+            const fallback = (error: GhError) => {
+              if (!isGraphqlLimit(error)) return Effect.fail(error);
+              graphqlBlocked = true;
+              return (
+                rest ??
+                Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh api graphql",
+                    exitCode: 1,
+                    message: "GitHub GraphQL is blocked; REST cannot perform this operation",
+                    stderr: "GitHub GraphQL is blocked; REST cannot perform this operation",
+                    hint: "Retry after GitHub lifts the GraphQL limit. No equivalent REST operation is available.",
+                  }),
+                )
+              );
+            };
+            if (graphqlBlocked) return yield* fallback(graphqlLimitError());
+            return yield* runGraphQLRaw(query, variables).pipe(Effect.catch(fallback));
+          });
 
         const getRepoInfo = Effect.fn("GitHubService.getRepoInfo")(function* () {
           const ghRepo = yield* RepoTarget;

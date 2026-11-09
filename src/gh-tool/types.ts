@@ -22,7 +22,7 @@ export type PRViewInfo = PRInfo & {
   baseSha: string | null;
   body: string;
   author: { login: string; is_bot: boolean };
-  reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "";
+  reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "UNKNOWN" | "";
   reviewRequests: ReviewRequest[];
 };
 
@@ -40,7 +40,7 @@ export type ReviewThread = {
   originalCommitSha: string | null;
   diffHunk: string | null;
   body: string;
-  isResolved: boolean;
+  isResolved: boolean | null;
   hasReply: boolean;
   replyCount: number;
   needsHumanReply: boolean;

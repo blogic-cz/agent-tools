@@ -6,6 +6,7 @@ import { gatedRead } from "./gated";
 import { restSnapshot, snapshotDigest } from "./rest";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
+import { isFallbackResult, markFallbackResult } from "./graphql-fallback";
 import type { RepoRef } from "./keys";
 import {
   REVIEW_THREADS_QUERY,
@@ -24,7 +25,7 @@ import type {
 const CachedThreads = Schema.Array(
   Schema.Struct({
     id: Schema.String,
-    isResolved: Schema.Boolean,
+    isResolved: Schema.NullOr(Schema.Boolean),
     comments: Schema.Struct({
       nodes: Schema.Array(
         Schema.Struct({
@@ -51,6 +52,7 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
 
   const nodes: ThreadNode[] = [];
   let after: string | null = null;
+  let usedFallback = false;
 
   while (true) {
     const response = (yield* service.runGraphQL(REVIEW_THREADS_QUERY, {
@@ -60,6 +62,10 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
       after,
     })) as ThreadsQueryResult;
 
+    if ("fallback" in response) {
+      usedFallback = true;
+      nodes.length = 0;
+    }
     const page = response.repository.pullRequest.reviewThreads;
     for (const node of page.nodes) {
       let commentsAfter = node.comments.pageInfo?.endCursor ?? null;
@@ -68,6 +74,7 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
           threadId: node.id,
           after: commentsAfter,
         })) as ThreadCommentsQueryResult;
+        if ("fallback" in commentsResponse) usedFallback = true;
         if (commentsResponse.node === null) break;
         node.comments.nodes.push(...commentsResponse.node.comments.nodes);
         node.comments.pageInfo = commentsResponse.node.comments.pageInfo;
@@ -97,7 +104,7 @@ const originThreads = Effect.fn("pr.fetchAllThreadNodes")(function* (
     }
 
     if (!page.pageInfo.hasNextPage || page.pageInfo.endCursor === null) {
-      return nodes;
+      return usedFallback ? markFallbackResult(nodes) : nodes;
     }
 
     after = page.pageInfo.endCursor;
@@ -133,9 +140,17 @@ export const reviewThreads = Effect.fn("reads.reviewThreads")(function* (
       Schema.decodeUnknownSync(CachedThreads)(raw);
       return raw as ThreadNode[];
     },
-    fetch: originThreads(repo, pr),
+    fetch: originThreads(repo, pr).pipe(
+      Effect.catchTag("GitHubCommandError", (error) =>
+        error.stderr === "GitHub GraphQL is blocked; REST cannot perform this operation"
+          ? originThreads(repo, pr)
+          : Effect.fail(error),
+      ),
+    ),
     signal: reviewPages(repo, pr, "prComments").pipe(Effect.map(snapshotDigest)),
     maxAgeMs: () => OPS.reviewThreads.maxAgeMs,
+    cacheableWhen: (nodes) =>
+      !isFallbackResult(nodes) && nodes.every((node) => node.isResolved !== null),
   });
 });
 export const lastHumanReviewer = Effect.fn("reads.lastHumanReviewer")(function* (
@@ -147,6 +162,7 @@ export const lastHumanReviewer = Effect.fn("reads.lastHumanReviewer")(function* 
     key: { op: "lastHumanReviewer", repo, pr },
     policy: OPS.lastHumanReviewer,
     decode: (raw) => raw as LastHumanReviewerQueryResult,
+    cacheableWhen: (value) => !("fallback" in value),
     fetch: () =>
       service
         .runGraphQL(LAST_HUMAN_REVIEWER_QUERY, { owner: repo.owner, name: repo.name, pr })

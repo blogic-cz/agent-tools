@@ -7,6 +7,7 @@ import { makeSchemaCommand, renderCauseToStderr, VERSION } from "#shared";
 import { AuditService, AuditServiceLayer, withAudit } from "#shared/audit";
 import { openRequestTelemetry } from "#gh/read/telemetry-store";
 import { withRedactedOutput } from "#shared/output-boundary";
+import { withFallbackOutput } from "#gh/read/graphql-fallback";
 import { ConfigServiceLayer } from "#config";
 import {
   issueCloseCommand,
@@ -292,7 +293,7 @@ const observed = Effect.gen(function* () {
   } catch {
     /* Telemetry is optional. */
   }
-  return yield* withReadCache(withRedactedOutput(withAudit("gh", cli))).pipe(
+  return yield* withReadCache(withRedactedOutput(withFallbackOutput(withAudit("gh", cli)))).pipe(
     Effect.provideService(Telemetry, store),
     Effect.ensuring(
       Effect.sync(() => {
