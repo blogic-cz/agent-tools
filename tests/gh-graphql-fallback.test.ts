@@ -514,6 +514,10 @@ describe("GraphQL REST fallback", () => {
       const result = yield* withFallbackOutput(
         Effect.gen(function* () {
           const repo = { owner: "owner", name: "repo" };
+          const selector =
+            operation === "currentBranch"
+              ? ({ by: "currentBranch" } as const)
+              : ({ by: "number", number: 12 } as const);
           const value =
             operation === "list"
               ? yield* prList(repo, {
@@ -524,10 +528,7 @@ describe("GraphQL REST fallback", () => {
                   head: null,
                   search: null,
                 })
-              : yield* prView(repo, {
-                  by: operation === "currentBranch" ? "currentBranch" : "number",
-                  ...(operation === "currentBranch" ? {} : { number: 12 }),
-                });
+              : yield* prView(repo, selector);
           yield* Console.log(JSON.stringify(value));
           return value;
         }),
