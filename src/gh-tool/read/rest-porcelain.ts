@@ -3,7 +3,7 @@ import { GitHubCommandError } from "#gh/errors";
 import type { GhError } from "./transport";
 
 export type JsonRead = (args: string[]) => Effect.Effect<unknown, GhError>;
-const User = Schema.Struct({ login: Schema.String, type: Schema.optional(Schema.String) });
+const User = Schema.Struct({ login: Schema.String, type: Schema.String });
 const Ref = Schema.Struct({
   ref: Schema.String,
   sha: Schema.String,
@@ -15,9 +15,9 @@ export const RestPull = Schema.Struct({
   html_url: Schema.String,
   title: Schema.String,
   state: Schema.String,
-  draft: Schema.optional(Schema.Boolean),
+  draft: Schema.Boolean,
   merged: Schema.optional(Schema.Boolean),
-  merged_at: Schema.optional(Schema.NullOr(Schema.String)),
+  merged_at: Schema.NullOr(Schema.String),
   mergeable: Schema.optional(Schema.NullOr(Schema.Boolean)),
   merge_commit_sha: Schema.optional(Schema.NullOr(Schema.String)),
   body: Schema.NullOr(Schema.String),
@@ -34,8 +34,11 @@ export const pullFromRest = (pull: typeof RestPull.Type) => ({
   number: pull.number,
   url: pull.html_url,
   title: pull.title,
-  state: pull.merged === true || pull.merged_at != null ? "MERGED" : pull.state.toUpperCase(),
-  isDraft: pull.draft ?? false,
+  state:
+    pull.merged === true || (pull.merged_at !== null && pull.merged_at !== undefined)
+      ? "MERGED"
+      : pull.state.toUpperCase(),
+  isDraft: pull.draft,
   headRefName: pull.head.ref,
   baseRefName: pull.base.ref,
   headRefOid: pull.head.sha,
@@ -48,14 +51,18 @@ export const pullFromRest = (pull: typeof RestPull.Type) => ({
   createdAt: pull.created_at,
   headRepositoryOwner: pull.head.user === null ? null : { login: pull.head.user.login },
   mergeCommit:
-    pull.merged === true || pull.merged_at != null
-      ? pull.merge_commit_sha == null
+    pull.merged === true || (pull.merged_at !== null && pull.merged_at !== undefined)
+      ? pull.merge_commit_sha === null || pull.merge_commit_sha === undefined
         ? null
         : { oid: pull.merge_commit_sha }
       : null,
   reviewRequests: [
     ...(pull.requested_reviewers ?? []).map((user) => ({ __typename: "User", login: user.login })),
-    ...(pull.requested_teams ?? []).map((team) => ({ __typename: "Team", ...team })),
+    ...(pull.requested_teams ?? []).map((team) => ({
+      __typename: "Team",
+      name: team.name,
+      slug: team.slug,
+    })),
   ],
   reviewDecision: "UNKNOWN",
   mergeStateStatus: "UNKNOWN",
@@ -101,7 +108,7 @@ export const restPorcelain = (
     return Effect.gen(function* () {
       const raw = yield* parseRest(
         Schema.Struct({
-          owner: User,
+          owner: Schema.Struct({ login: Schema.String }),
           name: Schema.String,
           default_branch: Schema.String,
           html_url: Schema.String,
@@ -167,8 +174,17 @@ export const restPorcelain = (
       "-f",
       "state=closed",
     ]);
+  if (!args.includes("--json")) return null;
+  const projectPull = (pull: ReturnType<typeof pullFromRest>) => {
+    const fields = new Set([...(option(args, "--json") ?? "").split(","), "reviewDecision"]);
+    return Object.fromEntries(
+      Object.entries(pull)
+        .filter(([key]) => fields.has(key))
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+  };
   if (args[1] === "view" && selector !== undefined && /^\d+$/.test(selector))
-    return restPull(read, repo, selector);
+    return restPull(read, repo, selector).pipe(Effect.map(projectPull));
   if (
     args[1] === "list" &&
     option(args, "--search") === undefined &&
@@ -193,7 +209,8 @@ export const restPorcelain = (
         .flat()
         .map(pullFromRest)
         .filter((pull) => state !== "merged" || pull.state === "MERGED")
-        .slice(0, Number(option(args, "--limit") ?? 30));
+        .slice(0, Number(option(args, "--limit") ?? 30))
+        .map(projectPull);
     });
   if (args[1] === "checks" && selector !== undefined && /^\d+$/.test(selector))
     return Effect.gen(function* () {
@@ -247,7 +264,10 @@ export const restPorcelain = (
           link: status.target_url ?? "",
         });
       }
-      return checks;
+      const fields = (option(args, "--json") ?? "").split(",");
+      return checks.map((check) =>
+        Object.fromEntries(Object.entries(check).filter(([key]) => fields.includes(key))),
+      );
     });
   return null;
 };

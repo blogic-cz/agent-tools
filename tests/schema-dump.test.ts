@@ -101,11 +101,20 @@ describe("dumpCommandSchema", () => {
               ],
               (args) => {
                 const reply = replay(args);
-                if (args[0] === "pr" && args[1] === "checks")
+                if (args[0] === "api" && args.some((arg) => arg.includes("/check-runs?")))
                   return {
                     ...reply,
                     stdout: JSON.stringify([
-                      { name: "CI", state: "completed", bucket: "pass", link: "external" },
+                      {
+                        check_runs: [
+                          {
+                            name: "CI",
+                            status: "completed",
+                            conclusion: "success",
+                            html_url: "external",
+                          },
+                        ],
+                      },
                     ]),
                   };
                 return reply;

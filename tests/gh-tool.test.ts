@@ -1,3 +1,4 @@
+import { restPullFixture } from "./fixtures/gh-rest-pull";
 import { stubBun } from "./helpers/stub-bun";
 import { captureOutput } from "./helpers/capture-output";
 import { describe, expect, it } from "@effect/vitest";
@@ -319,6 +320,20 @@ function createMockGhSpawnerLayer(observed: ObservedGhCommand[]) {
           extendEnv: command.options.extendEnv,
         });
 
+        if (command.args[0] === "api" && command.args[2] === "GET") {
+          const path = command.args[3] ?? "";
+          const [, owner = "test-owner", name = "test-repo"] = path.split("/");
+          stdout = JSON.stringify(
+            path.includes("/pulls/")
+              ? restPullFixture(1, { owner, name })
+              : {
+                  owner: { login: owner },
+                  name,
+                  default_branch: "main",
+                  html_url: `https://github.com/${owner}/${name}`,
+                },
+          );
+        }
         if (command.args[0] === "repo" && command.args[1] === "view") {
           const repo = command.args[2] ?? "test-owner/test-repo";
           const [owner = "test-owner", name = "test-repo"] = repo.split("/");
@@ -1836,11 +1851,10 @@ describe("GitHubService.runGh() error mapping", () => {
       Effect.tap(() =>
         Effect.sync(() => {
           expect(observedGhCommands[0]?.args).toEqual([
-            "repo",
-            "view",
-            "test-owner/test-be",
-            "--json",
-            "owner,name,defaultBranchRef,url",
+            "api",
+            "--method",
+            "GET",
+            "repos/test-owner/test-be",
           ]);
           expect(observedGhCommands[0]?.ghRepo).toBe("test-owner/test-be");
         }),
@@ -2312,7 +2326,7 @@ describe("PR view", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
           ],
         },
         {
@@ -3114,7 +3128,7 @@ describe("PR edit", () => {
           "--repo",
           "test-owner/test-repo",
           "--json",
-          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+          "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
         ],
         ["api", "repos/test-owner/test-repo/pulls/123", "--jq", ".base.sha"],
       ]);
@@ -4021,7 +4035,7 @@ describe("PR merge head condition", () => {
               "view",
               "123",
               "--json",
-              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+              "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
             ],
           ]);
         }),
@@ -4203,7 +4217,7 @@ describe("PR merge head condition", () => {
         "view",
         "123",
         "--json",
-        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
+        "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit",
       ]);
       expect(mutations).toEqual([["pr", "merge", "123", "--squash"]]);
     }),
@@ -12008,7 +12022,7 @@ describe("PR creation safety", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,reviewDecision,headRepositoryOwner",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner",
             "--base",
             "main",
             "--head",

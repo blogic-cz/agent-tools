@@ -756,6 +756,15 @@ export const replyAndResolveComment = Effect.fn("pr.replyAndResolveComment")(fun
   }
   const inferredThreadId = matches[0]?.id;
   if (inferredThreadId === undefined) return yield* Effect.die("matched thread missing");
+  if (inferredThreadId.startsWith("rest-thread:"))
+    return yield* new GitHubCommandError({
+      command: "gh-tool pr reply-and-resolve",
+      exitCode: 1,
+      message:
+        "GitHub GraphQL is blocked; REST cannot resolve a review thread. No reply was posted.",
+      stderr: "REST cannot resolve a review thread",
+      hint: "Retry after GitHub lifts the GraphQL limit, or post a reply separately.",
+    });
   if (threadId !== null && threadId !== inferredThreadId) {
     return yield* Effect.fail(
       new GitHubCommandError({

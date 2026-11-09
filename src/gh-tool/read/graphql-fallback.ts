@@ -20,6 +20,7 @@ export const reportFallback = (unknown: string[]) =>
       ...ghSubprocessEvent(["api", "graphql"], 0),
       method: "FALLBACK",
       endpoint: "graphql-to-rest",
+      outcome: "fallback",
     });
     return notice;
   });
@@ -46,7 +47,7 @@ export const withFallbackOutput = <A, E, R>(program: Effect.Effect<A, E, R>) =>
                   ? value.map((item) => ({ ...item, fallback }))
                   : { ...value, fallback },
                 null,
-                2,
+                arg.includes("\n") ? 2 : undefined,
               );
             } catch {
               return arg;
@@ -62,7 +63,7 @@ export const withFallbackOutput = <A, E, R>(program: Effect.Effect<A, E, R>) =>
 const Comment = Schema.Struct({
   id: Schema.Number,
   node_id: Schema.String,
-  in_reply_to_id: Schema.optional(Schema.Number),
+  in_reply_to_id: Schema.optional(Schema.NullOr(Schema.Number)),
   path: Schema.String,
   line: Schema.NullOr(Schema.Number),
   body: Schema.String,
@@ -74,7 +75,7 @@ export const restGraphql = (
   query: string,
   variables: Record<string, string | number | null>,
   read: JsonRead,
-) => {
+): Effect.Effect<unknown, import("./transport").GhError> | null => {
   if (
     query.includes("mutation") ||
     typeof variables.owner !== "string" ||
@@ -90,7 +91,9 @@ export const restGraphql = (
         Schema.Array(Schema.Array(Comment)),
         yield* restPages(read, `${root}/comments`),
       )).flat();
-      const roots = comments.filter((comment) => comment.in_reply_to_id === undefined);
+      const roots = comments.filter(
+        (comment) => comment.in_reply_to_id === undefined || comment.in_reply_to_id === null,
+      );
       const nodes = roots.map((comment) => ({
         id: `rest-thread:${comment.id}`,
         isResolved: null,
@@ -105,7 +108,9 @@ export const restGraphql = (
               author: { login: item.user.login },
               commit: { oid: item.commit_id },
               replyTo:
-                item.in_reply_to_id === undefined ? null : { id: String(item.in_reply_to_id) },
+                item.in_reply_to_id === undefined || item.in_reply_to_id === null
+                  ? null
+                  : { id: String(item.in_reply_to_id) },
             }),
           ),
           pageInfo: { hasNextPage: false, endCursor: null },

@@ -6,7 +6,7 @@ export type RequestEvent = {
   method: string;
   endpoint: string;
   status: number | null;
-  outcome: "cache" | "304" | "200" | "bypass" | "error" | "subprocess";
+  outcome: "cache" | "304" | "200" | "bypass" | "error" | "subprocess" | "fallback";
   resource: string | null;
   used: number | null;
   remaining: number | null;
@@ -132,13 +132,16 @@ const subprocessSpendsResource = (row: RequestRow, resource: string): boolean =>
 };
 
 export const summarizeRequests = (rows: readonly RequestRow[]) => {
-  const requests = rows.filter((row) => row.outcome !== "cache" && row.outcome !== "subprocess");
+  const requests = rows.filter(
+    (row) => row.outcome !== "cache" && row.outcome !== "subprocess" && row.outcome !== "fallback",
+  );
   const subprocesses = rows.filter((row) => row.outcome === "subprocess");
   const previous = new Map<string, { used: number; index: number }>();
   let externalUsageEstimate = 0;
   let intervals = 0;
   for (const [index, row] of rows.entries()) {
-    if (row.outcome === "cache" || row.outcome === "subprocess") continue;
+    if (row.outcome === "cache" || row.outcome === "subprocess" || row.outcome === "fallback")
+      continue;
     if (row.resource === null || row.used === null || row.reset === null) continue;
     const resource = row.resource;
     const key = `${resource}:${row.reset}`;

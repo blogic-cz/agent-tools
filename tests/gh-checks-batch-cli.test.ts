@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import { captureOutput } from "./helpers/capture-output";
 import { ghCommand } from "./helpers/gh-command";
+import { restPullFixture } from "./fixtures/gh-rest-pull";
 const MERGED_HEAD = "3e49e95c3dae6bba9236d2c43d2cb30c40478d30";
 const OPEN_HEAD = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
 afterEach(() => vi.unstubAllEnvs());
@@ -12,6 +13,33 @@ it("pr checks --prs marks a PR whose checks gh did not report instead of returni
       ghCommand(
         ["pr", "checks", "--prs", "1396,949", "--format", "json", "--repo", "test-owner/test-repo"],
         (args) => {
+          const path = args[3] ?? "";
+          if (args[0] === "api") {
+            const data = path.includes("/pulls/")
+              ? restPullFixture(Number(path.split("/").at(-1)), {
+                  owner: "test-owner",
+                  name: "test-repo",
+                  head: path.endsWith("1396") ? MERGED_HEAD : OPEN_HEAD,
+                  state: path.endsWith("1396") ? "MERGED" : "OPEN",
+                })
+              : path.includes("/check-runs")
+                ? [
+                    {
+                      check_runs: path.includes(MERGED_HEAD)
+                        ? []
+                        : [
+                            {
+                              name: "Build and Test",
+                              status: "completed",
+                              conclusion: "success",
+                              html_url: "external",
+                            },
+                          ],
+                    },
+                  ]
+                : [{ statuses: [] }];
+            return { stdout: JSON.stringify(data), stderr: "", exitCode: 0 };
+          }
           if (args[0] === "pr" && args[1] === "view")
             return {
               stdout: JSON.stringify(

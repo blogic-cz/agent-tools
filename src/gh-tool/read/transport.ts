@@ -179,7 +179,7 @@ export class GitHubService extends Context.Service<
           return getGitHubConfig(config);
         });
 
-        const executeGh = (args: string[], binary = GH_BINARY) =>
+        const executeGh = (args: string[], binary: string = GH_BINARY) =>
           Effect.scoped(
             Effect.gen(function* () {
               const ghRepo = yield* RepoTarget;
@@ -360,6 +360,7 @@ export class GitHubService extends Context.Service<
           );
         const runGh = (args: string[]): Effect.Effect<GhResult, GhError> =>
           Effect.gen(function* () {
+            yield* validateOutboundText(args.join("\n"), "gh-tool");
             const target = yield* RepoTarget;
             if (
               args[0] === "pr" &&
@@ -374,6 +375,8 @@ export class GitHubService extends Context.Service<
                   message: "Cannot determine the current branch; pass --pr",
                   stderr: branch.stderr,
                 });
+              const repoIndex = args.indexOf("--repo");
+              const selectedRepo = repoIndex < 0 ? target : args[repoIndex + 1];
               const pulls = yield* runGh([
                 "pr",
                 "list",
@@ -385,7 +388,7 @@ export class GitHubService extends Context.Service<
                 "2",
                 "--json",
                 "number",
-                ...(target === undefined ? [] : ["--repo", target]),
+                ...(selectedRepo === undefined ? [] : ["--repo", selectedRepo]),
               ]);
               const matches = yield* Effect.try({
                 try: () =>

@@ -38,7 +38,7 @@ const Pull = Schema.Struct({
   ),
   createdAt: Schema.optional(Schema.String),
   reviewDecision: Schema.optional(Schema.String),
-  headRepositoryOwner: Schema.optional(Schema.Struct({ login: Schema.String })),
+  headRepositoryOwner: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
 });
 
 const PullView = Schema.Struct({
