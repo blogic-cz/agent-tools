@@ -24,8 +24,17 @@ type Budget = {
   active: number;
   startedAt: number;
   revoked: boolean;
+  loginWaiters: Set<() => void>;
 };
 type LoginToken = { value: string; expiresAt: number };
+type LoginFlight = {
+  promise: Promise<string>;
+  waiters: number;
+  settled: boolean;
+  ownerRequest: object;
+  releaseOwnerSlot?: () => void;
+  abort: () => void;
+};
 export function createProxy(options: {
   config: unknown;
   secrets: Readonly<Record<string, string>>;
@@ -34,10 +43,18 @@ export function createProxy(options: {
 }) {
   const config = validateOperator(options.config);
   const now = options.now ?? Date.now;
-  const budgets = new Map(
-    config.grants.map((grant) => [
+  const budgets = new Map<string, Budget>(
+    config.grants.map((grant): [string, Budget] => [
       grant.digest,
-      { grant, requests: 0, bytes: 0, active: 0, startedAt: now(), revoked: grant.revoked },
+      {
+        grant,
+        requests: 0,
+        bytes: 0,
+        active: 0,
+        startedAt: now(),
+        revoked: grant.revoked,
+        loginWaiters: new Set<() => void>(),
+      },
     ]),
   );
   let active = 0;
@@ -115,7 +132,7 @@ export function createProxy(options: {
     }
   }
   const loginTokens = new Map<Profile, LoginToken>();
-  const pendingLogins = new Map<Profile, Promise<string>>();
+  const pendingLogins = new Map<Profile, LoginFlight>();
   const retention = createCredentialRetention(initial);
   const protectedOutput = (result: ApiResult): string => {
     const serialized = JSON.stringify(result);
@@ -152,6 +169,8 @@ export function createProxy(options: {
     input: unknown,
   ): Promise<{ result: ApiResult; serialized: string }> => {
     const budget = authorize(capability);
+    const requestId = {};
+    let loginFlight: LoginFlight | undefined;
     if (
       typeof input === "object" &&
       input !== null &&
@@ -262,17 +281,57 @@ export function createProxy(options: {
           const auth = profile.auth;
           const loginBody = loginBodies.get(profile);
           if (loginBody === undefined) throw apiError("CREDENTIAL_UNAVAILABLE");
+          const waitForLogin = (flight: LoginFlight): Promise<string> => {
+            loginFlight = flight;
+            flight.waiters++;
+            return new Promise((resolve, reject) => {
+              let waiting = true;
+              const leave = (): boolean => {
+                if (!waiting) return false;
+                waiting = false;
+                controller.signal.removeEventListener("abort", onAbort);
+                budget.loginWaiters.delete(onRevoke);
+                flight.waiters--;
+                if (flight.waiters === 0 && !flight.settled) {
+                  if (pendingLogins.get(profile) === flight) pendingLogins.delete(profile);
+                  flight.abort();
+                }
+                return true;
+              };
+              const onAbort = () => {
+                if (leave()) reject(apiError("DEADLINE_EXCEEDED"));
+              };
+              const onRevoke = () => {
+                if (leave()) reject(apiError("UNAUTHORIZED"));
+              };
+              controller.signal.addEventListener("abort", onAbort, { once: true });
+              budget.loginWaiters.add(onRevoke);
+              if (controller.signal.aborted) onAbort();
+              else if (budget.revoked) onRevoke();
+              flight.promise.then(
+                (token) => {
+                  if (leave()) resolve(token);
+                  return undefined;
+                },
+                (error: unknown) => {
+                  if (leave()) reject(error);
+                  return undefined;
+                },
+              );
+            });
+          };
           const getToken = (): Promise<string> => {
             const reuseMs = auth.tokenReuseMs;
             if (reuseMs !== undefined) {
               const cached = loginTokens.get(profile);
               if (cached && now() < cached.expiresAt) return Promise.resolve(cached.value);
               const pending = pendingLogins.get(profile);
-              if (pending) return pending;
+              if (pending) return waitForLogin(pending);
             }
             const reservation = retention.reserve();
             const loginController = new AbortController();
             const loginTimer = setTimeout(() => loginController.abort(), profile.timeoutMs);
+            let flight: LoginFlight;
             let operation: Promise<string>;
             try {
               operation = send(
@@ -318,29 +377,42 @@ export function createProxy(options: {
                   )
                     throw apiError("UPSTREAM_FAILED");
                   reservation.retain(token);
-                  if (reuseMs !== undefined)
+                  if (reuseMs !== undefined && flight.waiters > 0)
                     loginTokens.set(profile, { value: token, expiresAt: now() + reuseMs });
                   return token;
                 })
                 .finally(() => {
                   clearTimeout(loginTimer);
                   reservation.release();
+                  flight.settled = true;
+                  if (pendingLogins.get(profile) === flight) pendingLogins.delete(profile);
+                  flight.releaseOwnerSlot?.();
                 });
             } catch (error) {
               clearTimeout(loginTimer);
               reservation.release();
               throw error;
             }
+            flight = {
+              promise: operation,
+              waiters: 0,
+              settled: false,
+              ownerRequest: requestId,
+              abort: () => {
+                clearTimeout(loginTimer);
+                loginController.abort();
+              },
+            };
             if (reuseMs !== undefined) {
-              pendingLogins.set(profile, operation);
+              pendingLogins.set(profile, flight);
               const clearPending = () => {
-                if (pendingLogins.get(profile) === operation) pendingLogins.delete(profile);
+                if (pendingLogins.get(profile) === flight) pendingLogins.delete(profile);
               };
-              void operation.then(clearPending, clearPending);
+              void flight.promise.then(clearPending, clearPending);
             }
-            return operation;
+            return waitForLogin(flight);
           };
-          const token = await beforeAbort(getToken(), controller.signal);
+          const token = await getToken();
           headers.authorization = `Bearer ${token}`;
           usedLoginToken = token;
           break;
@@ -382,8 +454,18 @@ export function createProxy(options: {
       throw safeError(error);
     } finally {
       clearTimeout(timer);
-      budget.active--;
-      active--;
+      if (loginFlight?.ownerRequest === requestId && !loginFlight.settled) {
+        let released = false;
+        loginFlight.releaseOwnerSlot = () => {
+          if (released) return;
+          released = true;
+          budget.active--;
+          active--;
+        };
+      } else {
+        budget.active--;
+        active--;
+      }
     }
   };
   return {
@@ -392,7 +474,10 @@ export function createProxy(options: {
     },
     revoke: (digest: string): void => {
       const budget = budgets.get(digest);
-      if (budget) budget.revoked = true;
+      if (budget) {
+        budget.revoked = true;
+        for (const leave of budget.loginWaiters) leave();
+      }
     },
     request: async (capability: string, input: unknown): Promise<ApiResult> =>
       (await execute(capability, input)).result,
