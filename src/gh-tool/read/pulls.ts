@@ -481,3 +481,32 @@ const movedHead = (pr: number) =>
     stderr: "PR head changed while collecting checks",
     retryable: true,
   });
+
+export const prReviewDecision = Effect.fn("reads.prReviewDecision")(function* (
+  repo: RepoRef,
+  pr: number,
+) {
+  const gh = yield* GitHubService;
+  const result = yield* gh.runGhJson<unknown>([
+    "pr",
+    "view",
+    String(pr),
+    "--repo",
+    repoSlug(repo),
+    "--json",
+    "reviewDecision",
+  ]);
+  return yield* Effect.try({
+    try: () =>
+      Schema.decodeUnknownSync(Schema.Struct({ reviewDecision: PullView.fields.reviewDecision }))(
+        result,
+      ).reviewDecision,
+    catch: (cause) =>
+      new GitHubCommandError({
+        command: "pr view",
+        exitCode: 1,
+        message: "Invalid review decision",
+        stderr: String(cause),
+      }),
+  });
+});

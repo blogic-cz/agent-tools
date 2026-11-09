@@ -421,6 +421,13 @@ export class GitHubService extends Context.Service<
                   });
                 head = owner + ":" + head;
               }
+              if (trackingBranch.exitCode > 1 || trackingRemote.exitCode > 1)
+                return yield* new GitHubCommandError({
+                  command: "pr view",
+                  exitCode: 1,
+                  message: "Cannot read tracking configuration; pass --pr",
+                  stderr: trackingBranch.stderr + trackingRemote.stderr,
+                });
               const repoIndex = args.indexOf("--repo");
               const selectedRepo = repoIndex < 0 ? target : args[repoIndex + 1];
               const pulls = yield* runGh([
@@ -431,16 +438,16 @@ export class GitHubService extends Context.Service<
                 "--state",
                 "all",
                 "--limit",
-                "2",
+                "100",
                 "--json",
-                "number",
+                "number,state",
                 ...(selectedRepo === undefined ? [] : ["--repo", selectedRepo]),
               ]);
-              const matches = yield* Effect.try({
+              const candidates = yield* Effect.try({
                 try: () =>
-                  Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ number: Schema.Number })))(
-                    JSON.parse(pulls.stdout),
-                  ),
+                  Schema.decodeUnknownSync(
+                    Schema.Array(Schema.Struct({ number: Schema.Number, state: Schema.String })),
+                  )(JSON.parse(pulls.stdout)),
                 catch: (error) =>
                   new GitHubCommandError({
                     command: "pr view",
@@ -449,6 +456,8 @@ export class GitHubService extends Context.Service<
                     stderr: String(error),
                   }),
               });
+              const open = candidates.filter((pull) => pull.state === "OPEN");
+              const matches = open.length > 0 ? open : candidates.slice(0, 1);
               if (matches.length !== 1 || matches[0] === undefined)
                 return yield* new GitHubCommandError({
                   command: "pr view",

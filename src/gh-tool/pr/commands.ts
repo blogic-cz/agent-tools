@@ -417,14 +417,8 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
           fetchReviews(number, null, null, null, headSha),
           fetchComments(number, null, headSha),
         ]);
-        const gh = yield* GitHubService;
-        const { reviewDecision } = yield* gh.runGhJson<{ reviewDecision: string }>([
-          "pr",
-          "view",
-          String(number),
-          "--json",
-          "reviewDecision",
-        ]);
+        const repo = yield* resolveRepo(null);
+        const reviewDecision = yield* reads.prReviewDecision(repo, number);
         return { allThreads, summary, checkReport, reviews, inlineComments, reviewDecision };
       }),
     { operation: "review triage", command: "gh-tool pr review-triage" },

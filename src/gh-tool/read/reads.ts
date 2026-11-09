@@ -14,6 +14,7 @@ import {
   prBody,
   checkSignal,
   prReviewTriageSummary,
+  prReviewDecision,
 } from "./pulls";
 import { prComments, prReviews, reviewThreads, lastHumanReviewer } from "./reviews";
 import { reviewGuards } from "./review-guards";
@@ -384,6 +385,7 @@ export const reads = {
   prList,
   prChecks,
   prReviewTriageSummary,
+  prReviewDecision,
   prHead,
   prBody,
   checkSignal,

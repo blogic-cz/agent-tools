@@ -6441,6 +6441,8 @@ describe("pr feedback (aggregated review-response inventory)", () => {
         const layer = createMockGhLayer({
           runGhJson: (args) => {
             if (args[0] !== "pr" || args[1] !== "view") return Effect.succeed([]);
+            if (args.at(-1) === "reviewDecision")
+              return Effect.succeed({ reviewDecision: "APPROVED" });
             views += 1;
             return Effect.succeed({ ...mockPRInfo, headRefOid: views % 2 ? "head-a" : "head-b" });
           },
@@ -9366,6 +9368,8 @@ describe("PR composite commands", () => {
           createMockGhLayer({
             runGhJson: (args) => {
               if (args[0] === "pr" && args[1] === "view") {
+                if (args.at(-1) === "reviewDecision")
+                  return Effect.succeed({ reviewDecision: "APPROVED" });
                 views += 1;
                 return Effect.succeed({
                   ...mockPRInfo,
@@ -9414,6 +9418,7 @@ describe("PR composite commands", () => {
       Effect.gen(function* () {
         const layer = createMockGhLayer({
           runGhJson: (args) => {
+            if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
             if (args[0] === "pr" && args[1] === "view") {
               return Effect.succeed(mockPRInfo);
             }
@@ -9519,6 +9524,7 @@ describe("PR composite commands", () => {
           Effect.provide(
             createMockGhLayer({
               runGhJson: (args) => {
+                if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
                 if (args[0] === "pr" && args[1] === "view") {
                   return Effect.succeed({ ...mockPRInfo, headRefOid: "stable-head" });
                 }
@@ -9575,6 +9581,7 @@ describe("PR composite commands", () => {
       Effect.gen(function* () {
         const layer = createMockGhLayer({
           runGhJson: (args) => {
+            if (args.at(-1) === "reviewDecision") return Effect.succeed({ reviewDecision: "" });
             if (args[0] === "pr" && args[1] === "view" && args[2] === "124") {
               return Effect.fail(
                 new GitHubNotFoundError({
