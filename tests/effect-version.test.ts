@@ -3,11 +3,15 @@ import { effectVersionError, checkEffectVersion } from "#shared/effect-version";
 
 it("accepts the Effect peer range and reports incompatible or missing versions", () => {
   expect(effectVersionError("4.0.5")).toBeUndefined();
+  expect(effectVersionError("4.0.7")).toBeUndefined();
+  expect(effectVersionError("4.1.2")).toBe(
+    "agent-tools requires effect ~4.0.5 but found 4.1.2; install a matching effect version",
+  );
   expect(effectVersionError("4.0.0-beta.105")).toBe(
-    "agent-tools requires effect ^4.0.5 but found 4.0.0-beta.105; install a matching effect version",
+    "agent-tools requires effect ~4.0.5 but found 4.0.0-beta.105; install a matching effect version",
   );
   expect(effectVersionError(undefined)).toBe(
-    "agent-tools requires effect ^4.0.5 but could not resolve the installed effect package; install a matching effect version",
+    "agent-tools requires effect ~4.0.5 but could not resolve the installed effect package; install a matching effect version",
   );
 });
 
