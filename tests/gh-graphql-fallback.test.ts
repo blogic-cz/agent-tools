@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { Console, Effect, Layer, Result, Sink, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigService } from "#config";
 import { GitHubService } from "#gh/read/transport";
+import { SessionCredential } from "#gh/read/api";
 import {
   PR_VIEW_FIELDS,
   PR_LIST_FIELDS,
@@ -572,6 +573,82 @@ describe("GraphQL REST fallback", () => {
       return { result, output, warnings };
     });
 
+  const runCachedEmptyRead = (
+    operation: "list" | "threads",
+    store: FileStore,
+    calls: string[][],
+    events: RequestEvent[],
+    healthy: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const current = yield* Console.Console;
+      const output: string[] = [];
+      const warnings: string[] = [];
+      const result = yield* withFallbackOutput(
+        Effect.gen(function* () {
+          const repo = { owner: "owner", name: "repo" };
+          const gh = yield* GitHubService;
+          if (operation === "list" && !healthy)
+            yield* Effect.result(gh.runGraphQL("query { viewer { login } }", {}));
+          const value =
+            operation === "list"
+              ? yield* prList(repo, {
+                  state: "open",
+                  limit: 30,
+                  author: null,
+                  base: null,
+                  head: null,
+                  search: null,
+                })
+              : yield* reviewThreads(repo, 12);
+          yield* Console.log(JSON.stringify(value));
+          return value;
+        }),
+      ).pipe(
+        Effect.provide(GitHubService.layer),
+        Effect.provide(
+          setup(calls, (args) => {
+            if (args.includes("graphql"))
+              return healthy
+                ? ok({
+                    data: {
+                      repository: {
+                        pullRequest: {
+                          reviewThreads: {
+                            nodes: [],
+                            pageInfo: { hasNextPage: false, endCursor: null },
+                          },
+                        },
+                      },
+                    },
+                  })
+                : failure("GraphQL: API rate limit already exceeded (RATE_LIMIT)");
+            const path = args[3] ?? "";
+            if (path.endsWith("/pulls/12/comments")) return ok([[]]);
+            if (path.endsWith("/pulls/12")) return ok(pull);
+            if (path.includes("/pulls?")) return ok([]);
+            return undefined;
+          }),
+        ),
+        Effect.provide(
+          Layer.succeed(ConfigService, { github: { default: { owner: "owner", repo: "repo" } } }),
+        ),
+        Effect.provideService(ReadCache, { store, warned: false }),
+        Effect.provideService(SessionCredential, "test-token"),
+        Effect.provideService(Telemetry, {
+          record: (event) => events.push(event),
+          read: () => [],
+          close: () => {},
+        }),
+        Effect.provideService(Console.Console, {
+          ...current,
+          log: (...args) => output.push(...args.map(String)),
+          warn: (...args) => warnings.push(...args.map(String)),
+        }),
+      );
+      return { result, output, warnings };
+    });
+
   for (const operation of ["list", "view"] as const)
     it.effect(`does not cache fallback ${operation} reads across service instances`, () =>
       Effect.gen(function* () {
@@ -648,6 +725,97 @@ describe("GraphQL REST fallback", () => {
             expect(calls.filter((args) => args[0] === "pr" && args[1] === "view")).toHaveLength(1);
           }),
         () => Effect.promise(() => rm(root, { recursive: true, force: true })),
+      );
+    }),
+  );
+
+  it.effect("does not cache empty fallback review threads across service instances", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), "gh-thread-fallback-cache-")),
+      );
+      const originalFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", async () => Response.json([]));
+      return yield* Effect.acquireUseRelease(
+        Effect.promise(() => FileStore.open("fixture", root)),
+        (store) =>
+          Effect.gen(function* () {
+            const calls: string[][] = [];
+            const firstEvents: RequestEvent[] = [];
+            const secondEvents: RequestEvent[] = [];
+            const first = yield* runCachedEmptyRead("threads", store, calls, firstEvents, false);
+            const second = yield* runCachedEmptyRead("threads", store, calls, secondEvents, false);
+            expect(first.result).toEqual([]);
+            expect(second.result).toEqual([]);
+            expect(calls.filter((args) => args.includes("graphql"))).toHaveLength(2);
+            expect(JSON.parse(first.output[0] ?? "null").fallback.source).toBe("REST");
+            expect(JSON.parse(second.output[0] ?? "null").fallback.source).toBe("REST");
+            expect(first.warnings).toHaveLength(1);
+            expect(second.warnings).toHaveLength(1);
+            expect(firstEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
+            expect(secondEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
+          }),
+        () =>
+          Effect.promise(() => {
+            vi.stubGlobal("fetch", originalFetch);
+            return rm(root, { recursive: true, force: true });
+          }),
+      );
+    }),
+  );
+
+  it.effect("does not cache an empty fallback PR list across service instances", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-list-fallback-cache-")));
+      return yield* Effect.acquireUseRelease(
+        Effect.promise(() => FileStore.open("fixture", root)),
+        (store) =>
+          Effect.gen(function* () {
+            const calls: string[][] = [];
+            const firstEvents: RequestEvent[] = [];
+            const secondEvents: RequestEvent[] = [];
+            const first = yield* runCachedEmptyRead("list", store, calls, firstEvents, false);
+            const second = yield* runCachedEmptyRead("list", store, calls, secondEvents, false);
+            expect(first.result).toEqual([]);
+            expect(second.result).toEqual([]);
+            expect(calls.filter((args) => args[3]?.includes("/pulls?"))).toHaveLength(2);
+            expect(JSON.parse(first.output[0] ?? "null").fallback.source).toBe("REST");
+            expect(JSON.parse(second.output[0] ?? "null").fallback.source).toBe("REST");
+            expect(first.warnings).toHaveLength(1);
+            expect(second.warnings).toHaveLength(1);
+            expect(firstEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
+            expect(secondEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
+          }),
+        () => Effect.promise(() => rm(root, { recursive: true, force: true })),
+      );
+    }),
+  );
+
+  it.effect("still caches healthy empty review threads", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "gh-thread-healthy-cache-")));
+      const originalFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", async () => Response.json([]));
+      return yield* Effect.acquireUseRelease(
+        Effect.promise(() => FileStore.open("fixture", root)),
+        (store) =>
+          Effect.gen(function* () {
+            const calls: string[][] = [];
+            const firstEvents: RequestEvent[] = [];
+            const secondEvents: RequestEvent[] = [];
+            const first = yield* runCachedEmptyRead("threads", store, calls, firstEvents, true);
+            const second = yield* runCachedEmptyRead("threads", store, calls, secondEvents, true);
+            expect(first.result).toEqual([]);
+            expect(second.result).toEqual([]);
+            expect(calls.filter((args) => args.includes("graphql"))).toHaveLength(1);
+            expect(first.warnings).toHaveLength(0);
+            expect(second.warnings).toHaveLength(0);
+          }),
+        () =>
+          Effect.promise(() => {
+            vi.stubGlobal("fetch", originalFetch);
+            return rm(root, { recursive: true, force: true });
+          }),
       );
     }),
   );
