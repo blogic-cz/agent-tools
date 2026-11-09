@@ -582,6 +582,44 @@ it.effect("uses the tracking head and fork owner for current branch lookup", () 
     },
   );
 });
+it.effect("resolves a tracked PR ref by number in the selected repository", () => {
+  const calls: string[][] = [];
+  return provide(
+    Effect.gen(function* () {
+      const gh = yield* GitHubService;
+      const result = yield* gh.runGhJson<{ number: number }>([
+        "pr",
+        "view",
+        "--repo",
+        "owner/repo",
+        "--json",
+        "number",
+      ]);
+      expect(result.number).toBe(12);
+      expect(calls.some((args) => args.includes("repos/owner/repo/pulls/12"))).toBe(true);
+      expect(
+        calls.some((args) =>
+          args.some((arg) => arg.includes("refs%2Fpull%2F12%2Fhead")),
+        ),
+      ).toBe(false);
+    }),
+    calls,
+    (args) => {
+      if (args[0] === "branch") return { stdout: "review-12\n", stderr: "", exitCode: 0 };
+      if (args[0] === "config")
+        return {
+          stdout: args[2]?.endsWith(".merge") ? "refs/pull/12/head\n" : "origin\n",
+          stderr: "",
+          exitCode: 0,
+        };
+      if (args[0] === "remote")
+        return { stdout: "git@github.com:owner/repo.git\n", stderr: "", exitCode: 0 };
+      if (args[3] === "repos/owner/repo/pulls/12") return ok(pull);
+      if (args[3]?.includes("/pulls?")) return ok([[]]);
+      return undefined;
+    },
+  );
+});
 it.effect("verifies the PR before writing a close comment", () => {
   const calls: string[][] = [];
   return provide(
