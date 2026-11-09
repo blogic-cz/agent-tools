@@ -3,6 +3,12 @@ import { GitHubCommandError } from "#gh/errors";
 import type { GhError } from "./transport";
 
 export type JsonRead = (args: string[]) => Effect.Effect<unknown, GhError>;
+export type ReviewDecisionInput = {
+  repo: string;
+  number: number;
+  baseRefName: string;
+  headSha: string;
+};
 export type ReviewDecision = "" | "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "UNKNOWN";
 const User = Schema.Struct({ login: Schema.String, type: Schema.String });
 const Ref = Schema.Struct({
@@ -111,6 +117,12 @@ const reviewRule = (parameters: unknown) => {
     lastPush: decoded.require_last_push_approval ?? false,
   };
 };
+const ClassicReviewRule = Schema.Struct({
+  required_approving_review_count: Schema.Number,
+  require_code_owner_reviews: Schema.Boolean,
+  dismiss_stale_reviews: Schema.Boolean,
+  require_last_push_approval: Schema.Boolean,
+});
 const noRulesets = (error: unknown) =>
   error instanceof Error &&
   (/HTTP 404|Not Found/i.test(error.message) ||
@@ -127,7 +139,7 @@ const Rulesets = Schema.Array(
 
 export const restReviewDecision = (
   read: JsonRead,
-  input: { repo: string; number: number; baseRefName: string; headSha: string },
+  input: ReviewDecisionInput,
 ): Effect.Effect<ReviewDecision> =>
   Effect.gen(function* () {
     const base = encodeURIComponent(input.baseRefName);
@@ -161,12 +173,20 @@ export const restReviewDecision = (
       const protectionResult = yield* restValue(
         read,
         `repos/${input.repo}/branches/${base}/protection/required_pull_request_reviews`,
-        RestReviewRule,
+        ClassicReviewRule,
       );
       if (Result.isFailure(protectionResult)) {
-        if (!/HTTP 404|Not Found/i.test(protectionResult.failure.message)) return "UNKNOWN";
+        if (!/Branch not protected/i.test(protectionResult.failure.message)) return "UNKNOWN";
       } else {
-        classic = [reviewRule(protectionResult.success)];
+        const rule = protectionResult.success;
+        classic = [
+          {
+            approvals: rule.required_approving_review_count,
+            codeOwner: rule.require_code_owner_reviews,
+            dismissStale: rule.dismiss_stale_reviews,
+            lastPush: rule.require_last_push_approval,
+          },
+        ];
       }
     }
 
@@ -180,20 +200,27 @@ export const restReviewDecision = (
     };
     if (required.codeOwner || required.lastPush) return "UNKNOWN";
 
-    const reviewsResult = yield* restValue(
+    const reviewsResult = yield* restPages(
       read,
       `repos/${input.repo}/pulls/${input.number}/reviews`,
-      Schema.Array(
-        Schema.Array(
-          Schema.Struct({
-            id: Schema.Number,
-            user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
-            state: Schema.String,
-            submitted_at: Schema.NullOr(Schema.String),
-            commit_id: Schema.String,
-          }),
+    ).pipe(
+      Effect.flatMap((value) =>
+        parseRest(
+          Schema.Array(
+            Schema.Array(
+              Schema.Struct({
+                id: Schema.Number,
+                user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
+                state: Schema.String,
+                submitted_at: Schema.NullOr(Schema.String),
+                commit_id: Schema.String,
+              }),
+            ),
+          ),
+          value,
         ),
       ),
+      Effect.result,
     );
     if (Result.isFailure(reviewsResult)) return "UNKNOWN";
 
@@ -235,6 +262,9 @@ export const restPorcelain = (
   args: string[],
   read: JsonRead,
   target: string | undefined,
+  resolveDecision: (input: ReviewDecisionInput) => Effect.Effect<ReviewDecision, GhError> = (
+    input,
+  ) => restReviewDecision(read, input),
 ): Effect.Effect<unknown, GhError> | null => {
   const repo = option(args, "--repo") ?? target ?? "{owner}/{repo}";
   const selector = args[2]?.startsWith("-") === false ? args[2] : undefined;
@@ -329,7 +359,7 @@ export const restPorcelain = (
       const value = requestedFields.has("reviewDecision")
         ? {
             ...pull,
-            reviewDecision: yield* restReviewDecision(read, {
+            reviewDecision: yield* resolveDecision({
               repo,
               number: pull.number,
               baseRefName: pull.baseRefName,
@@ -382,7 +412,7 @@ export const restPorcelain = (
         });
       return yield* Effect.forEach(
         pages.flatMap((page) => page.items).slice(0, Number(option(args, "--limit") ?? 30)),
-        (item) => restPull(read, repo, String(item.number)).pipe(Effect.map(projectPull)),
+        (item) => restPull(read, repo, String(item.number)).pipe(Effect.flatMap(projectPull)),
       );
     });
   if (args[1] === "list")

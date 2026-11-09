@@ -1,7 +1,14 @@
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Schema, Stream } from "effect";
-import { graphFieldsRequested, restPorcelain } from "./rest-porcelain";
+import {
+  graphFieldsRequested,
+  restPorcelain,
+  restReviewDecision,
+  parseRest,
+  type ReviewDecisionInput,
+  type ReviewDecision,
+} from "./rest-porcelain";
 import {
   graphqlLimitError,
   isGraphqlLimit,
@@ -358,7 +365,8 @@ export class GitHubService extends Context.Service<
         };
 
         let graphqlBlocked = false;
-        const rawJson = (args: string[]) =>
+        const ruleReads = new Map<string, Effect.Effect<unknown, GhError>>();
+        const uncachedJson = (args: string[]) =>
           runGhRaw(args).pipe(
             Effect.flatMap((result) =>
               Effect.try({
@@ -373,6 +381,64 @@ export class GitHubService extends Context.Service<
               }),
             ),
           );
+        const rawJson = (args: string[]): Effect.Effect<unknown, GhError> =>
+          Effect.gen(function* () {
+            const path = args[3];
+            if (
+              args[0] !== "api" ||
+              args[2] !== "GET" ||
+              path === undefined ||
+              !/^repos\/[^/]+\/[^/]+\/(?:rules\/branches\/[^/]+|branches\/[^/]+(?:\/protection\/required_pull_request_reviews)?)$/.test(
+                path,
+              )
+            )
+              return yield* uncachedJson(args);
+            let read = ruleReads.get(path);
+            if (read === undefined) {
+              read = yield* Effect.cached(uncachedJson(args));
+              ruleReads.set(path, read);
+            }
+            return yield* read;
+          });
+        const resolveDecision = (
+          input: ReviewDecisionInput,
+        ): Effect.Effect<ReviewDecision, GhError> =>
+          Effect.gen(function* () {
+            const decision = yield* restReviewDecision(rawJson, input);
+            if (decision !== "UNKNOWN" || graphqlBlocked) return decision;
+            return yield* rawJson([
+              "pr",
+              "view",
+              String(input.number),
+              "--repo",
+              input.repo,
+              "--json",
+              "reviewDecision",
+            ]).pipe(
+              Effect.flatMap((value) =>
+                parseRest(
+                  Schema.Struct({
+                    reviewDecision: Schema.NullOr(
+                      Schema.Literals([
+                        "APPROVED",
+                        "CHANGES_REQUESTED",
+                        "REVIEW_REQUIRED",
+                        "UNKNOWN",
+                        "",
+                      ]),
+                    ),
+                  }),
+                  value,
+                ),
+              ),
+              Effect.map((value) => value.reviewDecision ?? ""),
+              Effect.catch((error) => {
+                if (!isGraphqlLimit(error)) return Effect.fail(error);
+                graphqlBlocked = true;
+                return Effect.succeed("UNKNOWN" as const);
+              }),
+            );
+          });
         const runGh = (args: string[]): Effect.Effect<GhResult, GhError> =>
           Effect.gen(function* () {
             yield* validateOutboundText(args.join("\n"), "gh-tool");
@@ -475,21 +541,21 @@ export class GitHubService extends Context.Service<
                 args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
               }
             }
-            const rest = restPorcelain(args, rawJson, target);
+            const rest = restPorcelain(args, rawJson, target, resolveDecision);
             const usesGraphql =
               args[0] === "pr" ||
               args[0] === "repo" ||
               (args[0] === "api" && args[1] === "graphql");
             const mutation = args[0] === "pr" && args[1] === "merge";
-            if (rest !== null && !graphFieldsRequested(args) && !mutation) {
-              return { stdout: JSON.stringify(yield* rest), stderr: "", exitCode: 0 };
-            }
-            const fallback = (error: GhError): Effect.Effect<GhResult, GhError> =>
+            const fallback = (
+              error: GhError,
+              resolved?: { value: unknown },
+            ): Effect.Effect<GhResult, GhError> =>
               Effect.gen(function* () {
                 if (!usesGraphql || !isGraphqlLimit(error)) return yield* Effect.fail(error);
                 graphqlBlocked = true;
                 if (rest === null) return yield* Effect.fail(error);
-                const value = yield* rest;
+                const value = resolved === undefined ? yield* rest : resolved.value;
                 const values = Array.isArray(value) ? value : [value];
                 const unknown = ["mergeStateStatus"].filter((field) =>
                   args.some((arg) => arg.split(",").includes(field)),
@@ -511,6 +577,17 @@ export class GitHubService extends Context.Service<
                   : { ...Object(value), fallback: notice };
                 return { stdout: JSON.stringify(output), stderr: "", exitCode: 0 };
               });
+            const jsonFields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
+            if (
+              rest !== null &&
+              !mutation &&
+              (!graphFieldsRequested(args) || !jsonFields.includes("mergeStateStatus"))
+            ) {
+              const value = yield* rest;
+              if (graphqlBlocked && graphFieldsRequested(args))
+                return yield* fallback(graphqlLimitError(), { value });
+              return { stdout: JSON.stringify(value), stderr: "", exitCode: 0 };
+            }
             if (graphqlBlocked && rest !== null) return yield* fallback(graphqlLimitError());
             if (graphqlBlocked && args[0] === "api" && args[1] === "graphql")
               return yield* graphqlLimitError();
