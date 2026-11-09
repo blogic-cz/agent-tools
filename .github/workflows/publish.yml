@@ -114,9 +114,6 @@ jobs:
             fi
           fi
 
-          TARBALL_URL="https://registry.npmjs.org/${PACKAGE_NAME}/-/${PACKAGE_NAME##*/}-${VERSION}.tgz"
-          bun scripts/wait-for-npm-tarball.ts "$TARBALL_URL"
-
       - name: Generate changelog
         id: changelog
         run: |
@@ -145,3 +142,9 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for the npm tarball
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          bun scripts/wait-for-npm-tarball.ts "https://registry.npmjs.org/${PACKAGE_NAME}/-/${PACKAGE_NAME##*/}-${VERSION}.tgz"
