@@ -2,7 +2,13 @@ import { ghSubprocessEvent, recordRequest } from "./telemetry";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Schema, Stream } from "effect";
 import { graphFieldsRequested, restPorcelain } from "./rest-porcelain";
-import { graphqlLimitError, isGraphqlLimit, reportFallback, restGraphql } from "./graphql-fallback";
+import {
+  graphqlLimitError,
+  isGraphqlLimit,
+  reportFallback,
+  restGraphql,
+  rateLimitResponse,
+} from "./graphql-fallback";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
@@ -236,6 +242,15 @@ export class GitHubService extends Context.Service<
           const result = yield* executeGh(args);
 
           if (result.exitCode !== 0) {
+            const limit =
+              args[0] === "api" && args[1] === "graphql" ? rateLimitResponse(result.stdout) : null;
+            if (limit !== null)
+              return yield* new GitHubCommandError({
+                command: "gh api graphql",
+                exitCode: result.exitCode,
+                message: limit,
+                stderr: limit,
+              });
             if (
               result.stderr.includes("not logged in") ||
               result.stderr.includes("gh auth login")
@@ -558,7 +573,13 @@ export class GitHubService extends Context.Service<
           const result = yield* runGh(args);
 
           const response = yield* Effect.try({
-            try: () => JSON.parse(result.stdout) as { errors?: unknown[]; data?: unknown },
+            try: () =>
+              JSON.parse(result.stdout) as {
+                errors?: unknown[];
+                data?: unknown;
+                type?: string;
+                code?: string;
+              },
             catch: (error) =>
               new GitHubCommandError({
                 message: `Failed to parse GraphQL response: ${error instanceof Error ? error.message : String(error)}`,
@@ -577,6 +598,13 @@ export class GitHubService extends Context.Service<
             });
           }
 
+          if (response.type === "RATE_LIMIT" || response.code === "graphql_rate_limit")
+            return yield* new GitHubCommandError({
+              command: "gh api graphql",
+              exitCode: 0,
+              message: "GitHub GraphQL RATE_LIMIT",
+              stderr: "GitHub GraphQL RATE_LIMIT",
+            });
           return response.data as unknown;
         });
 

@@ -109,17 +109,17 @@ export const restGraphql = (
       )).flat();
       const groups = new Map<number, Array<typeof Comment.Type>>();
       for (const comment of comments) {
-        const root = comment.in_reply_to_id ?? comment.id;
-        const group = groups.get(root) ?? [];
+        const rootId = comment.in_reply_to_id ?? comment.id;
+        const group = groups.get(rootId) ?? [];
         group.push(comment);
-        groups.set(root, group);
+        groups.set(rootId, group);
       }
-      const nodes = [...groups.entries()].map(([root, group]) => ({
-        id: `rest-thread:${root}`,
+      const nodes = [...groups.entries()].map(([rootId, group]) => ({
+        id: `rest-thread:${rootId}`,
         isResolved: null,
         comments: {
           nodes: group
-            .toSorted((a, b) => Number(b.id === root) - Number(a.id === root))
+            .toSorted((a, b) => Number(b.id === rootId) - Number(a.id === rootId))
             .map((item) => ({
               id: item.node_id,
               databaseId: item.id,
@@ -209,6 +209,22 @@ export const restGraphql = (
 export const isGraphqlLimit = (error: unknown) =>
   error instanceof GitHubCommandError &&
   /rate.?limit|already exceeded|secondary limit|abuse detection/i.test(error.stderr);
+export const rateLimitResponse = (stdout: string): string | null => {
+  try {
+    const value = Schema.decodeUnknownSync(
+      Schema.Struct({
+        errors: Schema.optional(Schema.Array(Schema.Unknown)),
+        type: Schema.optional(Schema.String),
+        code: Schema.optional(Schema.String),
+        message: Schema.optional(Schema.String),
+      }),
+    )(JSON.parse(stdout));
+    const detail = JSON.stringify(value.errors ?? value);
+    return /RATE_LIMIT|graphql_rate_limit|rate limit|secondary limit/i.test(detail) ? detail : null;
+  } catch {
+    return null;
+  }
+};
 export const graphqlLimitError = () =>
   new GitHubCommandError({
     command: "gh api graphql",

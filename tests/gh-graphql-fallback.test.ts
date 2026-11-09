@@ -87,6 +87,30 @@ const provide = <A, E>(
   );
 
 describe("GraphQL REST fallback", () => {
+  for (const exitCode of [0, 1])
+    it.effect(
+      `handles structured RATE_LIMIT responses with exit code ${exitCode} and no stderr`,
+      () =>
+        provide(
+          Effect.gen(function* () {
+            const nodes = yield* reviewThreads({ owner: "owner", name: "repo" }, 12);
+            expect(nodes[0]?.isResolved).toBeNull();
+          }),
+          [],
+          (args) =>
+            args.includes("graphql")
+              ? {
+                  stdout: JSON.stringify({
+                    type: "RATE_LIMIT",
+                    code: "graphql_rate_limit",
+                    message: "API rate limit already exceeded",
+                  }),
+                  stderr: "",
+                  exitCode,
+                }
+              : undefined,
+        ),
+    );
   it.effect("reads lists and checks through REST, including legacy statuses", () => {
     const calls: string[][] = [];
     return provide(
