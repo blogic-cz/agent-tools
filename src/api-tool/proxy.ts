@@ -218,8 +218,15 @@ export function createProxy(options: {
         if (budget.revoked || now() >= budget.grant.expiresAt) throw apiError("UNAUTHORIZED");
         if (now() - budget.startedAt >= budget.grant.lifetimeMs) throw apiError("BUDGET_EXHAUSTED");
       };
-      const send = (target: URL, method: string, headers: Record<string, string>, data: string) => {
-        checkGrant();
+      const send = (
+        target: URL,
+        method: string,
+        headers: Record<string, string>,
+        data: string,
+        signal = controller.signal,
+        check = checkGrant,
+      ) => {
+        check();
         return options.transport({
           url: target,
           method,
@@ -230,7 +237,7 @@ export function createProxy(options: {
           },
           body: data,
           maxBytes: profile.maxResponseBytes,
-          signal: controller.signal,
+          signal,
           allowedPrivateAddresses: profile.allowedPrivateAddresses,
         });
       };
@@ -264,9 +271,18 @@ export function createProxy(options: {
               if (pending) return pending;
             }
             const reservation = retention.reserve();
+            const loginController = new AbortController();
+            const loginTimer = setTimeout(() => loginController.abort(), profile.timeoutMs);
             let operation: Promise<string>;
             try {
-              operation = send(new URL(auth.path, profile.origin), "POST", {}, loginBody)
+              operation = send(
+                new URL(auth.path, profile.origin),
+                "POST",
+                {},
+                loginBody,
+                loginController.signal,
+                () => undefined,
+              )
                 .then((result) => {
                   if (
                     result.status < 200 ||
@@ -306,8 +322,12 @@ export function createProxy(options: {
                     loginTokens.set(profile, { value: token, expiresAt: now() + reuseMs });
                   return token;
                 })
-                .finally(reservation.release);
+                .finally(() => {
+                  clearTimeout(loginTimer);
+                  reservation.release();
+                });
             } catch (error) {
+              clearTimeout(loginTimer);
               reservation.release();
               throw error;
             }

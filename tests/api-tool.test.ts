@@ -366,17 +366,19 @@ describe("REST credential proxy boundaries", () => {
       fields: { clientId: { literal: "synthetic-client" }, password: { secretRef: "token" } },
       tokenField: "token",
     };
-    const proxy = proxyFor(
-      async (input) =>
-        input.url.pathname === "/auth/login"
-          ? { status: 200, body: '{"token":"minted-token"}' }
-          : { status: 200, body: '{"echo":"synthetic-client"}' },
-      value,
-    );
+    let loginBody: unknown;
+    const proxy = proxyFor(async (input) => {
+      if (input.url.pathname === "/auth/login") {
+        loginBody = JSON.parse(input.body);
+        return { status: 200, body: '{"token":"minted-token"}' };
+      }
+      return { status: 200, body: '{"echo":"synthetic-client"}' };
+    }, value);
     await expect(proxy.request(capability, request)).resolves.toEqual({
       status: 200,
       data: { echo: "synthetic-client" },
     });
+    expect(loginBody).toEqual({ clientId: "synthetic-client", password: credential });
     expect(() => {
       const onlyLiterals = config();
       onlyLiterals.profiles.sample.auth = {
@@ -408,6 +410,7 @@ describe("REST credential proxy boundaries", () => {
     );
     expect(() => {
       const invalid = config();
+      invalid.profiles.sample.methods = ["POST"];
       invalid.profiles.sample.auth = {
         kind: "bodyFields",
         fields: { apiKey: { literal: "only-literal" } },
@@ -447,7 +450,7 @@ describe("REST credential proxy boundaries", () => {
       expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
     }
     const value = config();
-    value.profiles.sample.maxRequestBytes = 20;
+    value.profiles.sample.maxRequestBytes = 35;
     value.profiles.sample.methods = ["POST"];
     value.profiles.sample.auth = { kind: "bodyFields", fields: { key: { secretRef: "token" } } };
     let calls = 0;
@@ -456,7 +459,7 @@ describe("REST credential proxy boundaries", () => {
       return { status: 200, body: "{}" };
     }, value);
     await expect(
-      proxy.request(capability, { ...request, method: "POST", body: { value: "x".repeat(20) } }),
+      proxy.request(capability, { ...request, method: "POST", body: { value: "x" } }),
     ).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
     expect(calls).toBe(0);
     expect(() => createProxy({ config: value, secrets: {}, transport: success })).toThrow(
@@ -563,6 +566,75 @@ describe("REST credential proxy boundaries", () => {
     await noReuse.request(capability, request);
     await noReuse.request(capability, request);
     expect(defaultLogins).toBe(2);
+  });
+  it("keeps a shared login alive when one waiting grant expires", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const shortCapability = "synthetic-short-capability-00000001";
+      const validCapability = "synthetic-valid-capability-00000001";
+      const value = loginConfig();
+      value.profiles.sample.timeoutMs = 200;
+      if (value.profiles.sample.auth.kind !== "login") throw new Error("Expected login fixture");
+      value.profiles.sample.auth.tokenReuseMs = 1000;
+      value.grants[0]!.digest = capabilityDigest(shortCapability);
+      value.grants[0]!.expiresAt = Date.now() + 25;
+      value.grants[0]!.maxRequests = 2;
+      value.grants.push({
+        ...value.grants[0]!,
+        digest: capabilityDigest(validCapability),
+        expiresAt: Date.now() + 1000,
+      });
+      let logins = 0;
+      let apiCalls = 0;
+      const proxy = proxyFor((input) => {
+        if (input.url.pathname === "/auth/login") {
+          logins++;
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(
+              () => resolve({ status: 200, body: '{"token":"shared-token"}' }),
+              50,
+            );
+            input.signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(new Error("login aborted"));
+              },
+              { once: true },
+            );
+          });
+        }
+        apiCalls++;
+        return success(input);
+      }, value);
+
+      const shortRequest = proxy.request(shortCapability, request);
+      const validRequest = proxy.request(validCapability, request);
+      const shortResult = shortRequest.then(
+        (result) => ({ status: "resolved" as const, result }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      const validResult = validRequest.then(
+        (result) => ({ status: "resolved" as const, result }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await shortResult).toMatchObject({
+        status: "rejected",
+        error: { code: "DEADLINE_EXCEEDED" },
+      });
+      expect(apiCalls).toBe(0);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await validResult).toEqual({
+        status: "resolved",
+        result: { status: 200, data: { items: [1, 2] } },
+      });
+      expect(logins).toBe(1);
+      expect(apiCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("bounds cumulative requests and byte reservations even when requests fail", async () => {
     const value = config();
