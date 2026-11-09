@@ -97,9 +97,10 @@ then conflicts on rebase.
 npm serves the metadata before the tarball. `npm view <pkg> version` reporting the new
 version does not mean `bun install` can resolve it. For v1.3.0, the manifest listed the
 version while `GET .../-/agent-tools-1.3.0.tgz` still returned 404 for several minutes. The
-publish job polls the tarball URL every five seconds for up to 15 minutes after publish and
-ends green only after it returns HTTP 200. The 15-minute bound allows for the several-minute
-delay seen in past releases and fails the run if the tarball does not appear.
+publish job creates the GitHub Release first, then polls the tarball URL every five seconds for
+up to 15 minutes and ends green only after it returns HTTP 200. For v1.16.0 the tarball still
+returned 404 after 15 minutes. A failed wait therefore means "not yet installable", not "not
+published": rerun the failed job; it skips the publish of a version npm already lists.
 
 ## Private guard corpus
 
