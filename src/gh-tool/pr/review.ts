@@ -465,13 +465,19 @@ export const fetchDiscussionSummary = Effect.fn("pr.fetchDiscussionSummary")(fun
     visibleOpenReviewThreadsCount: threads.filter((thread) => thread.isVisibleOpen).length,
     repliedReviewThreadsCount: threads.length - unrepliedReviewThreadsCount,
     unrepliedReviewThreadsCount,
-    resolvedUnrepliedReviewThreadsCount: threads.filter(
-      (thread) => thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
-    ).length,
-    unresolvedReviewThreadsCount: threads.filter((thread) => !thread.isResolved).length,
-    unresolvedUnrepliedReviewThreadsCount: threads.filter(
-      (thread) => !thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
-    ).length,
+    resolvedUnrepliedReviewThreadsCount: threads.some((thread) => thread.isResolved === null)
+      ? null
+      : threads.filter(
+          (thread) => thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
+        ).length,
+    unresolvedReviewThreadsCount: threads.some((thread) => thread.isResolved === null)
+      ? null
+      : threads.filter((thread) => thread.isResolved === false).length,
+    unresolvedUnrepliedReviewThreadsCount: threads.some((thread) => thread.isResolved === null)
+      ? null
+      : threads.filter(
+          (thread) => !thread.isResolved && !repliedThreadCommentIds.has(thread.commentId),
+        ).length,
   };
 });
 

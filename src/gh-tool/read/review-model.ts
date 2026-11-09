@@ -138,7 +138,7 @@ export const LAST_HUMAN_REVIEWER_QUERY = `
 
 export type ThreadNode<DatabaseId = number> = {
   id: string;
-  isResolved: boolean;
+  isResolved: boolean | null;
   comments: {
     nodes: Array<{
       id: string;

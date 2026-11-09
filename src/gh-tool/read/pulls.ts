@@ -12,9 +12,9 @@ import type { RepoRef } from "./keys";
 import { parsePreserving } from "./porcelain";
 
 export const PR_VIEW_FIELDS =
-  "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewDecision,reviewRequests,createdAt,headRepositoryOwner,mergeCommit";
+  "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit";
 export const PR_LIST_FIELDS =
-  "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,reviewDecision,headRepositoryOwner";
+  "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner";
 export type PrListFilter = {
   state: string;
   limit: number;
@@ -48,7 +48,13 @@ const PullView = Schema.Struct({
   baseSha: Schema.optional(Schema.NullOr(Schema.String)),
   body: Schema.String,
   author: Schema.Struct({ login: Schema.String, is_bot: Schema.Boolean }),
-  reviewDecision: Schema.Literals(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""]),
+  reviewDecision: Schema.Literals([
+    "APPROVED",
+    "CHANGES_REQUESTED",
+    "REVIEW_REQUIRED",
+    "UNKNOWN",
+    "",
+  ]),
   reviewRequests: Schema.mutable(
     Schema.Array(
       Schema.Union([
@@ -353,7 +359,7 @@ type PrReviewTriageSummaryPage = {
       };
       readonly reviewThreads: {
         readonly nodes: ReadonlyArray<{
-          readonly isResolved: boolean;
+          readonly isResolved: boolean | null;
           readonly comments: {
             readonly nodes: ReadonlyArray<{ readonly replyTo: { readonly id: string } | null }>;
           };
@@ -376,7 +382,7 @@ export type PrReviewTriageSummary = {
     readonly reviewRequests: ReadonlyArray<{ readonly login: string }>;
   };
   readonly summary: {
-    readonly unresolvedReviewThreadsCount: number;
+    readonly unresolvedReviewThreadsCount: number | null;
     readonly unrepliedReviewThreadsCount: number;
   };
   readonly checks: ReadonlyArray<{ readonly name: string; readonly bucket: string }>;
@@ -394,12 +400,14 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
   )) as PrReviewTriageSummaryPage;
   const firstPage = first.repository.pullRequest;
   let unresolvedReviewThreadsCount = 0;
+  let resolutionUnknown = false;
   let unrepliedReviewThreadsCount = 0;
   const countThreads = (
     threads: PrReviewTriageSummaryPage["repository"]["pullRequest"]["reviewThreads"]["nodes"],
   ) => {
     for (const thread of threads) {
-      if (!thread.isResolved) unresolvedReviewThreadsCount++;
+      if (thread.isResolved === null) resolutionUnknown = true;
+      if (thread.isResolved === false) unresolvedReviewThreadsCount++;
       if (!thread.comments.nodes.some((comment) => comment.replyTo !== null))
         unrepliedReviewThreadsCount++;
     }
@@ -451,7 +459,10 @@ export const prReviewTriageSummary = Effect.fn("reads.prReviewTriageSummary")(fu
       mergeable: firstPage.mergeable,
       reviewRequests,
     },
-    summary: { unresolvedReviewThreadsCount, unrepliedReviewThreadsCount },
+    summary: {
+      unresolvedReviewThreadsCount: resolutionUnknown ? null : unresolvedReviewThreadsCount,
+      unrepliedReviewThreadsCount,
+    },
     checks,
   };
 });

@@ -1,6 +1,8 @@
 import { ghSubprocessEvent, recordRequest } from "./telemetry";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Context, Effect, Layer, Schema, Stream } from "effect";
+import { graphFieldsRequested, restPorcelain } from "./rest-porcelain";
+import { graphqlLimitError, isGraphqlLimit, reportFallback, restGraphql } from "./graphql-fallback";
 
 import type { GitHubRepoConfig } from "#config";
 import type { RepoInfo } from "#gh/types";
@@ -177,14 +179,14 @@ export class GitHubService extends Context.Service<
           return getGitHubConfig(config);
         });
 
-        const executeGh = (args: string[]) =>
+        const executeGh = (args: string[], binary = GH_BINARY) =>
           Effect.scoped(
             Effect.gen(function* () {
               const ghRepo = yield* RepoTarget;
               const cache = yield* ReadCache;
               const credential = yield* SessionCredential;
               const cacheDirectory = cache?.store?.ghCacheDirectory;
-              const command = ChildProcess.make(GH_BINARY, args, {
+              const command = ChildProcess.make(binary, args, {
                 stdout: "pipe",
                 stderr: "pipe",
                 env: {
@@ -207,7 +209,8 @@ export class GitHubService extends Context.Service<
               const stdout = stdoutChunk.join("");
               const stderr = stderrChunk.join("");
               const exitCode = yield* proc.exitCode;
-              yield* recordRequest(ghSubprocessEvent(args, Number(exitCode)));
+              if (binary === GH_BINARY)
+                yield* recordRequest(ghSubprocessEvent(args, Number(exitCode)));
 
               return {
                 stdout,
@@ -326,7 +329,7 @@ export class GitHubService extends Context.Service<
         });
 
         // Auto-retry transient failures, but only for idempotent reads (never replay a mutation).
-        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> => {
+        const runGhRaw = (args: string[]): Effect.Effect<GhResult, GhError> => {
           const canRetry = isSafeRetryRead(args);
           return Effect.gen(function* () {
             yield* validateOutboundText(args.join("\n"), "gh-tool");
@@ -338,6 +341,103 @@ export class GitHubService extends Context.Service<
             });
           });
         };
+
+        let graphqlBlocked = false;
+        const rawJson = (args: string[]) =>
+          runGhRaw(args).pipe(
+            Effect.flatMap((result) =>
+              Effect.try({
+                try: () => JSON.parse(result.stdout) as unknown,
+                catch: (error) =>
+                  new GitHubCommandError({
+                    command: "gh REST",
+                    exitCode: 1,
+                    message: String(error),
+                    stderr: String(error),
+                  }),
+              }),
+            ),
+          );
+        const runGh = (args: string[]): Effect.Effect<GhResult, GhError> =>
+          Effect.gen(function* () {
+            const target = yield* RepoTarget;
+            if (
+              args[0] === "pr" &&
+              ["view", "checks"].includes(args[1] ?? "") &&
+              (args[2] === undefined || args[2].startsWith("-"))
+            ) {
+              const branch = yield* executeGh(["branch", "--show-current"], "git");
+              if (branch.exitCode !== 0 || branch.stdout.trim() === "")
+                return yield* new GitHubCommandError({
+                  command: "git branch --show-current",
+                  exitCode: 1,
+                  message: "Cannot determine the current branch; pass --pr",
+                  stderr: branch.stderr,
+                });
+              const pulls = yield* runGh([
+                "pr",
+                "list",
+                "--head",
+                branch.stdout.trim(),
+                "--state",
+                "open",
+                "--limit",
+                "2",
+                "--json",
+                "number",
+                ...(target === undefined ? [] : ["--repo", target]),
+              ]);
+              const matches = yield* Effect.try({
+                try: () =>
+                  Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ number: Schema.Number })))(
+                    JSON.parse(pulls.stdout),
+                  ),
+                catch: (error) =>
+                  new GitHubCommandError({
+                    command: "pr view",
+                    exitCode: 1,
+                    message: String(error),
+                    stderr: String(error),
+                  }),
+              });
+              if (matches.length !== 1 || matches[0] === undefined)
+                return yield* new GitHubCommandError({
+                  command: "pr view",
+                  exitCode: 1,
+                  message: "Cannot identify one open PR for the current branch; pass --pr",
+                  stderr: "Current branch has zero or multiple open PRs",
+                });
+              args = [args[0], args[1] ?? "view", String(matches[0].number), ...args.slice(2)];
+            }
+            const rest = restPorcelain(args, rawJson, target);
+            const mutation = args[0] === "pr" && ["merge", "close"].includes(args[1] ?? "");
+            if (rest !== null && !graphFieldsRequested(args) && !mutation) {
+              return { stdout: JSON.stringify(yield* rest), stderr: "", exitCode: 0 };
+            }
+            const fallback = (error: GhError): Effect.Effect<GhResult, GhError> =>
+              Effect.gen(function* () {
+                if (rest === null || !isGraphqlLimit(error)) return yield* Effect.fail(error);
+                graphqlBlocked = true;
+                const value = yield* rest;
+                const unknown = ["reviewDecision", "mergeStateStatus"].filter((field) =>
+                  args.some((arg) => arg.split(",").includes(field)),
+                );
+                const notice = yield* reportFallback(unknown);
+                const output = Array.isArray(value)
+                  ? value.map((item) => ({ ...item, fallback: notice }))
+                  : { ...Object(value), fallback: notice };
+                return { stdout: JSON.stringify(output), stderr: "", exitCode: 0 };
+              });
+            if (graphqlBlocked && rest !== null) return yield* fallback(graphqlLimitError());
+            if (graphqlBlocked && args[0] === "pr" && args[1] === "ready")
+              return yield* new GitHubCommandError({
+                command: "gh pr ready",
+                exitCode: 1,
+                message: "GitHub GraphQL is blocked; REST cannot change draft status",
+                stderr: "GitHub GraphQL is blocked; REST cannot change draft status",
+              });
+            return yield* runGhRaw(args).pipe(Effect.catch(fallback));
+          });
 
         const writePRCheckbox = Effect.fn("GitHubService.writePRCheckbox")(function* (
           opts: PRCheckboxWrite,
@@ -426,7 +526,7 @@ export class GitHubService extends Context.Service<
             return parsed;
           }).pipe(Effect.withSpan("GitHubService.runGhJson"));
 
-        const runGraphQL = Effect.fn("GitHubService.runGraphQL")(function* (
+        const runGraphQLRaw = Effect.fn("GitHubService.runGraphQL")(function* (
           query: string,
           variables: Record<string, string | number | null>,
         ) {
@@ -468,6 +568,29 @@ export class GitHubService extends Context.Service<
 
           return response.data as unknown;
         });
+
+        const runGraphQL = (query: string, variables: Record<string, string | number | null>) =>
+          Effect.gen(function* () {
+            const rest = restGraphql(query, variables, rawJson);
+            const fallback = (error: GhError) => {
+              if (!isGraphqlLimit(error)) return Effect.fail(error);
+              graphqlBlocked = true;
+              return (
+                rest ??
+                Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh api graphql",
+                    exitCode: 1,
+                    message: "GitHub GraphQL is blocked; REST cannot perform this operation",
+                    stderr: "GitHub GraphQL is blocked; REST cannot perform this operation",
+                    hint: "Retry after GitHub lifts the GraphQL limit. No equivalent REST operation is available.",
+                  }),
+                )
+              );
+            };
+            if (graphqlBlocked) return yield* fallback(graphqlLimitError());
+            return yield* runGraphQLRaw(query, variables).pipe(Effect.catch(fallback));
+          });
 
         const getRepoInfo = Effect.fn("GitHubService.getRepoInfo")(function* () {
           const ghRepo = yield* RepoTarget;

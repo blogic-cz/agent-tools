@@ -366,6 +366,16 @@ that GitHub squash commits exclude changes from an already squashed parent.
 
 ### gh-tool machine contracts
 
+Repository facts, PR facts, head/state PR lists, and CI checks use REST. PR facts report
+`reviewDecision: "UNKNOWN"` because REST cannot compute the GraphQL review decision.
+Explicit GraphQL review reads retry through REST when GitHub reports a rate limit.
+The command prints a short warning on stderr and adds `fallback` metadata to JSON
+objects. Review thread `isResolved` and resolution counts are `null` when REST cannot
+know them. Such threads remain visible and unknown resolution blocks readiness.
+The block lasts only for the current process. Workflow reads already use REST through
+`gh run`. Merge fallback preserves the requested head SHA. Draft status and thread
+resolution have no equivalent REST mutation and fail with a retry hint when blocked.
+
 `pr view` adds `headSha` and `baseSha`; failed-check evidence adds the same SHA pair. Review summaries, inline comments, and threads add `commitSha` plus `feedbackOrigin`: `current_head` only for an exact `commitSha === headSha`, `pre_existing` for a different known SHA (not an obsolescence verdict), and `unknown` when either SHA is absent. Issue comments always use `commitSha: null` and `feedbackOrigin: unknown`. `review-triage` preserves existing fields and adds `inlineComments` plus per-kind `feedbackOriginCounts`. It also returns `checksStatus`. When `checksStatus` is `none_reported`, it includes `checksReason`, adds `checks_not_reported` to `ready.blocking` and `classification.reasons`, and keeps `checks` empty. It does not report the PR as ready or claim a failed check.
 
 Use `review-triage --prs 12,34` for compact per-PR entries. Each entry has `classification`, the `visibleOpenReviewThreadsCount`, `unrepliedReviewThreadsCount`, and `unresolvedReviewThreadsCount` counts, and `visibleOpenThreadIds`. A failed PR returns an `error` entry. The command keeps results for other PRs. Use `review-triage-batch --prs 12,34` for the full triage result for each PR.

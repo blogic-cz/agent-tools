@@ -24,7 +24,7 @@ import type {
 const CachedThreads = Schema.Array(
   Schema.Struct({
     id: Schema.String,
-    isResolved: Schema.Boolean,
+    isResolved: Schema.NullOr(Schema.Boolean),
     comments: Schema.Struct({
       nodes: Schema.Array(
         Schema.Struct({
@@ -136,6 +136,7 @@ export const reviewThreads = Effect.fn("reads.reviewThreads")(function* (
     fetch: originThreads(repo, pr),
     signal: reviewPages(repo, pr, "prComments").pipe(Effect.map(snapshotDigest)),
     maxAgeMs: () => OPS.reviewThreads.maxAgeMs,
+    cacheableWhen: (nodes) => nodes.every((node) => node.isResolved !== null),
   });
 });
 export const lastHumanReviewer = Effect.fn("reads.lastHumanReviewer")(function* (
@@ -147,6 +148,7 @@ export const lastHumanReviewer = Effect.fn("reads.lastHumanReviewer")(function* 
     key: { op: "lastHumanReviewer", repo, pr },
     policy: OPS.lastHumanReviewer,
     decode: (raw) => raw as LastHumanReviewerQueryResult,
+    cacheableWhen: (value) => !("fallback" in value),
     fetch: () =>
       service
         .runGraphQL(LAST_HUMAN_REVIEWER_QUERY, { owner: repo.owner, name: repo.name, pr })
