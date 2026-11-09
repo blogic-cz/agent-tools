@@ -366,7 +366,9 @@ that GitHub squash commits exclude changes from an already squashed parent.
 
 ### gh-tool machine contracts
 
-Repository facts, PR facts, head/state PR lists, and CI checks use REST. PR facts report
+Repository facts, PR facts, head/state PR lists, and CI checks use REST. `pr close` without
+`--delete-branch` also uses only REST: it verifies the PR, posts the optional comment,
+then closes the PR, in the same order as `gh pr close`. PR facts report
 `reviewDecision: "UNKNOWN"` because REST cannot compute the GraphQL review decision.
 Explicit GraphQL review reads retry through REST when GitHub reports a rate limit.
 The command prints a short warning on stderr and adds `fallback` metadata to JSON
