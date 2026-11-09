@@ -370,6 +370,25 @@ describe("GraphQL REST fallback", () => {
             },
     );
   });
+  it.effect("refuses REST merge fallback for flags REST cannot honor", () => {
+    const calls: string[][] = [];
+    return provide(
+      Effect.gen(function* () {
+        const result = yield* gh_merge(["pr", "merge", "12", "--squash", "--delete-branch"]);
+        expect(result._tag).toBe("Failure");
+        expect(calls.some((args) => args.includes("PUT"))).toBe(false);
+      }),
+      calls,
+      (args) =>
+        args[0] === "pr"
+          ? { stdout: "", stderr: "GraphQL secondary rate limit", exitCode: 1 }
+          : {
+              stdout: JSON.stringify({ merged: true, message: "Merged" }),
+              stderr: "",
+              exitCode: 0,
+            },
+    );
+  });
   it.effect("adds JSON metadata without splitting JSONL records", () =>
     Effect.gen(function* () {
       const current = yield* Console.Console;
@@ -457,6 +476,7 @@ describe("GraphQL REST fallback", () => {
     branch?: unknown;
     protection?: unknown;
     protectionError?: string;
+    permissions?: Record<string, string>;
     reviews?: unknown[];
     reviewPages?: unknown[][];
   }) => {
@@ -487,6 +507,15 @@ describe("GraphQL REST fallback", () => {
           return scenario.protectionError === undefined
             ? ok(scenario.protection ?? {})
             : failure(scenario.protectionError);
+        const permission = /^repos\/owner\/repo\/collaborators\/([^/]+)\/permission$/.exec(
+          path ?? "",
+        );
+        if (permission !== null) {
+          const level = scenario.permissions?.[permission[1] ?? ""] ?? "write";
+          return level === "error"
+            ? failure("HTTP 403 Must have push access to view collaborator permission")
+            : ok({ permission: level, role_name: level });
+        }
         if (path === "repos/owner/repo/pulls/12/reviews") {
           expect(args).toContain("--paginate");
           expect(args).toContain("--slurp");
@@ -1174,6 +1203,47 @@ describe("GraphQL REST fallback", () => {
     );
   });
 
+  it.effect("counts only reviews from users with write access", () => {
+    const review = (id: number, login: string, state: string) => ({
+      id,
+      user: { login },
+      state,
+      submitted_at: `2026-01-0${id}T00:00:00Z`,
+      commit_id: "abc",
+    });
+    const rule = [{ type: "pull_request", parameters: { required_approving_review_count: 1 } }];
+    return Effect.all([
+      decision({
+        rulesets: rule,
+        permissions: { outsider: "read" },
+        reviews: [review(1, "outsider", "APPROVED")],
+      }),
+      decision({
+        rulesets: rule,
+        permissions: { outsider: "read" },
+        reviews: [review(1, "alice", "APPROVED"), review(2, "outsider", "CHANGES_REQUESTED")],
+      }),
+      decision({
+        rulesets: rule,
+        permissions: { alice: "error" },
+        reviews: [review(1, "alice", "APPROVED")],
+      }),
+      decision({
+        rulesets: [{ type: "pull_request", parameters: { required_approving_review_count: 0 } }],
+        reviews: [review(1, "alice", "CHANGES_REQUESTED")],
+      }),
+    ]).pipe(
+      Effect.tap(([readOnly, ignoredChange, unreadable, zero]) =>
+        Effect.sync(() => {
+          expect(readOnly.reviewDecision).toBe("REVIEW_REQUIRED");
+          expect(ignoredChange.reviewDecision).toBe("APPROVED");
+          expect(unreadable.reviewDecision).toBe("UNKNOWN");
+          expect(zero.reviewDecision).toBe("");
+        }),
+      ),
+    );
+  });
+
   it.effect(
     "returns UNKNOWN when a rule needs code-owner proof or classic protection is unreadable",
     () =>
@@ -1221,6 +1291,11 @@ describe("GraphQL REST fallback", () => {
   });
 });
 
+const gh_merge = (args: string[]) =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubService;
+    return yield* gh.runGh(args).pipe(Effect.result);
+  });
 const ok = (data: unknown): Reply => ({ stdout: JSON.stringify(data), stderr: "", exitCode: 0 });
 const failure = (stderr: string): Reply => ({ stdout: "", stderr, exitCode: 1 });
 it.effect("falls back on a bare GraphQL HTTP 429", () =>

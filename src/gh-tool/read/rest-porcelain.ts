@@ -199,6 +199,7 @@ export const restReviewDecision = (
       lastPush: rules.some((rule) => rule.lastPush),
     };
     if (required.codeOwner || required.lastPush) return "UNKNOWN";
+    if (required.approvals === 0) return "";
 
     const reviewsResult = yield* restPages(
       read,
@@ -238,7 +239,22 @@ export const restReviewDecision = (
       )
         latest.set(login, review);
     }
-    const currentReviews = [...latest.values()];
+    const currentReviews: Array<(typeof reviewsResult.success)[number][number]> = [];
+    for (const review of latest.values()) {
+      if (review.state.toUpperCase() === "DISMISSED" || review.user === null) continue;
+      const permission = yield* restValue(
+        read,
+        `repos/${input.repo}/collaborators/${encodeURIComponent(review.user.login)}/permission`,
+        Schema.Struct({
+          permission: Schema.String,
+          role_name: Schema.optional(Schema.String),
+        }),
+      );
+      if (Result.isFailure(permission)) return "UNKNOWN";
+      const { permission: level, role_name: role } = permission.success;
+      if (["admin", "write"].includes(level) || ["admin", "maintain", "write"].includes(role ?? ""))
+        currentReviews.push(review);
+    }
     if (currentReviews.some((review) => review.state.toUpperCase() === "CHANGES_REQUESTED"))
       return "CHANGES_REQUESTED";
     const approvals = currentReviews.filter(
@@ -252,6 +268,22 @@ export const restReviewDecision = (
 const option = (args: readonly string[], flag: string) => {
   const index = args.indexOf(flag);
   return index < 0 ? undefined : args[index + 1];
+};
+const onlyFlags = (
+  rest: readonly string[],
+  switches: readonly string[],
+  valued: readonly string[],
+): boolean => {
+  for (let index = 0; index < rest.length; index++) {
+    const flag = rest[index] ?? "";
+    if (switches.includes(flag)) continue;
+    if (valued.includes(flag) && index + 1 < rest.length) {
+      index++;
+      continue;
+    }
+    return false;
+  }
+  return true;
 };
 export const graphFieldsRequested = (args: readonly string[]) =>
   (option(args, "--json") ?? "")
@@ -291,8 +323,7 @@ export const restPorcelain = (
     args[1] === "merge" &&
     selector !== undefined &&
     /^\d+$/.test(selector) &&
-    !args.includes("--auto") &&
-    !args.includes("--admin")
+    onlyFlags(args.slice(3), ["--squash", "--rebase", "--merge"], ["--match-head-commit", "--repo"])
   )
     return Effect.gen(function* () {
       const strategy = args.includes("--squash")
