@@ -18,7 +18,9 @@ export const FallbackState = Context.Reference<{ notices: Fallback[] } | null>("
   defaultValue: () => null,
 });
 const fallbackMessage = (unknown: string[]) =>
-  `GitHub GraphQL is blocked (rate limit); answered from REST. Unknown: ${unknown.join(", ") || "none"}.`;
+  unknown.length === 0
+    ? "GitHub GraphQL is blocked (rate limit); answered from REST. All fields were provided."
+    : `GitHub GraphQL is blocked (rate limit); answered from REST. Not provided: ${unknown.join(", ")}. A null or UNKNOWN value there means "not provided", never false, unresolved or not approved. If your next step depends on it, retry in a few minutes; if it is still not provided, tell the user. Do not guess.`;
 export const reportFallback = (unknown: string[]) =>
   Effect.gen(function* () {
     const notice: Fallback = { source: "REST", reason: "GitHub GraphQL rate limit", unknown };

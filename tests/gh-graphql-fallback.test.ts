@@ -438,7 +438,7 @@ describe("GraphQL REST fallback", () => {
           }
           expect(calls.filter((args) => args[0] === "pr")).toHaveLength(1);
           expect(warnings.flat().join(" ")).toContain("answered from REST");
-          expect(warnings.flat().join(" ")).toContain("Unknown: reviewDecision");
+          expect(warnings.flat().join(" ")).toContain("Not provided: reviewDecision");
         }),
         calls,
       ).pipe(
@@ -674,8 +674,8 @@ describe("GraphQL REST fallback", () => {
                   ? secondOutput.items[0].reviewDecision
                   : secondOutput.reviewDecision,
               ).toBe("UNKNOWN");
-              expect(first.warnings.join(" ")).toContain("Unknown: reviewDecision");
-              expect(second.warnings.join(" ")).toContain("Unknown: reviewDecision");
+              expect(first.warnings.join(" ")).toContain("Not provided: reviewDecision");
+              expect(second.warnings.join(" ")).toContain("Not provided: reviewDecision");
               expect(firstEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
               expect(secondEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
             }),

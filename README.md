@@ -375,8 +375,10 @@ last-push approval needs proof that REST cannot provide. When REST returns `UNKN
 healthy PR view and list reads ask GraphQL for that PR decision only. Base-branch rule reads
 are shared within the process. Explicit GraphQL review reads retry
 through REST when GitHub reports a rate limit.
-The command prints a short warning on stderr and adds `fallback` metadata to JSON
-objects. Array results use `{ "items": [...], "fallback": {...} }` during fallback,
+The command prints a warning on stderr and adds `fallback` metadata to JSON
+objects. The warning names the fields REST did not provide and tells the agent that
+`null` or `UNKNOWN` there means "not provided", never false: retry in a few minutes
+when the next step depends on it, and tell the user if it is still not provided. Array results use `{ "items": [...], "fallback": {...} }` during fallback,
 including empty results. Review thread `isResolved` and resolution counts are `null` when REST cannot
 know them. Such threads remain visible and unknown resolution blocks readiness.
 The block lasts only for the current process. Workflow reads already use REST through

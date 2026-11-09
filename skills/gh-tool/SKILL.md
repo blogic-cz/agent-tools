@@ -92,6 +92,15 @@ bun gh-tool rate-limit --resource graphql --format json
 
 The lookup uses GitHub's `/rate_limit` endpoint and does not consume quota. Each resource includes its limit, usage, remaining quota, reset time, and seconds until reset. `pr status` also includes the rate-limit summary.
 
+## When GitHub blocks GraphQL
+
+A command that fell back to REST prints `GitHub GraphQL is blocked (rate limit); answered from REST.` on stderr and adds a `fallback` object to its JSON. `fallback.unknown` names the fields REST did not provide. Those fields are `null` (for example `isResolved`) or `"UNKNOWN"` (for example `reviewDecision`).
+
+- A `null` or `"UNKNOWN"` value means "not provided". It never means false, unresolved, or not approved.
+- When your next step depends on such a value (merging, replying to or resolving threads, a ready verdict), wait a few minutes and run the command again. The block usually ends within minutes; `bun gh-tool rate-limit --resource graphql` shows the reset time.
+- When the value is still not provided after the retry, tell the user which values were not provided. Do not guess them.
+- `pr ready`, `pr draft` and `pr resolve` have no REST equivalent and fail while GraphQL is blocked. Retry them later.
+
 ## Gist commands
 
 ```bash
