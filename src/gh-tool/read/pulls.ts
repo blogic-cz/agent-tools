@@ -165,7 +165,7 @@ export const prView = Effect.fn("reads.prView")(function* (
   if (selector.by === "currentBranch" || repo === null) {
     const fence = yield* readFence;
     const data = (yield* fetch()).value;
-    if (repo !== null && consistency !== "origin" && fence !== null) {
+    if (repo !== null && consistency !== "origin" && fence !== null && !("fallback" in data)) {
       const head = yield* prHead(repo, data.number).pipe(Effect.orElseSucceed(() => null));
       if (head !== null && head.headSha === data.headRefOid)
         yield* seedRead(
@@ -183,6 +183,7 @@ export const prView = Effect.fn("reads.prView")(function* (
     fetch: Effect.suspend(() => gh.runGhJson<PrView>(args)),
     signal: prHead(repo, selector.number).pipe(Effect.map((head) => head.signature)),
     maxAgeMs: () => OPS.prView.maxAgeMs,
+    cacheableWhen: (value) => !("fallback" in value),
   });
 });
 
@@ -220,6 +221,7 @@ export const prList = Effect.fn("reads.prList")(function* (
       gh
         .runGhJson<PrListItem[]>(args)
         .pipe(Effect.map((value) => ({ kind: "fresh" as const, value }))),
+    cacheableWhen: (value) => value.every((item) => !("fallback" in item)),
   });
 });
 

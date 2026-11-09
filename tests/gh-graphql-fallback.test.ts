@@ -591,6 +591,11 @@ describe("GraphQL REST fallback", () => {
               );
               expect(firstOutput.fallback.unknown).toContain("reviewDecision");
               expect(secondOutput.fallback.unknown).toContain("reviewDecision");
+              expect(
+                operation === "list"
+                  ? secondOutput.items[0].reviewDecision
+                  : secondOutput.reviewDecision,
+              ).toBe("UNKNOWN");
               expect(first.warnings.join(" ")).toContain("Unknown: reviewDecision");
               expect(second.warnings.join(" ")).toContain("Unknown: reviewDecision");
               expect(firstEvents.filter((event) => event.outcome === "fallback")).toHaveLength(1);
