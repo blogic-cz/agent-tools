@@ -437,6 +437,215 @@ describe("GraphQL REST fallback", () => {
       );
     });
   });
+  const decision = (scenario: {
+    rulesets?: unknown;
+    rulesetsError?: string;
+    branch?: unknown;
+    protection?: unknown;
+    protectionError?: string;
+    reviews?: unknown[];
+  }) => {
+    const calls: string[][] = [];
+    return provide(
+      Effect.gen(function* () {
+        const gh = yield* GitHubService;
+        const value = yield* gh.runGhJson<{
+          reviewDecision: string;
+          fallback: { unknown: string[] };
+        }>(["pr", "view", "12", "--json", "number,reviewDecision"]);
+        return value;
+      }),
+      calls,
+      (args) => {
+        if (args[0] === "pr") return undefined;
+        const path = args[3];
+        if (path === "repos/owner/repo/rules/branches/main")
+          return scenario.rulesetsError === undefined
+            ? ok(scenario.rulesets ?? [])
+            : failure(scenario.rulesetsError);
+        if (path === "repos/owner/repo/branches/main")
+          return ok(scenario.branch ?? { protected: false });
+        if (path === "repos/owner/repo/branches/main/protection/required_pull_request_reviews")
+          return scenario.protectionError === undefined
+            ? ok(scenario.protection ?? {})
+            : failure(scenario.protectionError);
+        if (path === "repos/owner/repo/pulls/12/reviews") return ok([scenario.reviews ?? []]);
+        return undefined;
+      },
+    );
+  };
+
+  it.effect("computes no review requirement when rulesets are unavailable on a free plan", () =>
+    decision({
+      rulesetsError:
+        "HTTP 403 Upgrade to GitHub Pro or make this repository public to use rulesets",
+    }).pipe(
+      Effect.tap((value) =>
+        Effect.sync(() => {
+          expect(value.reviewDecision).toBe("");
+          expect(value.fallback.unknown).not.toContain("reviewDecision");
+        }),
+      ),
+    ),
+  );
+
+  it.effect("ignores rulesets that only require status checks", () =>
+    decision({
+      rulesets: [
+        {
+          type: "required_status_checks",
+          parameters: { strict_required_status_checks_policy: true },
+        },
+      ],
+    }).pipe(Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision).toBe("")))),
+  );
+
+  it.effect("computes review decisions from latest reviewer states", () => {
+    const cases = [
+      {
+        name: "one approval on the current head",
+        reviews: [
+          {
+            id: 1,
+            user: { login: "alice" },
+            state: "APPROVED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id: "abc",
+          },
+        ],
+        expected: "APPROVED",
+      },
+      {
+        name: "a later change request from another reviewer",
+        reviews: [
+          {
+            id: 1,
+            user: { login: "alice" },
+            state: "APPROVED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id: "abc",
+          },
+          {
+            id: 2,
+            user: { login: "bob" },
+            state: "CHANGES_REQUESTED",
+            submitted_at: "2026-01-02T00:00:00Z",
+            commit_id: "abc",
+          },
+        ],
+        expected: "CHANGES_REQUESTED",
+      },
+      {
+        name: "comment-only review",
+        reviews: [
+          {
+            id: 1,
+            user: { login: "alice" },
+            state: "COMMENTED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id: "abc",
+          },
+        ],
+        expected: "REVIEW_REQUIRED",
+      },
+      {
+        name: "approval after the same user's change request",
+        reviews: [
+          {
+            id: 1,
+            user: { login: "alice" },
+            state: "CHANGES_REQUESTED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id: "abc",
+          },
+          {
+            id: 2,
+            user: { login: "alice" },
+            state: "APPROVED",
+            submitted_at: "2026-01-02T00:00:00Z",
+            commit_id: "abc",
+          },
+        ],
+        expected: "APPROVED",
+      },
+      {
+        name: "stale approval after a push",
+        reviews: [
+          {
+            id: 1,
+            user: { login: "alice" },
+            state: "APPROVED",
+            submitted_at: "2026-01-01T00:00:00Z",
+            commit_id: "old",
+          },
+        ],
+        stale: true,
+        expected: "REVIEW_REQUIRED",
+      },
+    ] as const;
+    return Effect.forEach(cases, ({ name, reviews, stale, expected }) =>
+      decision({
+        rulesets: [
+          {
+            type: "pull_request",
+            parameters: {
+              required_approving_review_count: 1,
+              ...(stale === true ? { dismiss_stale_reviews_on_push: true } : {}),
+            },
+          },
+        ],
+        reviews: [...reviews],
+      }).pipe(
+        Effect.tap((value) => Effect.sync(() => expect(value.reviewDecision, name).toBe(expected))),
+      ),
+    );
+  });
+
+  it.effect(
+    "returns UNKNOWN when a rule needs code-owner proof or classic protection is unreadable",
+    () =>
+      Effect.all([
+        decision({
+          rulesets: [
+            {
+              type: "pull_request",
+              parameters: { required_approving_review_count: 1, require_code_owner_review: true },
+            },
+          ],
+        }),
+        decision({
+          branch: { protected: true },
+          protectionError: "HTTP 403 Resource not accessible by integration",
+        }),
+      ]).pipe(
+        Effect.tap(([codeOwner, classic]) =>
+          Effect.sync(() => {
+            expect(codeOwner.reviewDecision).toBe("UNKNOWN");
+            expect(classic.reviewDecision).toBe("UNKNOWN");
+          }),
+        ),
+      ),
+  );
+
+  it.effect("does not read REST review rules when GraphQL supplies the decision", () => {
+    const calls: string[][] = [];
+    return provide(
+      Effect.gen(function* () {
+        const gh = yield* GitHubService;
+        const result = yield* gh.runGhJson<{ reviewDecision: string }>([
+          "pr",
+          "view",
+          "12",
+          "--json",
+          "number,reviewDecision",
+        ]);
+        expect(result.reviewDecision).toBe("APPROVED");
+        expect(calls.some((args) => args[3]?.includes("/rules/branches/"))).toBe(false);
+      }),
+      calls,
+      (args) => (args[0] === "pr" ? ok({ reviewDecision: "APPROVED" }) : undefined),
+    );
+  });
 });
 
 const ok = (data: unknown): Reply => ({ stdout: JSON.stringify(data), stderr: "", exitCode: 0 });
