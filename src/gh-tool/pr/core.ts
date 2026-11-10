@@ -1036,7 +1036,97 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     });
   }
 
-  const repo = opts.deleteBranch ? yield* gh.getRepoInfo() : null;
+  const repo = yield* gh.getRepoInfo();
+
+  const baseIsLongLived =
+    LONG_LIVED_BRANCHES.has(info.baseRefName) || info.baseRefName === repo.defaultBranch;
+  if (!baseIsLongLived) {
+    const mergedParents = yield* reads
+      .prList(
+        repo,
+        {
+          state: "merged",
+          limit: 100,
+          base: null,
+          head: info.baseRefName,
+          author: null,
+          search: null,
+        },
+        "origin",
+      )
+      .pipe(
+        Effect.catch((error) =>
+          Effect.fail(
+            new GitHubMergeError({
+              message: `Could not determine whether base branch \`${info.baseRefName}\` belongs to an already merged PR: ${error.message}`,
+              reason: "unknown",
+              hint: "The merge is refused while the base branch history is unknown. Retry after GitHub can list merged pull requests.",
+            }),
+          ),
+        ),
+      );
+    const repositoryOwner = repo.owner.toLowerCase();
+    const ownedMergedParents = mergedParents.filter(
+      (parent) =>
+        parent.headRefName === info.baseRefName &&
+        parent.state === "MERGED" &&
+        parent.headRepositoryOwner?.login.toLowerCase() === repositoryOwner,
+    );
+    let mergedParent: (typeof mergedParents)[number] | undefined;
+    if (ownedMergedParents.length > 0) {
+      const openParents = yield* reads
+        .prList(
+          repo,
+          {
+            state: "open",
+            limit: 100,
+            base: null,
+            head: info.baseRefName,
+            author: null,
+            search: null,
+          },
+          "origin",
+        )
+        .pipe(
+          Effect.catch((error) =>
+            Effect.fail(
+              new GitHubMergeError({
+                message: `Could not determine whether an open PR still owns base branch \`${info.baseRefName}\`: ${error.message}`,
+                reason: "unknown",
+                hint: "The merge is refused while the base branch owner is unknown. Retry after GitHub can list open pull requests.",
+              }),
+            ),
+          ),
+        );
+      const hasOpenParent = openParents.some(
+        (parent) =>
+          parent.headRefName === info.baseRefName &&
+          parent.headRepositoryOwner?.login.toLowerCase() === repositoryOwner,
+      );
+      if (!hasOpenParent) {
+        const branch = yield* passthrough.branchProtection(repo, info.baseRefName).pipe(
+          Effect.catch((error) =>
+            Effect.fail(
+              new GitHubMergeError({
+                message: `Could not determine whether base branch \`${info.baseRefName}\` is protected: ${error.message}`,
+                reason: "unknown",
+                hint: "The merge is refused while the base branch lifetime is unknown. Retry after GitHub can read the branch.",
+              }),
+            ),
+          ),
+        );
+        if (branch.protected !== true) mergedParent = ownedMergedParents[0];
+      }
+    }
+    if (mergedParent) {
+      return yield* new GitHubMergeError({
+        message: `PR #${opts.pr} targets \`${info.baseRefName}\`, the head branch of already merged PR #${mergedParent.number}.`,
+        reason: "unknown",
+        hint: "Retarget this PR to the merged parent's base before merging. An unprotected long-lived branch outside the named list can still be refused.",
+        nextCommand: `agent-tools-gh pr edit --pr ${opts.pr} --base ${mergedParent.baseRefName}`,
+      });
+    }
+  }
 
   // merge-async lands the requested PR AND every unmerged PR below it in its stack, and
   // `gh pr merge` falls back to that endpoint for a stacked PR. Merging one member can
@@ -1094,7 +1184,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // retargeting them would mass-rewrite their base — and the branch itself
   // must never be deleted.
   const headIsLongLived =
-    LONG_LIVED_BRANCHES.has(info.headRefName) || info.headRefName === repo?.defaultBranch;
+    LONG_LIVED_BRANCHES.has(info.headRefName) || info.headRefName === repo.defaultBranch;
 
   // Stacked-PR safety: find open PRs that depend on this PR's head branch.
   // Deleting the head branch of an open PR that uses it as its base CLOSES that
@@ -1102,9 +1192,9 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   // retarget such dependents onto this PR's base first, and only delete the
   // branch if EVERY retarget succeeds (fail-closed).
   const dependentOpenPrs =
-    opts.deleteBranch && !headIsLongLived && info.headRefName
+    !headIsLongLived && info.headRefName
       ? yield* reads.prList(
-          yield* resolveRepo(null),
+          repo,
           {
             state: "open",
             limit: 100,
@@ -1117,21 +1207,35 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
         )
       : [];
 
+  if (!opts.deleteBranch && opts.confirm && dependentOpenPrs.length > 0) {
+    return yield* new GitHubMergeError({
+      message:
+        `PR #${opts.pr} has ${dependentOpenPrs.length} open dependent PR(s): ` +
+        dependentOpenPrs.map((child) => `#${child.number}`).join(", ") +
+        ". Merging without retargeting them risks closing their pull requests.",
+      reason: "unknown",
+      hint: "Retry with --delete-branch to retarget dependents before merging.",
+      nextCommand:
+        `agent-tools-gh pr merge --pr ${opts.pr} --strategy ${opts.strategy} --delete-branch --confirm` +
+        (matchHeadCommit === undefined ? "" : ` --match-head-commit ${matchHeadCommit}`),
+    });
+  }
+
   if (!opts.confirm) {
     const mergeableNote =
       info.mergeable === "MERGEABLE"
         ? "PR is mergeable."
         : `PR mergeable status: ${info.mergeable}`;
+    const dependentNumbers = dependentOpenPrs.map((child) => `#${child.number}`).join(", ");
 
     const dependentNote = headIsLongLived
       ? opts.deleteBranch
         ? `Head \`${info.headRefName}\` is a long-lived branch; deletion and dependent retargeting are skipped. `
         : ""
       : dependentOpenPrs.length > 0
-        ? `${dependentOpenPrs.length} dependent open PR(s) (${dependentOpenPrs
-            .map((d) => `#${d.number}`)
-            .join(", ")}) will be retargeted to \`${info.baseRefName}\` before deletion ` +
-          "(rolled back if the merge fails); branch deletion is skipped if any retarget fails. "
+        ? opts.deleteBranch
+          ? `${dependentOpenPrs.length} dependent open PR(s) (${dependentNumbers}) will be retargeted to \`${info.baseRefName}\` before merge. The merge stops if any retarget fails. Successful retargets roll back if the merge fails. `
+          : `${dependentOpenPrs.length} dependent open PR(s) (${dependentNumbers}) will block a confirmed merge. Retry with --delete-branch to retarget them to \`${info.baseRefName}\`. `
         : "";
 
     yield* logText(
@@ -1156,6 +1260,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
   let willDeleteBranch = opts.deleteBranch && !headIsLongLived;
   let branchDeleteSkipped = opts.deleteBranch && headIsLongLived;
   const retargetedChildren: number[] = [];
+  const failedRetargets: number[] = [];
 
   // Retarget dependents BEFORE merging: repos with "Automatically delete head
   // branches" delete the head as part of the merge itself, which closes any PR
@@ -1186,6 +1291,7 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
       } else {
         willDeleteBranch = false;
         branchDeleteSkipped = true;
+        failedRetargets.push(child.number);
         break;
       }
     }
@@ -1219,6 +1325,27 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     }
     return failed;
   });
+
+  if (failedRetargets.length > 0) {
+    const rollbackFailed = yield* rollbackRetargets;
+    const rollbackNote =
+      rollbackFailed.length > 0
+        ? ` Rollback failed for dependent PR(s) ${rollbackFailed
+            .map((child) => `#${child}`)
+            .join(", ")}; manually restore their base to \`${info.headRefName}\`.`
+        : retargetedChildren.length > 0
+          ? " Successful retargets were rolled back."
+          : " No child bases were changed.";
+    return yield* new GitHubMergeError({
+      message: `Could not retarget dependent PR(s) ${failedRetargets
+        .map((child) => `#${child}`)
+        .join(", ")}; merge was not attempted.${rollbackNote}`,
+      reason: "unknown",
+      hint: `Resolve the retarget failure for dependent PR(s) ${failedRetargets
+        .map((child) => `#${child}`)
+        .join(", ")} before retrying the merge.`,
+    });
+  }
 
   const mergeRepo = yield* resolveRepo(null);
   const mergeArgs = ["pr", "merge", String(opts.pr), `--${opts.strategy}`];
