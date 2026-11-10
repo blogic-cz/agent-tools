@@ -4029,7 +4029,7 @@ describe("PR merge head condition", () => {
                   },
                 ]);
               if (args[1] === "list" && args.includes("open")) return Effect.succeed([]);
-              if (args[0] === "api") return Effect.succeed({ commit: { sha: mergedHeadSha } });
+              if (args[0] === "api") return Effect.succeed({ protected: false });
               return Effect.succeed([]);
             },
             runGh: (args) => {
@@ -4086,30 +4086,31 @@ describe("PR merge head condition", () => {
   );
 
   it.effect(
-    "does not match a merged PR from another owner, an open parent, or a moved branch",
+    "does not match a merged PR from another owner or an open parent and allows protected branches",
     () =>
       Effect.gen(function* () {
+        const jsonCalls: string[][] = [];
         const cases = [
           {
             baseBranch: "chore/parent",
             mergedOwner: "fork-owner",
             hasOpenParent: false,
             mergedHeadSha: "1234567890abcdef1234567890abcdef12345678",
-            branchTip: "1234567890abcdef1234567890abcdef12345678",
+            protected: false,
           },
           {
             baseBranch: "chore/parent",
             mergedOwner: "test-owner",
             hasOpenParent: true,
             mergedHeadSha: "1234567890abcdef1234567890abcdef12345678",
-            branchTip: "1234567890abcdef1234567890abcdef12345678",
+            protected: false,
           },
           {
             baseBranch: "qa",
             mergedOwner: "test-owner",
             hasOpenParent: false,
             mergedHeadSha: "1234567890abcdef1234567890abcdef12345678",
-            branchTip: "abcdef1234567890abcdef1234567890abcdef12",
+            protected: true,
           },
         ];
 
@@ -4123,6 +4124,7 @@ describe("PR merge head condition", () => {
             Effect.provide(
               createMockGhLayer({
                 runGhJson: (args) => {
+                  jsonCalls.push(args);
                   if (args[1] === "view")
                     return Effect.succeed({
                       ...mockPRInfo,
@@ -4156,8 +4158,7 @@ describe("PR merge head condition", () => {
                           ]
                         : [],
                     );
-                  if (args[0] === "api")
-                    return Effect.succeed({ commit: { sha: testCase.branchTip } });
+                  if (args[0] === "api") return Effect.succeed({ protected: testCase.protected });
                   return Effect.succeed([]);
                 },
               }),
@@ -4165,8 +4166,120 @@ describe("PR merge head condition", () => {
           );
 
           expect(result.merged).toBe(false);
+          expect(jsonCalls.some((args) => args[0] === "api")).toBe(
+            testCase.mergedOwner === "test-owner" && !testCase.hasOpenParent,
+          );
         }
       }),
+  );
+
+  it.effect("refuses an unprotected moved branch with a merged parent", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const jsonCalls: string[][] = [];
+      const result = yield* mergePR({
+        ...options,
+        deleteBranch: false,
+        matchHeadCommit: undefined,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              jsonCalls.push(args);
+              if (args[1] === "view")
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  baseRefName: "feat/parent",
+                  headRefName: "feat/child",
+                });
+              if (args[1] === "list" && args.includes("merged"))
+                return Effect.succeed([
+                  {
+                    ...mockPRInfo,
+                    number: 1378,
+                    baseRefName: "main",
+                    headRefName: "feat/parent",
+                    headRepositoryOwner: { login: "test-owner" },
+                    state: "MERGED",
+                  },
+                ]);
+              if (args[1] === "list" && args.includes("open")) return Effect.succeed([]);
+              if (args[0] === "api") return Effect.succeed({ protected: false });
+              return Effect.succeed([]);
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.die("unprotected moved base must not mutate");
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(GitHubMergeError);
+        expect(result.failure.message).toContain("already merged PR #1378");
+      }
+      expect(ghCalls).toEqual([]);
+      expect(jsonCalls).toContainEqual([
+        "api",
+        "repos/test-owner/test-repo/branches/feat%2Fparent",
+      ]);
+    }),
+  );
+
+  it.effect("refuses when it cannot determine whether a merged base is protected", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const result = yield* mergePR({
+        ...options,
+        deleteBranch: false,
+        matchHeadCommit: undefined,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "view")
+                return Effect.succeed({ ...mockPRInfo, baseRefName: "feat/parent" });
+              if (args[1] === "list" && args.includes("merged"))
+                return Effect.succeed([
+                  {
+                    ...mockPRInfo,
+                    number: 1378,
+                    headRefName: "feat/parent",
+                    headRepositoryOwner: { login: "test-owner" },
+                    state: "MERGED",
+                  },
+                ]);
+              if (args[1] === "list" && args.includes("open")) return Effect.succeed([]);
+              if (args[0] === "api")
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh api branch",
+                    exitCode: 1,
+                    stderr: "lookup failed",
+                    message: "lookup failed",
+                  }),
+                );
+              return Effect.succeed([]);
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.die("unknown branch protection must not mutate");
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(GitHubMergeError);
+        expect(result.failure.message).toContain("Could not determine whether base branch");
+      }
+      expect(ghCalls).toEqual([]);
+    }),
   );
 
   it.effect("refuses to merge while the base branch history is unknown", () =>

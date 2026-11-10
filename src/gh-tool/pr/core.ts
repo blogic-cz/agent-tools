@@ -1074,13 +1074,6 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
     );
     let mergedParent: (typeof mergedParents)[number] | undefined;
     if (ownedMergedParents.length > 0) {
-      if (ownedMergedParents.some((parent) => !isFullCommitSha(parent.headRefOid))) {
-        return yield* new GitHubMergeError({
-          message: `Could not determine the merged PR head for base branch \`${info.baseRefName}\``,
-          reason: "unknown",
-          hint: "The merge is refused while the merged PR head is missing or invalid. Retry after GitHub can list complete pull request data.",
-        });
-      }
       const openParents = yield* reads
         .prList(
           repo,
@@ -1111,35 +1104,25 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
           parent.headRepositoryOwner?.login.toLowerCase() === repositoryOwner,
       );
       if (!hasOpenParent) {
-        const branch = yield* passthrough.branchTip(repo, info.baseRefName).pipe(
+        const branch = yield* passthrough.branchProtection(repo, info.baseRefName).pipe(
           Effect.catch((error) =>
             Effect.fail(
               new GitHubMergeError({
-                message: `Could not determine the current tip of base branch \`${info.baseRefName}\`: ${error.message}`,
+                message: `Could not determine whether base branch \`${info.baseRefName}\` is protected: ${error.message}`,
                 reason: "unknown",
-                hint: "The merge is refused while the base branch tip is unknown. Retry after GitHub can read the branch.",
+                hint: "The merge is refused while the base branch lifetime is unknown. Retry after GitHub can read the branch.",
               }),
             ),
           ),
         );
-        const branchTip = branch.commit?.sha;
-        if (!isFullCommitSha(branchTip)) {
-          return yield* new GitHubMergeError({
-            message: `Could not determine the current tip of base branch \`${info.baseRefName}\``,
-            reason: "unknown",
-            hint: "The merge is refused while the base branch tip is missing or invalid. Retry after GitHub can read the branch.",
-          });
-        }
-        mergedParent = ownedMergedParents.find(
-          (parent) => parent.headRefOid?.toLowerCase() === branchTip.toLowerCase(),
-        );
+        if (branch.protected !== true) mergedParent = ownedMergedParents[0];
       }
     }
     if (mergedParent) {
       return yield* new GitHubMergeError({
         message: `PR #${opts.pr} targets \`${info.baseRefName}\`, the head branch of already merged PR #${mergedParent.number}.`,
         reason: "unknown",
-        hint: "Retarget this PR to the merged parent's base before merging.",
+        hint: "Retarget this PR to the merged parent's base before merging. An unprotected long-lived branch outside the named list can still be refused.",
         nextCommand: `agent-tools-gh pr edit --pr ${opts.pr} --base ${mergedParent.baseRefName}`,
       });
     }

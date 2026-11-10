@@ -293,6 +293,16 @@ const branchTip = Effect.fn("reads.branchTip")(function* (
     `repos/${repo.owner}/${repo.name}/branches/${encodeURIComponent(branch)}`,
   ]);
 });
+const branchProtection = Effect.fn("reads.branchProtection")(function* (
+  repo: { owner: string; name: string },
+  branch: string,
+) {
+  const gh = yield* GitHubService;
+  return yield* gh.runGhJson<{ protected?: boolean }>([
+    "api",
+    `repos/${repo.owner}/${repo.name}/branches/${encodeURIComponent(branch)}`,
+  ]);
+});
 const asyncMergeStatus = Effect.fn("reads.asyncMergeStatus")(function* (path: string) {
   const gh = yield* GitHubService;
   return yield* gh.runGhJson<AsyncMergeResult>(["api", path]);
@@ -308,6 +318,7 @@ const repoInfo = Effect.fn("reads.repoInfo")(function* () {
 export const passthrough = {
   repoInfo,
   branchTip,
+  branchProtection,
   listOrgRepos,
   searchOrgCode,
   listReleases,
