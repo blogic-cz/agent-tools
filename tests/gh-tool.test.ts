@@ -3996,6 +3996,137 @@ describe("PR merge head condition", () => {
     matchHeadCommit: reviewedSha,
   };
 
+  it.effect("refuses a PR based on an already-merged parent branch", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const result = yield* mergePR({
+        ...options,
+        deleteBranch: false,
+        matchHeadCommit: undefined,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              Effect.succeed(
+                args[1] === "view"
+                  ? { ...mockPRInfo, baseRefName: "chore/parent", headRefName: "feat/child" }
+                  : [
+                      {
+                        ...mockPRInfo,
+                        number: 1378,
+                        baseRefName: "main",
+                        headRefName: "chore/parent",
+                        state: "MERGED",
+                      },
+                    ],
+              ),
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.die("stale-base merge must not mutate");
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(GitHubMergeError);
+        expect(result.failure.message).toContain("PR #1378");
+        expect((result.failure as GitHubMergeError).nextCommand).toBe(
+          "agent-tools-gh pr edit --pr 123 --base main",
+        );
+      }
+      expect(ghCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses to merge while the base branch history is unknown", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const result = yield* mergePR({
+        ...options,
+        deleteBranch: false,
+        matchHeadCommit: undefined,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) =>
+              args[1] === "view"
+                ? Effect.succeed({ ...mockPRInfo, baseRefName: "chore/parent" })
+                : Effect.fail(
+                    new GitHubCommandError({
+                      command: "gh pr list",
+                      exitCode: 1,
+                      stderr: "lookup failed",
+                      message: "lookup failed",
+                    }),
+                  ),
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.die("unknown base history must not mutate");
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(GitHubMergeError);
+        expect(result.failure.message).toContain("Could not determine whether base branch");
+      }
+      expect(ghCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses to merge a PR with open children unless branch deletion handles them", () =>
+    Effect.gen(function* () {
+      const ghCalls: string[][] = [];
+      const result = yield* mergePR({
+        ...options,
+        deleteBranch: false,
+        matchHeadCommit: undefined,
+      }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[1] === "view") return Effect.succeed(mockPRInfo);
+              const isOpen = args.includes("open");
+              return Effect.succeed(
+                isOpen
+                  ? [
+                      {
+                        ...mockPRInfo,
+                        number: 124,
+                        baseRefName: "feat/test",
+                        headRefName: "feat/child",
+                      },
+                    ]
+                  : [],
+              );
+            },
+            runGh: (args) => {
+              ghCalls.push(args);
+              return Effect.die("merge with open children must not mutate");
+            },
+          }),
+        ),
+        Effect.result,
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(GitHubMergeError);
+        expect(result.failure.message).toContain("open dependent PR #124");
+        expect((result.failure as GitHubMergeError).nextCommand).toBe(
+          "agent-tools-gh pr merge --pr 123 --squash --delete-branch",
+        );
+      }
+      expect(ghCalls).toEqual([]);
+    }),
+  );
+
   for (const sha of ["", "a".repeat(39), "a".repeat(41), "g".repeat(40), `${reviewedSha}\n`]) {
     it.effect(
       `rejects invalid requested SHA ${JSON.stringify(sha)} before lookup or mutation`,
