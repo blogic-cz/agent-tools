@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 
 export const CODE_OR_PROSE_EXTENSION =
-  /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|cs|py|go|rs|java|kt|rb|php|sh|md|mdx)$/i;
+  /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|cs|csproj|fsproj|sln|slnx|py|go|rs|java|kt|rb|php|sh|md|mdx)$/i;
 
 export const DEFAULT_BLOCKED_PATH_PATTERNS: RegExp[] = [
   /(?:^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?(?![^/]*\.pub$)(?:[-_.][^/]*|~)?$/i,

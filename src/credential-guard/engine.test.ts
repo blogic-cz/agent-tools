@@ -391,6 +391,14 @@ describe("agent configuration boundaries", () => {
     expect(bash("rg -n x --glob '*.cs' src").kind).toBe("pass");
   });
   it.each([
+    "rg -n ProjectReference src/App/*.csproj",
+    "rg -n Project --glob '*.fsproj' src",
+    "rg -n Project *.slnx",
+    "rg -n Project *.sln",
+  ])("allows a .NET project or solution file glob %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+  it.each([
     ["cp *.txt /tmp/dir/", "opaque-path"],
     ["cp --target-directory=/tmp/dir a b", "no-analyzer"],
   ])("preserves the base refusal for %s", (command, rule) => {
