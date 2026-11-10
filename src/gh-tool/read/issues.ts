@@ -17,6 +17,7 @@ const IssueListItem = Schema.Struct({
   url: Schema.String,
   labels: Schema.mutable(Schema.Array(Label)),
   assignees: Schema.mutable(Schema.Array(Login)),
+  author: Schema.NullOr(Login),
   createdAt: Schema.String,
 });
 const IssueView = Schema.Struct({
@@ -24,6 +25,18 @@ const IssueView = Schema.Struct({
   author: Login,
   body: Schema.String,
   closedAt: Schema.NullOr(Schema.String),
+});
+const IssueNodeLookup = Schema.Struct({
+  repository: Schema.NullOr(
+    Schema.Struct({
+      issue: Schema.NullOr(
+        Schema.Struct({
+          id: Schema.String,
+          url: Schema.optional(Schema.String),
+        }),
+      ),
+    }),
+  ),
 });
 const IssueComment = Schema.Struct({
   id: Schema.Number,
@@ -39,7 +52,7 @@ export type IssueListFilter = {
   limit: number;
   includeBody?: boolean;
 };
-export const ISSUE_LIST_FIELDS = "number,title,state,url,labels,assignees,createdAt";
+export const ISSUE_LIST_FIELDS = "number,title,state,url,labels,assignees,author,createdAt";
 export const ISSUE_VIEW_FIELDS =
   "number,title,state,url,labels,assignees,author,body,createdAt,closedAt";
 
@@ -67,6 +80,15 @@ export const issueView = Effect.fn("reads.issueView")(function* (
         ])
         .pipe(Effect.map((value) => ({ kind: "fresh" as const, value }))),
   });
+});
+
+export const issueNode = Effect.fn("reads.issueNode")(function* (repo: RepoRef, issue: number) {
+  const gh = yield* GitHubService;
+  const response = yield* gh.runGraphQL(
+    "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { id url } } }",
+    { owner: repo.owner, name: repo.name, number: issue },
+  );
+  return parsePreserving(IssueNodeLookup)(response).repository?.issue ?? null;
 });
 
 export const issueList = Effect.fn("reads.issueList")(function* (

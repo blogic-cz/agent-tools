@@ -2,7 +2,7 @@ import { Effect } from "effect";
 
 import type { GitHubIssueCommentUrl, IssueComment, IssueCommentId, IsoTimestamp } from "#gh/types";
 
-import { GitHubCommandError } from "#gh/errors";
+import { GitHubCommandError, GitHubNotFoundError } from "#gh/errors";
 import { GitHubService } from "#gh/read/transport";
 import { reads, resolveRepo } from "#gh/read/reads";
 import { writes } from "#gh/read/writes";
@@ -28,7 +28,14 @@ export type IssueListItem = {
   url: string;
   labels: Array<{ name: string }>;
   assignees: Array<{ login: string }>;
+  author: { login: string } | null;
   createdAt: string;
+};
+
+export type IssueSubscription = {
+  number: number;
+  url?: string;
+  viewerSubscription: string;
 };
 
 export type RawIssueComment = {
@@ -142,6 +149,43 @@ export const reopenIssue = Effect.fn("issue.reopenIssue")(function* (opts: {
   ]);
 
   return yield* viewIssue(opts.issue);
+});
+
+export const unsubscribeIssue = Effect.fn("issue.unsubscribeIssue")(function* (issue: number) {
+  const repo = yield* resolveRepo(null);
+  const issueNode = yield* reads.issueNode(repo, issue);
+
+  if (issueNode === null) {
+    return yield* new GitHubNotFoundError({
+      message: `Issue #${issue} was not found in ${repoSlug(repo)}`,
+      resource: "issue",
+      identifier: `${repoSlug(repo)}#${issue}`,
+    });
+  }
+
+  const subscription = (yield* writes.graphql(
+    "mutation($id: ID!) { updateSubscription(input: {subscribableId: $id, state: UNSUBSCRIBED}) { subscribable { viewerSubscription } } }",
+    { id: issueNode.id },
+    [`issue:${repoSlug(repo)}#${issue}`, `issues:${repoSlug(repo)}`],
+  )) as {
+    updateSubscription: { subscribable: { viewerSubscription: string } | null } | null;
+  } | null;
+  const viewerSubscription = subscription?.updateSubscription?.subscribable?.viewerSubscription;
+
+  if (viewerSubscription === undefined || viewerSubscription === null) {
+    return yield* new GitHubCommandError({
+      command: "gh-tool issue unsubscribe",
+      exitCode: 1,
+      message: `GitHub did not return the subscription state for issue #${issue}`,
+      stderr: "The unsubscribe mutation returned no subscription state.",
+    });
+  }
+
+  return {
+    number: issue,
+    ...(issueNode.url === undefined ? {} : { url: issueNode.url }),
+    viewerSubscription,
+  } satisfies IssueSubscription;
 });
 
 export const commentOnIssue = Effect.fn("issue.commentOnIssue")(function* (opts: {

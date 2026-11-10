@@ -84,14 +84,18 @@ bun gh-tool workflow cancel --run 123                  # Cancel in-progress run
 **NEVER use `sleep N && workflow list/jobs/view`** — use `workflow watch --run N` instead. The credential guard blocks sleep-polling with agent-tools commands.
 
 ```bash
-bun gh-tool issue list --state open --limit 30
+bun gh-tool issue list --state open --limit 30 --format json
 bun gh-tool issue view --issue 123
 bun gh-tool issue close --issue 123 --reason completed --comment "Done"
 bun gh-tool issue reopen --issue 123
+bun gh-tool issue unsubscribe --issue 123 --format json
 bun gh-tool issue comment --issue 123 --body "text"
 bun gh-tool issue edit --issue 123 --title "New title" --add-labels bug
 bun gh-tool issue triage --issue 123 --verbosity full --format json
+bun gh-tool viewer --format json
 ```
+
+Issue list JSON includes each issue's `author.login`. The viewer command returns the authenticated login.
 
 ### observability-tool (LGTM)
 

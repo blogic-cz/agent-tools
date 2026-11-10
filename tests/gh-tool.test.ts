@@ -53,7 +53,10 @@ import {
   editIssue,
   fetchIssueComments as fetchIssueDiscussionComments,
   reopenIssue,
+  unsubscribeIssue,
 } from "#gh/issue/core";
+import { issueUnsubscribeCommand } from "#gh/issue/commands";
+import { viewerCommand } from "#gh/repo";
 import { formatAny } from "#shared/format";
 import {
   collectLinkedPullRequestNumbers,
@@ -158,6 +161,26 @@ const mockRepoInfo = {
   defaultBranch: "main",
   url: "https://github.com/test-owner/test-repo",
 };
+
+const commandTestLayer = Layer.mergeAll(
+  FileSystem.layerNoop({}),
+  Path.layer,
+  Stdio.layerTest({}),
+  Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make(() => Effect.die("command test must not spawn a local process")),
+  ),
+  Layer.succeed(
+    Terminal.Terminal,
+    Terminal.make({
+      columns: Effect.succeed(80),
+      rows: Effect.succeed(24),
+      readInput: Effect.die("unused"),
+      readLine: Effect.die("unused"),
+      display: () => Effect.void,
+    }),
+  ),
+);
 
 const mockPRInfo: PRInfo & { mergeable: string } = {
   number: 123,
@@ -12708,7 +12731,7 @@ it.effect("shares the issue view with triage and invalidates it after an edit", 
   }).pipe(Effect.scoped),
 );
 
-it.effect("lists issue assignees in toon and json output", () =>
+it.effect("lists issue authors and assignees in toon and json output", () =>
   Effect.gen(function* () {
     const args: string[][] = [];
     const issues = [
@@ -12719,6 +12742,7 @@ it.effect("lists issue assignees in toon and json output", () =>
         url: "issue-url",
         labels: [],
         assignees: [{ login: "reviewer" }],
+        author: { login: "creator" },
         createdAt: "2026-10-01T00:00:00Z",
       },
       {
@@ -12728,6 +12752,7 @@ it.effect("lists issue assignees in toon and json output", () =>
         url: "issue-url",
         labels: [],
         assignees: [],
+        author: null,
         createdAt: "2026-10-01T00:00:00Z",
       },
     ];
@@ -12748,9 +12773,141 @@ it.effect("lists issue assignees in toon and json output", () =>
     expect(args[0]).toContain(ISSUE_LIST_FIELDS);
     expect(result[0]?.assignees).toEqual([{ login: "reviewer" }]);
     expect(result[1]?.assignees).toEqual([]);
-    expect(formatAny(result, "json")).toContain('"login": "reviewer"');
+    expect(result[0]?.author).toEqual({ login: "creator" });
+    expect(result[1]?.author).toBeNull();
+    expect(JSON.parse(formatAny(result, "json"))).toMatchObject([
+      { author: { login: "creator" } },
+      { author: null },
+    ]);
     expect(formatAny(result, "toon")).toContain("assignees");
     expect(formatAny(result, "toon")).toContain("reviewer");
+  }),
+);
+
+it.effect("issue unsubscribe resolves the issue id and confirms the viewer subscription", () =>
+  Effect.gen(function* () {
+    const graphqlCalls: Array<{
+      query: string;
+      variables: Record<string, string | number | null>;
+    }> = [];
+    const command = Command.runWith(issueUnsubscribeCommand, { version: "test" })([
+      "--issue",
+      "7",
+      "--repo",
+      "test-owner/test-repo",
+      "--format",
+      "json",
+    ]).pipe(
+      Effect.provide(
+        Layer.merge(
+          createMockGhLayer({
+            runGraphQL: (query, variables) => {
+              graphqlCalls.push({ query, variables });
+              return Effect.succeed(
+                query.includes("mutation")
+                  ? { updateSubscription: { subscribable: { viewerSubscription: "UNSUBSCRIBED" } } }
+                  : {
+                      repository: {
+                        issue: {
+                          id: "issue-node-7",
+                          url: "https://github.com/test-owner/test-repo/issues/7",
+                        },
+                      },
+                    },
+              );
+            },
+          }),
+          commandTestLayer,
+        ),
+      ),
+    );
+    const output = yield* Effect.promise(() =>
+      captureOutput(() => Effect.runPromise(command.pipe(Effect.result))),
+    );
+
+    expect(Result.isSuccess(output.value)).toBe(true);
+    expect(JSON.parse(output.stdout)).toEqual({
+      number: 7,
+      url: "https://github.com/test-owner/test-repo/issues/7",
+      viewerSubscription: "UNSUBSCRIBED",
+    });
+    expect(graphqlCalls).toHaveLength(2);
+    expect(graphqlCalls[0]?.variables).toEqual({
+      owner: "test-owner",
+      name: "test-repo",
+      number: 7,
+    });
+    expect(graphqlCalls[1]?.query).toContain("state: UNSUBSCRIBED");
+    expect(graphqlCalls[1]?.variables).toEqual({ id: "issue-node-7" });
+  }),
+);
+
+it.effect("issue unsubscribe fails when the issue is missing or GitHub refuses the mutation", () =>
+  Effect.gen(function* () {
+    const mutationCalls: string[] = [];
+    let missingMutationCalls = 0;
+    const missing = yield* unsubscribeIssue(7).pipe(
+      Effect.provide(
+        createMockGhLayer({
+          runGraphQL: (query) => {
+            if (query.includes("mutation")) missingMutationCalls += 1;
+            return Effect.succeed({ repository: { issue: null } });
+          },
+        }),
+      ),
+      Effect.result,
+    );
+    const refused = yield* unsubscribeIssue(7).pipe(
+      Effect.provide(
+        createMockGhLayer({
+          runGraphQL: (query) => {
+            if (query.includes("mutation")) {
+              mutationCalls.push(query);
+              return Effect.fail(
+                new GitHubCommandError({
+                  command: "gh api graphql",
+                  exitCode: 1,
+                  stderr: "subscription update refused",
+                  message: "subscription update refused",
+                }),
+              );
+            }
+            return Effect.succeed({ repository: { issue: { id: "issue-node-7" } } });
+          },
+        }),
+      ),
+      Effect.result,
+    );
+
+    expect(Result.isFailure(missing)).toBe(true);
+    expect(Result.isFailure(refused)).toBe(true);
+    expect(missingMutationCalls).toBe(0);
+    expect(mutationCalls).toHaveLength(1);
+  }),
+);
+
+it.effect("viewer command reads the authenticated login through GraphQL", () =>
+  Effect.gen(function* () {
+    const queries: string[] = [];
+    const command = Command.runWith(viewerCommand, { version: "test" })(["--format", "json"]).pipe(
+      Effect.provide(
+        Layer.merge(
+          createMockGhLayer({
+            runGraphQL: (query) => {
+              queries.push(query);
+              return Effect.succeed({ viewer: { login: "test-user" } });
+            },
+          }),
+          commandTestLayer,
+        ),
+      ),
+      Effect.result,
+    );
+    const output = yield* Effect.promise(() => captureOutput(() => Effect.runPromise(command)));
+
+    expect(Result.isSuccess(output.value)).toBe(true);
+    expect(JSON.parse(output.stdout)).toEqual({ login: "test-user" });
+    expect(queries).toEqual(["query { viewer { login } }"]);
   }),
 );
 

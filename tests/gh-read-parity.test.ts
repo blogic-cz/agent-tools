@@ -122,7 +122,14 @@ it("replays published 1.7.5 outputs with original review location fields without
     }
     const result = await invoke(replayFlags(entry.argv));
     const pr = Number(entry.argv[entry.argv.indexOf("--pr") + 1]) || 42;
-    expect(JSON.parse(result.stdout)).toEqual(restExpected(JSON.parse(expected), pr));
+    const actual: unknown = JSON.parse(result.stdout);
+    if (entry.argv[0] === "issue" && entry.argv[1] === "list" && Array.isArray(actual)) {
+      for (const value of actual) {
+        if (value !== null && typeof value === "object")
+          delete (value as Record<string, unknown>).author;
+      }
+    }
+    expect(actual).toEqual(restExpected(JSON.parse(expected), pr));
     expect(result.stderr).toBe("");
   }
 });

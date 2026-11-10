@@ -19,6 +19,7 @@ import {
   issueReopenCommand,
   issueSnapshotBatchCommand,
   issueTriageCommand,
+  issueUnsubscribeCommand,
   issueViewCommand,
 } from "./issue";
 import {
@@ -80,6 +81,7 @@ import {
   repoInfoCommand,
   repoListCommand,
   repoSearchCodeCommand,
+  viewerCommand,
 } from "./repo";
 import { labelCreateCommand } from "./label";
 import { GitHubService } from "./read/transport";
@@ -144,7 +146,7 @@ const prCommand = Command.make("pr", {}).pipe(
 
 const issueCommand = Command.make("issue", {}).pipe(
   Command.withDescription(
-    "Issue operations (list, view, comments, triage, snapshot-batch, create, close, reopen, comment, edit)",
+    "Issue operations (list, view, comments, triage, snapshot-batch, create, close, reopen, unsubscribe, comment, edit)",
   ),
   Command.withSubcommands([
     issueListCommand,
@@ -155,6 +157,7 @@ const issueCommand = Command.make("issue", {}).pipe(
     issueCreateCommand,
     issueCloseCommand,
     issueReopenCommand,
+    issueUnsubscribeCommand,
     issueCommentCommand,
     issueEditCommand,
   ]),
@@ -264,6 +267,7 @@ WORKFLOW FOR AI AGENTS:
     prCommand,
     issueCommand,
     repoCommand,
+    viewerCommand,
     labelCommand,
     branchCommand,
     workflowCommand,
