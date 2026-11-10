@@ -1111,22 +1111,17 @@ export const mergePR = Effect.fn("pr.mergePR")(function* (opts: {
           parent.headRepositoryOwner?.login.toLowerCase() === repositoryOwner,
       );
       if (!hasOpenParent) {
-        const branch = yield* gh
-          .runGhJson<{ commit?: { sha?: string } }>([
-            "api",
-            `repos/${repo.owner}/${repo.name}/branches/${encodeURIComponent(info.baseRefName)}`,
-          ])
-          .pipe(
-            Effect.catch((error) =>
-              Effect.fail(
-                new GitHubMergeError({
-                  message: `Could not determine the current tip of base branch \`${info.baseRefName}\`: ${error.message}`,
-                  reason: "unknown",
-                  hint: "The merge is refused while the base branch tip is unknown. Retry after GitHub can read the branch.",
-                }),
-              ),
+        const branch = yield* passthrough.branchTip(repo, info.baseRefName).pipe(
+          Effect.catch((error) =>
+            Effect.fail(
+              new GitHubMergeError({
+                message: `Could not determine the current tip of base branch \`${info.baseRefName}\`: ${error.message}`,
+                reason: "unknown",
+                hint: "The merge is refused while the base branch tip is unknown. Retry after GitHub can read the branch.",
+              }),
             ),
-          );
+          ),
+        );
         const branchTip = branch.commit?.sha;
         if (!isFullCommitSha(branchTip)) {
           return yield* new GitHubMergeError({

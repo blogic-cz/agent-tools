@@ -4091,7 +4091,6 @@ describe("PR merge head condition", () => {
       Effect.gen(function* () {
         const cases = [
           {
-            label: "another owner",
             baseBranch: "chore/parent",
             mergedOwner: "fork-owner",
             hasOpenParent: false,
@@ -4099,7 +4098,6 @@ describe("PR merge head condition", () => {
             branchTip: "1234567890abcdef1234567890abcdef12345678",
           },
           {
-            label: "an open parent",
             baseBranch: "chore/parent",
             mergedOwner: "test-owner",
             hasOpenParent: true,
@@ -4107,7 +4105,6 @@ describe("PR merge head condition", () => {
             branchTip: "1234567890abcdef1234567890abcdef12345678",
           },
           {
-            label: "a moved branch",
             baseBranch: "qa",
             mergedOwner: "test-owner",
             hasOpenParent: false,
@@ -4167,7 +4164,7 @@ describe("PR merge head condition", () => {
             ),
           );
 
-          expect(result.merged, testCase.label).toBe(false);
+          expect(result.merged).toBe(false);
         }
       }),
   );
