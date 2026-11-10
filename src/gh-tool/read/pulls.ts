@@ -15,7 +15,7 @@ import { parsePreserving } from "./porcelain";
 export const PR_VIEW_FIELDS =
   "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,body,author,reviewRequests,createdAt,headRepositoryOwner,mergeCommit,reviewDecision";
 export const PR_LIST_FIELDS =
-  "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision";
+  "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision";
 export type PrListFilter = {
   state: string;
   limit: number;
@@ -31,7 +31,6 @@ const Pull = Schema.Struct({
   title: Schema.String,
   headRefName: Schema.String,
   baseRefName: Schema.String,
-  headRefOid: Schema.optional(Schema.String),
   state: Schema.String,
   isDraft: Schema.Boolean,
   mergeable: Schema.Literals(["MERGEABLE", "CONFLICTING", "UNKNOWN"]),

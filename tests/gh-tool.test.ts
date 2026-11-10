@@ -4063,7 +4063,7 @@ describe("PR merge head condition", () => {
       const mergedListArgs = jsonCalls.find(
         (args) => args[1] === "list" && args.includes("merged"),
       );
-      expect(mergedListArgs?.[mergedListArgs.indexOf("--json") + 1]).toContain("headRefOid");
+      expect(mergedListArgs?.[mergedListArgs.indexOf("--json") + 1]).not.toContain("headRefOid");
       expect(
         jsonCalls.find(
           (args) => args[1] === "list" && args.includes("open") && args.includes("--head"),
@@ -12575,7 +12575,7 @@ describe("PR creation safety", () => {
             "--repo",
             "test-owner/test-repo",
             "--json",
-            "number,url,title,headRefName,baseRefName,headRefOid,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision",
+            "number,url,title,headRefName,baseRefName,state,isDraft,mergeable,author,createdAt,headRepositoryOwner,reviewDecision",
             "--base",
             "main",
             "--head",
