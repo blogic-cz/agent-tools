@@ -45,6 +45,7 @@ export { stableHead as collectWithStableState } from "./snapshot";
 
 const LONG_LIVED_BRANCHES = new Set(["main", "master", "develop", "staging", "production"]);
 const GITHUB_ACTIONS_RUN_ID_RE = /github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)/;
+const CHECK_RUN_OUTPUT_ID_RE = /github\.com\/[^/]+\/[^/]+\/runs\/(\d+)(?:[/?#]|$)/;
 const MERGE_SHA_POLL_INTERVAL_MS = 5000;
 const MERGE_SHA_WAIT_SECONDS = 5;
 const isFullCommitSha = (value: unknown): value is string =>
@@ -141,6 +142,16 @@ const buildChecksFailedCommand = (pr: number | null): string =>
 
 const extractRunIdFromCheckLink = (link: string): number | null => {
   const match = link.match(GITHUB_ACTIONS_RUN_ID_RE);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const runId = Number(match[1]);
+  return Number.isFinite(runId) ? runId : null;
+};
+
+const extractCheckRunOutputIdFromLink = (link: string): number | null => {
+  const match = link.match(CHECK_RUN_OUTPUT_ID_RE);
   if (!match?.[1]) {
     return null;
   }
@@ -370,7 +381,17 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         const runId = extractRunIdFromCheckLink(check.link);
         const found = runId === null ? null : (runContexts.get(runId) ?? null);
         const run = found?.context ?? null;
-        const detail: FailedCheckDetail = { ...check, runId, run };
+        const checkRunOutputId = extractCheckRunOutputIdFromLink(check.link);
+        const checkRunOutput =
+          checkRunOutputId === null
+            ? null
+            : yield* reads.checkRunOutput(yield* resolveRepo(null), checkRunOutputId);
+        const detail: FailedCheckDetail = {
+          ...check,
+          runId,
+          run,
+          ...(checkRunOutput === null ? {} : { checkRunOutput }),
+        };
 
         if (!options.withLogs || runId === null) {
           return detail;
@@ -468,8 +489,12 @@ const buildFailedChecksReport = Effect.fn("pr.buildFailedChecksReport")(function
         ? "Some checks are still running. Re-run this command to refresh the snapshot."
         : "All current checks are green."
       : pendingChecks.length > 0
-        ? "Inspect the failed workflow run first. Other checks are still running and may change overall merge readiness."
-        : "Inspect the failed workflow run and failed job logs to get the first concrete error, then rerun only if the failure is understood.";
+        ? "Inspect the failed check run output and workflow details when available. Other checks are still running and may change overall merge readiness."
+        : enrichedFailedChecks.some(
+              (check) => check.checkRunOutput !== undefined && check.run === null,
+            )
+          ? "Inspect the failed check run output title and summary first. Workflow details and job logs are available when the check has a workflow run."
+          : "Inspect the failed workflow run and failed job logs to get the first concrete error, then rerun only if the failure is understood.";
 
   return {
     evidence,

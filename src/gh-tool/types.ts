@@ -138,6 +138,7 @@ export type FailedCheckRunContext = {
 export type FailedCheckDetail = CheckResult & {
   runId: number | null;
   run: FailedCheckRunContext | null;
+  checkRunOutput?: { title: string | null; summary: string | null };
   failedStepLogs?: string;
   diagnosis?: LogDiagnosis;
 };

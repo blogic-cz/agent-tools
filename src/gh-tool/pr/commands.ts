@@ -1109,7 +1109,7 @@ export const prChecksFailedCommand = Command.make(
         yield* logFormatted(checks, format);
       }),
     ),
-).pipe(Command.withDescription("Fetch only failed CI checks for a PR"));
+).pipe(Command.withDescription("Fetch failed CI checks and check-run output for a PR"));
 
 export const prWatchCommand = Command.make(
   "watch",

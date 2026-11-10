@@ -7985,6 +7985,63 @@ describe("PR checks", () => {
     }),
   );
 
+  it.effect("checks-failed includes check-run output when no workflow run exists", () =>
+    Effect.gen(function* () {
+      const summary = "x".repeat(5000);
+      const result = yield* fetchFailedChecks(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "checks") {
+                return Effect.succeed([
+                  {
+                    name: "Coverage Status",
+                    state: "completed",
+                    bucket: "fail",
+                    link: "https://github.com/test-owner/test-repo/runs/42",
+                  },
+                ]);
+              }
+              if (args[0] === "run" && args[1] === "view") {
+                return Effect.fail(
+                  new GitHubCommandError({
+                    command: "gh run view",
+                    exitCode: 1,
+                    message: "workflow run not found",
+                    stderr: "workflow run not found",
+                  }),
+                );
+              }
+              return Effect.succeed({});
+            },
+            apiRequest: ({ path }) =>
+              path === "repos/test-owner/test-repo/check-runs/42"
+                ? Effect.succeed({
+                    status: 200,
+                    body: { output: { title: "Coverage upload failed", summary } },
+                  })
+                : Effect.fail(
+                    new GitHubNotFoundError({
+                      message: `no stub for ${path}`,
+                      identifier: path,
+                      resource: "github-api",
+                    }),
+                  ),
+          }),
+        ),
+      );
+
+      expect(result.failedChecks[0]?.runId).toBeNull();
+      expect(result.failedChecks[0]?.run).toBeNull();
+      expect(result.failedChecks[0]?.checkRunOutput).toEqual({
+        title: "Coverage upload failed",
+        summary: summary.slice(0, 4000),
+      });
+      expect(result.failedChecks[0]?.checkRunOutput?.summary).toHaveLength(4000);
+      expect(result.hint).toContain("check run output title and summary");
+    }),
+  );
+
   it.effect("checks-failed reports no checks as an unknown CI state", () =>
     Effect.gen(function* () {
       const result = yield* fetchFailedChecks(123).pipe(
