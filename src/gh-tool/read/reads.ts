@@ -340,6 +340,32 @@ const annotations = Effect.fn("reads.annotations")(function* (repo: RepoRef, job
   });
 });
 
+const CHECK_RUN_SUMMARY_MAX_LENGTH = 4000;
+const checkRunOutput = Effect.fn("reads.checkRunOutput")(function* (
+  repo: RepoRef,
+  checkRunId: number,
+) {
+  const gh = yield* GitHubService;
+  const response = yield* gh
+    .apiRequest<{
+      output?: { title?: string | null; summary?: string | null } | null;
+    }>({ path: `repos/${repoSlug(repo)}/check-runs/${checkRunId}` })
+    .pipe(
+      Effect.map((result) => result.body),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+  const output = response?.output;
+  if (!output) return null;
+
+  return {
+    title: typeof output.title === "string" ? output.title : null,
+    summary:
+      typeof output.summary === "string"
+        ? output.summary.slice(0, CHECK_RUN_SUMMARY_MAX_LENGTH)
+        : null,
+  };
+});
+
 const JobIdentity = Schema.NullOr(Schema.Struct({ runId: Schema.Number, attempt: Schema.Number }));
 const jobIdentity = Effect.fn("reads.jobIdentity")(function* (repo: RepoRef, jobId: number) {
   const gh = yield* GitHubService;
@@ -402,6 +428,7 @@ export const reads = {
   runLog,
   jobLog,
   annotations,
+  checkRunOutput,
   issueView,
   issueList,
   issueComments,
