@@ -4118,7 +4118,7 @@ describe("PR merge head condition", () => {
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
         expect(result.failure).toBeInstanceOf(GitHubMergeError);
-        expect(result.failure.message).toContain("open dependent PR #124");
+        expect(result.failure.message).toContain("#124");
         expect((result.failure as GitHubMergeError).nextCommand).toBe(
           "agent-tools-gh pr merge --pr 123 --squash --delete-branch",
         );
