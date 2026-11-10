@@ -286,6 +286,12 @@ approval permits exact nonsensitive reads, not script execution or environment f
 
 All tools support `--help` for full usage documentation. Legacy `agent-tools-*` binary names (e.g. `agent-tools-gh`) still work for backwards compatibility.
 
+### GitHub issue subscriptions
+
+`gh-tool issue list --format json` returns `author.login` for each issue. Use `gh-tool viewer --format json` to read the authenticated login.
+
+To unsubscribe from an issue, run `gh-tool issue unsubscribe --issue 123 --repo owner/name --format json`. The command uses GitHub GraphQL and fails if GitHub cannot complete the mutation.
+
 ### Kubernetes command safety
 
 `k8s-tool` parses generic kubectl commands into arguments and invokes `kubectl` directly. Shell pipelines, chaining, substitution, user overrides of the configured cluster or credentials, mutating `config`/`auth` subcommands, and `cluster-info dump` are rejected. Direct Secret reads, raw kubeconfig output, filename/kustomize reads, and `kubectl diff` are also blocked.

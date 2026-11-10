@@ -22,6 +22,7 @@ const issue = {
   url: "https://github.com/owner/repo/issues/42",
   labels: [{ name: "debt" }],
   assignees: [{ login: "owner" }],
+  author: { login: "owner" },
   createdAt: "2026-10-19T00:00:00Z",
 };
 const success = { stdout: issue.url, stderr: "", exitCode: 0 };
@@ -85,14 +86,14 @@ describe("issue census operations", () => {
         "--limit",
         "1000",
         "--json",
-        "number,title,state,url,labels,assignees,createdAt,body",
+        "number,title,state,url,labels,assignees,author,createdAt,body",
         "--repo",
         "owner/repo",
         "--label",
         "debt",
       ]);
       yield* listIssues({ state: "open", labels: null, limit: 30 }).pipe(Effect.provide(layer));
-      expect(calls[1]).toContain("number,title,state,url,labels,assignees,createdAt");
+      expect(calls[1]).toContain("number,title,state,url,labels,assignees,author,createdAt");
     }),
   );
 

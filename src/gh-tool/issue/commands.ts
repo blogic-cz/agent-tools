@@ -16,6 +16,7 @@ import {
   fetchIssueComments,
   listIssues,
   reopenIssue,
+  unsubscribeIssue,
   viewIssue,
 } from "./core";
 import { GitHubService } from "#gh/read/transport";
@@ -206,6 +207,23 @@ export const issueReopenCommand = Command.make(
       }),
     ),
 ).pipe(Command.withDescription("Reopen a closed issue"));
+
+export const issueUnsubscribeCommand = Command.make(
+  "unsubscribe",
+  {
+    format: formatOption,
+    issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number to unsubscribe from")),
+    repo: repoOption,
+  },
+  ({ format, issue, repo }) =>
+    withRepo(
+      repo,
+      Effect.gen(function* () {
+        const result = yield* unsubscribeIssue(issue);
+        yield* logFormatted(result, format);
+      }),
+    ),
+).pipe(Command.withDescription("Unsubscribe the authenticated user from an issue"));
 
 export const issueCreateCommand = Command.make(
   "create",

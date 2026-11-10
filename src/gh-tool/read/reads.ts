@@ -5,7 +5,7 @@ import type { CheckRunAnnotation } from "#gh/types";
 import { cachedRead, ReadCache } from "./cache";
 import { OPS } from "./classes";
 import { repoSlug } from "./keys";
-import { issueView, issueList, issueComments } from "./issues";
+import { issueView, issueList, issueComments, issueNode } from "./issues";
 import {
   prView,
   prList,
@@ -41,6 +41,7 @@ const RateLimitResponse = Schema.Struct({
     }),
   ),
 });
+const ViewerLogin = Schema.Struct({ viewer: Schema.Struct({ login: Schema.String }) });
 
 export type RateLimitResource = {
   readonly limit: number;
@@ -109,6 +110,12 @@ export const getPRStatusRateLimit = Effect.fn("reads.getPRStatusRateLimit")(func
     } satisfies PRStatusRateLimit;
   }
   return { core, graphql } satisfies PRStatusRateLimit;
+});
+
+export const viewerLogin = Effect.fn("reads.viewerLogin")(function* () {
+  const gh = yield* GitHubService;
+  const response = yield* gh.runGraphQL("query { viewer { login } }", {});
+  return parsePreserving(ViewerLogin)(response).viewer;
 });
 
 const completedAttemptJobs = Effect.fn("reads.completedAttemptJobs")(function* (
@@ -398,4 +405,6 @@ export const reads = {
   issueView,
   issueList,
   issueComments,
+  issueNode,
+  viewerLogin,
 };

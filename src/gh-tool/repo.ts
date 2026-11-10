@@ -5,7 +5,7 @@ import { formatOption, logFormatted } from "#shared";
 import { passthrough } from "./read/catalog";
 import { GitHubService } from "./read/transport";
 import { commitAuthor } from "./read/commits";
-import { resolveRepo } from "./read/reads";
+import { reads, resolveRepo } from "./read/reads";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +57,12 @@ export const repoInfoCommand = Command.make(
       );
     }),
 ).pipe(Command.withDescription("Show repository information (owner, name, default branch, URL)"));
+
+export const viewerCommand = Command.make("viewer", { format: formatOption }, ({ format }) =>
+  Effect.gen(function* () {
+    yield* logFormatted(yield* reads.viewerLogin(), format);
+  }),
+).pipe(Command.withDescription("Show the authenticated GitHub user's login"));
 
 export const repoListCommand = Command.make(
   "list",
