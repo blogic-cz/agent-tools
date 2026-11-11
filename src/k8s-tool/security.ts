@@ -156,8 +156,113 @@ const flagsWithoutValues = new Set([
   "--watch",
   "--watch-only",
 ]);
-const isSecretResource = (resource: string) =>
-  resource.split(",").some((part) => /^(?:secrets?|secrets?\.[^/]+)(?:\/|$)/i.test(part));
+const isSecretResourceType = (resource: string) =>
+  /^(?:secrets?|secrets?\.[^/]+)(?:\/|$)/i.test(resource);
+const isSecretResource = (resource: string) => resource.split(",").some(isSecretResourceType);
+const isOnlySecretResource = (resource: string) => resource.split(",").every(isSecretResourceType);
+
+const readOnlyKubectlOperations = [...ALLOWED_KUBECTL_VERBS, "rollout status|history"];
+
+type KubectlOutputFormat =
+  | { _tag: "Default" }
+  | { _tag: "Invalid" }
+  | { _tag: "Format"; value: string };
+
+function kubectlOutputFormat(argv: string[], verbIndex: number): KubectlOutputFormat {
+  let format: string | undefined;
+  for (let i = verbIndex + 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) return { _tag: "Invalid" };
+    if (arg === "-o" || arg === "--output") {
+      if (format !== undefined || argv[i + 1] === undefined) return { _tag: "Invalid" };
+      format = argv[++i];
+    } else if (arg.startsWith("--output=")) {
+      if (format !== undefined) return { _tag: "Invalid" };
+      format = arg.slice("--output=".length);
+    } else if (arg.startsWith("-o") && !arg.startsWith("--") && arg.length > 2) {
+      if (format !== undefined) return { _tag: "Invalid" };
+      format = arg.slice(2).replace(/^=/, "");
+    }
+  }
+  return format === undefined ? { _tag: "Default" } : { _tag: "Format", value: format };
+}
+
+function isMetadataPath(path: string): boolean {
+  return /^\.metadata(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[(?:\*|\d+|'[^'{}\]]*'|"[^"{}\]]*")\])*$/.test(
+    path,
+  );
+}
+
+function isMetadataJsonPath(format: string): boolean {
+  let cursor = 0;
+  let expressions = 0;
+  while (cursor < format.length) {
+    const open = format.indexOf("{", cursor);
+    const strayClose = format.indexOf("}", cursor);
+    if (strayClose !== -1 && (open === -1 || strayClose < open)) return false;
+    if (open === -1) break;
+    const close = format.indexOf("}", open + 1);
+    const nestedOpen = format.indexOf("{", open + 1);
+    if (close === -1 || (nestedOpen !== -1 && nestedOpen < close)) return false;
+    if (!isMetadataPath(format.slice(open + 1, close).trim())) return false;
+    expressions++;
+    cursor = close + 1;
+  }
+  return expressions > 0;
+}
+
+function splitCustomColumns(columns: string): string[] | undefined {
+  const result: string[] = [];
+  let start = 0;
+  let bracketDepth = 0;
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < columns.length; i++) {
+    const char = columns[i];
+    if (char === undefined) return undefined;
+    if (quote) {
+      if (char === quote) quote = undefined;
+    } else if (char === "'" || char === '"') quote = char;
+    else if (char === "[") bracketDepth++;
+    else if (char === "]") {
+      if (bracketDepth === 0) return undefined;
+      bracketDepth--;
+    } else if (char === "," && bracketDepth === 0) {
+      result.push(columns.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (quote || bracketDepth !== 0) return undefined;
+  result.push(columns.slice(start));
+  return result;
+}
+
+function isMetadataCustomColumns(format: string): boolean {
+  const columns = splitCustomColumns(format);
+  return (
+    columns !== undefined &&
+    columns.length > 0 &&
+    columns.every((column) => {
+      const separator = column.indexOf(":");
+      return (
+        separator > 0 &&
+        column.slice(0, separator).trim() !== "" &&
+        isMetadataPath(column.slice(separator + 1).trim())
+      );
+    })
+  );
+}
+
+function isSafeSecretOutput(argv: string[], verbIndex: number): boolean {
+  const output = kubectlOutputFormat(argv, verbIndex);
+  if (output._tag === "Default") return true;
+  if (output._tag === "Invalid") return false;
+  if (["wide", "name"].includes(output.value.toLowerCase())) return true;
+  if (output.value.startsWith("jsonpath="))
+    return isMetadataJsonPath(output.value.slice("jsonpath=".length));
+  if (output.value.startsWith("custom-columns="))
+    return isMetadataCustomColumns(output.value.slice("custom-columns=".length));
+  return false;
+}
 
 function resourceOperand(argv: string[], verbIndex: number): string | null | undefined {
   let flagsEnded = false;
@@ -230,11 +335,13 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
     reason,
     hint,
   });
-  if ((BLOCKED_KUBECTL_VERBS as readonly string[]).includes(verb))
+  const readOnlyRollout =
+    verb === "rollout" && ["status", "history"].includes(argv[verbIndex + 1]?.toLowerCase() ?? "");
+  if ((BLOCKED_KUBECTL_VERBS as readonly string[]).includes(verb) && !readOnlyRollout)
     return denied(
-      `'${verb}' is a mutating operation blocked for AI agents. Only read-only operations are allowed: ${ALLOWED_KUBECTL_VERBS.join(", ")}.`,
+      `'${verb}' is a mutating operation blocked for AI agents. Only read-only operations are allowed: ${readOnlyKubectlOperations.join(", ")}.`,
     );
-  if (!(ALLOWED_KUBECTL_VERBS as readonly string[]).includes(verb))
+  if (!(ALLOWED_KUBECTL_VERBS as readonly string[]).includes(verb) && !readOnlyRollout)
     return denied(
       `Unknown kubectl verb '${verb}'. Only known read-only operations are allowed: ${ALLOWED_KUBECTL_VERBS.join(", ")}.`,
     );
@@ -295,11 +402,15 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
     (verb === "get" || verb === "describe") &&
     ((resource !== undefined && resource !== null && isSecretResource(resource)) ||
       hasNamedSecretResource)
-  )
-    return denied(
-      "Kubernetes Secret reads and file-based reads are blocked because they may expose credentials.",
-      "Use a targeted non-secret resource diagnostic instead.",
-    );
+  ) {
+    const resourceIsOnlySecret =
+      resource !== undefined && resource !== null && isOnlySecretResource(resource);
+    if (verb === "describe" || !resourceIsOnlySecret || !isSafeSecretOutput(argv, verbIndex))
+      return denied(
+        "Kubernetes Secret reads and file-based reads are blocked because they may expose credentials.",
+        "Use a targeted non-secret resource diagnostic instead.",
+      );
+  }
   if (verb === "config" && argv.includes("view") && argv.some((arg) => /^--raw(?:=|$)/.test(arg)))
     return denied(
       "Raw kubeconfig output is blocked because it may expose credentials.",

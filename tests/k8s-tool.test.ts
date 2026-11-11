@@ -1711,6 +1711,11 @@ describe("kubectl command security", () => {
       "edit deployment web-app",
       "replace -f deployment.yaml",
       "rollout restart deployment web-app",
+      "rollout undo deployment web-app",
+      "rollout pause deployment web-app",
+      "rollout resume deployment web-app",
+      "rollout",
+      "rollout unknown deployment web-app",
       "set image deployment/web-app app=app:v2",
       "label pod my-pod env=prod",
       "annotate pod my-pod note=test",
@@ -1758,29 +1763,27 @@ describe("kubectl command security", () => {
         expect(result.verb).toBe(verb);
       });
     }
+
+    for (const cmd of [
+      "rollout status deployment/web-app",
+      "rollout history deployment/web-app",
+      "rollout history deployment/web-app --revision=2",
+    ]) {
+      it(`allows read-only rollout command '${cmd}'`, () => {
+        const result = isKubectlCommandAllowed(cmd);
+        expect(result.allowed).toBe(true);
+        expect(result.verb).toBe("rollout");
+      });
+    }
+
+    it("names read-only rollout subcommands in the refusal message", () => {
+      const result = isKubectlCommandAllowed("rollout restart deployment/web-app");
+      expect(result.reason).toContain("rollout status|history");
+    });
   });
 
   describe("isKubectlCommandAllowed - secret-bearing reads", () => {
     for (const cmd of [
-      "get secret app-credentials",
-      "get -- secrets",
-      "describe -- secret/app-credentials",
-      "get secrets -n my-ns",
-      "get secret/app-credentials",
-      "get -n my-ns secret app-credentials",
-      "get --namespace=my-ns secrets",
-      "get -A secrets",
-      "get --all-namespaces secret/app-credentials",
-      "get --sort-by .metadata.name secrets",
-      "get --chunk-size 100 secrets",
-      "get --template X secrets",
-      "get --subresource status secrets",
-      "get 'secret' app-credentials",
-      "get sec''ret app-credentials",
-      "get secret.v1 app-credentials",
-      "get pods,secrets",
-      "get pod/x secret/app-credentials",
-      "describe pod/x secret/app-credentials",
       "get --raw=/api/v1/namespaces/my-ns/secrets/app-credentials",
       "get --raw=/api/v1/namespaces/my-ns/secrets?limit=1",
       "get -f resource.yaml",
@@ -1790,16 +1793,70 @@ describe("kubectl command security", () => {
       "get -k overlays/prod",
       "get -koverlay",
       "get --kustomize=overlays/prod",
+      "get secret app-credentials -o yaml",
+      "get secrets -o json",
+      "get secret app-credentials -o go-template={{.metadata.name}}",
+      "get secret app-credentials -o go-template-file=/tmp/secret.tmpl",
+      "get secret app-credentials -o template={{.metadata.name}}",
+      "get secret app-credentials -o templatefile=/tmp/secret.tmpl",
+      "get secret app-credentials -o jsonpath-as-json={.metadata.name}",
+      "get secret app-credentials -o jsonpath={.data.password}",
+      "get secret app-credentials -o jsonpath={.stringData.password}",
+      "get secret app-credentials -o jsonpath={.kind}",
+      "get secret app-credentials -o jsonpath={..metadata.name}",
+      "get secrets -o 'jsonpath={.items[*].metadata.name}'",
+      "get secret app-credentials -o jsonpath={.metadata.name}{.data.password}",
+      "get secret app-credentials -o custom-columns=NAME:.metadata.name,DATA:.data.password",
+      "get secret app-credentials -o custom-columns=NAME:.metadata.name,DATA:.stringData.password",
+      "get secret app-credentials -o custom-columns=KIND:.kind",
+      "get secret app-credentials -o \"custom-columns=NAME:.metadata.name,DATA:.data['password']\"",
+      "get secret app-credentials -o jsonpath={unknown expression}",
+      "get secret app-credentials -o jsonpath={.metadata.name",
+      "get secret app-credentials -o custom-columns=NAME:.metadata.name,INVALID:expression",
+      "get secret app-credentials -o custom-columns-file=/tmp/columns",
+      "get secret app-credentials -o 'custom-columns=NAME:.items[*].metadata.name'",
+      "get pods,secrets",
+      "get pod/x secret/app-credentials",
+      "get pods,secrets -o json",
+      "get pod/x secret/app-credentials -o json",
       "describe secret app-credentials",
       "describe secrets -n my-ns",
       "describe secret/app-credentials",
       "describe --namespace my-ns secret/app-credentials",
+      "describe -- secret/app-credentials",
+      "describe pod/x secret/app-credentials",
     ]) {
       it(`blocks '${cmd}'`, () => {
         const result = isKubectlCommandAllowed(cmd);
         expect(result.allowed).toBe(false);
         expect(result.reason).toContain("Secret reads");
         expect(result.hint).toContain("non-secret");
+      });
+    }
+
+    for (const cmd of [
+      "get secret app-credentials",
+      "get secrets -n my-ns",
+      "get secret/app-credentials",
+      "get secret.v1 app-credentials",
+      "get -n my-ns secret app-credentials",
+      "get --namespace=my-ns secrets",
+      "get -A secrets",
+      "get --all-namespaces secret/app-credentials",
+      "get secret app-credentials -o wide",
+      "get secrets -o name",
+      "get secret app-credentials -owide",
+      "get secret app-credentials -o=wide",
+      "get secrets --output=name",
+      "get secret app-credentials -o jsonpath={.metadata.creationTimestamp}",
+      "get secret app-credentials -o jsonpath=created:{.metadata.creationTimestamp}",
+      "get secret app-credentials --output=\"jsonpath={.metadata.labels['app']}\"",
+      "get secret app-credentials -o jsonpath={.metadata.name}{.metadata.creationTimestamp}",
+      "get secrets -o custom-columns=NAME:.metadata.name,CREATED:.metadata.creationTimestamp",
+      "get secret app-credentials --output=\"custom-columns=NAME:.metadata.name,LABEL:.metadata.labels['app']\"",
+    ]) {
+      it(`allows metadata-only Secret read '${cmd}'`, () => {
+        expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
       });
     }
 
