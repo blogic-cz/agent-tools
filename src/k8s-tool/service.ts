@@ -120,7 +120,11 @@ export class K8sService extends Context.Service<
               const command = ChildProcess.make("kubectl", argv, {
                 stdout: "pipe",
                 stderr: "pipe",
-                ...(kubeconfig ? { env: { KUBECONFIG: kubeconfig }, extendEnv: true } : {}),
+                env: {
+                  KUBECTL_KUBERC: "false",
+                  ...(kubeconfig ? { KUBECONFIG: kubeconfig } : {}),
+                },
+                extendEnv: true,
               });
               const process = yield* executor.spawn(command);
 
@@ -180,6 +184,8 @@ export class K8sService extends Context.Service<
               {
                 stdout: "pipe",
                 stderr: "pipe",
+                env: { KUBECTL_KUBERC: "false" },
+                extendEnv: true,
               },
             );
 
@@ -290,7 +296,11 @@ export class K8sService extends Context.Service<
               const command = ChildProcess.make("kubectl", ["--context", context, ...argv], {
                 stdout: "pipe",
                 stderr: "pipe",
-                ...(kubeconfig ? { env: { KUBECONFIG: kubeconfig }, extendEnv: true } : {}),
+                env: {
+                  KUBECTL_KUBERC: "false",
+                  ...(kubeconfig ? { KUBECONFIG: kubeconfig } : {}),
+                },
+                extendEnv: true,
               });
               const resultOption = yield* Effect.scoped(
                 Effect.gen(function* () {

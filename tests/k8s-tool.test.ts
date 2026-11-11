@@ -83,12 +83,16 @@ function createMockProcess(result: ShellResult) {
 function createMockChildProcessSpawnerLayer(
   shellResponses: Record<string, ShellResult>,
   observedShellCommands?: Array<string>,
+  observedSpawnEnvironments?: Array<Record<string, string> | undefined>,
 ) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       const shellCommand = commandToShellString(command);
       observedShellCommands?.push(shellCommand);
+      if (command._tag === "StandardCommand" && command.command === "kubectl") {
+        observedSpawnEnvironments?.push(command.options.env as Record<string, string> | undefined);
+      }
 
       const response = shellResponses[shellCommand] ?? {
         stdout: "",
@@ -2209,8 +2213,108 @@ describe("round-two Kubernetes read refusals", () => {
     "wait --for=condition=Ready pod/x",
     "wait --for=condition=Ready pod/x --timeout=60s",
     "wait --for=condition=Ready pod/x -o name",
+  ]) {
+    it(`allows round-three read ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+  }
+
+  for (const cmd of [
+    "-o yaml wait --for=condition=Ready pod/x",
+    "-o jsonpath={.metadata.name} wait --for=condition=Ready pod/x",
     "-A get pods",
     "--all-namespaces get pods",
+    "-w get pods",
+    "--watch get pods",
+    "-w get proxy --address=0.0.0.0",
+  ]) {
+    it(`refuses round-three read ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+
+  for (const cmd of [
+    "get pods -Ao jsonpath-file=/etc/hosts",
+    "get pods -Aojsonpath-file=/etc/hosts",
+    "get pods -Ao=jsonpath-file=/etc/hosts",
+    "get pods -wo templatefile --template=/etc/hosts",
+    "get pods -Ro go-template-file --template=/etc/hosts",
+    "get pods -wAo custom-columns-file=/etc/hosts",
+  ]) {
+    it(`refuses short-cluster file output ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+
+  for (const cmd of [
+    "get pods -o 'jsonpath={.spec.securityContext.seccompProfile.type}'",
+    "get pods -o 'jsonpath={.spec.securityContext.appArmorProfile}'",
+    "get pods -o 'custom-columns=PROFILE:.spec.securityContext.seccompProfile.type'",
+    "get pods -o 'jsonpath={.data.logfile}'",
+  ]) {
+    it(`allows non-secret output containing file in data ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+  }
+
+  it.effect("disables default kuberc for every kubectl spawn", () => {
+    const observedSpawnEnvironments: Array<Record<string, string> | undefined> = [];
+    const observedShellCommands: Array<string> = [];
+    const selectedContextQuery = CONTEXT_VIEW_COMMAND;
+    const probeCommand =
+      "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
+
+    return Effect.gen(function* () {
+      const service = yield* K8sService;
+      yield* service.runKubectl("get pods", false, "selected");
+      expect(observedSpawnEnvironments.length).toBe(3);
+      expect(observedSpawnEnvironments.every((env) => env?.KUBECTL_KUBERC === "false")).toBe(true);
+    }).pipe(
+      Effect.provide(K8sService.layer),
+      Effect.provide(
+        createMockChildProcessSpawnerLayer(
+          {
+            [selectedContextQuery]: contextViewResult("selected-context", "selected-cluster"),
+            [probeCommand]: { stdout: '{"major":"1"}', stderr: "", exitCode: 0 },
+            "kubectl --context selected-context get pods": {
+              stdout: "pod-a\n",
+              stderr: "",
+              exitCode: 0,
+            },
+          },
+          observedShellCommands,
+          observedSpawnEnvironments,
+        ),
+      ),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          kubernetes: {
+            selected: {
+              clusterId: "selected-cluster",
+              namespaces: { test: "selected" },
+              timeoutMs: 12345,
+            },
+          },
+        }),
+      ),
+    );
+  });
+
+  it("refuses a file output format before the verb", () => {
+    expect(isKubectlCommandAllowed("-o jsonpath-file=/etc/hosts get pods").allowed).toBe(false);
+  });
+
+  it("allows a non-file output format before the verb", () => {
+    expect(isKubectlCommandAllowed("-o jsonpath get pods").allowed).toBe(true);
+  });
+
+  it("reports an unsupported wait flag as a wait parse error", () => {
+    const result = isKubectlCommandAllowed("wait --for=condition=Ready pod/x -v=6");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).not.toContain("Secret");
+  });
+
+  for (const cmd of [
     "-o wide get pods",
     "-oyaml get pods",
     "--output=wide get pods",
@@ -2218,15 +2322,13 @@ describe("round-two Kubernetes read refusals", () => {
     "--v=6 get pods",
     "-l app=x get pods",
     "--selector=app=x get pods",
-    "-w get pods",
-    "--watch get pods",
     "-n x -o wide get pods",
     "--match-server-version get pods",
     "--warnings-as-errors get pods",
     "--log-flush-frequency=5s get pods",
     "--disable-compression get pods",
   ]) {
-    it(`allows round-two read ${cmd}`, () => {
+    it(`allows round-three root pre-verb flag ${cmd}`, () => {
       expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
     });
   }

@@ -176,10 +176,6 @@ const prefixValueFlags = new Set([
   "--log-flush-frequency",
 ]);
 const prefixBooleanFlags = new Set([
-  "-A",
-  "--all-namespaces",
-  "-w",
-  "--watch",
   "--match-server-version",
   "--warnings-as-errors",
   "--disable-compression",
@@ -388,19 +384,37 @@ function isAllowedRolloutHistoryOutput(output: string): boolean {
   );
 }
 
+function outputFormatName(value: string | undefined): string | undefined {
+  return value?.slice(0, value.indexOf("=") < 0 ? undefined : value.indexOf("=")).toLowerCase();
+}
+
+function shortOutputValue(
+  argv: string[],
+  index: number,
+): { value: string | undefined; next: number } | undefined {
+  const arg = argv[index];
+  if (arg === undefined || !arg.startsWith("-") || arg.startsWith("--")) return undefined;
+  const equals = arg.indexOf("=");
+  const shortFlags = arg.slice(1, equals < 0 ? undefined : equals);
+  const outputIndex = shortFlags.indexOf("o");
+  if (outputIndex < 0 || !/^[ARw]*$/.test(shortFlags.slice(0, outputIndex))) return undefined;
+  let value = arg.slice(outputIndex + 2).replace(/^=/, "");
+  if (value === "" && equals >= 0) value = arg.slice(equals + 1);
+  if (value === "") return { value: argv[index + 1], next: index + 2 };
+  return { value, next: index + 1 };
+}
+
 function hasFileOutputFormat(argv: string[]): boolean {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === undefined) return true;
-    const value =
+    let value =
       arg === "-o" || arg === "--output"
         ? argv[i + 1]
         : arg.startsWith("--output=")
           ? arg.slice("--output=".length)
-          : arg.startsWith("-o") && arg.length > 2
-            ? arg.slice(2).replace(/^=/, "")
-            : undefined;
-    if (value?.toLowerCase().includes("file")) return true;
+          : shortOutputValue(argv, i)?.value;
+    if (outputFormatName(value)?.includes("file")) return true;
   }
   return false;
 }
@@ -411,19 +425,23 @@ function hasSafeWaitOutput(argv: string[], start: number): boolean {
     if (arg === undefined) return false;
     const separate = arg === "-o" || arg === "--output" || arg === "--template";
     const attached = arg.startsWith("--output=") || arg.startsWith("--template=");
-    const shortAttached = arg.startsWith("-o") && arg.length > 2;
-    if (!separate && !attached && !shortAttached) continue;
+    const clustered = shortOutputValue(argv, i);
+    if (!separate && !attached && !clustered) continue;
     const value = separate
       ? argv[++i]
       : attached
         ? arg.slice(arg.indexOf("=") + 1)
-        : arg.slice(2).replace(/^=/, "");
+        : clustered?.value;
+    if (clustered) i = clustered.next - 1;
     if (value !== "name") return false;
   }
   return true;
 }
 
-function hasWaitSecretOperand(argv: string[], start: number): boolean {
+function waitSecretOperandResult(
+  argv: string[],
+  start: number,
+): "secret" | "unsupported" | undefined {
   const values = new Set([
     "-n",
     "--namespace",
@@ -440,17 +458,17 @@ function hasWaitSecretOperand(argv: string[], start: number): boolean {
   const booleans = new Set(["-A", "--all-namespaces", "--all", "--ignore-not-found"]);
   for (let i = start; i < argv.length;) {
     const arg = argv[i];
-    if (arg === undefined) return true;
+    if (arg === undefined) return "unsupported";
     if (arg.startsWith("-")) {
       const parsed = readFlag(argv, i, values, booleans);
-      if (!parsed) return true;
+      if (!parsed) return "unsupported";
       i = parsed.next;
       continue;
     }
-    if (isSecretResource(arg)) return true;
+    if (isSecretResource(arg)) return "secret";
     i++;
   }
-  return false;
+  return undefined;
 }
 
 function resourceOperand(argv: string[], verbIndex: number): string | null | undefined {
@@ -579,12 +597,14 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
     );
   const resource = resourceOperand(argv, verbIndex);
   if (verb === "wait") {
-    if (hasWaitSecretOperand(argv, verbIndex + 1))
+    const waitOperandResult = waitSecretOperandResult(argv, verbIndex + 1);
+    if (waitOperandResult === "secret")
       return denied(
         "Kubernetes Secret reads through wait are blocked because they may expose credentials.",
       );
-    if (!hasSafeWaitOutput(argv, verbIndex + 1))
-      return denied("Only name output is allowed for kubectl wait.");
+    if (waitOperandResult === "unsupported")
+      return denied("Unsupported kubectl wait flag or operand.");
+    if (!hasSafeWaitOutput(argv, 0)) return denied("Only name output is allowed for kubectl wait.");
   }
   const hasSensitiveInputFlag = argv.some(
     (arg) =>
