@@ -9831,6 +9831,54 @@ describe("PR composite commands", () => {
     );
   }
 
+  it.effect("review-triage ignores failed and cancelled runs that a newer run superseded", () =>
+    Effect.gen(function* () {
+      const link = (run: number, job: number) =>
+        `https://github.com/acme/repo/actions/runs/${run}/job/${job}`;
+      const checkResults = [
+        { name: "Compare contracts", state: "FAILURE", bucket: "fail", link: link(100, 1) },
+        { name: "Compare contracts", state: "SUCCESS", bucket: "pass", link: link(200, 2) },
+        { name: "Check PR title", state: "CANCELLED", bucket: "cancel", link: link(101, 3) },
+        { name: "Check PR title", state: "SUCCESS", bucket: "pass", link: link(201, 4) },
+      ];
+      const result = yield* fetchReviewTriage(123).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            runGhJson: (args) => {
+              if (args[0] === "pr" && args[1] === "view") {
+                return Effect.succeed({
+                  ...mockPRInfo,
+                  mergeable: "MERGEABLE",
+                  headRefOid: "stable-head",
+                  reviewDecision: "APPROVED",
+                });
+              }
+              if (args[0] === "pr" && args[1] === "checks") {
+                return Effect.succeed(checkResults);
+              }
+              return Effect.succeed({});
+            },
+            runGraphQL: () =>
+              Effect.succeed({
+                repository: {
+                  pullRequest: {
+                    reviewThreads: {
+                      nodes: [],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              }),
+            runGh: () => Effect.succeed({ stdout: "[]", stderr: "", exitCode: 0 }),
+          }),
+        ),
+      );
+      expect(result.classification).toEqual({ status: "clear", reasons: [] });
+      expect(result.ready.blocking).toEqual([]);
+      expect(result.checks).toEqual([checkResults[1], checkResults[3]]);
+    }),
+  );
+
   it.effect("review-triage reports missing checks without calling them failures", () =>
     Effect.gen(function* () {
       const result = yield* fetchReviewTriage(123).pipe(

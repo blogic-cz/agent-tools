@@ -59,6 +59,26 @@ const resolveEnv = (envOption: Option.Option<string>) =>
     });
   });
 
+/**
+ * The CLI parser reads an argument that starts with "-" as a flag, so `--sql "-- note"` loses its
+ * value. SQL line comments start with "--", so the value after `--sql` is joined to the flag as
+ * `--sql=<value>` and read verbatim. Arguments after a bare `--` stay untouched.
+ */
+export const sqlValueArgs = (args: readonly string[]): string[] => {
+  const end = args.indexOf("--");
+  const head = end === -1 ? args : args.slice(0, end);
+  const out: string[] = [];
+  for (let i = 0; i < head.length; i++) {
+    const arg = head[i] ?? "";
+    const next = head[i + 1];
+    if (arg === "--sql" && next !== undefined) {
+      out.push(`--sql=${next}`);
+      i++;
+    } else out.push(arg);
+  }
+  return end === -1 ? out : [...out, ...args.slice(end)];
+};
+
 const sqlCommand = Command.make(
   "sql",
   {
@@ -238,10 +258,10 @@ export const mainCommand = Command.make("db-tool", {}).pipe(
   ]),
 );
 
-const cli = Command.run(mainCommand, {
-  version: VERSION,
-  renderErrors: false,
-});
+const runCli = (args: readonly string[]) =>
+  Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(sqlValueArgs(args));
+
+const cli = Effect.suspend(() => runCli(process.argv.slice(2)));
 
 const dbConfigLayer = makeDbConfigLayer(profileArg);
 
@@ -267,6 +287,7 @@ export const runMain = () =>
   });
 
 export const runProgram = (args: readonly string[]) =>
-  withRedactedOutput(
-    withAudit("db", Command.runWith(mainCommand, { version: VERSION, renderErrors: false })(args)),
-  ).pipe(Effect.provide(MainLayer), Effect.tapCause(renderCauseToStderr));
+  withRedactedOutput(withAudit("db", runCli(args))).pipe(
+    Effect.provide(MainLayer),
+    Effect.tapCause(renderCauseToStderr),
+  );

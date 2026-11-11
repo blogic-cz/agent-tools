@@ -46,6 +46,7 @@ import {
   fetchChecksBatch,
   fetchChecksForCommand,
   fetchFailedChecks,
+  latestChecksOnly,
   listPRs,
   mergePR,
   readyPR,
@@ -425,7 +426,7 @@ export const fetchReviewTriage = Effect.fn("pr.fetchReviewTriage")(function* (
   );
   const info = { ...baseInfo, reviewDecision: value.reviewDecision };
   const { allThreads, summary, checkReport, reviews, inlineComments } = value;
-  const checks = checkReport.checks ?? [];
+  const checks = latestChecksOnly(checkReport.checks ?? []);
   const unresolvedThreads = allThreads.filter((thread) => !thread.isResolved);
   const visibleOpenThreads = allThreads.filter((thread) => thread.isVisibleOpen);
   const classification = classifyReviewTriage(summary, checks, checkReport.checksStatus);

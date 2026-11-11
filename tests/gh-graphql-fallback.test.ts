@@ -146,7 +146,7 @@ describe("GraphQL REST fallback", () => {
           "checks",
           "12",
           "--json",
-          "name,state,bucket,link",
+          "name,state,bucket,link,workflow",
         ]);
         expect(checks).toMatchObject([
           { name: "Build", bucket: "pass" },
