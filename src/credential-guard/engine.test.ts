@@ -378,7 +378,6 @@ describe("agent configuration boundaries", () => {
     });
   });
   it.each([
-    ["rg -n x --glob '*.json' src", "glob does not end in a code or prose extension"],
     ["rg -n x -g '*.env' src", "glob does not end in a code or prose extension"],
     ["cp *.txt /tmp/dir/", "glob does not end in a code or prose extension"],
     ['cat "$OLDPWD/README.md"', "path is not a finite literal"],
@@ -386,6 +385,33 @@ describe("agent configuration boundaries", () => {
     expect(bash(command)).toMatchObject({
       findings: expect.arrayContaining([expect.objectContaining({ rule: "opaque-path", detail })]),
     });
+  });
+  it.each([
+    "rg -n x src",
+    "rg -n x ~/.docker",
+    "rg -n x ~/.config/gh",
+    "rg -n x --glob '*.yaml' src",
+    "rg -n x --iglob='*.yml' src",
+    "rg -n x -g'*.json' src",
+    "rg -n x --glob '*.toml' src",
+    "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
+  ])("allows config search filters and existing directory searches %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+  it.each([
+    "rg x templates/*migrat*",
+    "rg x --glob '.env*'",
+    "rg x --glob '*.pem'",
+    "rg x --glob '*.key'",
+    "cat ~/.docker/*.json",
+    "rg x ~/.config/gh/*.yml",
+    "rg x --glob 'service-account*.json'",
+    "rg x --glob '~/.docker/*.json'",
+    "rg x --glob '{*.yaml,.env*}'",
+    "cat *.yaml",
+    "rg x *.json",
+  ])("preserves secret and positional glob refusals %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
   });
   it("allows a glob that ends in a code or prose extension", () => {
     expect(bash("rg -n x --glob '*.cs' src").kind).toBe("pass");

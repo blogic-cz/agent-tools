@@ -880,22 +880,28 @@ describe("credential guard recovery families", () => {
 });
 
 describe("Grep path and glob fields", () => {
-  it.each([".env*", "**/.env", "*.json", "*.key"])("refuses protected glob %s", (glob) => {
-    expect(() =>
-      createCredentialGuard().handleToolExecuteBefore(
-        { tool: "Grep" },
-        { args: { pattern: "example", glob } },
-      ),
-    ).toThrow();
-  });
-  it.each(["*.ts", "README.md", "!*.json"])("permits safe glob %s", (glob) => {
-    expect(() =>
-      createCredentialGuard().handleToolExecuteBefore(
-        { tool: "Grep" },
-        { args: { pattern: "example", glob } },
-      ),
-    ).not.toThrow();
-  });
+  it.each([".env*", "**/.env", "service-account*.json", "*.key"])(
+    "refuses protected glob %s",
+    (glob) => {
+      expect(() =>
+        createCredentialGuard().handleToolExecuteBefore(
+          { tool: "Grep" },
+          { args: { pattern: "example", glob } },
+        ),
+      ).toThrow();
+    },
+  );
+  it.each(["*.ts", "README.md", "!*.json", "*.json", "*.yaml", "*.yml", "*.toml"])(
+    "permits safe glob %s",
+    (glob) => {
+      expect(() =>
+        createCredentialGuard().handleToolExecuteBefore(
+          { tool: "Grep" },
+          { args: { pattern: "example", glob } },
+        ),
+      ).not.toThrow();
+    },
+  );
   it("refuses the protected directory itself", () => {
     expect(() =>
       createCredentialGuard().handleToolExecuteBefore(

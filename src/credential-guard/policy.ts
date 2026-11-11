@@ -888,7 +888,16 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
             : alternatives.some((text) => /[*?[]/.test(text))
               ? { ...opaque(...alternatives), globPatterns: alternatives }
               : literal(...alternatives);
-        checkPath(patternValue, invocationScope, span, true);
+        const configFilter =
+          executableName(first.texts[0] ?? "") === "rg" &&
+          alternatives !== null &&
+          alternatives.every((pattern) => /^\*\.(?:yaml|yml|json|toml)$/i.test(pattern));
+        checkPath(
+          configFilter ? literal(...alternatives) : patternValue,
+          invocationScope,
+          span,
+          true,
+        );
         continue;
       }
       if (
