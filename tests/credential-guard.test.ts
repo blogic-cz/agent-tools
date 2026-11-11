@@ -1,6 +1,9 @@
 import { captureOutput } from "./helpers/capture-output";
 
-import { describe, expect, it, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, test, vi } from "vitest";
+import { mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   createCredentialGuard,
@@ -29,6 +32,117 @@ const SK_PREFIX = "sk-";
 const SK_BODY = "x".repeat(48);
 const EXAMPLE_OPENAI_KEY = `${SK_PREFIX}${SK_BODY}`;
 const SYNTHETIC_HANDLER_TOKEN = `ghp_${"A".repeat(36)}`;
+
+it("keeps config searches inside the real project across symlinks", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "guard-project-"));
+  const project = join(fixture, "repo");
+  await mkdir(project);
+  await mkdir(join(project, "sub"));
+  await mkdir(join(project, ".hidden"));
+  await mkdir(join(fixture, "outside"));
+  await symlink(join(fixture, "outside"), join(project, "escape"));
+  await symlink(join(project, ".hidden"), join(project, "hidden"));
+  await symlink(join(project, "sub"), join(project, "safe"));
+  await symlink(join(fixture, "absent"), join(project, "dangling"));
+  const cwd = vi.spyOn(process, "cwd").mockReturnValue(project);
+  try {
+    const guard = createCredentialGuard();
+    for (const path of ["escape", "escape/missing", "hidden", "dangling"]) {
+      expect(() =>
+        guard.handleToolExecuteBefore(
+          { tool: "Grep" },
+          { args: { pattern: "x", glob: "*.json", path } },
+        ),
+      ).toThrow();
+      expect(guard.isDangerousBashCommand(`rg x -g '*.json' ${path}`)).toBe(true);
+      expect(guard.isDangerousBashCommand(`cd ${path} && rg x -g '*.json'`)).toBe(true);
+    }
+    for (const path of ["sub", "safe", "./sub"]) {
+      expect(() =>
+        guard.handleToolExecuteBefore(
+          { tool: "Grep" },
+          { args: { pattern: "x", glob: "*.yaml", path } },
+        ),
+      ).not.toThrow();
+    }
+    expect(guard.isDangerousBashCommand("ln -s ~ h && rg x -g '*.json' h")).toBe(true);
+    expect(guard.isDangerousBashCommand("rg -L x -g '*.json' sub")).toBe(true);
+  } finally {
+    cwd.mockRestore();
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+describe("config searches prove the exact existing project path", () => {
+  let fixture = "";
+  let project = "";
+  let cwd: { mockRestore: () => void } | undefined;
+  beforeAll(async () => {
+    fixture = await mkdtemp(join(tmpdir(), "guard-spelling-"));
+    project = join(fixture, "repo");
+    const outside = join(fixture, "home");
+    await mkdir(join(project, "sub"), { recursive: true });
+    await mkdir(join(project, "kubernetes", "applications", "example-api"), { recursive: true });
+    await mkdir(outside);
+    await symlink(outside, join(project, "h."));
+    await symlink(outside, join(project, "h "));
+    await symlink(outside, join(project, "sub", "abs"));
+    cwd = vi.spyOn(process, "cwd").mockReturnValue(project);
+  });
+  afterAll(async () => {
+    cwd?.mockRestore();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it.each([
+    "rg x -g '*.json' h.",
+    "rg x -g '*.json' 'h '",
+    "cd h. && rg x -g '*.json'",
+    "cd 'h ' && rg x -g '*.json'",
+    "env -C h. rg x -g '*.json'",
+    `sh -c "cd h. && rg x -g '*.json'"`,
+    "rg x -g '*.json' {sub,h.}",
+    "rg x -g '*.json' sub/abs.",
+    "rg x -g '*.json' nonexist",
+    "cd nonexist && rg x -g '*.json'",
+    "git checkout evil && rg x -g '*.json' newlink",
+    "tar -xf t.tar && rg x -g '*.json' newlink",
+  ])("refuses %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+  });
+  it("refuses the absolute spelling of a trailing-dot project entry", () => {
+    expect(createCredentialGuard().isDangerousBashCommand(`rg x -g '*.json' '${project}/h.'`)).toBe(
+      true,
+    );
+  });
+  it.each(["h.", "h ", "missing"])("refuses Grep path %j", (path) => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.json", path } },
+      ),
+    ).toThrow();
+  });
+  it.each([
+    "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
+    "rg -n x ./kubernetes/applications/example-api --glob '*.yaml'",
+    "cd kubernetes/applications && rg -n x example-api --glob '*.yaml'",
+    "rg -n x -g '*.yaml'",
+    "env -C kubernetes rg -n x -g '*.yaml'",
+  ])("permits %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(false);
+  });
+  it("permits an absolute project root and Grep path", () => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(`rg x -g '*.yaml' '${project}/kubernetes'`)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.yaml", path: "kubernetes" } },
+      ),
+    ).not.toThrow();
+  });
+});
 
 // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
 const GENERIC_SECRET_VALUE = "my-super-" + "secret-password-12345-abcdef";
@@ -880,22 +994,28 @@ describe("credential guard recovery families", () => {
 });
 
 describe("Grep path and glob fields", () => {
-  it.each([".env*", "**/.env", "*.json", "*.key"])("refuses protected glob %s", (glob) => {
-    expect(() =>
-      createCredentialGuard().handleToolExecuteBefore(
-        { tool: "Grep" },
-        { args: { pattern: "example", glob } },
-      ),
-    ).toThrow();
-  });
-  it.each(["*.ts", "README.md", "!*.json"])("permits safe glob %s", (glob) => {
-    expect(() =>
-      createCredentialGuard().handleToolExecuteBefore(
-        { tool: "Grep" },
-        { args: { pattern: "example", glob } },
-      ),
-    ).not.toThrow();
-  });
+  it.each([".env*", "**/.env", "service-account*.json", "*.key"])(
+    "refuses protected glob %s",
+    (glob) => {
+      expect(() =>
+        createCredentialGuard().handleToolExecuteBefore(
+          { tool: "Grep" },
+          { args: { pattern: "example", glob } },
+        ),
+      ).toThrow();
+    },
+  );
+  it.each(["*.ts", "README.md", "!*.json", "*.json", "*.yaml", "*.yml", "*.toml"])(
+    "permits safe glob %s",
+    (glob) => {
+      expect(() =>
+        createCredentialGuard().handleToolExecuteBefore(
+          { tool: "Grep" },
+          { args: { pattern: "example", glob } },
+        ),
+      ).not.toThrow();
+    },
+  );
   it("refuses the protected directory itself", () => {
     expect(() =>
       createCredentialGuard().handleToolExecuteBefore(
@@ -903,5 +1023,24 @@ describe("Grep path and glob fields", () => {
         { args: { pattern: "example", path: "/repo/.ssh" } },
       ),
     ).toThrow();
+  });
+});
+
+describe("Grep config filter project containment", () => {
+  it.each(["~/.claude", "/users/test", "../other"])("refuses outside root %s", (path) => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.json", path } },
+      ),
+    ).toThrow();
+  });
+  it("permits an existing project root", () => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.yaml", path: "src" } },
+      ),
+    ).not.toThrow();
   });
 });

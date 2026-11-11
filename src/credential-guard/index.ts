@@ -8,7 +8,12 @@ import { parsePowerShell } from "./powershell";
 import { judge } from "./policy";
 import type { Decision, PolicyContext } from "./policy";
 import { buildRegistry, executableName } from "./registry";
-import { DEFAULT_ALLOWED_PATH_PATTERNS, isSensitivePath, normalizePath } from "./paths";
+import {
+  DEFAULT_ALLOWED_PATH_PATTERNS,
+  isSensitivePath,
+  isVisibleProjectEntry,
+  normalizePath,
+} from "./paths";
 
 export { findSecretMatches } from "#shared/credential-patterns";
 export { redactSensitiveText } from "#shared/content-security";
@@ -199,6 +204,17 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     additionalAllowedPaths: config?.additionalAllowedPaths?.map((p) => new RegExp(p)),
     dangerousPatterns: config?.additionalDangerousBashPatterns?.map((p) => new RegExp(p)),
     chainCopyDestinations: config?.chainCopyDestinations,
+    proveProjectPath: (path) => {
+      try {
+        return isVisibleProjectEntry(
+          realpathSync(context.cwd),
+          realpathSync(path),
+          process.platform,
+        );
+      } catch {
+        return false;
+      }
+    },
     proveCopyDestination: (path, source) =>
       proveCopyDestination(path, source, config?.chainCopyDestinations ?? []),
   };
@@ -293,7 +309,10 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           if (value === undefined) continue;
           if (typeof value !== "string") throw new Error("Invalid Grep filter");
           const quoted = "'" + value.replaceAll("'", "'\\''") + "'";
-          const checked = decision("rg " + option + " " + quoted + " -- example");
+          const quotedPath = "'" + path.replaceAll("'", "'\\''") + "'";
+          const checked = decision(
+            "rg " + option + " " + quoted + " -- example" + (path ? " " + quotedPath : ""),
+          );
           if (checked.kind !== "pass")
             throw new Error("Access blocked: Grep filter can select a sensitive file.");
         }

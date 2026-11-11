@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseBash } from "./bash";
 import { parsePowerShell } from "./powershell";
 import { wordText } from "./ir";
-import { isSensitivePath, normalizePath } from "./paths";
+import { isSensitivePath, isVisibleProjectEntry, normalizePath } from "./paths";
 import {
   EXECUTABLES,
   buildRegistry,
@@ -16,6 +16,7 @@ import { judge } from "./policy";
 import type { PolicyContext } from "./policy";
 
 const context: PolicyContext = {
+  proveProjectPath: (path) => path === "/repo" || path.startsWith("/repo/"),
   cwd: "/repo",
   home: "/users/test",
   approvedNames: new Set(["HERDR_PANE_ID", "HOME", "USERPROFILE"]),
@@ -378,13 +379,60 @@ describe("agent configuration boundaries", () => {
     });
   });
   it.each([
-    ["rg -n x --glob '*.json' src", "glob does not end in a code or prose extension"],
     ["rg -n x -g '*.env' src", "glob does not end in a code or prose extension"],
     ["cp *.txt /tmp/dir/", "glob does not end in a code or prose extension"],
     ['cat "$OLDPWD/README.md"', "path is not a finite literal"],
   ])("names why %s is an opaque path", (command, detail) => {
     expect(bash(command)).toMatchObject({
       findings: expect.arrayContaining([expect.objectContaining({ rule: "opaque-path", detail })]),
+    });
+  });
+  it.each([
+    "rg -n x src",
+    "rg -n x --glob '*.yaml' src",
+    "rg -n x --iglob='*.yml' src",
+    "rg -n x -g'*.json' src",
+    "rg -n x --glob '*.toml' src",
+    "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
+  ])("allows config search filters in relative roots %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+  it.each([
+    "rg -n x -g '*.json' ~/.claude",
+    "rg -n x -g '*.json' /Users/dev",
+    "rg -n x -g '*.yaml' ../other",
+    "rg -n x -g '*.json' .secrets",
+    "rg x --type-add 'k:*.json' -tk .",
+    "rg x -- -g '*.json'",
+    "cd ~/.aws && rg x -g '*.json'",
+  ])("preserves base refusal outside config filter roots %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it("allows config filters without a root", () => {
+    expect(bash("rg -n x -g '*.yaml'").kind).toBe("pass");
+  });
+  it("retains the base limit that ignored service-account JSON files in a repo can be searched", () => {
+    expect(bash("rg --no-ignore x .").kind).toBe("pass");
+  });
+  it.each([
+    "rg x templates/*migrat*",
+    "cat ~/.docker/*.json",
+    "rg x ~/.config/gh/*.yml",
+    "rg x --glob '~/.docker/*.json'",
+    "cat *.yaml",
+    "rg x *.json",
+  ])("preserves secret and positional glob refusals %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "rg x --glob '.env*'",
+    "rg x --glob '*.pem'",
+    "rg x --glob '*.key'",
+    "rg x --glob 'service-account*.json'",
+    "rg x --glob '{*.yaml,.env*}'",
+  ])("refuses sensitive config filter %s", (command) => {
+    expect(bash(command)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "sensitive-path" })]),
     });
   });
   it("allows a glob that ends in a code or prose extension", () => {
@@ -2562,5 +2610,198 @@ describe("named path roles", () => {
   });
   it("still protects explicit credential directories added by cwd normalization", () => {
     expect(bash("cat config", { ...context, cwd: "/repo/.aws" }).kind).not.toBe("pass");
+  });
+});
+
+describe("config filters require plain project paths", () => {
+  it("keeps the base refusal without filesystem proof", () => {
+    expect(bash("rg x -g '*.json'", { ...context, proveProjectPath: undefined }).kind).not.toBe(
+      "pass",
+    );
+  });
+  it("does not treat a Windows drive root as a project above home", () => {
+    expect(
+      bash("rg x -g '*.json'", {
+        ...context,
+        cwd: "C:/",
+        home: "C:/Users/dev",
+        proveProjectPath: () => true,
+      }).kind,
+    ).not.toBe("pass");
+  });
+  it.each([
+    "rg x -g '*.json' ~dev",
+    "rg x -g '*.json' -- ~test",
+    "rg x -g '*.json' ~1",
+    "cd ~/.claude && cd /repo && rg x -g '*.json' ~-",
+    "cd ~test && rg x -g '*.json'",
+    "env -C ~test rg x -g '*.json'",
+    "chdir ~/.claude && rg x -g '*.json'",
+    "chdir ~/.docker && cat config.json",
+    "pushd sub && rg x -g '*.json'",
+    "cd repo users/test && rg x -g '*.json'",
+    "cd && rg x -g '*.json'",
+    "ln -s ~ h && rg x -g '*.json' h",
+    "rg -L x -g '*.json' sub",
+    "rg --follow x -g '*.json' sub",
+  ])("retains the base refusal for %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "cd ../../.. && rg x -g '*.json'",
+    "Set-Location C:/../Users/dev; rg x -g '*.json'",
+    "Set-Location FileSystem::C:/Users/dev; rg x -g '*.json'",
+    "cd C:.. && rg x -g '*.json'",
+    "Set-Location -Path sub; rg x -g '*.json'",
+  ])("retains Windows refusal for %s", (command) => {
+    const options = { ...context, cwd: "C:/Users/dev/repo", home: "C:/Users/dev" };
+    expect(judge(parsePowerShell(command), options).kind).not.toBe("pass");
+    expect(bash(command, options).kind).not.toBe("pass");
+  });
+});
+
+describe("config filter real paths compare with the host path rules", () => {
+  it.each([
+    ["C:\\work\\repo", "C:\\work\\repo"],
+    ["C:\\work\\repo", "C:\\work\\repo\\kubernetes\\applications"],
+    ["C:\\work\\repo", "c:\\work\\repo\\sub"],
+    ["d:\\a\\repo", "D:\\a\\repo\\sub"],
+    ["C:\\work\\repo", "C:\\work\\repo/sub"],
+  ])("permits the Windows project entry %s -> %s", (project, entry) => {
+    expect(isVisibleProjectEntry(project, entry, "win32")).toBe(true);
+  });
+  it.each([
+    ["C:\\work\\repo", "C:\\work\\repo\\.hidden"],
+    ["C:\\work\\repo", "C:\\work\\repo\\sub\\.git"],
+    ["C:\\work\\repo", "C:\\work\\repo2"],
+    ["C:\\work\\repo", "C:\\work"],
+    ["C:\\work\\repo", "D:\\work\\repo\\sub"],
+    ["C:\\work\\repo", "C:\\work\\Repo\\sub"],
+    ["C:\\work\\repo", "\\\\?\\C:\\work\\repo\\sub"],
+  ])("refuses the Windows entry outside a visible project %s -> %s", (project, entry) => {
+    expect(isVisibleProjectEntry(project, entry, "win32")).toBe(false);
+  });
+  it.each([
+    ["/repo", "/repo\\evil"],
+    ["/repo", "/repo\\.hidden"],
+    ["/repo", "/repo/.hidden"],
+    ["/repo", "/Repo/sub"],
+  ])("keeps POSIX backslashes and case literal %s -> %s", (project, entry) => {
+    expect(isVisibleProjectEntry(project, entry, "linux")).toBe(false);
+    expect(isVisibleProjectEntry(project, entry, "darwin")).toBe(false);
+  });
+  it("permits a POSIX project entry", () => {
+    expect(isVisibleProjectEntry("/repo", "/repo/sub", "linux")).toBe(true);
+  });
+});
+
+describe("config filters prove the spelling the shell opens", () => {
+  const caseSensitive: PolicyContext = {
+    ...context,
+    proveProjectPath: (path) => ["/repo", "/repo/link", "/repo/h", "/repo/sub"].includes(path),
+  };
+  it.each([
+    "rg x -g '*.json' Link",
+    "cd Link && rg x -g '*.json'",
+    "rg x -g '*.json' h.",
+    "rg x -g '*.json' 'h '",
+    "rg x -g '*.json' 'sub/h. .'",
+    "cd h. && rg x -g '*.json'",
+    "cd 'h ' && rg x -g '*.json'",
+    "env -C h. rg x -g '*.json'",
+    `sh -c "cd h. && rg x -g '*.json'"`,
+    "rg x -g '*.json' {sub,h.}",
+    "rg x -g '*.json' /repo/h.",
+  ])("refuses a spelling that differs from its normalized path: %s", (command) => {
+    expect(bash(command, caseSensitive).kind).not.toBe("pass");
+  });
+  it.each(["rg x -g '*.json' link", "cd sub && rg x -g '*.json'", "rg x -g '*.json' /repo/sub"])(
+    "permits the exact proven spelling %s",
+    (command) => {
+      expect(bash(command, caseSensitive).kind).toBe("pass");
+    },
+  );
+  it.each([
+    "cd -1 && rg x -g '*.json'",
+    "cd +1 && rg x -g '*.json'",
+    "cd +0 && rg x -g '*.json'",
+    "Pop-Location; rg x -g '*.json'",
+  ])("treats a directory stack change as an unproven cwd: %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+    expect(ps(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "~/.claude && rg x -g '*.json'",
+    "Downloads && rg x -g '*.json'",
+    "unknowncmd; rg x -g '*.json'",
+    "git checkout evil && rg x -g '*.json' sub",
+    "git stash pop && rg x -g '*.json' sub",
+    "git reset --hard evil && rg x -g '*.yaml' kubernetes",
+    "tar -xf t.tar && rg x -g '*.json' sub",
+    "(git checkout evil); rg x -g '*.json' sub",
+    "git checkout evil && cd sub && rg x -g '*.json'",
+    "sh -c 'git checkout evil' && rg x -g '*.json' sub",
+    "rg x -g '*.json' sub | git checkout evil",
+    "rg x -g '*.json' sub & git checkout evil",
+    "cat <(rg x -g '*.json' sub) <(git checkout evil)",
+    "git status && rg x -g '*.yaml' kubernetes",
+    "git bisect run rg x -g '*.json' sub",
+    "timeout 5 rg x -g '*.json' sub",
+    "nice rg x -g '*.json' sub",
+    "sudo rg x -g '*.json' sub",
+  ])("refuses a config search beside another command: %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "rg x -g '*.yaml' kubernetes; rg x -g '*.json' sub",
+    "cd kubernetes && cd applications && rg x -g '*.yaml'",
+  ])("permits searches and cd steps together: %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+  it.each([
+    "RIPGREP_CONFIG_PATH=rc rg x -g '*.json' .",
+    "export RIPGREP_CONFIG_PATH=rc; rg x -g '*.json' .",
+    "env RIPGREP_CONFIG_PATH=rc rg x -g '*.json' .",
+    "RIPGREP_CONFIG_PATH=rc; rg x -g '*.json' .",
+  ])("refuses a config filter under a command-set ripgrep config: %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+});
+
+describe("config filter resolved project containment", () => {
+  it.each([
+    "cd ~/.claude && rg x -g '*.json'",
+    "(cd ~/.claude; rg x -g '*.json')",
+    "env -C ~/.claude rg x -g '*.json'",
+    `bash -c 'cd ~ && rg x -g "*.json"'`,
+    "cd .. && rg x -g '*.json' other",
+    "cd .secrets && rg x -g '*.json'",
+  ])("retains the base refusal for %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it("retains the base refusal after PowerShell location changes", () => {
+    expect(ps("Set-Location ~/.claude; rg x -g '*.json'").kind).not.toBe("pass");
+  });
+  it.each(["C:/Users/dev", "C:", "C:sub", "%USERPROFILE%", "%APPDATA%"])(
+    "refuses Windows root %s",
+    (root) => {
+      expect(
+        bash("rg x -g '*.json' " + root, { ...context, cwd: "C:/repo", home: "C:/Users/dev" }).kind,
+      ).not.toBe("pass");
+    },
+  );
+  it.each(["/users/test", "/users", "/", "/users/test/.claude"])(
+    "refuses unsafe session cwd %s",
+    (cwd) => {
+      expect(bash("rg x -g '*.json'", { ...context, cwd }).kind).not.toBe("pass");
+    },
+  );
+  it.each([
+    "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
+    "rg -n x ./kubernetes/applications/example-api --glob '*.yaml'",
+    "cd kubernetes/applications && rg -n x example-api --glob '*.yaml'",
+    "rg -n x -g '*.yaml'",
+  ])("permits project search %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
   });
 });
