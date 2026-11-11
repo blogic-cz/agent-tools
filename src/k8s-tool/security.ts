@@ -163,39 +163,128 @@ const isOnlySecretResource = (resource: string) => resource.split(",").every(isS
 
 const readOnlyKubectlOperations = [...ALLOWED_KUBECTL_VERBS, "rollout status|history"];
 
-type KubectlOutputFormat =
-  | { _tag: "Default" }
-  | { _tag: "Invalid" }
-  | { _tag: "Format"; value: string };
+const prefixFlags = new Set(["-n", "--namespace", "--request-timeout", "--context"]);
+const secretValueFlags = new Set([
+  "-n",
+  "--namespace",
+  "-l",
+  "--selector",
+  "--field-selector",
+  "-L",
+  "--label-columns",
+  "--chunk-size",
+  "--request-timeout",
+  "-o",
+  "--output",
+]);
+const secretBooleanFlags = new Set([
+  "-A",
+  "--all-namespaces",
+  "--no-headers",
+  "--show-labels",
+  "--ignore-not-found",
+  "--show-kind",
+]);
+const rolloutValueFlags = new Set([
+  "-n",
+  "--namespace",
+  "--timeout",
+  "--revision",
+  "-l",
+  "--selector",
+  "--request-timeout",
+]);
 
-function kubectlOutputFormat(argv: string[], verbIndex: number): KubectlOutputFormat {
-  let format: string | undefined;
-  for (let i = verbIndex + 1; i < argv.length; i++) {
+function readFlag(
+  argv: string[],
+  index: number,
+  values: Set<string>,
+  booleans: Set<string>,
+): { next: number; flag: string; value?: string } | undefined {
+  const arg = argv[index];
+  if (!arg) return undefined;
+  const equal = arg.indexOf("=");
+  const exact = equal < 0 ? arg : arg.slice(0, equal);
+  if (booleans.has(exact)) {
+    if (equal >= 0 && !["true", "false"].includes(arg.slice(equal + 1))) return undefined;
+    return { next: index + 1, flag: exact };
+  }
+  let flag = exact;
+  let value = equal < 0 ? undefined : arg.slice(equal + 1);
+  if (!values.has(flag)) {
+    const short = arg.slice(0, 2);
+    if (arg.startsWith("--") || !values.has(short) || arg.length <= 2) return undefined;
+    flag = short;
+    value = arg.slice(2).replace(/^=/, "");
+  }
+  const next = value === undefined ? index + 2 : index + 1;
+  value ??= argv[index + 1];
+  if (!value || value.startsWith("-")) return undefined;
+  return { next, flag, value };
+}
+
+function closedReadArgs(argv: string[], start: number, rollout: boolean): boolean {
+  const values = new Set(rollout ? rolloutValueFlags : secretValueFlags);
+  if (rollout && argv[start - 1] === "history") {
+    values.add("-o");
+    values.add("--output");
+  }
+  const booleans = rollout ? new Set(["-w", "--watch"]) : secretBooleanFlags;
+  const operands: string[] = [];
+  let output: string | undefined;
+  for (let i = start; i < argv.length;) {
     const arg = argv[i];
-    if (arg === undefined) return { _tag: "Invalid" };
-    if (arg === "-o" || arg === "--output") {
-      if (format !== undefined || argv[i + 1] === undefined) return { _tag: "Invalid" };
-      format = argv[++i];
-    } else if (arg.startsWith("--output=")) {
-      if (format !== undefined) return { _tag: "Invalid" };
-      format = arg.slice("--output=".length);
-    } else if (arg.startsWith("-o") && !arg.startsWith("--") && arg.length > 2) {
-      if (format !== undefined) return { _tag: "Invalid" };
-      format = arg.slice(2).replace(/^=/, "");
+    if (!arg) return false;
+    if (!arg.startsWith("-")) {
+      operands.push(arg);
+      i++;
+      continue;
+    }
+    const parsed = readFlag(argv, i, values, booleans);
+    if (!parsed) return false;
+    if (parsed.flag === "-o" || parsed.flag === "--output") {
+      if (output !== undefined) return false;
+      output = parsed.value;
+    }
+    i = parsed.next;
+  }
+  if (!operands.length) return false;
+  const resourceType = rollout
+    ? /^(?:deployments?|deploy|daemonsets?|ds|statefulsets?|sts)(?:\.apps)?$/
+    : /^(?:secrets?)(?:\.v1\.?)?$/i;
+  let named = false;
+  for (const [i, operand] of operands.entries()) {
+    for (const part of operand.split(",")) {
+      const pieces = part.split("/");
+      if (pieces.length > 2) return false;
+      if (i === 0 || pieces.length === 2) {
+        if (!resourceType.test(pieces[0] ?? "")) return false;
+        if (pieces.length === 2) {
+          if (!/^[a-z0-9][a-z0-9.-]*$/.test(pieces[1] ?? "")) return false;
+          named = true;
+        }
+      } else {
+        if (!/^[a-z0-9][a-z0-9.-]*$/.test(part)) return false;
+        named = true;
+      }
     }
   }
-  return format === undefined ? { _tag: "Default" } : { _tag: "Format", value: format };
+  return rollout ? named : isSafeSecretOutput(output);
 }
 
 function isMetadataPath(path: string): boolean {
-  return /^\.metadata(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[(?:\*|\d+|'[^'{}\]]*'|"[^"{}\]]*")\])*$/.test(
-    path,
+  const leaf = path.replace(/^\.items\[\*\]/, "");
+  return (
+    /^\.(?:type|metadata\.(?:name|namespace|uid|resourceVersion|generation|creationTimestamp|deletionTimestamp|ownerReferences|finalizers))$/.test(
+      leaf,
+    ) || /^\.metadata\.labels(?:\.[A-Za-z0-9_-]+|\['[A-Za-z0-9_./-]+'\])?$/.test(leaf)
   );
 }
 
 function isMetadataJsonPath(format: string): boolean {
   let cursor = 0;
   let expressions = 0;
+  let range = false;
   while (cursor < format.length) {
     const open = format.indexOf("{", cursor);
     const strayClose = format.indexOf("}", cursor);
@@ -204,11 +293,18 @@ function isMetadataJsonPath(format: string): boolean {
     const close = format.indexOf("}", open + 1);
     const nestedOpen = format.indexOf("{", open + 1);
     if (close === -1 || (nestedOpen !== -1 && nestedOpen < close)) return false;
-    if (!isMetadataPath(format.slice(open + 1, close).trim())) return false;
+    const expression = format.slice(open + 1, close).trim();
+    if (expression === "range .items[*]" && !range) range = true;
+    else if (expression === "end" && range) range = false;
+    else if (
+      !isMetadataPath(expression) &&
+      !/^(?:"(?:[^"\\{}]|\\[nrt\\"])*"|'(?:[^'\\{}]|\\[nrt\\'])*')$/.test(expression)
+    )
+      return false;
     expressions++;
     cursor = close + 1;
   }
-  return expressions > 0;
+  return expressions > 0 && !range;
 }
 
 function splitCustomColumns(columns: string): string[] | undefined {
@@ -252,15 +348,10 @@ function isMetadataCustomColumns(format: string): boolean {
   );
 }
 
-function isSafeSecretOutput(argv: string[], verbIndex: number): boolean {
-  const output = kubectlOutputFormat(argv, verbIndex);
-  if (output._tag === "Default") return true;
-  if (output._tag === "Invalid") return false;
-  if (["wide", "name"].includes(output.value.toLowerCase())) return true;
-  if (output.value.startsWith("jsonpath="))
-    return isMetadataJsonPath(output.value.slice("jsonpath=".length));
-  if (output.value.startsWith("custom-columns="))
-    return isMetadataCustomColumns(output.value.slice("custom-columns=".length));
+function isSafeSecretOutput(output: string | undefined): boolean {
+  if (output === undefined || output === "wide" || output === "name") return true;
+  if (output.startsWith("jsonpath=")) return isMetadataJsonPath(output.slice(9));
+  if (output.startsWith("custom-columns=")) return isMetadataCustomColumns(output.slice(15));
   return false;
 }
 
@@ -322,9 +413,10 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
     return { allowed: false, command: cmd, reason: "Empty, malformed, or shell syntax command." };
   let verbIndex = 0;
   while (argv[verbIndex]?.startsWith("-")) {
-    const flag = argv[verbIndex];
-    if (flag !== undefined && flagsWithValues.has(flag)) verbIndex++;
-    verbIndex++;
+    const parsed = readFlag(argv, verbIndex, prefixFlags, new Set());
+    if (!parsed)
+      return { allowed: false, command: cmd, reason: "Unsupported flag before kubectl verb." };
+    verbIndex = parsed.next;
   }
   const verb = argv[verbIndex]?.toLowerCase();
   if (!verb) return { allowed: false, command: cmd, reason: "Empty kubectl command." };
@@ -343,7 +435,7 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
     );
   if (!(ALLOWED_KUBECTL_VERBS as readonly string[]).includes(verb) && !readOnlyRollout)
     return denied(
-      `Unknown kubectl verb '${verb}'. Only known read-only operations are allowed: ${ALLOWED_KUBECTL_VERBS.join(", ")}.`,
+      `Unknown kubectl verb '${verb}'. Only known read-only operations are allowed: ${readOnlyKubectlOperations.join(", ")}.`,
     );
   const controlledFlag = argv.find((arg) => {
     const flag = arg.split("=", 1)[0] ?? "";
@@ -354,6 +446,8 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
       `Cluster, authentication, and impersonation flag '${controlledFlag}' is controlled by the selected profile.`,
       "Remove the override and select the intended Kubernetes profile instead.",
     );
+  if (readOnlyRollout && !closedReadArgs(argv, verbIndex + 2, true))
+    return denied("Unsupported rollout resource or flag.");
   const subcommand = argv[verbIndex + 1]?.toLowerCase();
   if (
     verb === "config" &&
@@ -405,7 +499,7 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
   ) {
     const resourceIsOnlySecret =
       resource !== undefined && resource !== null && isOnlySecretResource(resource);
-    if (verb === "describe" || !resourceIsOnlySecret || !isSafeSecretOutput(argv, verbIndex))
+    if (verb === "describe" || !resourceIsOnlySecret || !closedReadArgs(argv, verbIndex + 1, false))
       return denied(
         "Kubernetes Secret reads and file-based reads are blocked because they may expose credentials.",
         "Use a targeted non-secret resource diagnostic instead.",
