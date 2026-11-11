@@ -2138,7 +2138,7 @@ describe("metadata leaves and rollout operands", () => {
     'get secret foo --show-managed-fields -o "jsonpath={.metadata.managedFields}"',
     "get secret foo --mystery value",
     "rollout status deploy/x --mystery value",
-    "--all-namespaces get pods",
+    "--mystery get pods",
     "rollout status deploy/x -v=9",
     "get secret foo -o jsonpath={.metadata.name} -o name",
   ])
@@ -2160,4 +2160,80 @@ describe("metadata leaves and rollout operands", () => {
     it(`allows ${cmd}`, () => {
       expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
     });
+});
+
+describe("round-two Kubernetes read refusals", () => {
+  for (const cmd of [
+    "-v 6 get pods",
+    "rollout history deploy/x -o jsonpath-file=/Users/x/.kube/config",
+    "rollout history deploy/x -o go-template-file=/Users/x/.kube/config",
+    "rollout history deploy/x -o templatefile=/Users/x/.kube/config",
+    "rollout history deploy/x -o custom-columns-file=/Users/x/.kube/config",
+    "rollout history deploy/x -o some-file-format=/Users/x/.kube/config",
+    "rollout history deploy/x -o jsonpath-as-json={.spec}",
+    "rollout history deploy/x -o custom-columns=NAME:.metadata.name",
+    "get pods -o jsonpath-file=/Users/x/.kube/config",
+    "config view -o go-template-file=/Users/x/.kube/config",
+    "get pods -o go-template-file=/Users/x/.kube/config --template={{.metadata.name}}",
+    "config view -o templatefile=/Users/x/.kube/config --template={{.metadata.name}}",
+    "get secrets. foo -o yaml",
+    "get secret. foo -o yaml",
+    "get Secret. foo -o yaml",
+    "get secrets./foo -o yaml",
+    "get pods,secrets. -A -o yaml",
+    "describe secrets. foo",
+    "wait --for=create secret/foo -o yaml",
+    "wait --for=jsonpath={.type}=Opaque secret/foo -o yaml",
+    "wait --for=create secret/foo -o jsonpath={.data}",
+    "wait --for=jsonpath={.type}=Opaque secrets --all -n x -o yaml",
+    "wait --for=jsonpath={.data.password}=guess secret/foo --timeout=1s",
+    "wait --for=create secrets -n x",
+    "wait --for=condition=Ready pod/x secrets",
+    "wait --for=condition=Ready pod/x -o yaml",
+    "wait --for=condition=Ready pod/x -o jsonpath={.metadata.name}",
+    "wait --for=condition=Ready pod/x --template={{.metadata.name}}",
+  ]) {
+    it(`refuses round-two read escape ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+
+  for (const cmd of [
+    "rollout status Deployment/x",
+    "rollout status Deployment.v1.apps/x",
+    "rollout status deployment.v1.apps/x",
+    "rollout history deploy/x -o json",
+    "rollout history deploy/x -o name",
+    "rollout history deploy/x -o jsonpath={.metadata.name}",
+    "rollout history deploy/x -o go-template={{.metadata.name}}",
+    "wait --for=condition=Ready pod/x",
+    "wait --for=condition=Ready pod/x --timeout=60s",
+    "wait --for=condition=Ready pod/x -o name",
+    "-A get pods",
+    "--all-namespaces get pods",
+    "-o wide get pods",
+    "-oyaml get pods",
+    "--output=wide get pods",
+    "-v=6 get pods",
+    "--v=6 get pods",
+    "-l app=x get pods",
+    "--selector=app=x get pods",
+    "-w get pods",
+    "--watch get pods",
+    "-n x -o wide get pods",
+    "--match-server-version get pods",
+    "--warnings-as-errors get pods",
+    "--log-flush-frequency=5s get pods",
+    "--disable-compression get pods",
+  ]) {
+    it(`allows round-two read ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+  }
+
+  it("hints that unsupported flags belong after the kubectl verb", () => {
+    const result = isKubectlCommandAllowed("--field-manager get pods");
+    expect(result.allowed).toBe(false);
+    expect(result.hint).toContain("after the verb");
+  });
 });

@@ -156,14 +156,34 @@ const flagsWithoutValues = new Set([
   "--watch",
   "--watch-only",
 ]);
-const isSecretResourceType = (resource: string) =>
-  /^(?:secrets?|secrets?\.[^/]+)(?:\/|$)/i.test(resource);
+const isSecretResourceType = (resource: string) => /^secrets?(?:\.[^/]*)?(?:\/|$)/i.test(resource);
 const isSecretResource = (resource: string) => resource.split(",").some(isSecretResourceType);
 const isOnlySecretResource = (resource: string) => resource.split(",").every(isSecretResourceType);
 
 const readOnlyKubectlOperations = [...ALLOWED_KUBECTL_VERBS, "rollout status|history"];
 
-const prefixFlags = new Set(["-n", "--namespace", "--request-timeout", "--context"]);
+const prefixValueFlags = new Set([
+  "-n",
+  "--namespace",
+  "--request-timeout",
+  "--context",
+  "-o",
+  "--output",
+  "-v",
+  "--v",
+  "-l",
+  "--selector",
+  "--log-flush-frequency",
+]);
+const prefixBooleanFlags = new Set([
+  "-A",
+  "--all-namespaces",
+  "-w",
+  "--watch",
+  "--match-server-version",
+  "--warnings-as-errors",
+  "--disable-compression",
+]);
 const secretValueFlags = new Set([
   "-n",
   "--namespace",
@@ -250,7 +270,7 @@ function closedReadArgs(argv: string[], start: number, rollout: boolean): boolea
   }
   if (!operands.length) return false;
   const resourceType = rollout
-    ? /^(?:deployments?|deploy|daemonsets?|ds|statefulsets?|sts)(?:\.apps)?$/
+    ? /^(?:deployments?|deploy|daemonsets?|ds|statefulsets?|sts)(?:(?:\.v1)?\.apps)?$/i
     : /^(?:secrets?)(?:\.v1\.?)?$/i;
   let named = false;
   for (const [i, operand] of operands.entries()) {
@@ -269,7 +289,12 @@ function closedReadArgs(argv: string[], start: number, rollout: boolean): boolea
       }
     }
   }
-  return rollout ? named : isSafeSecretOutput(output);
+  return rollout
+    ? named &&
+        (argv[start - 1]?.toLowerCase() !== "history" ||
+          output === undefined ||
+          isAllowedRolloutHistoryOutput(output))
+    : isSafeSecretOutput(output);
 }
 
 function isMetadataPath(path: string): boolean {
@@ -355,6 +380,79 @@ function isSafeSecretOutput(output: string | undefined): boolean {
   return false;
 }
 
+function isAllowedRolloutHistoryOutput(output: string): boolean {
+  return (
+    ["yaml", "json", "name"].includes(output) ||
+    output.startsWith("jsonpath=") ||
+    output.startsWith("go-template=")
+  );
+}
+
+function hasFileOutputFormat(argv: string[]): boolean {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) return true;
+    const value =
+      arg === "-o" || arg === "--output"
+        ? argv[i + 1]
+        : arg.startsWith("--output=")
+          ? arg.slice("--output=".length)
+          : arg.startsWith("-o") && arg.length > 2
+            ? arg.slice(2).replace(/^=/, "")
+            : undefined;
+    if (value?.toLowerCase().includes("file")) return true;
+  }
+  return false;
+}
+
+function hasSafeWaitOutput(argv: string[], start: number): boolean {
+  for (let i = start; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) return false;
+    const separate = arg === "-o" || arg === "--output" || arg === "--template";
+    const attached = arg.startsWith("--output=") || arg.startsWith("--template=");
+    const shortAttached = arg.startsWith("-o") && arg.length > 2;
+    if (!separate && !attached && !shortAttached) continue;
+    const value = separate
+      ? argv[++i]
+      : attached
+        ? arg.slice(arg.indexOf("=") + 1)
+        : arg.slice(2).replace(/^=/, "");
+    if (value !== "name") return false;
+  }
+  return true;
+}
+
+function hasWaitSecretOperand(argv: string[], start: number): boolean {
+  const values = new Set([
+    "-n",
+    "--namespace",
+    "-o",
+    "--output",
+    "--template",
+    "--for",
+    "--timeout",
+    "-l",
+    "--selector",
+    "--field-selector",
+    "--request-timeout",
+  ]);
+  const booleans = new Set(["-A", "--all-namespaces", "--all", "--ignore-not-found"]);
+  for (let i = start; i < argv.length;) {
+    const arg = argv[i];
+    if (arg === undefined) return true;
+    if (arg.startsWith("-")) {
+      const parsed = readFlag(argv, i, values, booleans);
+      if (!parsed) return true;
+      i = parsed.next;
+      continue;
+    }
+    if (isSecretResource(arg)) return true;
+    i++;
+  }
+  return false;
+}
+
 function resourceOperand(argv: string[], verbIndex: number): string | null | undefined {
   let flagsEnded = false;
   for (let i = verbIndex + 1; i < argv.length; i++) {
@@ -413,9 +511,21 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
     return { allowed: false, command: cmd, reason: "Empty, malformed, or shell syntax command." };
   let verbIndex = 0;
   while (argv[verbIndex]?.startsWith("-")) {
-    const parsed = readFlag(argv, verbIndex, prefixFlags, new Set());
+    if (argv[verbIndex] === "-v" || argv[verbIndex] === "--v")
+      return {
+        allowed: false,
+        command: cmd,
+        reason: "Unsupported flag before kubectl verb.",
+        hint: "Place flags after the verb.",
+      };
+    const parsed = readFlag(argv, verbIndex, prefixValueFlags, prefixBooleanFlags);
     if (!parsed)
-      return { allowed: false, command: cmd, reason: "Unsupported flag before kubectl verb." };
+      return {
+        allowed: false,
+        command: cmd,
+        reason: "Unsupported flag before kubectl verb.",
+        hint: "Place flags after the verb.",
+      };
     verbIndex = parsed.next;
   }
   const verb = argv[verbIndex]?.toLowerCase();
@@ -468,6 +578,14 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
       "Use cluster-info without dump.",
     );
   const resource = resourceOperand(argv, verbIndex);
+  if (verb === "wait") {
+    if (hasWaitSecretOperand(argv, verbIndex + 1))
+      return denied(
+        "Kubernetes Secret reads through wait are blocked because they may expose credentials.",
+      );
+    if (!hasSafeWaitOutput(argv, verbIndex + 1))
+      return denied("Only name output is allowed for kubectl wait.");
+  }
   const hasSensitiveInputFlag = argv.some(
     (arg) =>
       arg === "-f" ||
@@ -499,12 +617,17 @@ export function isKubectlCommandAllowed(cmd: string): K8sSecurityCheckResult {
   ) {
     const resourceIsOnlySecret =
       resource !== undefined && resource !== null && isOnlySecretResource(resource);
-    if (verb === "describe" || !resourceIsOnlySecret || !closedReadArgs(argv, verbIndex + 1, false))
+    const secretArgs = argv.filter((_, index) => index !== verbIndex);
+    if (verb === "describe" || !resourceIsOnlySecret || !closedReadArgs(secretArgs, 0, false))
       return denied(
         "Kubernetes Secret reads and file-based reads are blocked because they may expose credentials.",
         "Use a targeted non-secret resource diagnostic instead.",
       );
   }
+  if (hasFileOutputFormat(argv))
+    return denied(
+      "Kubernetes file-based output formats are blocked because they can read local files.",
+    );
   if (verb === "config" && argv.includes("view") && argv.some((arg) => /^--raw(?:=|$)/.test(arg)))
     return denied(
       "Raw kubeconfig output is blocked because it may expose credentials.",
