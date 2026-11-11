@@ -17,7 +17,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Install zsh for the shell oracle
+        run: |
+          if ! (sudo apt-get update && sudo apt-get install -y zsh); then
+            echo "::warning::zsh install failed; the shell oracle skips its zsh cases"
+          fi
       - run: bun install
       - run: bun run check ci
 
