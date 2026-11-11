@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseBash } from "./bash";
 import { parsePowerShell } from "./powershell";
 import { wordText } from "./ir";
-import { isSensitivePath, normalizePath } from "./paths";
+import { isSensitivePath, isVisibleProjectEntry, normalizePath } from "./paths";
 import {
   EXECUTABLES,
   buildRegistry,
@@ -2657,6 +2657,41 @@ describe("config filters require plain project paths", () => {
     const options = { ...context, cwd: "C:/Users/dev/repo", home: "C:/Users/dev" };
     expect(judge(parsePowerShell(command), options).kind).not.toBe("pass");
     expect(bash(command, options).kind).not.toBe("pass");
+  });
+});
+
+describe("config filter real paths compare with the host path rules", () => {
+  it.each([
+    ["C:\\work\\repo", "C:\\work\\repo"],
+    ["C:\\work\\repo", "C:\\work\\repo\\kubernetes\\applications"],
+    ["C:\\work\\repo", "c:\\work\\repo\\sub"],
+    ["d:\\a\\repo", "D:\\a\\repo\\sub"],
+    ["C:\\work\\repo", "C:\\work\\repo/sub"],
+  ])("permits the Windows project entry %s -> %s", (project, entry) => {
+    expect(isVisibleProjectEntry(project, entry, "win32")).toBe(true);
+  });
+  it.each([
+    ["C:\\work\\repo", "C:\\work\\repo\\.hidden"],
+    ["C:\\work\\repo", "C:\\work\\repo\\sub\\.git"],
+    ["C:\\work\\repo", "C:\\work\\repo2"],
+    ["C:\\work\\repo", "C:\\work"],
+    ["C:\\work\\repo", "D:\\work\\repo\\sub"],
+    ["C:\\work\\repo", "C:\\work\\Repo\\sub"],
+    ["C:\\work\\repo", "\\\\?\\C:\\work\\repo\\sub"],
+  ])("refuses the Windows entry outside a visible project %s -> %s", (project, entry) => {
+    expect(isVisibleProjectEntry(project, entry, "win32")).toBe(false);
+  });
+  it.each([
+    ["/repo", "/repo\\evil"],
+    ["/repo", "/repo\\.hidden"],
+    ["/repo", "/repo/.hidden"],
+    ["/repo", "/Repo/sub"],
+  ])("keeps POSIX backslashes and case literal %s -> %s", (project, entry) => {
+    expect(isVisibleProjectEntry(project, entry, "linux")).toBe(false);
+    expect(isVisibleProjectEntry(project, entry, "darwin")).toBe(false);
+  });
+  it("permits a POSIX project entry", () => {
+    expect(isVisibleProjectEntry("/repo", "/repo/sub", "linux")).toBe(true);
   });
 });
 

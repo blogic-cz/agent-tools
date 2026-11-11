@@ -111,7 +111,7 @@ describe("config searches prove the exact existing project path", () => {
     expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
   });
   it("refuses the absolute spelling of a trailing-dot project entry", () => {
-    expect(createCredentialGuard().isDangerousBashCommand(`rg x -g '*.json' ${project}/h.`)).toBe(
+    expect(createCredentialGuard().isDangerousBashCommand(`rg x -g '*.json' '${project}/h.'`)).toBe(
       true,
     );
   });
@@ -134,7 +134,7 @@ describe("config searches prove the exact existing project path", () => {
   });
   it("permits an absolute project root and Grep path", () => {
     const guard = createCredentialGuard();
-    expect(guard.isDangerousBashCommand(`rg x -g '*.yaml' ${project}/kubernetes`)).toBe(false);
+    expect(guard.isDangerousBashCommand(`rg x -g '*.yaml' '${project}/kubernetes'`)).toBe(false);
     expect(() =>
       guard.handleToolExecuteBefore(
         { tool: "Grep" },

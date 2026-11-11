@@ -8,7 +8,12 @@ import { parsePowerShell } from "./powershell";
 import { judge } from "./policy";
 import type { Decision, PolicyContext } from "./policy";
 import { buildRegistry, executableName } from "./registry";
-import { DEFAULT_ALLOWED_PATH_PATTERNS, isSensitivePath, normalizePath } from "./paths";
+import {
+  DEFAULT_ALLOWED_PATH_PATTERNS,
+  isSensitivePath,
+  isVisibleProjectEntry,
+  normalizePath,
+} from "./paths";
 
 export { findSecretMatches } from "#shared/credential-patterns";
 export { redactSensitiveText } from "#shared/content-security";
@@ -201,15 +206,10 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
     chainCopyDestinations: config?.chainCopyDestinations,
     proveProjectPath: (path) => {
       try {
-        const project = realpathSync(context.cwd);
-        const prefix = project.endsWith("/") ? project : project + "/";
-        const resolved = realpathSync(path);
-        return (
-          (resolved === project || resolved.startsWith(prefix)) &&
-          resolved
-            .slice(project.length)
-            .split("/")
-            .every((segment) => !segment.startsWith("."))
+        return isVisibleProjectEntry(
+          realpathSync(context.cwd),
+          realpathSync(path),
+          process.platform,
         );
       } catch {
         return false;

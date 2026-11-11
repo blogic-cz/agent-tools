@@ -56,6 +56,26 @@ export function normalizePath(path: string, home = "~", cwd = "."): string {
     value = `${cwd.replace(/\\/g, "/")}/${value}`;
   return posix.normalize(value).toLowerCase();
 }
+export function isVisibleProjectEntry(
+  project: string,
+  entry: string,
+  platform: NodeJS.Platform,
+): boolean {
+  const spelling = (path: string) =>
+    platform === "win32"
+      ? path.replace(/\\/g, "/").replace(/^[a-z](?=:)/, (drive) => drive.toUpperCase())
+      : path;
+  const root = spelling(project);
+  const resolved = spelling(entry);
+  const prefix = root.endsWith("/") ? root : root + "/";
+  return (
+    (resolved === root || resolved.startsWith(prefix)) &&
+    resolved
+      .slice(root.length)
+      .split("/")
+      .every((segment) => !segment.startsWith("."))
+  );
+}
 function matches(pattern: RegExp, value: string): boolean {
   return new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")).test(value);
 }
