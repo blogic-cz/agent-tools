@@ -118,9 +118,6 @@ const missingVpnServiceError = (key: string, driver: ResolvedVpnDriver) => {
   });
 };
 
-const observedVpnStatus = (status: VpnStatus): boolean | undefined =>
-  status === "missing-service" ? undefined : status;
-
 const runStatusBefore = <E>(
   driver: ResolvedVpnDriver,
   deadline: number,
@@ -653,7 +650,11 @@ const acquireVpn = <E>(
                 continue;
               }
               const connected = yield* runStatusBefore(driver, connectDeadline, runCommand);
-              store.reconcileOperation(snapshot, observedVpnStatus(connected), Date.now());
+              if (connected === "missing-service") {
+                store.reconcileOperation(snapshot, undefined, Date.now());
+                return yield* fail(missingVpnServiceError(key, driver));
+              }
+              store.reconcileOperation(snapshot, connected, Date.now());
               continue;
             }
             const sleepRemainingMs = operationDeadline - Date.now();

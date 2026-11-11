@@ -650,6 +650,38 @@ describe("VpnStore", () => {
     });
   });
 
+  test("missing service confirms disconnected after stop", async () => {
+    if (driver.type !== "macos-scutil") return;
+
+    const runtimeRoot = root();
+    const store = VpnStore.open(driver, { root: runtimeRoot, now: 0 });
+    const held = makeManaged(store);
+    store.releaseLease({ ...held, idleDisconnectMs: 0, now: 10 });
+    let clock = 10;
+    const commands: Array<"status" | "stop"> = [];
+    await stopWhenIdle(
+      store,
+      { ...init(runtimeRoot, held.leaseId, held.guardianId), disconnectTimeoutMs: 10 },
+      (action) => {
+        commands.push(action);
+        clock += 6;
+        return Promise.resolve(
+          action === "stop"
+            ? { stdout: "", stderr: "", exitCode: 0 }
+            : { stdout: "No service\n", stderr: "", exitCode: 1 },
+        );
+      },
+      () => clock,
+    );
+
+    expect(commands).toEqual(["stop", "status"]);
+    expect(store.snapshot()).toMatchObject({
+      lifecycle: "DOWN",
+      evidence: "VPN stop confirmed disconnected.",
+    });
+    store.close();
+  });
+
   test("starts no command when deadline expires before stop", async () => {
     const runtimeRoot = root();
     const store = VpnStore.open(driver, { root: runtimeRoot, now: 0 });
@@ -2091,6 +2123,60 @@ describe("runWithProfilePrerequisites", () => {
     expect(commands).toEqual([statusLabel()]);
     const store = VpnStore.open(driver, { root: runtimeRoot });
     expect(store.snapshot().lifecycle).toBe("UNKNOWN");
+    store.close();
+  });
+
+  test("stale CHECKING preserves the missing-service refusal when the next status call fails", async () => {
+    if (driver.type !== "macos-scutil") return;
+
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    const deadPid = 2_147_483_647;
+    expect(() => process.kill(deadPid, 0)).toThrow();
+    const staleStore = VpnStore.open(driver, { root: runtimeRoot, now: 0 });
+    staleStore.reserveLease({
+      leaseId: "dead-owner",
+      guardianId: "dead-guardian",
+      ownerPid: deadPid,
+      cleanup: "stop-if-started",
+      now: 1,
+    });
+    expect(staleStore.claimCheck("stale-check", "stale-token", deadPid, 2)).toBeDefined();
+    staleStore.close();
+
+    const commands: string[] = [];
+    const result = await Effect.runPromise(
+      Effect.result(
+        runWithProfilePrerequisites(
+          runtimeConfig(),
+          { vpn: "work" },
+          (_command, label) => {
+            commands.push(label);
+            return commands.length === 1
+              ? Effect.succeed({ stdout: "No service\n", stderr: "", exitCode: 1 })
+              : Effect.fail(new Error("status failed"));
+          },
+          Effect.void,
+          { runGuardianInProcess: true },
+        ),
+      ),
+    );
+
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.message).toContain(
+        'VPN service "ExampleVPN" is not present in macOS Network services.',
+      );
+      expect(result.failure.hint).toContain("Add or connect the VPN service");
+    }
+    expect(commands).toEqual([statusLabel()]);
+    const store = VpnStore.open(driver, { root: runtimeRoot });
+    expect(store.snapshot()).toMatchObject({
+      lifecycle: "UNKNOWN",
+      operationId: null,
+      pendingLeases: 0,
+      activeLeases: 0,
+    });
     store.close();
   });
 

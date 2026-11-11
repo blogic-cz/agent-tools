@@ -93,7 +93,7 @@ export async function stopWhenIdle(
           }
           const status = await runCommand("status", statusRemaining);
           const connected = parseVpnStatus(init.driver, status);
-          if (connected === false) return true;
+          if (connected === false || connected === "missing-service") return true;
           if (connected === undefined) {
             return status.exitCode === 0
               ? "VPN status output after stop was unparseable; ownership is unknown."
