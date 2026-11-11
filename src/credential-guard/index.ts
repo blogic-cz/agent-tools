@@ -203,32 +203,14 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
       try {
         const project = realpathSync(context.cwd);
         const prefix = project.endsWith("/") ? project : project + "/";
-        let candidate = path;
-        for (;;) {
-          try {
-            const resolved = realpathSync(candidate);
-            return (
-              (resolved === project || resolved.startsWith(prefix)) &&
-              resolved
-                .slice(project.length)
-                .split("/")
-                .every((segment) => !segment.startsWith("."))
-            );
-          } catch (error) {
-            if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT")
-              return false;
-            try {
-              lstatSync(candidate);
-              return false;
-            } catch (missing) {
-              if (!(missing instanceof Error) || !("code" in missing) || missing.code !== "ENOENT")
-                return false;
-            }
-            const parent = posix.dirname(candidate);
-            if (parent === candidate) return false;
-            candidate = parent;
-          }
-        }
+        const resolved = realpathSync(path);
+        return (
+          (resolved === project || resolved.startsWith(prefix)) &&
+          resolved
+            .slice(project.length)
+            .split("/")
+            .every((segment) => !segment.startsWith("."))
+        );
       } catch {
         return false;
       }

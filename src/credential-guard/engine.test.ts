@@ -2660,6 +2660,79 @@ describe("config filters require plain project paths", () => {
   });
 });
 
+describe("config filters prove the spelling the shell opens", () => {
+  const caseSensitive: PolicyContext = {
+    ...context,
+    proveProjectPath: (path) => ["/repo", "/repo/link", "/repo/h", "/repo/sub"].includes(path),
+  };
+  it.each([
+    "rg x -g '*.json' Link",
+    "cd Link && rg x -g '*.json'",
+    "rg x -g '*.json' h.",
+    "rg x -g '*.json' 'h '",
+    "rg x -g '*.json' 'sub/h. .'",
+    "cd h. && rg x -g '*.json'",
+    "cd 'h ' && rg x -g '*.json'",
+    "env -C h. rg x -g '*.json'",
+    `sh -c "cd h. && rg x -g '*.json'"`,
+    "rg x -g '*.json' {sub,h.}",
+    "rg x -g '*.json' /repo/h.",
+  ])("refuses a spelling that differs from its normalized path: %s", (command) => {
+    expect(bash(command, caseSensitive).kind).not.toBe("pass");
+  });
+  it.each(["rg x -g '*.json' link", "cd sub && rg x -g '*.json'", "rg x -g '*.json' /repo/sub"])(
+    "permits the exact proven spelling %s",
+    (command) => {
+      expect(bash(command, caseSensitive).kind).toBe("pass");
+    },
+  );
+  it.each([
+    "cd -1 && rg x -g '*.json'",
+    "cd +1 && rg x -g '*.json'",
+    "cd +0 && rg x -g '*.json'",
+    "Pop-Location; rg x -g '*.json'",
+  ])("treats a directory stack change as an unproven cwd: %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+    expect(ps(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "~/.claude && rg x -g '*.json'",
+    "Downloads && rg x -g '*.json'",
+    "unknowncmd; rg x -g '*.json'",
+    "git checkout evil && rg x -g '*.json' sub",
+    "git stash pop && rg x -g '*.json' sub",
+    "git reset --hard evil && rg x -g '*.yaml' kubernetes",
+    "tar -xf t.tar && rg x -g '*.json' sub",
+    "(git checkout evil); rg x -g '*.json' sub",
+    "git checkout evil && cd sub && rg x -g '*.json'",
+    "sh -c 'git checkout evil' && rg x -g '*.json' sub",
+    "rg x -g '*.json' sub | git checkout evil",
+    "rg x -g '*.json' sub & git checkout evil",
+    "cat <(rg x -g '*.json' sub) <(git checkout evil)",
+    "git status && rg x -g '*.yaml' kubernetes",
+    "git bisect run rg x -g '*.json' sub",
+    "timeout 5 rg x -g '*.json' sub",
+    "nice rg x -g '*.json' sub",
+    "sudo rg x -g '*.json' sub",
+  ])("refuses a config search beside another command: %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "rg x -g '*.yaml' kubernetes; rg x -g '*.json' sub",
+    "cd kubernetes && cd applications && rg x -g '*.yaml'",
+  ])("permits searches and cd steps together: %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+  it.each([
+    "RIPGREP_CONFIG_PATH=rc rg x -g '*.json' .",
+    "export RIPGREP_CONFIG_PATH=rc; rg x -g '*.json' .",
+    "env RIPGREP_CONFIG_PATH=rc rg x -g '*.json' .",
+    "RIPGREP_CONFIG_PATH=rc; rg x -g '*.json' .",
+  ])("refuses a config filter under a command-set ripgrep config: %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+});
+
 describe("config filter resolved project containment", () => {
   it.each([
     "cd ~/.claude && rg x -g '*.json'",

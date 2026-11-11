@@ -72,8 +72,9 @@ Bun async filesystem APIs are preferred throughout the project. Synchronous `nod
 
 `lstatSync` and `realpathSync` are also permitted in the credential guard's copy-destination proof in `src/credential-guard/index.ts` when `chainCopyDestinations` is non-empty. The guard API is synchronous. This proof refuses filesystem errors, symlinks, and paths outside the configured directories.
 
-These APIs are also permitted in the config-filter project-path proof in that module.
-The proof follows existing paths and refuses filesystem errors and paths outside the real project directory.
+`realpathSync` is also permitted in the config-filter project-path proof in that module.
+The proof resolves the exact path the shell opens and refuses missing paths, other filesystem
+errors, and paths outside the real project directory.
 
 Asynchronous `node:fs/promises` is permitted in modules covered by the Vitest suite.
 Vitest runs under Bun. Tests inject process and IPC boundaries and never launch real zsh.

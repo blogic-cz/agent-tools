@@ -72,7 +72,7 @@ export type Value =
 type Scope = {
   readonly bindings: ReadonlyMap<string, Value>;
   readonly cwd: Value;
-  readonly configCwdProven: boolean;
+  readonly configCwd: string | undefined;
   readonly positional: readonly Value[] | null;
   readonly written: ReadonlyMap<string, Value>;
   readonly exported: ReadonlySet<string>;
@@ -194,7 +194,7 @@ function merge(a: Scope | null, b: Scope | null): Scope | null {
     written,
     exported: new Set([...a.exported, ...b.exported]),
     cwd: join(a.cwd, b.cwd),
-    configCwdProven: a.configCwdProven && b.configCwdProven,
+    configCwd: a.configCwd === b.configCwd ? a.configCwd : undefined,
     dirtyStartup: [...new Set([...a.dirtyStartup, ...b.dirtyStartup])],
   };
 }
@@ -211,7 +211,7 @@ function stateKey(scope: Scope): string {
   return JSON.stringify({
     bindings: [...scope.bindings].toSorted(([a], [b]) => a.localeCompare(b)),
     cwd: scope.cwd,
-    configCwdProven: scope.configCwdProven,
+    configCwd: scope.configCwd,
     dirty: scope.dirtyStartup,
     braceMode: scope.braceMode,
     exported: [...scope.exported].toSorted(),
@@ -249,7 +249,8 @@ function readTargets(command: Command): readonly string[] | null {
 }
 
 export function judge(script: Script | ParseError, context: PolicyContext): Decision {
-  let projectFilesystemUnproven = false;
+  let configSearches = 0;
+  let otherCommands = 0;
   const findings: Finding[] = [];
   let detected = false;
   let steps = 0;
@@ -711,35 +712,30 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
     }
     const project = normalizePath(context.cwd, context.home, context.cwd);
     const projectPrefix = project.endsWith("/") ? project : project + "/";
+    const rawProjectPrefix = context.cwd.endsWith("/") ? context.cwd : context.cwd + "/";
     const plainProjectPath = (text: string, cwd: string): string | undefined => {
+      const inProject = text === context.cwd || text.startsWith(rawProjectPrefix);
       const relative =
-        text === project
-          ? "."
-          : text.startsWith(projectPrefix)
-            ? text.slice(projectPrefix.length)
-            : text;
-      if (!relative || /^[\\/~$%]/.test(relative) || /[:\\$%]/.test(relative)) return undefined;
+        text === context.cwd ? "." : inProject ? text.slice(rawProjectPrefix.length) : text;
+      if (!relative || /^[\\/~$%+-]/.test(relative) || /[:\\$%]/.test(relative)) return undefined;
       if (
         relative
           .split("/")
-          .some((segment) => !segment || (segment.startsWith(".") && segment !== "."))
+          .some((segment) => !segment || (segment !== "." && /^\.|[. ]$/.test(segment)))
       )
         return undefined;
-      const path = normalizePath(
-        relative,
-        context.home,
-        text === project || text.startsWith(projectPrefix) ? project : cwd,
-      );
+      const path = posix.join(inProject ? context.cwd : cwd, relative);
       return context.proveProjectPath?.(path) === true ? path : undefined;
     };
-    let configCwdProven = scope.configCwdProven && !plan.remote;
-    if (plan.cwdOperands.length) {
-      const executable = executableName(first.texts[0] ?? "").toLowerCase();
-      configCwdProven &&=
-        plan.delta === "cd"
-          ? ["cd", "set-location"].includes(executable) && argv.length === 2
-          : executable === "env" && argv[1] === "-C" && plan.cwdOperands.length === 1;
-    }
+    const executable = executableName(first.texts[0] ?? "");
+    let configCwd = plan.remote ? undefined : scope.configCwd;
+    if (
+      plan.cwdOperands.length &&
+      !(plan.delta === "cd"
+        ? ["cd", "set-location"].includes(executable) && argv.length === 2
+        : executable === "env" && argv[1] === "-C" && plan.cwdOperands.length === 1)
+    )
+      configCwd = undefined;
     let invocationCwd = plan.remote ? literal("/") : scope.cwd;
     for (const operand of plan.cwdOperands) {
       const destination =
@@ -750,14 +746,11 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
         if (/^(?:env:|(?:microsoft\.powershell\.core[\\/])?environment::)/i.test(path))
           checkPath(destination, scope, span);
       const cwd = invocationCwd;
-      configCwdProven &&=
-        destination.kind === "literal" &&
-        destination.texts.length === 1 &&
-        cwd.kind === "literal" &&
-        cwd.texts.length === 1 &&
-        destination.texts.every((path) =>
-          cwd.texts.every((base) => plainProjectPath(path, base) !== undefined),
-        );
+      const target = destination.kind === "literal" ? destination.texts : [];
+      configCwd =
+        configCwd !== undefined && target.length === 1 && target[0] !== undefined
+          ? plainProjectPath(target[0], configCwd)
+          : undefined;
       invocationCwd =
         destination.kind === "literal" && cwd.kind === "literal"
           ? literal(
@@ -767,12 +760,10 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
             )
           : opaque(...mentions(destination));
     }
-    if (
-      executableName(first.texts[0] ?? "") === "ln" ||
-      plan.roles.some((operand) => operand.role === "write")
-    )
-      projectFilesystemUnproven = true;
-    const invocationScope = { ...scope, cwd: invocationCwd, configCwdProven };
+    const otherCommand = plan.delta === "none" && !(executable === "env" && plan.children.length);
+    if (otherCommand) otherCommands++;
+    let configSearch = false;
+    const invocationScope = { ...scope, cwd: invocationCwd, configCwd };
     if (executableName(first.texts[0] ?? "") === "git") {
       checkPath(invocationScope.cwd, invocationScope, span);
       checkPath(concat(invocationScope.cwd, literal("/")), invocationScope, span);
@@ -853,25 +844,21 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
       project.split("/").every((segment) => !segment.startsWith("."));
     const configFilterRoots =
       projectAllowsConfigFilters &&
-      configCwdProven &&
-      !projectFilesystemUnproven &&
+      configCwd !== undefined &&
+      !bindings.has(bindingName("RIPGREP_CONFIG_PATH", scope)) &&
       !argv.some((arg) => arg === "--follow" || /^-[^-]*L/.test(arg ?? "")) &&
-      invocationScope.cwd.kind === "literal" &&
-      invocationScope.cwd.texts.length === 1 &&
-      invocationScope.cwd.texts.every((cwd) => {
-        if (context.proveProjectPath?.(cwd) !== true) return false;
-        return plan.roles
-          .filter((operand) => operand.role === "path" || operand.role === "content")
-          .every((operand) => {
-            const root =
-              operand.literal !== undefined ? literal(operand.literal) : values[operand.index];
-            return (
-              root?.kind === "literal" &&
-              root.texts.length === 1 &&
-              root.texts.every((text) => plainProjectPath(text, cwd) !== undefined)
-            );
-          });
-      });
+      context.proveProjectPath?.(configCwd) === true &&
+      plan.roles
+        .filter((operand) => operand.role === "path" || operand.role === "content")
+        .every((operand) => {
+          const root =
+            operand.literal !== undefined ? literal(operand.literal) : values[operand.index];
+          return (
+            root?.kind === "literal" &&
+            root.texts.length === 1 &&
+            root.texts.every((text) => plainProjectPath(text, configCwd) !== undefined)
+          );
+        });
     for (const operand of plan.roles) {
       const value =
         operand.literal !== undefined
@@ -972,6 +959,11 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
             /^(?:--glob|--iglob)=|^-g./.test(argv[operand.index] ?? "")) &&
           alternatives !== null &&
           alternatives.every((pattern) => /^\*\.(?:yaml|yml|json|toml)$/i.test(pattern));
+        if (configFilter && !configSearch) {
+          configSearch = true;
+          configSearches++;
+          if (otherCommand) otherCommands--;
+        }
         checkPath(
           configFilter ? literal(...alternatives) : patternValue,
           invocationScope,
@@ -1252,7 +1244,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
           ...resultScope,
           bindings: directoryBindings,
           cwd: invocationScope.cwd,
-          configCwdProven,
+          configCwd,
         },
         failure: resultScope,
         stdout,
@@ -1797,7 +1789,7 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
     const scope: Scope = {
       bindings: new Map(),
       cwd: literal(normalizePath(context.cwd, context.home, "/")),
-      configCwdProven: true,
+      configCwd: context.cwd,
       positional: null,
       written: new Map(),
       exported: new Set(),
@@ -1806,6 +1798,13 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
       braceMode: "host",
     };
     foldList(script.body, scope, opaque(), 0);
+    if (configSearches && otherCommands)
+      emit(
+        "opaque-path",
+        "config filter search runs beside a command that can change project files",
+        script.span,
+        true,
+      );
     if (herdrSeen || context.chainCopyDestinations?.length) for (const prove of copyProofs) prove();
     checkConfigured(script.source, script.span);
   }

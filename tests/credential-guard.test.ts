@@ -1,6 +1,6 @@
 import { captureOutput } from "./helpers/capture-output";
 
-import { describe, expect, it, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, test, vi } from "vitest";
 import { mkdtemp, mkdir, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +57,7 @@ it("keeps config searches inside the real project across symlinks", async () => 
       expect(guard.isDangerousBashCommand(`rg x -g '*.json' ${path}`)).toBe(true);
       expect(guard.isDangerousBashCommand(`cd ${path} && rg x -g '*.json'`)).toBe(true);
     }
-    for (const path of ["sub", "safe", "missing", "./sub"]) {
+    for (const path of ["sub", "safe", "./sub"]) {
       expect(() =>
         guard.handleToolExecuteBefore(
           { tool: "Grep" },
@@ -71,6 +71,77 @@ it("keeps config searches inside the real project across symlinks", async () => 
     cwd.mockRestore();
     await rm(fixture, { recursive: true, force: true });
   }
+});
+
+describe("config searches prove the exact existing project path", () => {
+  let fixture = "";
+  let project = "";
+  let cwd: { mockRestore: () => void } | undefined;
+  beforeAll(async () => {
+    fixture = await mkdtemp(join(tmpdir(), "guard-spelling-"));
+    project = join(fixture, "repo");
+    const outside = join(fixture, "home");
+    await mkdir(join(project, "sub"), { recursive: true });
+    await mkdir(join(project, "kubernetes", "applications", "example-api"), { recursive: true });
+    await mkdir(outside);
+    await symlink(outside, join(project, "h."));
+    await symlink(outside, join(project, "h "));
+    await symlink(outside, join(project, "sub", "abs"));
+    cwd = vi.spyOn(process, "cwd").mockReturnValue(project);
+  });
+  afterAll(async () => {
+    cwd?.mockRestore();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
+  it.each([
+    "rg x -g '*.json' h.",
+    "rg x -g '*.json' 'h '",
+    "cd h. && rg x -g '*.json'",
+    "cd 'h ' && rg x -g '*.json'",
+    "env -C h. rg x -g '*.json'",
+    `sh -c "cd h. && rg x -g '*.json'"`,
+    "rg x -g '*.json' {sub,h.}",
+    "rg x -g '*.json' sub/abs.",
+    "rg x -g '*.json' nonexist",
+    "cd nonexist && rg x -g '*.json'",
+    "git checkout evil && rg x -g '*.json' newlink",
+    "tar -xf t.tar && rg x -g '*.json' newlink",
+  ])("refuses %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(true);
+  });
+  it("refuses the absolute spelling of a trailing-dot project entry", () => {
+    expect(createCredentialGuard().isDangerousBashCommand(`rg x -g '*.json' ${project}/h.`)).toBe(
+      true,
+    );
+  });
+  it.each(["h.", "h ", "missing"])("refuses Grep path %j", (path) => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.json", path } },
+      ),
+    ).toThrow();
+  });
+  it.each([
+    "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
+    "rg -n x ./kubernetes/applications/example-api --glob '*.yaml'",
+    "cd kubernetes/applications && rg -n x example-api --glob '*.yaml'",
+    "rg -n x -g '*.yaml'",
+    "env -C kubernetes rg -n x -g '*.yaml'",
+  ])("permits %s", (command) => {
+    expect(createCredentialGuard().isDangerousBashCommand(command)).toBe(false);
+  });
+  it("permits an absolute project root and Grep path", () => {
+    const guard = createCredentialGuard();
+    expect(guard.isDangerousBashCommand(`rg x -g '*.yaml' ${project}/kubernetes`)).toBe(false);
+    expect(() =>
+      guard.handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.yaml", path: "kubernetes" } },
+      ),
+    ).not.toThrow();
+  });
 });
 
 // eslint-disable-next-line eslint/no-useless-concat -- intentionally split to avoid credential guard self-detection
@@ -964,11 +1035,11 @@ describe("Grep config filter project containment", () => {
       ),
     ).toThrow();
   });
-  it("permits a project root", () => {
+  it("permits an existing project root", () => {
     expect(() =>
       createCredentialGuard().handleToolExecuteBefore(
         { tool: "Grep" },
-        { args: { pattern: "x", glob: "*.yaml", path: "kubernetes" } },
+        { args: { pattern: "x", glob: "*.yaml", path: "src" } },
       ),
     ).not.toThrow();
   });
