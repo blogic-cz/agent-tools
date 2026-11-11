@@ -83,12 +83,16 @@ function createMockProcess(result: ShellResult) {
 function createMockChildProcessSpawnerLayer(
   shellResponses: Record<string, ShellResult>,
   observedShellCommands?: Array<string>,
+  observedSpawnEnvironments?: Array<Record<string, string> | undefined>,
 ) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       const shellCommand = commandToShellString(command);
       observedShellCommands?.push(shellCommand);
+      if (command._tag === "StandardCommand" && command.command === "kubectl") {
+        observedSpawnEnvironments?.push(command.options.env as Record<string, string> | undefined);
+      }
 
       const response = shellResponses[shellCommand] ?? {
         stdout: "",
@@ -1711,6 +1715,11 @@ describe("kubectl command security", () => {
       "edit deployment web-app",
       "replace -f deployment.yaml",
       "rollout restart deployment web-app",
+      "rollout undo deployment web-app",
+      "rollout pause deployment web-app",
+      "rollout resume deployment web-app",
+      "rollout",
+      "rollout unknown deployment web-app",
       "set image deployment/web-app app=app:v2",
       "label pod my-pod env=prod",
       "annotate pod my-pod note=test",
@@ -1758,29 +1767,27 @@ describe("kubectl command security", () => {
         expect(result.verb).toBe(verb);
       });
     }
+
+    for (const cmd of [
+      "rollout status deployment/web-app",
+      "rollout history deployment/web-app",
+      "rollout history deployment/web-app --revision=2",
+    ]) {
+      it(`allows read-only rollout command '${cmd}'`, () => {
+        const result = isKubectlCommandAllowed(cmd);
+        expect(result.allowed).toBe(true);
+        expect(result.verb).toBe("rollout");
+      });
+    }
+
+    it("names read-only rollout subcommands in the refusal message", () => {
+      const result = isKubectlCommandAllowed("rollout restart deployment/web-app");
+      expect(result.reason).toContain("rollout status|history");
+    });
   });
 
   describe("isKubectlCommandAllowed - secret-bearing reads", () => {
     for (const cmd of [
-      "get secret app-credentials",
-      "get -- secrets",
-      "describe -- secret/app-credentials",
-      "get secrets -n my-ns",
-      "get secret/app-credentials",
-      "get -n my-ns secret app-credentials",
-      "get --namespace=my-ns secrets",
-      "get -A secrets",
-      "get --all-namespaces secret/app-credentials",
-      "get --sort-by .metadata.name secrets",
-      "get --chunk-size 100 secrets",
-      "get --template X secrets",
-      "get --subresource status secrets",
-      "get 'secret' app-credentials",
-      "get sec''ret app-credentials",
-      "get secret.v1 app-credentials",
-      "get pods,secrets",
-      "get pod/x secret/app-credentials",
-      "describe pod/x secret/app-credentials",
       "get --raw=/api/v1/namespaces/my-ns/secrets/app-credentials",
       "get --raw=/api/v1/namespaces/my-ns/secrets?limit=1",
       "get -f resource.yaml",
@@ -1790,16 +1797,68 @@ describe("kubectl command security", () => {
       "get -k overlays/prod",
       "get -koverlay",
       "get --kustomize=overlays/prod",
+      "get secret app-credentials -o yaml",
+      "get secrets -o json",
+      "get secret app-credentials -o go-template={{.metadata.name}}",
+      "get secret app-credentials -o go-template-file=/tmp/secret.tmpl",
+      "get secret app-credentials -o template={{.metadata.name}}",
+      "get secret app-credentials -o templatefile=/tmp/secret.tmpl",
+      "get secret app-credentials -o jsonpath-as-json={.metadata.name}",
+      "get secret app-credentials -o jsonpath={.data.password}",
+      "get secret app-credentials -o jsonpath={.stringData.password}",
+      "get secret app-credentials -o jsonpath={.kind}",
+      "get secret app-credentials -o jsonpath={..metadata.name}",
+      "get secret app-credentials -o jsonpath={.metadata.name}{.data.password}",
+      "get secret app-credentials -o custom-columns=NAME:.metadata.name,DATA:.data.password",
+      "get secret app-credentials -o custom-columns=NAME:.metadata.name,DATA:.stringData.password",
+      "get secret app-credentials -o custom-columns=KIND:.kind",
+      "get secret app-credentials -o \"custom-columns=NAME:.metadata.name,DATA:.data['password']\"",
+      "get secret app-credentials -o jsonpath={unknown expression}",
+      "get secret app-credentials -o jsonpath={.metadata.name",
+      "get secret app-credentials -o custom-columns=NAME:.metadata.name,INVALID:expression",
+      "get secret app-credentials -o custom-columns-file=/tmp/columns",
+      "get pods,secrets",
+      "get pod/x secret/app-credentials",
+      "get pods,secrets -o json",
+      "get pod/x secret/app-credentials -o json",
       "describe secret app-credentials",
       "describe secrets -n my-ns",
       "describe secret/app-credentials",
       "describe --namespace my-ns secret/app-credentials",
+      "describe -- secret/app-credentials",
+      "describe pod/x secret/app-credentials",
     ]) {
       it(`blocks '${cmd}'`, () => {
         const result = isKubectlCommandAllowed(cmd);
         expect(result.allowed).toBe(false);
         expect(result.reason).toContain("Secret reads");
         expect(result.hint).toContain("non-secret");
+      });
+    }
+
+    for (const cmd of [
+      "get secret app-credentials",
+      "get secrets -n my-ns",
+      "get secret/app-credentials",
+      "get secret.v1 app-credentials",
+      "get -n my-ns secret app-credentials",
+      "get --namespace=my-ns secrets",
+      "get -A secrets",
+      "get --all-namespaces secret/app-credentials",
+      "get secret app-credentials -o wide",
+      "get secrets -o name",
+      "get secret app-credentials -owide",
+      "get secret app-credentials -o=wide",
+      "get secrets --output=name",
+      "get secret app-credentials -o jsonpath={.metadata.creationTimestamp}",
+      "get secret app-credentials -o jsonpath=created:{.metadata.creationTimestamp}",
+      "get secret app-credentials --output=\"jsonpath={.metadata.labels['app']}\"",
+      "get secret app-credentials -o jsonpath={.metadata.name}{.metadata.creationTimestamp}",
+      "get secrets -o custom-columns=NAME:.metadata.name,CREATED:.metadata.creationTimestamp",
+      "get secret app-credentials --output=\"custom-columns=NAME:.metadata.name,LABEL:.metadata.labels['app']\"",
+    ]) {
+      it(`allows metadata-only Secret read '${cmd}'`, () => {
+        expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
       });
     }
 
@@ -1934,9 +1993,8 @@ describe("kubectl command security", () => {
       expect(result.reason).toContain("Unknown kubectl verb");
     });
 
-    it("handles leading flags (without value) before verb", () => {
-      // pure flags before verb are filtered out, verb is 'get'
-      const result = isKubectlCommandAllowed("--all-namespaces get pods");
+    it("handles allowed namespace flags before verb", () => {
+      const result = isKubectlCommandAllowed("--namespace x get pods");
       expect(result.allowed).toBe(true);
       expect(result.verb).toBe("get");
     });
@@ -2031,5 +2089,253 @@ describe("hasKubernetesConfig", () => {
 
   it("true when at least one kubernetes profile is configured", () => {
     expect(hasKubernetesConfig({ default: { clusterId: "example-k8s-dev" } })).toBe(true);
+  });
+});
+
+describe("closed read-only command allowlists", () => {
+  for (const cmd of [
+    "get secret foo --template={{.data}}",
+    "get secret foo --template {{.data}}",
+    "get --template X secrets",
+    "get Secrets.V1. foo --template={{.data}}",
+    "get --template X secrets",
+    "get secrets -Aoyaml",
+    "get secrets -Ao yaml",
+    "get secret foo -wo json",
+    "get secret foo -Ao=json",
+    "-o yaml get secret foo",
+    "-oyaml get secret foo",
+    "--output=yaml get secret foo",
+    "--template={{.data}} get secret foo",
+    "get secret foo does-not-exist -v=9",
+    "get secret foo --sort-by=.metadata.name -v=8",
+    "rollout status secret/foo -v=9",
+    "rollout status -f /etc/passwd",
+    "rollout history -f /Users/x/.kube/config",
+    "rollout status -k ./dir",
+    "rollout status secret/foo",
+    "get secret foo --kuberc=/private/tmp/kuberc",
+    "get secret foo --kuberc /private/tmp/kuberc",
+    "get secret foo --sort-by=.data.password",
+    "get secret -A --sort-by=.data.password -o name",
+    "--field-manager get rollout restart deployment/x",
+    "--field-manager get create namespace evil",
+    "-i get run --image=busybox --restart=Never",
+  ]) {
+    it(`refuses review repro ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+});
+
+describe("metadata leaves and rollout operands", () => {
+  for (const cmd of [
+    "get secret foo -o jsonpath={.metadata.annotations}",
+    "get secret foo -o jsonpath={.metadata}",
+    'get secret foo -o "jsonpath={.metadata.annotations[*]}"',
+    'get secret foo -o "jsonpath={.metadata[*]}"',
+    "get secret foo -o \"jsonpath={.metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']}\"",
+    'get secret foo -o "jsonpath={ .metadata.annotations }"',
+    "get secret foo -o custom-columns=A:.metadata.annotations",
+    "get secret foo -o custom-columns=A:.metadata",
+    'get secret foo -o "custom-columns=A:.metadata.annotations[*]"',
+    'get secret foo --show-managed-fields -o "jsonpath={.metadata.managedFields}"',
+    "get secret foo --mystery value",
+    "rollout status deploy/x --mystery value",
+    "--mystery get pods",
+    "rollout status deploy/x -v=9",
+    "get secret foo -o jsonpath={.metadata.name} -o name",
+  ])
+    it(`refuses ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  for (const cmd of [
+    "get secret example-credentials -n app-performance -o jsonpath={.metadata.creationTimestamp}",
+    "get secrets -n x",
+    "get secrets -o 'jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}'",
+    "get secrets -o 'jsonpath={.items[*].metadata.name}'",
+    "get secret foo -o 'custom-columns=NAME:.items[*].metadata.name,TYPE:.type'",
+    "rollout status deployment/example-api -n app-performance --timeout=10s",
+    "rollout history deploy/example-api -n x",
+    "rollout status ds.apps/example -w=false",
+    "rollout history statefulset.apps/example --revision=2 -o yaml",
+    "get secret foo --namespace=x -lapp=x -Lapp --show-labels --chunk-size=10",
+  ])
+    it(`allows ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+});
+
+describe("round-two Kubernetes read refusals", () => {
+  for (const cmd of [
+    "-v 6 get pods",
+    "rollout history deploy/x -o jsonpath-file=/Users/x/.kube/config",
+    "rollout history deploy/x -o go-template-file=/Users/x/.kube/config",
+    "rollout history deploy/x -o templatefile=/Users/x/.kube/config",
+    "rollout history deploy/x -o custom-columns-file=/Users/x/.kube/config",
+    "rollout history deploy/x -o some-file-format=/Users/x/.kube/config",
+    "rollout history deploy/x -o jsonpath-as-json={.spec}",
+    "rollout history deploy/x -o custom-columns=NAME:.metadata.name",
+    "get pods -o jsonpath-file=/Users/x/.kube/config",
+    "config view -o go-template-file=/Users/x/.kube/config",
+    "get pods -o go-template-file=/Users/x/.kube/config --template={{.metadata.name}}",
+    "config view -o templatefile=/Users/x/.kube/config --template={{.metadata.name}}",
+    "get secrets. foo -o yaml",
+    "get secret. foo -o yaml",
+    "get Secret. foo -o yaml",
+    "get secrets./foo -o yaml",
+    "get pods,secrets. -A -o yaml",
+    "describe secrets. foo",
+    "wait --for=create secret/foo -o yaml",
+    "wait --for=jsonpath={.type}=Opaque secret/foo -o yaml",
+    "wait --for=create secret/foo -o jsonpath={.data}",
+    "wait --for=jsonpath={.type}=Opaque secrets --all -n x -o yaml",
+    "wait --for=jsonpath={.data.password}=guess secret/foo --timeout=1s",
+    "wait --for=create secrets -n x",
+    "wait --for=condition=Ready pod/x secrets",
+    "wait --for=condition=Ready pod/x -o yaml",
+    "wait --for=condition=Ready pod/x -o jsonpath={.metadata.name}",
+    "wait --for=condition=Ready pod/x --template={{.metadata.name}}",
+  ]) {
+    it(`refuses round-two read escape ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+
+  for (const cmd of [
+    "rollout status Deployment/x",
+    "rollout status Deployment.v1.apps/x",
+    "rollout status deployment.v1.apps/x",
+    "rollout history deploy/x -o json",
+    "rollout history deploy/x -o name",
+    "rollout history deploy/x -o jsonpath={.metadata.name}",
+    "rollout history deploy/x -o go-template={{.metadata.name}}",
+    "wait --for=condition=Ready pod/x",
+    "wait --for=condition=Ready pod/x --timeout=60s",
+    "wait --for=condition=Ready pod/x -o name",
+  ]) {
+    it(`allows round-three read ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+  }
+
+  for (const cmd of [
+    "-o yaml wait --for=condition=Ready pod/x",
+    "-o jsonpath={.metadata.name} wait --for=condition=Ready pod/x",
+    "-A get pods",
+    "--all-namespaces get pods",
+    "-w get pods",
+    "--watch get pods",
+    "-w get proxy --address=0.0.0.0",
+  ]) {
+    it(`refuses round-three read ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+
+  for (const cmd of [
+    "get pods -Ao jsonpath-file=/etc/hosts",
+    "get pods -Aojsonpath-file=/etc/hosts",
+    "get pods -Ao=jsonpath-file=/etc/hosts",
+    "get pods -wo templatefile --template=/etc/hosts",
+    "get pods -Ro go-template-file --template=/etc/hosts",
+    "get pods -wAo custom-columns-file=/etc/hosts",
+  ]) {
+    it(`refuses short-cluster file output ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(false);
+    });
+  }
+
+  for (const cmd of [
+    "get pods -o 'jsonpath={.spec.securityContext.seccompProfile.type}'",
+    "get pods -o 'jsonpath={.spec.securityContext.appArmorProfile}'",
+    "get pods -o 'custom-columns=PROFILE:.spec.securityContext.seccompProfile.type'",
+    "get pods -o 'jsonpath={.data.logfile}'",
+  ]) {
+    it(`allows non-secret output containing file in data ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+  }
+
+  it.effect("disables default kuberc for every kubectl spawn", () => {
+    const observedSpawnEnvironments: Array<Record<string, string> | undefined> = [];
+    const observedShellCommands: Array<string> = [];
+    const selectedContextQuery = CONTEXT_VIEW_COMMAND;
+    const probeCommand =
+      "kubectl --context selected-context get --raw=/version --request-timeout=2000ms";
+
+    return Effect.gen(function* () {
+      const service = yield* K8sService;
+      yield* service.runKubectl("get pods", false, "selected");
+      expect(observedSpawnEnvironments.length).toBe(3);
+      expect(observedSpawnEnvironments.every((env) => env?.KUBECTL_KUBERC === "false")).toBe(true);
+    }).pipe(
+      Effect.provide(K8sService.layer),
+      Effect.provide(
+        createMockChildProcessSpawnerLayer(
+          {
+            [selectedContextQuery]: contextViewResult("selected-context", "selected-cluster"),
+            [probeCommand]: { stdout: '{"major":"1"}', stderr: "", exitCode: 0 },
+            "kubectl --context selected-context get pods": {
+              stdout: "pod-a\n",
+              stderr: "",
+              exitCode: 0,
+            },
+          },
+          observedShellCommands,
+          observedSpawnEnvironments,
+        ),
+      ),
+      Effect.provide(
+        Layer.succeed(ConfigService, {
+          kubernetes: {
+            selected: {
+              clusterId: "selected-cluster",
+              namespaces: { test: "selected" },
+              timeoutMs: 12345,
+            },
+          },
+        }),
+      ),
+    );
+  });
+
+  it("refuses a file output format before the verb", () => {
+    expect(isKubectlCommandAllowed("-o jsonpath-file=/etc/hosts get pods").allowed).toBe(false);
+  });
+
+  it("allows a non-file output format before the verb", () => {
+    expect(isKubectlCommandAllowed("-o jsonpath get pods").allowed).toBe(true);
+  });
+
+  it("reports an unsupported wait flag as a wait parse error", () => {
+    const result = isKubectlCommandAllowed("wait --for=condition=Ready pod/x -v=6");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).not.toContain("Secret");
+  });
+
+  for (const cmd of [
+    "-o wide get pods",
+    "-oyaml get pods",
+    "--output=wide get pods",
+    "-v=6 get pods",
+    "--v=6 get pods",
+    "-l app=x get pods",
+    "--selector=app=x get pods",
+    "-n x -o wide get pods",
+    "--match-server-version get pods",
+    "--warnings-as-errors get pods",
+    "--log-flush-frequency=5s get pods",
+    "--disable-compression get pods",
+  ]) {
+    it(`allows round-three root pre-verb flag ${cmd}`, () => {
+      expect(isKubectlCommandAllowed(cmd).allowed).toBe(true);
+    });
+  }
+
+  it("hints that unsupported flags belong after the kubectl verb", () => {
+    const result = isKubectlCommandAllowed("--field-manager get pods");
+    expect(result.allowed).toBe(false);
+    expect(result.hint).toContain("after the verb");
   });
 });
