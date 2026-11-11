@@ -2057,6 +2057,70 @@ describe("runWithProfilePrerequisites", () => {
     store.close();
   });
 
+  test("No service reports a missing macOS VPN service instead of a missing scutil tool", async () => {
+    if (driver.type !== "macos-scutil") return;
+
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    await poisonUnknown(runtimeRoot);
+
+    const commands: string[] = [];
+    const result = await Effect.runPromise(
+      Effect.result(
+        runWithProfilePrerequisites(
+          runtimeConfig(),
+          { vpn: "work" },
+          (_command, label) =>
+            Effect.sync(() => {
+              commands.push(label);
+              return { stdout: "No service\n", stderr: "", exitCode: 1 };
+            }),
+          Effect.void,
+          { runGuardianInProcess: true },
+        ),
+      ),
+    );
+
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.message).toContain(
+        'VPN service "ExampleVPN" is not present in macOS Network services',
+      );
+      expect(result.failure.hint).toContain("Add or connect the VPN service");
+    }
+    expect(commands).toEqual([statusLabel()]);
+    const store = VpnStore.open(driver, { root: runtimeRoot });
+    expect(store.snapshot().lifecycle).toBe("UNKNOWN");
+    store.close();
+  });
+
+  test("missing scutil keeps its existing hint", async () => {
+    if (driver.type !== "macos-scutil") return;
+
+    const runtimeRoot = root();
+    process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
+    await poisonUnknown(runtimeRoot);
+
+    const result = await Effect.runPromise(
+      Effect.result(
+        runWithProfilePrerequisites(
+          runtimeConfig(),
+          { vpn: "work" },
+          () => Effect.fail(new Error("scutil was not found")),
+          Effect.void,
+          { runGuardianInProcess: true },
+        ),
+      ),
+    );
+
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.hint).toBe(
+        "scutil was not found or is unavailable. Ensure macOS system tools are available and the VPN service name matches the Network service name.",
+      );
+    }
+  });
+
   test("UNKNOWN never reconciles while another lease is active", async () => {
     const runtimeRoot = root();
     process.env.AGENT_TOOLS_RUNTIME_DIR = runtimeRoot;
