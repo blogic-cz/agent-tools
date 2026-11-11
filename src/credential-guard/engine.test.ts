@@ -2611,3 +2611,41 @@ describe("named path roles", () => {
     expect(bash("cat config", { ...context, cwd: "/repo/.aws" }).kind).not.toBe("pass");
   });
 });
+
+describe("config filter resolved project containment", () => {
+  it.each([
+    "cd ~/.claude && rg x -g '*.json'",
+    "(cd ~/.claude; rg x -g '*.json')",
+    "env -C ~/.claude rg x -g '*.json'",
+    `bash -c 'cd ~ && rg x -g "*.json"'`,
+    "cd .. && rg x -g '*.json' other",
+    "cd .secrets && rg x -g '*.json'",
+  ])("retains the base refusal for %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it("retains the base refusal after PowerShell location changes", () => {
+    expect(ps("Set-Location ~/.claude; rg x -g '*.json'").kind).not.toBe("pass");
+  });
+  it.each(["C:/Users/dev", "C:", "C:sub", "%USERPROFILE%", "%APPDATA%"])(
+    "refuses Windows root %s",
+    (root) => {
+      expect(
+        bash("rg x -g '*.json' " + root, { ...context, cwd: "C:/repo", home: "C:/Users/dev" }).kind,
+      ).not.toBe("pass");
+    },
+  );
+  it.each(["/users/test", "/users", "/", "/users/test/.claude"])(
+    "refuses unsafe session cwd %s",
+    (cwd) => {
+      expect(bash("rg x -g '*.json'", { ...context, cwd }).kind).not.toBe("pass");
+    },
+  );
+  it.each([
+    "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
+    "rg -n x ./kubernetes/applications/example-api --glob '*.yaml'",
+    "cd kubernetes/applications && rg -n x example-api --glob '*.yaml'",
+    "rg -n x -g '*.yaml'",
+  ])("permits project search %s", (command) => {
+    expect(bash(command).kind).toBe("pass");
+  });
+});

@@ -797,20 +797,41 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
       stdout = literal(argv[1]);
     let resultScope: Scope = plan.delta === "assign" ? { ...scope, bindings, exported } : scope;
     const optionEnd = argv.indexOf("--");
-    const configFilterRoots = plan.roles
-      .filter((operand) => operand.role === "path" || operand.role === "content")
-      .every((operand) => {
-        const root =
-          operand.literal !== undefined ? literal(operand.literal) : values[operand.index];
-        return (
-          root?.kind === "literal" &&
-          root.texts.every(
-            (text) =>
-              text.length > 0 &&
-              !/^[~/$\\]/.test(text) &&
-              text.split(/[\\/]/).every((segment) => segment === "." || !segment.startsWith(".")),
-          )
-        );
+    const project = normalizePath(context.cwd, context.home, context.cwd);
+    const insideProject = (path: string): boolean =>
+      (path === project || path.startsWith(project === "/" ? "/" : project + "/")) &&
+      path
+        .slice(project.length)
+        .split("/")
+        .every((segment) => !segment.startsWith("."));
+    const projectAllowsConfigFilters =
+      (project.startsWith("/") || /^[a-z]:[/]/.test(project)) &&
+      project !== home &&
+      !home.startsWith(project === "/" ? "/" : project + "/") &&
+      project.split("/").every((segment) => !segment.startsWith("."));
+    const configFilterRoots =
+      projectAllowsConfigFilters &&
+      invocationScope.cwd.kind === "literal" &&
+      invocationScope.cwd.texts.length > 0 &&
+      invocationScope.cwd.texts.every((cwd) => {
+        if (!insideProject(normalizePath(cwd, context.home, context.cwd))) return false;
+        return plan.roles
+          .filter((operand) => operand.role === "path" || operand.role === "content")
+          .every((operand) => {
+            const root =
+              operand.literal !== undefined ? literal(operand.literal) : values[operand.index];
+            return (
+              root?.kind === "literal" &&
+              root.texts.length > 0 &&
+              root.texts.every(
+                (text) =>
+                  text.length > 0 &&
+                  !/^[a-z]:(?![\\/])/i.test(text) &&
+                  !/%|\$/.test(text) &&
+                  insideProject(normalizePath(text, context.home, cwd)),
+              )
+            );
+          });
       });
     for (const operand of plan.roles) {
       const value =

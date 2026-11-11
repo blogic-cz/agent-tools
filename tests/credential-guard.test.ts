@@ -911,3 +911,22 @@ describe("Grep path and glob fields", () => {
     ).toThrow();
   });
 });
+
+describe("Grep config filter project containment", () => {
+  it.each(["~/.claude", "/users/test", "../other"])("refuses outside root %s", (path) => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.json", path } },
+      ),
+    ).toThrow();
+  });
+  it("permits a project root", () => {
+    expect(() =>
+      createCredentialGuard().handleToolExecuteBefore(
+        { tool: "Grep" },
+        { args: { pattern: "x", glob: "*.yaml", path: "kubernetes" } },
+      ),
+    ).not.toThrow();
+  });
+});

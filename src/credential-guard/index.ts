@@ -293,7 +293,10 @@ export function createCredentialGuard(config?: CredentialGuardConfig): Credentia
           if (value === undefined) continue;
           if (typeof value !== "string") throw new Error("Invalid Grep filter");
           const quoted = "'" + value.replaceAll("'", "'\\''") + "'";
-          const checked = decision("rg " + option + " " + quoted + " -- example");
+          const quotedPath = "'" + path.replaceAll("'", "'\\''") + "'";
+          const checked = decision(
+            "rg " + option + " " + quoted + " -- example" + (path ? " " + quotedPath : ""),
+          );
           if (checked.kind !== "pass")
             throw new Error("Access blocked: Grep filter can select a sensitive file.");
         }
