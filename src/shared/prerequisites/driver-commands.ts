@@ -5,6 +5,7 @@ import type { SanitizedVpnDriver } from "#shared/prerequisites/store";
 
 export type VpnDriverAction = "status" | "start" | "stop";
 export type VpnCommandSpec = { readonly executable: string; readonly args: readonly string[] };
+export type VpnStatus = boolean | "missing-service" | undefined;
 
 export const sanitizeVpnDriver = (driver: ResolvedVpnDriver): SanitizedVpnDriver => {
   if (driver.type === "macos-scutil") {
@@ -67,14 +68,16 @@ export const makeParentVpnCommand = (
 export const parseVpnStatus = (
   driver: SanitizedVpnDriver,
   result: { readonly stdout: string; readonly exitCode: number },
-): boolean | undefined => {
-  if (result.exitCode !== 0) return undefined;
+): VpnStatus => {
   const lines = result.stdout.split(/\r?\n/);
   if (driver.type === "macos-scutil") {
+    if (lines.includes("No service")) return "missing-service";
+    if (result.exitCode !== 0) return undefined;
     if (lines.includes("Connected")) return true;
     if (lines.includes("Disconnected")) return false;
     return undefined;
   }
+  if (result.exitCode !== 0) return undefined;
   if (driver.type === "linux-nmcli") {
     return lines.some((line) => line === driver.connectionName);
   }

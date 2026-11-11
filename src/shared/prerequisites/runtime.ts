@@ -14,6 +14,7 @@ import {
   parseVpnStatus,
   sanitizeVpnDriver,
 } from "#shared/prerequisites/driver-commands";
+import type { VpnStatus } from "#shared/prerequisites/driver-commands";
 import type { GuardianInitMessage, GuardianOutboundMessage } from "#shared/prerequisites/guardian";
 import { normalizeProfilePrerequisites } from "#shared/prerequisites/config";
 import { PrerequisiteRunError } from "#shared/prerequisites/errors";
@@ -104,6 +105,19 @@ const runStatus = <E>(driver: ResolvedVpnDriver, runCommand: PrerequisiteCommand
   );
 };
 
+const missingVpnServiceError = (key: string, driver: ResolvedVpnDriver) => {
+  if (driver.type === "macos-scutil") {
+    return new PrerequisiteRunError({
+      message: `VPN service "${driver.serviceName}" is not present in macOS Network services.`,
+      hint: "Add or connect the VPN service in macOS Network settings, then retry.",
+    });
+  }
+  return new PrerequisiteRunError({
+    message: `Could not determine VPN prerequisite "${key}" status.`,
+    hint: missingVpnToolHint(driver),
+  });
+};
+
 const runStatusBefore = <E>(
   driver: ResolvedVpnDriver,
   deadline: number,
@@ -124,10 +138,10 @@ const waitForConnected = <E>(
   runCommand: PrerequisiteCommandRunner<E>,
 ) =>
   Effect.gen(function* () {
-    let last: boolean | undefined;
+    let last: VpnStatus;
     while (true) {
       last = yield* runStatusBefore(driver, deadline, runCommand);
-      if (last === true) return true as const;
+      if (last === true || last === "missing-service") return last;
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) return last;
       yield* Effect.sleep(Duration.millis(Math.min(250, remainingMs)));
@@ -560,6 +574,8 @@ const acquireVpn = <E>(
             const contended = snapshot.activeLeases > 0;
             if (!contended) {
               const observed = yield* runStatusBefore(driver, connectDeadline, runCommand);
+              if (observed === "missing-service")
+                return yield* fail(missingVpnServiceError(key, driver));
               if (
                 observed !== undefined &&
                 (store.reconcileUnknown(snapshot, observed, Date.now()) ||
@@ -596,6 +612,10 @@ const acquireVpn = <E>(
             if (!guard) continue;
             const claimed = store.snapshot();
             const connected = yield* runStatusBefore(driver, connectDeadline, runCommand);
+            if (connected === "missing-service") {
+              store.reconcileOperation(claimed, undefined, Date.now());
+              return yield* fail(missingVpnServiceError(key, driver));
+            }
             if (connected === undefined) {
               store.reconcileOperation(claimed, undefined, Date.now());
               return yield* fail(
@@ -630,6 +650,10 @@ const acquireVpn = <E>(
                 continue;
               }
               const connected = yield* runStatusBefore(driver, connectDeadline, runCommand);
+              if (connected === "missing-service") {
+                store.reconcileOperation(snapshot, undefined, Date.now());
+                return yield* fail(missingVpnServiceError(key, driver));
+              }
               store.reconcileOperation(snapshot, connected, Date.now());
               continue;
             }
@@ -648,6 +672,10 @@ const acquireVpn = <E>(
           if (!checkGuard) continue;
           const claimedCheck = store.snapshot();
           const connected = yield* runStatusBefore(driver, connectDeadline, runCommand);
+          if (connected === "missing-service") {
+            store.reconcileOperation(claimedCheck, undefined, Date.now());
+            return yield* fail(missingVpnServiceError(key, driver));
+          }
           if (connected === undefined) {
             store.reconcileOperation(claimedCheck, undefined, Date.now());
             return yield* fail(
@@ -725,6 +753,9 @@ const acquireVpn = <E>(
                 : "VPN start confirmation failed, timed out, or was unparseable.",
               Date.now(),
             );
+            if (ready === "missing-service") {
+              return yield* fail(missingVpnServiceError(key, driver));
+            }
             return yield* fail(
               new PrerequisiteRunError({
                 message: `VPN prerequisite "${key}" did not connect within timeout.`,
