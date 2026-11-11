@@ -16,6 +16,7 @@ import { judge } from "./policy";
 import type { PolicyContext } from "./policy";
 
 const context: PolicyContext = {
+  proveProjectPath: (path) => path === "/repo" || path.startsWith("/repo/"),
   cwd: "/repo",
   home: "/users/test",
   approvedNames: new Set(["HERDR_PANE_ID", "HOME", "USERPROFILE"]),
@@ -2609,6 +2610,53 @@ describe("named path roles", () => {
   });
   it("still protects explicit credential directories added by cwd normalization", () => {
     expect(bash("cat config", { ...context, cwd: "/repo/.aws" }).kind).not.toBe("pass");
+  });
+});
+
+describe("config filters require plain project paths", () => {
+  it("keeps the base refusal without filesystem proof", () => {
+    expect(bash("rg x -g '*.json'", { ...context, proveProjectPath: undefined }).kind).not.toBe(
+      "pass",
+    );
+  });
+  it("does not treat a Windows drive root as a project above home", () => {
+    expect(
+      bash("rg x -g '*.json'", {
+        ...context,
+        cwd: "C:/",
+        home: "C:/Users/dev",
+        proveProjectPath: () => true,
+      }).kind,
+    ).not.toBe("pass");
+  });
+  it.each([
+    "rg x -g '*.json' ~dev",
+    "rg x -g '*.json' -- ~test",
+    "rg x -g '*.json' ~1",
+    "cd ~/.claude && cd /repo && rg x -g '*.json' ~-",
+    "cd ~test && rg x -g '*.json'",
+    "env -C ~test rg x -g '*.json'",
+    "chdir ~/.claude && rg x -g '*.json'",
+    "chdir ~/.docker && cat config.json",
+    "pushd sub && rg x -g '*.json'",
+    "cd repo users/test && rg x -g '*.json'",
+    "cd && rg x -g '*.json'",
+    "ln -s ~ h && rg x -g '*.json' h",
+    "rg -L x -g '*.json' sub",
+    "rg --follow x -g '*.json' sub",
+  ])("retains the base refusal for %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "cd ../../.. && rg x -g '*.json'",
+    "Set-Location C:/../Users/dev; rg x -g '*.json'",
+    "Set-Location FileSystem::C:/Users/dev; rg x -g '*.json'",
+    "cd C:.. && rg x -g '*.json'",
+    "Set-Location -Path sub; rg x -g '*.json'",
+  ])("retains Windows refusal for %s", (command) => {
+    const options = { ...context, cwd: "C:/Users/dev/repo", home: "C:/Users/dev" };
+    expect(judge(parsePowerShell(command), options).kind).not.toBe("pass");
+    expect(bash(command, options).kind).not.toBe("pass");
   });
 });
 

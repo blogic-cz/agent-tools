@@ -981,7 +981,7 @@ export const EXECUTABLES: readonly ExecutableEntry[] = [
   {
     name: "cd",
     builtinOnly: true,
-    aliases: ["Set-Location", "Push-Location", "sl"],
+    aliases: ["Set-Location", "Push-Location", "sl", "chdir"],
     operands: ["names"],
     semantics: "cd",
     startup: ["CDPATH"],
