@@ -796,6 +796,22 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
     )
       stdout = literal(argv[1]);
     let resultScope: Scope = plan.delta === "assign" ? { ...scope, bindings, exported } : scope;
+    const optionEnd = argv.indexOf("--");
+    const configFilterRoots = plan.roles
+      .filter((operand) => operand.role === "path" || operand.role === "content")
+      .every((operand) => {
+        const root =
+          operand.literal !== undefined ? literal(operand.literal) : values[operand.index];
+        return (
+          root?.kind === "literal" &&
+          root.texts.every(
+            (text) =>
+              text.length > 0 &&
+              !/^[~/$\\]/.test(text) &&
+              text.split(/[\\/]/).every((segment) => segment === "." || !segment.startsWith(".")),
+          )
+        );
+      });
     for (const operand of plan.roles) {
       const value =
         operand.literal !== undefined
@@ -890,6 +906,10 @@ export function judge(script: Script | ParseError, context: PolicyContext): Deci
               : literal(...alternatives);
         const configFilter =
           executableName(first.texts[0] ?? "") === "rg" &&
+          configFilterRoots &&
+          (optionEnd === -1 || operand.index < optionEnd) &&
+          (["-g", "--glob", "--iglob"].includes(argv[operand.index - 1] ?? "") ||
+            /^(?:--glob|--iglob)=|^-g./.test(argv[operand.index] ?? "")) &&
           alternatives !== null &&
           alternatives.every((pattern) => /^\*\.(?:yaml|yml|json|toml)$/i.test(pattern));
         checkPath(

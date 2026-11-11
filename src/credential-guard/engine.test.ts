@@ -388,30 +388,51 @@ describe("agent configuration boundaries", () => {
   });
   it.each([
     "rg -n x src",
-    "rg -n x ~/.docker",
-    "rg -n x ~/.config/gh",
     "rg -n x --glob '*.yaml' src",
     "rg -n x --iglob='*.yml' src",
     "rg -n x -g'*.json' src",
     "rg -n x --glob '*.toml' src",
     "rg -n 'helm.sh/hook|sync-wave' kubernetes/applications/example-api --glob '*.yaml'",
-  ])("allows config search filters and existing directory searches %s", (command) => {
+  ])("allows config search filters in relative roots %s", (command) => {
     expect(bash(command).kind).toBe("pass");
   });
   it.each([
+    "rg -n x -g '*.json' ~/.claude",
+    "rg -n x -g '*.json' /Users/dev",
+    "rg -n x -g '*.yaml' ../other",
+    "rg -n x -g '*.json' .secrets",
+    "rg x --type-add 'k:*.json' -tk .",
+    "rg x -- -g '*.json'",
+    "cd ~/.aws && rg x -g '*.json'",
+  ])("preserves base refusal outside config filter roots %s", (command) => {
+    expect(bash(command).kind).not.toBe("pass");
+  });
+  it("allows config filters without a root", () => {
+    expect(bash("rg -n x -g '*.yaml'").kind).toBe("pass");
+  });
+  it("retains the base limit that ignored service-account JSON files in a repo can be searched", () => {
+    expect(bash("rg --no-ignore x .").kind).toBe("pass");
+  });
+  it.each([
     "rg x templates/*migrat*",
-    "rg x --glob '.env*'",
-    "rg x --glob '*.pem'",
-    "rg x --glob '*.key'",
     "cat ~/.docker/*.json",
     "rg x ~/.config/gh/*.yml",
-    "rg x --glob 'service-account*.json'",
     "rg x --glob '~/.docker/*.json'",
-    "rg x --glob '{*.yaml,.env*}'",
     "cat *.yaml",
     "rg x *.json",
   ])("preserves secret and positional glob refusals %s", (command) => {
     expect(bash(command).kind).not.toBe("pass");
+  });
+  it.each([
+    "rg x --glob '.env*'",
+    "rg x --glob '*.pem'",
+    "rg x --glob '*.key'",
+    "rg x --glob 'service-account*.json'",
+    "rg x --glob '{*.yaml,.env*}'",
+  ])("refuses sensitive config filter %s", (command) => {
+    expect(bash(command)).toMatchObject({
+      findings: expect.arrayContaining([expect.objectContaining({ rule: "sensitive-path" })]),
+    });
   });
   it("allows a glob that ends in a code or prose extension", () => {
     expect(bash("rg -n x --glob '*.cs' src").kind).toBe("pass");
