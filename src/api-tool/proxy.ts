@@ -140,7 +140,7 @@ export function createProxy(options: {
     if (retention.protects(serialized)) throw apiError("DISCLOSURE_DENIED");
     return serialized;
   };
-  const admit = (budget: Budget, profile: Profile): void => {
+  const admit = (budget: Budget, profile: Profile): number => {
     const reserve = profile.maxRequestBytes + profile.maxResponseBytes;
     const total = profile.auth.kind === "login" ? reserve * 2 : reserve;
     if (budget.revoked || now() >= budget.grant.expiresAt) throw apiError("UNAUTHORIZED");
@@ -156,6 +156,7 @@ export function createProxy(options: {
     budget.bytes += total;
     budget.active++;
     active++;
+    return total;
   };
   const authorize = (capability: string): Budget => {
     const budget = budgets.get(capabilityDigest(capability));
@@ -222,7 +223,9 @@ export function createProxy(options: {
       profile.maxRequestBytes
     )
       throw apiError("LIMIT_EXCEEDED");
-    admit(budget, profile);
+    let used = 0;
+    let incomplete = false;
+    const reserved = admit(budget, profile);
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(),
@@ -237,7 +240,7 @@ export function createProxy(options: {
         if (budget.revoked || now() >= budget.grant.expiresAt) throw apiError("UNAUTHORIZED");
         if (now() - budget.startedAt >= budget.grant.lifetimeMs) throw apiError("BUDGET_EXHAUSTED");
       };
-      const send = (
+      const send = async (
         target: URL,
         method: string,
         headers: Record<string, string>,
@@ -246,19 +249,26 @@ export function createProxy(options: {
         check = checkGrant,
       ) => {
         check();
-        return options.transport({
-          url: target,
-          method,
-          headers: {
-            "content-type": "application/json",
-            accept: "application/json",
-            ...headers,
-          },
-          body: data,
-          maxBytes: profile.maxResponseBytes,
-          signal,
-          allowedPrivateAddresses: profile.allowedPrivateAddresses,
-        });
+        try {
+          const response = await options.transport({
+            url: target,
+            method,
+            headers: {
+              "content-type": "application/json",
+              accept: "application/json",
+              ...headers,
+            },
+            body: data,
+            maxBytes: profile.maxResponseBytes,
+            signal,
+            allowedPrivateAddresses: profile.allowedPrivateAddresses,
+          });
+          used += Buffer.byteLength(data) + Buffer.byteLength(response.body);
+          return response;
+        } catch (error) {
+          incomplete = true;
+          throw error;
+        }
       };
       const headers: Record<string, string> = {};
       let usedLoginToken: string | undefined;
@@ -454,6 +464,7 @@ export function createProxy(options: {
       throw safeError(error);
     } finally {
       clearTimeout(timer);
+      if (!incomplete) budget.bytes -= Math.max(0, reserved - used);
       if (loginFlight?.ownerRequest === requestId && !loginFlight.settled) {
         let released = false;
         loginFlight.releaseOwnerSlot = () => {
