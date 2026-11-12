@@ -77,6 +77,7 @@ const Check = Schema.Struct({
   state: Schema.String,
   bucket: Schema.String,
   link: Schema.String,
+  workflow: Schema.optional(Schema.String),
 });
 
 export const prHead = Effect.fn("reads.prHead")(function* (
@@ -242,7 +243,7 @@ export const prChecks = Effect.fn("reads.prChecks")(function* (
         "--repo",
         repoSlug(repo),
         "--json",
-        "name,state,bucket,link",
+        "name,state,bucket,link,workflow",
       ])
       .pipe(Effect.map((value) => ({ kind: "fresh" as const, value })));
   const session = yield* ReadCache;
@@ -268,7 +269,7 @@ export const prChecks = Effect.fn("reads.prChecks")(function* (
       "--repo",
       repoSlug(repo),
       "--json",
-      "name,state,bucket,link",
+      "name,state,bucket,link,workflow",
     ]);
     const after = yield* prHead(repo, number, "origin").pipe(Effect.orElseSucceed(() => null));
     if (after !== null && after.headSha !== sha) return yield* movedHead(number);
