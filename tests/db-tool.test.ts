@@ -1208,6 +1208,125 @@ describe("DbService", () => {
       );
     });
 
+    it.effect("sends the default 5 s query time limit on every connection", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        yield* service.executeQuery("prod", "SELECT 1");
+
+        expect(observedSql[0].connection.queryTimeoutMs).toBe(5000);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("uses the configured queryTimeoutMs, including 0", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+        queryTimeoutMs: 0,
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        yield* service.executeQuery("prod", "SELECT 1");
+
+        expect(observedSql[0].connection.queryTimeoutMs).toBe(0);
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "SELECT 1": { rows: [{ "?column?": 1 }] } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("--explain sends EXPLAIN and returns every plan row", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+      const planRows = Array.from({ length: 60 }, (_, index) => ({
+        "QUERY PLAN": `line ${index}`,
+      }));
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const result = yield* service.executeQuery("prod", "SELECT * FROM orders", undefined, true);
+
+        expect(observedSql.map((entry) => entry.sql)).toEqual(["EXPLAIN SELECT * FROM orders"]);
+        expect(result.rowCount).toBe(60);
+        expect(result.truncated).toBeUndefined();
+      }).pipe(
+        Effect.provide(
+          createRealDbServiceLayer(
+            {},
+            databaseConfig,
+            { "EXPLAIN SELECT * FROM orders": { rows: planRows } },
+            observedSql,
+          ),
+        ),
+      );
+    });
+
+    it.effect("--explain keeps the mutation guard for a blocked statement", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const error = yield* Effect.flip(
+          service.executeQuery("prod", "DELETE FROM orders", undefined, true),
+        );
+
+        expect(error._tag).toBe("DbMutationBlockedError");
+        expect(observedSql).toEqual([]);
+      }).pipe(Effect.provide(createRealDbServiceLayer({}, databaseConfig, {}, observedSql)));
+    });
+
+    it.effect("--explain refuses SQL that already starts with EXPLAIN", () => {
+      const observedSql: ObservedSql[] = [];
+      const databaseConfig: DatabaseConfig = {
+        environments: {
+          prod: { host: "db.internal", port: 5432, user: "readonly", database: "app" },
+        },
+      };
+
+      return Effect.gen(function* () {
+        const service = yield* DbService;
+        const error = yield* Effect.flip(
+          service.executeQuery("prod", "explain analyze SELECT 1", undefined, true),
+        );
+
+        expect(error._tag).toBe("DbQueryError");
+        expect(observedSql).toEqual([]);
+      }).pipe(Effect.provide(createRealDbServiceLayer({}, databaseConfig, {}, observedSql)));
+    });
+
     it.effect("leaves the connection writable when mutation targets are configured", () => {
       const observedSql: ObservedSql[] = [];
       const databaseConfig: DatabaseConfig = {

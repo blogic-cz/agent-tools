@@ -85,6 +85,7 @@
         namespace: "system",
       },
       tunnelTimeoutMs: 5000,
+      queryTimeoutMs: 5000, // server cancels a statement after 5 s; 0 turns the limit off
       remotePort: 5432,
       allowedMutationTargets: {
         prod: {

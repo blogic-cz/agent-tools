@@ -13,7 +13,7 @@ import { runWithProfilePrerequisites } from "#shared/prerequisites/runtime";
 import { buildApiProbeArgs } from "#shared/k8s-probe";
 import { missingBinaryFromSpawnFailure } from "#shared/binary-preflight";
 import { DbConfigService, TUNNEL_CHECK_INTERVAL_MS } from "./config-service";
-import { DbSqlClient, type DbConnection } from "./sql-client";
+import { DEFAULT_QUERY_TIMEOUT_MS, DbSqlClient, type DbConnection } from "./sql-client";
 import {
   DbConnectionError,
   DbMutationBlockedError,
@@ -144,6 +144,7 @@ export class DbService extends Context.Service<
       env: string,
       sql: string,
       limit?: number,
+      explain?: boolean,
     ) => Effect.Effect<QueryResult, DbError>;
     readonly executeSchemaQuery: (
       env: string,
@@ -171,7 +172,7 @@ export class DbService extends Context.Service<
               environment: env,
             });
           return {
-            executeQuery: (env: string, _sql: string, _limit?: number) =>
+            executeQuery: (env: string, _sql: string, _limit?: number, _explain?: boolean) =>
               Effect.fail(noConfigError(env)),
             executeSchemaQuery: (env: string, _mode: SchemaMode, _table?: string) =>
               Effect.fail(noConfigError(env)),
@@ -185,6 +186,7 @@ export class DbService extends Context.Service<
         const tunnelTimeoutMs = dbConfig.tunnelTimeoutMs ?? 5000;
         const apiProbeTimeoutMs = dbConfig.apiProbeTimeoutMs ?? 2000;
         const remotePort = dbConfig.remotePort ?? 5432;
+        const queryTimeoutMs = dbConfig.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
 
         const envTemplateRegex = /^\$\{([A-Za-z0-9_]+)\}$/;
         const lookupConfigEnv = (name: string) =>
@@ -490,6 +492,7 @@ export class DbService extends Context.Service<
           database: config.database,
           password,
           readOnly: isFullyReadOnly(config),
+          queryTimeoutMs,
         });
 
         const unsafeSqlError = (reason: string) =>
@@ -772,6 +775,7 @@ export class DbService extends Context.Service<
           env: string,
           sql: string,
           limit?: number,
+          explain = false,
         ) {
           const unsafeReason = unsafeOutboundTextReason(sql);
           if (unsafeReason !== null) {
@@ -817,9 +821,28 @@ export class DbService extends Context.Service<
             });
           }
 
-          const queryEffect = mutation
-            ? executeMutationQuery(resolvedConfig, sql, password, Number(startTimeMs))
-            : executeSelectQuery(resolvedConfig, sql, password, Number(startTimeMs), true, limit);
+          if (explain && /^\s*explain\b/i.test(sql)) {
+            return yield* new DbQueryError({
+              message: "--explain adds EXPLAIN itself; the SQL already starts with EXPLAIN.",
+              sql,
+              hint: "Remove EXPLAIN from --sql, or drop the --explain flag.",
+            });
+          }
+
+          // Plain EXPLAIN plans the statement without running it, so a mutation is not executed.
+          // The mutation guard above still applies to the original statement.
+          const queryEffect = explain
+            ? executeSelectQuery(
+                resolvedConfig,
+                `EXPLAIN ${sql}`,
+                password,
+                Number(startTimeMs),
+                true,
+                limit ?? 0,
+              )
+            : mutation
+              ? executeMutationQuery(resolvedConfig, sql, password, Number(startTimeMs))
+              : executeSelectQuery(resolvedConfig, sql, password, Number(startTimeMs), true, limit);
 
           return yield* runWithVpnPrerequisites(
             resolvedConfig.port,
