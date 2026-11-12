@@ -19,12 +19,17 @@ Auth: env var defined by `passwordEnvVar` in config (e.g. `AGENT_TOOLS_DB_PASSWO
 bun db-tool envs                                       # List configured environments + default (no network)
 bun db-tool sql --env local --sql "SELECT * FROM users LIMIT 5"
 bun db-tool sql --env test --sql "SELECT count(*) FROM organizations"
+bun db-tool sql --env prod --explain --sql "SELECT * FROM orders WHERE note ILIKE '%x%'"  # plan only, nothing runs
 bun db-tool schema --env local --mode tables          # List tables
 bun db-tool schema --env local --mode columns --table users # Show table schema
 bun db-tool commands                                   # Full command/flag tree (one call, no repeated --help)
 ```
 
 Run `bun db-tool envs` to see valid environment names instead of guessing. Set `defaultEnvironment` in `agent-tools.json5` to skip `--env` on every call.
+
+## Query Time Limit
+
+The server cancels any statement that runs longer than `database.<profile>.queryTimeoutMs` (default 5000 ms; `0` turns the limit off). The limit holds even when your process is killed. Before a query on a large table, a join without an index, or anything on prod, run it once with `--explain` and check the plan for a `Seq Scan` on a big table. When a query hits the limit, narrow it; do not ask to raise the limit first.
 
 ## DB VPN Prerequisites
 

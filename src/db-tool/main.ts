@@ -73,16 +73,27 @@ const sqlCommand = Command.make(
         "Max rows to return (default 50). Use 0 for no cap. Prefer a SQL LIMIT for large tables.",
       ),
     ),
+    explain: Flag.Boolean("explain").pipe(
+      Flag.withDescription(
+        "Show the query plan (EXPLAIN) instead of running the query. Use it before a query on a large table.",
+      ),
+      Flag.withDefault(false),
+    ),
     format: formatOption,
     profile: Flag.optional(Flag.String("profile")).pipe(
       Flag.withDescription("Database profile name from agent-tools.json5 (if multiple configured)"),
     ),
   },
-  ({ env, sql, limit, format }) =>
+  ({ env, sql, limit, explain, format }) =>
     Effect.gen(function* () {
       const resolvedEnv = yield* resolveEnv(env);
       const db = yield* DbService;
-      const result = yield* db.executeQuery(resolvedEnv, sql, Option.getOrUndefined(limit));
+      const result = yield* db.executeQuery(
+        resolvedEnv,
+        sql,
+        Option.getOrUndefined(limit),
+        explain,
+      );
       yield* logText(formatOutput(result, format));
     }),
 ).pipe(Command.withDescription("Execute a SQL query"));

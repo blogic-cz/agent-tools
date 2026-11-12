@@ -25,6 +25,7 @@ const connection: DbConnection = {
   database: "testdb",
   password: "",
   readOnly: true,
+  queryTimeoutMs: 0,
 };
 it("db-tool applies the PostgreSQL read-only startup setting and reads rows", async () => {
   const configurations: unknown[] = [];
@@ -68,6 +69,106 @@ it("db-tool applies the PostgreSQL read-only startup setting and reads rows", as
   expect(queries).toEqual(["SHOW transaction_read_only", "SELECT 1"]);
   expect(result).toEqual({ rows: [{ value: 1 }], rowCount: 1, command: "" });
   expect(close).toHaveBeenCalledOnce();
+});
+it("db-tool sends statement_timeout and a capped lock_timeout and verifies them", async () => {
+  const configurations: unknown[] = [];
+  const queries: string[] = [];
+  stubBun(
+    Object.assign(Object.create(Bun), {
+      SQL: class {
+        constructor(options: unknown) {
+          configurations.push(options);
+        }
+        unsafe(sql: string) {
+          queries.push(sql);
+          if (sql === "SHOW transaction_read_only")
+            return Promise.resolve([{ transaction_read_only: "on" }]);
+          if (sql.includes("pg_settings")) return Promise.resolve([{ setting: "5000" }]);
+          return Promise.resolve([{ value: 1 }]);
+        }
+        close() {
+          return Promise.resolve();
+        }
+      },
+    }),
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* DbSqlClient;
+      return yield* sql.run({ ...connection, queryTimeoutMs: 5000 }, "SELECT 1");
+    }).pipe(Effect.provide(DbSqlClient.layer)),
+  );
+  expect(configurations[0]).toMatchObject({
+    connection: {
+      default_transaction_read_only: "on",
+      statement_timeout: "5000",
+      lock_timeout: "2000",
+    },
+  });
+  expect(queries).toEqual([
+    "SHOW transaction_read_only",
+    "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'",
+    "SELECT 1",
+  ]);
+});
+it("db-tool refuses to run the query when the server ignores statement_timeout", async () => {
+  const queries: string[] = [];
+  stubBun(
+    Object.assign(Object.create(Bun), {
+      SQL: class {
+        unsafe(sql: string) {
+          queries.push(sql);
+          return Promise.resolve(sql.includes("pg_settings") ? [{ setting: "0" }] : []);
+        }
+        close() {
+          return Promise.resolve();
+        }
+      },
+    }),
+  );
+  const error = await Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* DbSqlClient;
+      return yield* sql.run({ ...connection, readOnly: false, queryTimeoutMs: 5000 }, "SELECT 1");
+    }).pipe(Effect.flip, Effect.provide(DbSqlClient.layer)),
+  );
+  expect(error.message).toContain("statement_timeout");
+  expect(queries).not.toContain("SELECT 1");
+});
+it("db-tool refuses a negative or fractional queryTimeoutMs without connecting", async () => {
+  const constructed = vi.fn<() => void>();
+  stubBun(Object.assign(Object.create(Bun), { SQL: constructed }));
+  for (const queryTimeoutMs of [-1, 1.5]) {
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* DbSqlClient;
+        return yield* sql.run({ ...connection, queryTimeoutMs }, "SELECT 1");
+      }).pipe(Effect.flip, Effect.provide(DbSqlClient.layer)),
+    );
+    expect(error.message).toContain("queryTimeoutMs");
+  }
+  expect(constructed).not.toHaveBeenCalled();
+});
+it("db-tool adds an --explain hint when the server cancels a statement on timeout", async () => {
+  stubBun(
+    Object.assign(Object.create(Bun), {
+      SQL: class {
+        unsafe() {
+          return Promise.reject(new Error("canceling statement due to statement timeout"));
+        }
+        close() {
+          return Promise.resolve();
+        }
+      },
+    }),
+  );
+  const error = await Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* DbSqlClient;
+      return yield* sql.run({ ...connection, readOnly: false }, "SELECT pg_sleep(10)");
+    }).pipe(Effect.flip, Effect.provide(DbSqlClient.layer)),
+  );
+  expect(error.hint).toContain("--explain");
 });
 it("db-tool preserves mutation rowCount and command from the SQL driver", async () => {
   stubBun(
@@ -162,7 +263,7 @@ for (const [name, settings] of [
       `svc/${"service" in settings ? settings.service : "postgresql"}`,
       "15432:5432",
     ]);
-    expect(connections).toEqual([connection]);
+    expect(connections).toEqual([{ ...connection, queryTimeoutMs: 5000 }]);
   });
 }
 it("db-tool starts VPN prerequisites when direct database access fails", async () => {

@@ -147,6 +147,13 @@ export type DatabaseConfig = ProfilePrerequisites & {
   };
   tunnelTimeoutMs?: number;
   /**
+   * Server-side time limit for one statement, in milliseconds. db-tool sends it as the
+   * PostgreSQL statement_timeout startup setting, so the server cancels a runaway query even
+   * when the agent process dies. lock_timeout is the same value, at most 2000. Set to 0 to
+   * turn the limit off. Defaults to 5000.
+   */
+  queryTimeoutMs?: number;
+  /**
    * Timeout in milliseconds for the cheap Kubernetes API-server reachability probe
    * run before attempting a tunnel. When the API server is unreachable (VPN down and
    * not on the office network) `kubectl port-forward` hangs silently on TCP connect, so
