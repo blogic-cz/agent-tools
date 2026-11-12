@@ -876,6 +876,15 @@ describe("REST credential proxy boundaries", () => {
       code: "BUDGET_EXHAUSTED",
     });
   });
+  it("refunds the unused response reserve of a small response", async () => {
+    const value = config();
+    value.grants[0]!.maxRequests = 100;
+    value.grants[0]!.maxBytes =
+      3 * (value.profiles.sample.maxRequestBytes + value.profiles.sample.maxResponseBytes);
+    const proxy = proxyFor(async () => ({ status: 200, body: "{}" }), value);
+    for (let index = 0; index < 10; index++)
+      await expect(proxy.request(capability, request)).resolves.toEqual({ status: 200, data: {} });
+  });
   it("atomically refuses excess concurrent admission", async () => {
     const value = config();
     value.grants[0]!.maxConcurrent = 1;
