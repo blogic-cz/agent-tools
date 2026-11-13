@@ -169,8 +169,8 @@ export function validateOperator(value: unknown): OperatorConfig {
       !/^[a-f0-9]{64}$/.test(grant.digest) ||
       digests.has(grant.digest) ||
       !bounded(grant.expiresAt, Number.MAX_SAFE_INTEGER) ||
-      !bounded(grant.maxRequests, 10000) ||
-      !bounded(grant.maxBytes, 1_000_000_000) ||
+      !bounded(grant.maxRequests, 1_000_000) ||
+      !bounded(grant.maxBytes, 100_000_000_000) ||
       !bounded(grant.maxConcurrent, 64) ||
       !bounded(grant.lifetimeMs, 86400000) ||
       !grant.profiles.length ||
