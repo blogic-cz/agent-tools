@@ -137,6 +137,20 @@ describe("REST credential proxy boundaries", () => {
     value.profiles.sample.origin = "http://service.example.invalid";
     expect(() => validateOperator(value)).toThrow("CONFIG_INVALID");
   });
+  it("accepts grant request and byte limits at the maximum and refuses one above", () => {
+    const atMaximum = config();
+    atMaximum.grants[0]!.maxRequests = 1_000_000;
+    atMaximum.grants[0]!.maxBytes = 100_000_000_000;
+    expect(() => validateOperator(atMaximum)).not.toThrow();
+
+    const requestsOver = config();
+    requestsOver.grants[0]!.maxRequests = 1_000_001;
+    expect(() => validateOperator(requestsOver)).toThrow("CONFIG_INVALID");
+
+    const bytesOver = config();
+    bytesOver.grants[0]!.maxBytes = 100_000_000_001;
+    expect(() => validateOperator(bytesOver)).toThrow("CONFIG_INVALID");
+  });
   it.each([
     credential,
     'quoted"\\password',
