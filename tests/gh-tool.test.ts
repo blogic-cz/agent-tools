@@ -131,7 +131,9 @@ import type { GitHubPrTitlePolicy, GitHubRepoConfig } from "#config";
 import { ConfigService } from "#config";
 import {
   prCreateCommand,
+  prDiffCommand,
   prEditCommand,
+  prViewCommand,
   prCheckboxCommand,
   prMergeCommand,
   prWatchCommand,
@@ -12803,11 +12805,32 @@ describe("PR creation safety", () => {
     }
   }
 
+  it.effect("pr view accepts a positional PR number", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      const result = yield* Command.runWith(prViewCommand, { version: "test" })(["2236"]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGhJson: (args) => {
+                calls.push(args);
+                return Effect.succeed(mockPRInfo);
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+        Effect.result,
+      );
+      expect(Result.isSuccess(result)).toBe(true);
+      expect(calls[0]).toContain("2236");
+    }),
+  );
+
   it.effect("pr edit parses an explicit empty body and sends it through REST", () =>
     Effect.gen(function* () {
       const calls: string[][] = [];
       const result = yield* Command.runWith(prEditCommand, { version: "test" })([
-        "--pr",
         "123",
         "--body",
         "",
@@ -12845,6 +12868,74 @@ describe("PR creation safety", () => {
             args.join(" ").includes("baseRefOid") || args.join(" ").includes("projectCards"),
         ),
       ).toBe(false);
+    }),
+  );
+
+  it.effect("pr diff sends the selected number and name-only option through GitHubService", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      yield* Command.runWith(prDiffCommand, { version: "test" })(["2236", "--name-only"]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "src/file.ts\n", stderr: "", exitCode: 0 });
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+      );
+      expect(calls).toEqual([["pr", "diff", "2236", "--name-only"]]);
+    }),
+  );
+
+  it.effect("pr diff uses the current branch PR when no number is given", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      yield* Command.runWith(prDiffCommand, { version: "test" })([]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "patch\n", stderr: "", exitCode: 0 });
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+      );
+      expect(calls).toEqual([["pr", "diff"]]);
+    }),
+  );
+
+  it.effect("pr diff accepts matching number forms and rejects conflicting forms", () =>
+    Effect.gen(function* () {
+      const calls: string[][] = [];
+      yield* Command.runWith(prDiffCommand, { version: "test" })(["2236", "--pr", "2236"]).pipe(
+        Effect.provide(
+          Layer.merge(
+            createMockGhLayer({
+              runGh: (args) => {
+                calls.push(args);
+                return Effect.succeed({ stdout: "patch\n", stderr: "", exitCode: 0 });
+              },
+            }),
+            cliLayer,
+          ),
+        ),
+      );
+      expect(calls).toEqual([["pr", "diff", "2236"]]);
+
+      const mismatch = yield* Command.runWith(prDiffCommand, { version: "test" })([
+        "2236",
+        "--pr",
+        "2237",
+      ]).pipe(Effect.provide(Layer.merge(createMockGhLayer(), cliLayer)), Effect.result);
+      expect(Result.isFailure(mismatch)).toBe(true);
+      expect(calls).toHaveLength(1);
     }),
   );
 

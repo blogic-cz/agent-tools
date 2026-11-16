@@ -34,5 +34,6 @@ export {
   prReviewTriageCommand,
   prReviewTriageBatchCommand,
   prViewCommand,
+  prDiffCommand,
   prWatchCommand,
 } from "./commands";

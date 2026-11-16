@@ -305,6 +305,10 @@ const repoInfo = Effect.fn("reads.repoInfo")(function* () {
   const gh = yield* GitHubService;
   return yield* gh.getRepoInfo();
 });
+const prDiff = Effect.fn("reads.prDiff")(function* (args: string[]) {
+  const gh = yield* GitHubService;
+  return yield* gh.runGh(args);
+});
 export const passthrough = {
   repoInfo,
   branchProtection,
@@ -318,4 +322,5 @@ export const passthrough = {
   baseSha,
   asyncMergeStatus,
   stackMergeStatus,
+  prDiff,
 };

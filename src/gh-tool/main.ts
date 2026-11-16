@@ -24,6 +24,7 @@ import {
 } from "./issue";
 import {
   prViewCommand,
+  prDiffCommand,
   prStatusCommand,
   prListCommand,
   prCreateCommand,
@@ -106,6 +107,7 @@ const prCommand = Command.make("pr", {}).pipe(
   Command.withDescription("Pull request operations (view, create, merge, reviews, checks)"),
   Command.withSubcommands([
     prViewCommand,
+    prDiffCommand,
     prStatusCommand,
     prListCommand,
     prCreateCommand,

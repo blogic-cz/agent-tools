@@ -24,7 +24,8 @@ Use `--repo <profile|owner/name>` when working outside a single-repo checkout. I
 ```bash
 bun gh-tool pr list --state open                         # List PRs (filter: --author/--base/--head/--search)
 bun gh-tool pr status                  # View PR status for current branch
-bun gh-tool pr view --pr 123           # View PR details
+bun gh-tool pr view --pr 123           # View PR details (every pr command with --pr also takes the number positionally: pr view 123)
+bun gh-tool pr diff 123                # Print the PR diff; --name-only lists changed paths
 bun gh-tool pr view --prs 12,34,56     # Batch view several PRs in one call (also: pr checks --prs)
 bun gh-tool pr checks --pr 123         # Check CI status (one-shot snapshot)
 bun gh-tool pr checks --pr 123 --watch # Watch CI until complete or --timeout (default 600s); returns a snapshot on timeout

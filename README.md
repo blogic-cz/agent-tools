@@ -322,6 +322,8 @@ bun gh-tool gist delete --id <gist-id> --confirm
 
 Gists are secret by default. `gist delete` prints a dry run unless `--confirm` is passed. `gist edit` requires a content or mutation flag and never opens an editor.
 
+`pr view 123` and other commands that accept `--pr` also accept the PR number as a positional argument. If both forms are present, they must match. `pr diff [123]` prints the patch, and `pr diff --name-only` prints changed paths.
+
 `pr create` refuses when an open PR already matches the head and base branches. Pass
 `--update-if-exists` to update that open PR explicitly. Output includes `updated: true`
 for an update and `updated: false` for a new PR. Only open PRs are selected, and their
