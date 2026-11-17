@@ -111,6 +111,7 @@ export type CheckResult = {
   state: string;
   bucket: string;
   link: string;
+  workflow?: string;
 };
 
 export type FailedCheckJob = {

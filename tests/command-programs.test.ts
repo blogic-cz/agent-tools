@@ -548,6 +548,19 @@ describe("Command program: env safety + k8s namespace fallback", () => {
     expect(output).toContain("--env prod");
   });
 
+  it("db-tool sql takes a value that starts with an SQL comment as the SQL text", async () => {
+    const result = await runTool(
+      "src/db-tool/index.ts",
+      ["sql", "--sql", "-- CORE-731 check (read only)\nSELECT 1", "--format", "json"],
+      prodDefaultDir,
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(output).not.toContain("Missing value for flag --sql");
+    expect(output).not.toContain("Unrecognized flag");
+    expect(output).toContain("Implicit prod access blocked");
+  });
+
   it("blocks implicit prod in logs-tool unless --env prod is explicit", async () => {
     const result = await runTool(
       "src/logs-tool/index.ts",

@@ -306,6 +306,40 @@ const summarizeFailedStepEntries = (entries: Array<{ step: string; message: stri
   return output;
 };
 
+const checkRunOrder = (link: string): readonly [number, number] | null => {
+  const run = extractRunIdFromCheckLink(link);
+  if (run === null) return null;
+  return [run, checkJobId(link) ?? 0];
+};
+
+const checkKey = (check: CheckResult): string => `${check.workflow ?? ""}\u0000${check.name}`;
+
+/**
+ * `gh pr checks` lists every run of a check for the head SHA, so a rerun leaves the older failed
+ * or cancelled run beside the newer passing one. Keep only the newest run per workflow and check
+ * name. An entry whose run cannot be ordered stays: it is never proven superseded.
+ */
+export const latestChecksOnly = (checks: readonly CheckResult[]): CheckResult[] => {
+  const newest = new Map<string, readonly [number, number]>();
+  for (const check of checks) {
+    const order = checkRunOrder(check.link);
+    if (order === null) continue;
+    const known = newest.get(checkKey(check));
+    if (
+      known === undefined ||
+      order[0] > known[0] ||
+      (order[0] === known[0] && order[1] > known[1])
+    )
+      newest.set(checkKey(check), order);
+  }
+  return checks.filter((check) => {
+    const order = checkRunOrder(check.link);
+    if (order === null) return true;
+    const best = newest.get(checkKey(check));
+    return best === undefined || (order[0] === best[0] && order[1] === best[1]);
+  });
+};
+
 export const fetchCheckResults = Effect.fn("pr.fetchCheckResults")(function* (
   pr: number | null,
   cache?: { headSha: string; watchPending?: boolean },
