@@ -9,12 +9,14 @@ type CheckboxLine = {
   readonly offset: number;
   readonly boxIndex: number;
   readonly checked: boolean;
+  readonly lineNumber: number;
 };
 
 type ScannedEntry = CheckboxOutlineEntry & {
   readonly offset?: number;
   readonly boxIndex?: number;
   readonly before?: string;
+  readonly lineNumber?: number;
 };
 
 type Fence = {
@@ -89,7 +91,7 @@ const scanOutline = (body: string): ScannedEntry[] => {
   let fence: Fence | null = null;
   const listItems: ListItemIndent[] = [];
 
-  for (const raw of lines) {
+  for (const [lineIndex, raw] of lines.entries()) {
     if (raw.length === 0) continue;
     const line = (raw.endsWith("\n") ? raw.slice(0, -1) : raw).replace(/\r$/, "");
     const lineStart = offset;
@@ -146,6 +148,7 @@ const scanOutline = (body: string): ScannedEntry[] => {
       offset: lineStart + boxIndex,
       boxIndex,
       before: line.replace(/\r$/, ""),
+      lineNumber: lineIndex + 1,
     });
   }
   return entries;
@@ -203,7 +206,11 @@ export const bunMarkdownOutline: CheckboxOutlineParser = (body) => {
   return outline;
 };
 
-const sameOutline = (scanned: readonly ScannedEntry[], parsed: readonly CheckboxOutlineEntry[]) => {
+const sameOutline = (
+  scanned: readonly ScannedEntry[],
+  parsed: readonly CheckboxOutlineEntry[],
+  parseOutline: CheckboxOutlineParser,
+) => {
   return (
     scanned.length === parsed.length &&
     scanned.every((entry, index) => {
@@ -211,7 +218,12 @@ const sameOutline = (scanned: readonly ScannedEntry[], parsed: readonly Checkbox
       return (
         actual !== undefined &&
         entry.type === actual.type &&
-        entry.text === actual.text &&
+        (entry.text === actual.text ||
+          (entry.type === "task" &&
+            entry.before !== undefined &&
+            entry.boxIndex !== undefined &&
+            parseOutline(`- [ ] ${entry.before.slice(entry.boxIndex + 2).trimStart()}`)?.[0]
+              ?.text === actual.text)) &&
         (entry.type !== "heading" || (actual.type === "heading" && entry.level === actual.level)) &&
         (entry.type !== "task" || (actual.type === "task" && entry.checked === actual.checked))
       );
@@ -238,7 +250,7 @@ export const validateCheckboxEdit = (
   );
   if (
     original === null ||
-    !sameOutline(scanned, original) ||
+    !sameOutline(scanned, original, parseOutline) ||
     selectedIndex < 0 ||
     original[selectedIndex]?.type !== "task" ||
     body[offset] === undefined ||
@@ -276,7 +288,7 @@ export const findCheckboxLines = (
 ) => {
   const scanned = scanOutline(body);
   const parsed = parseOutline(body);
-  if (parsed === null || !sameOutline(scanned, parsed)) {
+  if (parsed === null || !sameOutline(scanned, parsed, parseOutline)) {
     throw new Error("PR body structure is ambiguous; tick this item in the GitHub UI");
   }
 
@@ -297,13 +309,19 @@ export const findCheckboxLines = (
       continue;
     }
     if (!inSection || !entry.text.includes(match)) continue;
-    if (entry.offset === undefined || entry.boxIndex === undefined || entry.before === undefined)
+    if (
+      entry.offset === undefined ||
+      entry.boxIndex === undefined ||
+      entry.before === undefined ||
+      entry.lineNumber === undefined
+    )
       continue;
     matches.push({
       before: entry.before,
       offset: entry.offset,
       boxIndex: entry.boxIndex,
       checked: entry.checked,
+      lineNumber: entry.lineNumber,
     });
   }
   return matches;

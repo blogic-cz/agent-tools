@@ -3170,6 +3170,29 @@ describe("PR checkbox", () => {
     state: "checked" as const,
   };
 
+  it.effect("changes only the selected box in a generated PR body", () =>
+    Effect.gen(function* () {
+      const body = yield* Effect.promise(() =>
+        Bun.file(new URL("./fixtures/pr-checkbox-generated-body.md", import.meta.url)).text(),
+      );
+      const writes: string[][] = [];
+      yield* togglePRCheckboxWithParser({ ...options, match: "FE pair (Czech texts)" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(writes.map((args) => args.at(-1))).toEqual([
+        `body=${body.replace("- [ ] FE pair (Czech texts)", "- [x] FE pair (Czech texts)")}`,
+      ]);
+    }),
+  );
+
   it("accepts an injected matching outline and refuses disagreement or a missing parser", () => {
     const body = "## Release\n- [ ] write release notes\n";
     const outline = [
@@ -3453,6 +3476,9 @@ describe("PR checkbox", () => {
         );
 
         expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result) && count === 2) {
+          expect(result.failure.message).toContain("found 2 (lines 1, 2)");
+        }
         expect(writes).toEqual([]);
       }),
     );
