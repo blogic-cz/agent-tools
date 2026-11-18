@@ -296,7 +296,8 @@ export const findCheckboxLines = (
   let sectionLevel: number | null = null;
   let inSection = section === null;
 
-  for (const entry of scanned) {
+  for (const [index, entry] of scanned.entries()) {
+    const rendered = parsed[index];
     if (entry.type === "heading") {
       if (sectionLevel !== null && entry.level <= sectionLevel) {
         inSection = false;
@@ -308,7 +309,7 @@ export const findCheckboxLines = (
       }
       continue;
     }
-    if (!inSection || !entry.text.includes(match)) continue;
+    if (!inSection || rendered?.type !== "task" || !rendered.text.includes(match)) continue;
     if (
       entry.offset === undefined ||
       entry.boxIndex === undefined ||
