@@ -91,7 +91,7 @@ export const issueViewCommand = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "View one issue's details. For multiple issues use `gh issue snapshot-batch --issues 1,2,3` (one call, not N).",
+    "View one issue's details without its body. For the full body use `gh issue triage --issue N --verbosity full`. For multiple issues use `gh issue snapshot-batch --issues 1,2,3` (one call, not N).",
   ),
 );
 
