@@ -239,7 +239,9 @@ export const issueTriageCommand = Command.make(
     issue: Flag.Int("issue").pipe(Flag.withDescription("Issue number")),
     repo: repoOption,
     verbosity: Flag.Literals("verbosity", ["compact", "full"] as const).pipe(
-      Flag.withDescription("Output detail level: compact or full"),
+      Flag.withDescription(
+        "Output detail level: compact cuts the body to 500 characters and keeps the latest comment; full keeps the whole body and every comment",
+      ),
       Flag.withDefault("compact"),
     ),
   },
