@@ -20,14 +20,17 @@ const readPRBody = Effect.fn("pr.checkbox.readPRBody")(function* (pr: number) {
   return { repo, body };
 });
 
-const checkboxMatchError = (pr: number, count: number) =>
-  new GitHubCommandError({
+const checkboxMatchError = (pr: number, lines: readonly number[]) => {
+  const count = lines.length;
+  const locations = count > 0 ? ` (lines ${lines.join(", ")})` : "";
+  return new GitHubCommandError({
     command: "gh-tool pr checkbox",
     exitCode: 1,
-    stderr: `Found ${count} matching task items in PR #${pr}`,
-    message: `Expected one matching task item in PR #${pr}, found ${count}`,
+    stderr: `Found ${count} matching task items in PR #${pr}${locations}`,
+    message: `Expected one matching task item in PR #${pr}, found ${count}${locations}`,
     hint: "Use --section to narrow the search or pass a longer --match.",
   });
+};
 
 export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (
   opts: {
@@ -64,10 +67,13 @@ export const togglePRCheckbox = Effect.fn("pr.togglePRCheckbox")(function* (
         hint: "PR body structure is ambiguous; tick this item in the GitHub UI.",
       }),
   });
-  if (matches.length !== 1) return yield* checkboxMatchError(opts.pr, matches.length);
-
   const selected = matches[0];
-  if (selected === undefined) return yield* checkboxMatchError(opts.pr, 0);
+  if (matches.length !== 1 || selected === undefined) {
+    return yield* checkboxMatchError(
+      opts.pr,
+      matches.map((match) => match.lineNumber),
+    );
+  }
 
   const alreadyRequested = opts.state === "checked" ? selected.checked : !selected.checked;
   if (alreadyRequested) {

@@ -3169,6 +3169,82 @@ describe("PR checkbox", () => {
     section: null,
     state: "checked" as const,
   };
+  const assertRenderedCheckboxMatch = (
+    body: string,
+    match: string,
+    before: string,
+    after: string,
+  ) =>
+    Effect.gen(function* () {
+      const writes: string[][] = [];
+      yield* togglePRCheckboxWithParser({ ...options, match }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(writes.map((args) => args.at(-1))).toEqual([`body=${body.replace(before, after)}`]);
+    });
+
+  it.effect("changes only the selected box in a generated PR body", () =>
+    Effect.gen(function* () {
+      const body = yield* Effect.promise(() =>
+        Bun.file(new URL("./fixtures/pr-checkbox-generated-body.md", import.meta.url)).text(),
+      );
+      const writes: string[][] = [];
+      yield* togglePRCheckboxWithParser({ ...options, match: "FE pair (Czech texts)" }).pipe(
+        Effect.provide(
+          createMockGhLayer({
+            apiRequest: () => Effect.succeed({ status: 200, body: { body } }),
+            runGh: (args) => {
+              writes.push(args);
+              return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+            },
+          }),
+        ),
+      );
+      expect(writes.map((args) => args.at(-1))).toEqual([
+        `body=${body.replace("- [ ] FE pair (Czech texts)", "- [x] FE pair (Czech texts)")}`,
+      ]);
+    }),
+  );
+
+  it.effect("matches inline code as rendered text", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() =>
+        Bun.file(new URL("./fixtures/pr-checkbox-generated-body.md", import.meta.url)).text(),
+      );
+      const body = fixture.replace(
+        "- [x] Review the `settings__display__mode` option.",
+        "- [ ] Review the `settings__display__mode` option.",
+      );
+      yield* assertRenderedCheckboxMatch(
+        body,
+        "settings__display__mode",
+        "- [ ] Review the `settings__display__mode` option.",
+        "- [x] Review the `settings__display__mode` option.",
+      );
+    }),
+  );
+
+  it.effect("matches link labels as rendered text", () =>
+    Effect.gen(function* () {
+      const body = yield* Effect.promise(() =>
+        Bun.file(new URL("./fixtures/pr-checkbox-generated-body.md", import.meta.url)).text(),
+      );
+      yield* assertRenderedCheckboxMatch(
+        body,
+        "Review the sample change",
+        "- [ ] Review the [sample change](https://example.com/changes/1).",
+        "- [x] Review the [sample change](https://example.com/changes/1).",
+      );
+    }),
+  );
 
   it("accepts an injected matching outline and refuses disagreement or a missing parser", () => {
     const body = "## Release\n- [ ] write release notes\n";
@@ -3453,6 +3529,9 @@ describe("PR checkbox", () => {
         );
 
         expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result) && count === 2) {
+          expect(result.failure.message).toContain("found 2 (lines 1, 2)");
+        }
         expect(writes).toEqual([]);
       }),
     );
