@@ -309,7 +309,7 @@ export const findCheckboxLines = (
       }
       continue;
     }
-    if (!inSection || rendered?.type !== "task" || !rendered.text.includes(match)) continue;
+    if (!inSection || rendered?.type !== "task") continue;
     if (
       entry.offset === undefined ||
       entry.boxIndex === undefined ||
@@ -317,6 +317,8 @@ export const findCheckboxLines = (
       entry.lineNumber === undefined
     )
       continue;
+    const sourceText = entry.before.slice(entry.boxIndex + 2);
+    if (!rendered.text.includes(match) && !sourceText.includes(match)) continue;
     matches.push({
       before: entry.before,
       offset: entry.offset,

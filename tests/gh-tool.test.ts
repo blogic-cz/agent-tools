@@ -3169,12 +3169,7 @@ describe("PR checkbox", () => {
     section: null,
     state: "checked" as const,
   };
-  const assertRenderedCheckboxMatch = (
-    body: string,
-    match: string,
-    before: string,
-    after: string,
-  ) =>
+  const assertCheckboxMatch = (body: string, match: string, before: string, after: string) =>
     Effect.gen(function* () {
       const writes: string[][] = [];
       yield* togglePRCheckboxWithParser({ ...options, match }).pipe(
@@ -3223,7 +3218,7 @@ describe("PR checkbox", () => {
         "- [x] Review the `settings__display__mode` option.",
         "- [ ] Review the `settings__display__mode` option.",
       );
-      yield* assertRenderedCheckboxMatch(
+      yield* assertCheckboxMatch(
         body,
         "settings__display__mode",
         "- [ ] Review the `settings__display__mode` option.",
@@ -3232,12 +3227,23 @@ describe("PR checkbox", () => {
     }),
   );
 
+  it.effect("matches inline code copied from the PR body source", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() =>
+        Bun.file(new URL("./fixtures/pr-checkbox-generated-body.md", import.meta.url)).text(),
+      );
+      const match = "Review the `settings__display__mode` option.";
+      const body = fixture.replace(`- [x] ${match}`, `- [ ] ${match}`);
+      yield* assertCheckboxMatch(body, match, `- [ ] ${match}`, `- [x] ${match}`);
+    }),
+  );
+
   it.effect("matches link labels as rendered text", () =>
     Effect.gen(function* () {
       const body = yield* Effect.promise(() =>
         Bun.file(new URL("./fixtures/pr-checkbox-generated-body.md", import.meta.url)).text(),
       );
-      yield* assertRenderedCheckboxMatch(
+      yield* assertCheckboxMatch(
         body,
         "Review the sample change",
         "- [ ] Review the [sample change](https://example.com/changes/1).",
